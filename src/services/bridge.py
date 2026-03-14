@@ -150,6 +150,10 @@ class JotaBridge:
             while True:
                 message = await self.client_ws.receive()
 
+                if message.get("type") == "websocket.disconnect":
+                    logger.info(f"[{self.client_id}] Cliente físico desconectado.")
+                    break
+
                 # AUDIO → Transcriber
                 if "bytes" in message:
                     if self.handshake.input_mode == "audio" and self.transcriber:
