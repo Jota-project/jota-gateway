@@ -63,6 +63,46 @@ class JotaBridge:
 
         logger.info(f"[{self.client_id}] Puente asíncrono cerrado.")
 
+    async def health_check(self) -> bool:
+        """Ping each microservice and notify the client of any issues.
+
+        Returns True if the session can proceed, False if a critical service
+        is unavailable (caller should close the WebSocket).
+        """
+        # Orchestrator — always critical
+        if not await self.orchestrator.ping():
+            await self.client_ws.send_json({
+                "type": "service_status",
+                "service": "orchestrator",
+                "status": "unavailable",
+                "message": "Orchestrator unavailable, closing session",
+            })
+            return False
+
+        # Transcriber — critical only for audio input (defense-in-depth;
+        # primary failure path is caught by connect_internal_services → routes.py)
+        if self.handshake.input_mode == "audio":
+            if not self.transcriber or not self.transcriber._is_ready:
+                await self.client_ws.send_json({
+                    "type": "service_status",
+                    "service": "transcriber",
+                    "status": "unavailable",
+                    "message": "Transcriber unavailable, closing session",
+                })
+                return False
+
+        # TTS — non-critical; session continues in degraded mode
+        if "audio" in self.handshake.output_mode:
+            if not await TTSClient.ping(settings.TTS_WS_URL):
+                await self.client_ws.send_json({
+                    "type": "service_status",
+                    "service": "tts",
+                    "status": "unavailable",
+                    "message": "Audio output unavailable",
+                })
+
+        return True
+
     async def run(self):
         # Loop principal de lectura del cliente
         self.tasks.append(asyncio.create_task(self._client_input_loop()))
