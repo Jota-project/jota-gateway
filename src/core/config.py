@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     TTS_WS_URL: str = "ws://localhost:8005/ws"
     TTS_TOKEN: str = "gateway"
 
+    BARGE_IN_MIN_CHARS: int = 5
+
     class Config:
         env_file = ".env"
 
