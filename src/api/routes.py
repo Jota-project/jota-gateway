@@ -41,6 +41,12 @@ async def gateway_websocket(websocket: WebSocket, client_id: str):
          await websocket.close(code=1011, reason="Problema estableciendo microservicios internos del hub.")
          return
 
+    # 2.5 HEALTH CHECK — verifica disponibilidad de servicios antes de abrir la sesión
+    if not await bridge.health_check():
+        logger.warning(f"[{client_id}] Health check falló. Cerrando sesión.")
+        await websocket.close(code=1011, reason="Servicio crítico no disponible.")
+        return
+
     # 3. LANZAR LOOPS CONCURRENTES
     try:
         # Este thread se queda en el método run() asíncronamente mientras los bucles corren.
