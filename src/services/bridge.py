@@ -26,6 +26,7 @@ class JotaBridge:
         self.transcriber: Optional[TranscriberClient] = None
 
         self.tasks: list[asyncio.Task] = []
+        self._active_turn: Optional[asyncio.Task] = None
 
     async def connect_internal_services(self):
         """Inicializa clientes de microservicios dependiendo del handshake."""
@@ -102,6 +103,18 @@ class JotaBridge:
                 })
 
         return True
+
+    async def _cancel_active_turn(self) -> bool:
+        """Cancel the active orchestrator turn if one is running. Returns True if cancelled."""
+        if self._active_turn and not self._active_turn.done():
+            self._active_turn.cancel()
+            try:
+                await self._active_turn
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._active_turn = None
+            return True
+        return False
 
     async def run(self):
         # Loop principal de lectura del cliente
