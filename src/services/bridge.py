@@ -123,7 +123,7 @@ class JotaBridge:
         # Loop del Transcriptor (solo si hay audio de entrada)
         if self.transcriber:
             self.tasks.append(asyncio.create_task(
-                self.transcriber.listen_loop(on_transcription_callback=self._on_transcribed_text)
+                self.transcriber.listen_loop(on_transcription_callback=self._on_transcription)
             ))
 
         try:
@@ -157,12 +157,32 @@ class JotaBridge:
         except Exception as e:
             logger.error(f"[{self.client_id}] Error en input loop: {e}")
 
-    async def _on_transcribed_text(self, text: str, is_final: bool):
-        """Callback ejecutado por TranscriberClient cuando detecta 'is_final'."""
+    async def _on_transcription(self, text: str, is_final: bool):
+        """Callback dispatched by TranscriberClient on every transcription event.
+
+        Partials: trigger barge-in if text is substantial and a turn is active.
+        Finals: cancel any running turn, notify the client, start a new turn.
+        All client_ws sends are guarded — the client may disconnect at any time.
+        """
+        if not is_final:
+            # Barge-in: interrupt active turn if partial is substantial enough
+            if len(text) >= settings.BARGE_IN_MIN_CHARS:
+                if await self._cancel_active_turn():
+                    logger.info(f"[{self.client_id}] Barge-in: turno cancelado por parcial '{text[:30]}'")
+                    try:
+                        await self.client_ws.send_json({"type": "interrupted"})
+                    except Exception:
+                        pass
+            return  # partials never reach the orchestrator
+
+        # Final: cancel any running turn, notify client, start new turn
+        await self._cancel_active_turn()
         logger.info(f"[{self.client_id}] Transcripción final: '{text}'")
-        await self.client_ws.send_json({"type": "transcription", "text": text})
-        if self.orchestrator:
-            await self._call_orchestrator(text)
+        try:
+            await self.client_ws.send_json({"type": "transcription", "text": text})
+        except Exception:
+            return  # client disconnected — no point starting a new turn
+        self._active_turn = asyncio.create_task(self._call_orchestrator(text))
 
     async def _call_orchestrator(self, text: str):
         """
