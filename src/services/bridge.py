@@ -110,7 +110,7 @@ class JotaBridge:
         # Loop del Transcriptor (solo si hay audio de entrada)
         if self.transcriber:
             self.tasks.append(asyncio.create_task(
-                self.transcriber.listen_loop(on_text_callback=self._on_transcribed_text)
+                self.transcriber.listen_loop(on_transcription_callback=self._on_transcribed_text)
             ))
 
         try:
@@ -144,7 +144,7 @@ class JotaBridge:
         except Exception as e:
             logger.error(f"[{self.client_id}] Error en input loop: {e}")
 
-    async def _on_transcribed_text(self, text: str):
+    async def _on_transcribed_text(self, text: str, is_final: bool):
         """Callback ejecutado por TranscriberClient cuando detecta 'is_final'."""
         logger.info(f"[{self.client_id}] Transcripción final: '{text}'")
         await self.client_ws.send_json({"type": "transcription", "text": text})
