@@ -216,14 +216,20 @@ class JotaBridge:
             await tts.connect()
 
         async def _on_token(token_text: str):
-            if "text" in self.handshake.output_mode:
-                await self.client_ws.send_json({"type": "token", "content": token_text})
-            if tts:
-                await tts.send_text_chunk(token_text)
+            try:
+                if "text" in self.handshake.output_mode:
+                    await self.client_ws.send_json({"type": "token", "content": token_text})
+                if tts:
+                    await tts.send_text_chunk(token_text)
+            except Exception:
+                pass  # client disconnected mid-stream
 
         async def _on_event(data: dict):
-            if data.get("type") == "error" or "status" in self.handshake.output_mode:
-                await self.client_ws.send_json(data)
+            try:
+                if data.get("type") == "error" or "status" in self.handshake.output_mode:
+                    await self.client_ws.send_json(data)
+            except Exception:
+                pass  # client disconnected mid-stream
 
         async def pipe_tokens():
             await self.orchestrator.listen_loop(
@@ -236,7 +242,10 @@ class JotaBridge:
 
         async def pipe_audio():
             async for chunk in tts.get_audio_stream():
-                await self.client_ws.send_bytes(chunk)
+                try:
+                    await self.client_ws.send_bytes(chunk)
+                except Exception:
+                    return  # client disconnected, abort audio stream
 
         if tts:
             try:
