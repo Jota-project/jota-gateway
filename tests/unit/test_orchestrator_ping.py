@@ -47,3 +47,15 @@ async def test_ping_returns_false_on_network_error(client):
     result = await client.ping()
 
     assert result is False
+
+
+async def test_ping_returns_false_when_not_connected():
+    """ping() before connect() must return False, not crash."""
+    c = OrchestratorClient(
+        base_url="http://localhost:8000",
+        api_key="test-key",
+        client_id="test",
+    )
+    # _http is None (connect() not called)
+    result = await c.ping()
+    assert result is False

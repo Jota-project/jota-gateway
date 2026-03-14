@@ -64,10 +64,13 @@ class OrchestratorClient:
 
     async def ping(self) -> bool:
         """Return True if the orchestrator /health endpoint responds with 2xx."""
+        if not self._http:
+            return False
         try:
             r = await self._http.get(f"{self.base_url}/health", timeout=5.0)
             return r.is_success
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[{self.client_id}] Orchestrator health check failed: {e}")
             return False
 
     # ------------------------------------------------------------------
