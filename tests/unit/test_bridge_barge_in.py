@@ -15,8 +15,10 @@ def make_bridge():
         bridge = JotaBridge(client_id="test", client_ws=ws)
         bridge.handshake = Handshake(input_mode=input_mode, output_mode=output_mode)
         bridge.orchestrator = AsyncMock()
+        bridge.orchestrator.close = AsyncMock()
         bridge.transcriber = MagicMock()
         bridge.transcriber._is_ready = True
+        bridge.transcriber.close = AsyncMock()
         return bridge
     return _make
 
@@ -184,3 +186,27 @@ async def test_barge_in_interrupted_send_failure_is_silent(make_bridge):
 
     # Must not raise
     await bridge._on_transcription("hello world", False)
+
+
+# ── close_all ────────────────────────────────────────────────────────────────
+
+async def test_close_all_cancels_and_awaits_active_turn(make_bridge):
+    """close_all() cancels _active_turn and waits for cleanup (e.g. tts.close())
+    to complete before closing other clients."""
+    bridge = make_bridge()
+
+    cleanup_ran = asyncio.Event()
+
+    async def mock_turn():
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cleanup_ran.set()
+            raise
+
+    bridge._active_turn = asyncio.create_task(mock_turn())
+    await asyncio.sleep(0)
+
+    await bridge.close_all()
+
+    assert cleanup_ran.is_set()

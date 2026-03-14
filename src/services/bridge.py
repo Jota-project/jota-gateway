@@ -51,6 +51,15 @@ class JotaBridge:
         await asyncio.gather(*connect_tasks)
 
     async def close_all(self):
+        # Cancel and await the active turn first so TTS finally-blocks run before
+        # orchestrator/transcriber clients are closed.
+        if self._active_turn and not self._active_turn.done():
+            self._active_turn.cancel()
+            try:
+                await self._active_turn
+            except (asyncio.CancelledError, Exception):
+                pass
+
         for task in self.tasks:
             if not task.done():
                 task.cancel()
