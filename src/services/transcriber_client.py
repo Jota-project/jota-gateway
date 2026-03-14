@@ -70,32 +70,30 @@ class TranscriberClient:
             self._is_ready = False
             logger.warning(f"[{self.client_id}] Intento de enviar audio a Transcriber cerrado.")
 
-    async def listen_loop(self, on_text_callback: Callable[[str], Awaitable[None]]):
+    async def listen_loop(self, on_transcription_callback: Callable[[str, bool], Awaitable[None]]):
         """
-        Bucle que escucha continuamente las transcripciones C++ y ejecuta
-        un callback asíncrono pasándole el String limpio cada vez que sale.
+        Bucle que escucha transcripciones del C++ y ejecuta el callback con (text, is_final).
+        El loop no interpreta is_final — solo reenvía lo que llega.
         """
         if not self.ws:
             return
-            
+
         try:
             async for message in self.ws:
                 try:
-                     # El modelo C++ devuelve JSON
-                     data = json.loads(message)
-                     t_msg = TranscriberMessage(**data)
-                     
-                     if t_msg.type == "transcription" and t_msg.text:
-                         # Extraemos el texto literal
-                         await on_text_callback(t_msg.text)
-                         
-                     elif t_msg.type == "error":
-                         logger.error(f"[{self.client_id}] Transcriber Runtime Error: {t_msg.message}")
-                     elif t_msg.type == "warning":
-                         pass # Warning de buffer full
-                         
+                    data = json.loads(message)
+                    t_msg = TranscriberMessage(**data)
+
+                    if t_msg.type == "transcription" and t_msg.text:
+                        await on_transcription_callback(t_msg.text, bool(t_msg.is_final))
+
+                    elif t_msg.type == "error":
+                        logger.error(f"[{self.client_id}] Transcriber Runtime Error: {t_msg.message}")
+                    elif t_msg.type == "warning":
+                        pass  # Warning de buffer full
+
                 except json.JSONDecodeError:
-                     logger.warning(f"[{self.client_id}] Transcriber mandó un non-JSON: {message}")
+                    logger.warning(f"[{self.client_id}] Transcriber mandó un non-JSON: {message}")
         except ConnectionClosed:
             self._is_ready = False
             logger.info(f"[{self.client_id}] Loop de escucha del Transcriber finalizado.")
