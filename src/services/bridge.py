@@ -219,10 +219,10 @@ class JotaBridge:
             try:
                 if "text" in self.handshake.output_mode:
                     await self.client_ws.send_json({"type": "token", "content": token_text})
-                if tts:
-                    await tts.send_text_chunk(token_text)
             except Exception:
                 pass  # client disconnected mid-stream
+            if tts:
+                await tts.send_text_chunk(token_text)
 
         async def _on_event(data: dict):
             try:
