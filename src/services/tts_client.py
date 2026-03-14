@@ -1,0 +1,104 @@
+import json
+import logging
+from typing import AsyncGenerator, Optional
+
+import websockets
+from websockets.exceptions import ConnectionClosed
+
+logger = logging.getLogger(__name__)
+
+
+class TTSClient:
+    """
+    Client for jota-speaker TTS service (port 8005).
+
+    One instance = one WebSocket session: auth → tokens → end → audio → done.
+    Create a fresh instance per _call_orchestrator invocation.
+    """
+
+    def __init__(self, url: str, token: str, client_id: str) -> None:
+        self.url = url
+        self.token = token
+        self.client_id = client_id
+        self.ws = None
+
+    async def connect(self) -> None:
+        """Open WS and authenticate. Raises RuntimeError on auth failure."""
+        self.ws = await websockets.connect(self.url)
+        await self.ws.send(json.dumps({"type": "auth", "token": self.token}))
+        try:
+            raw = await self.ws.recv()
+        except ConnectionClosed as exc:
+            raise RuntimeError(
+                f"[{self.client_id}] TTS connection closed during auth: {exc}"
+            ) from exc
+
+        try:
+            msg = json.loads(raw)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise RuntimeError(
+                f"[{self.client_id}] TTS sent non-JSON during auth: {raw!r}"
+            ) from exc
+
+        if msg.get("type") != "auth_ok":
+            raise RuntimeError(f"[{self.client_id}] TTS auth failed: {msg}")
+
+        logger.info("[%s] Connected to TTS at %s", self.client_id, self.url)
+
+    async def send_text_chunk(self, text: str) -> None:
+        """Send one LLM token. No-op if WS is unavailable."""
+        if not self.ws:
+            return
+        try:
+            await self.ws.send(json.dumps({"type": "token", "text": text}))
+        except ConnectionClosed:
+            logger.warning("[%s] send_text_chunk: ConnectionClosed", self.client_id)
+
+    async def end(self) -> None:
+        """Signal no more tokens. No-op if WS is unavailable."""
+        if not self.ws:
+            return
+        try:
+            await self.ws.send(json.dumps({"type": "end"}))
+        except ConnectionClosed:
+            logger.warning("[%s] end: ConnectionClosed", self.client_id)
+
+    async def get_audio_stream(self) -> AsyncGenerator[bytes, None]:
+        """
+        Yields binary PCM16 audio frames. Skips JSON control messages.
+        Stops on 'done', 'error', or ConnectionClosed.
+        """
+        if not self.ws:
+            return
+        try:
+            async for msg in self.ws:
+                if isinstance(msg, bytes):
+                    yield msg
+                else:
+                    try:
+                        data = json.loads(msg)
+                    except json.JSONDecodeError:
+                        logger.warning("[%s] TTS unparseable frame: %r", self.client_id, msg)
+                        continue
+                    msg_type = data.get("type")
+                    if msg_type == "done":
+                        break
+                    elif msg_type == "error":
+                        logger.warning(
+                            "[%s] TTS error: %s — %s",
+                            self.client_id, data.get("code"), data.get("message"),
+                        )
+                        break
+                    else:
+                        logger.debug("[%s] TTS control frame: %s", self.client_id, msg_type)
+        except ConnectionClosed:
+            logger.info("[%s] TTS audio stream ended (ConnectionClosed)", self.client_id)
+
+    async def close(self) -> None:
+        """Close the WS with code 1000. No-op if ws is None."""
+        if self.ws is None:
+            return
+        try:
+            await self.ws.close(1000)
+        except Exception:
+            pass

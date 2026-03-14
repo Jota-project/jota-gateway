@@ -1,0 +1,10 @@
+services:
+  jota-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jota_gateway
+    network_mode: "host"
+    env_file:
+      - .env
+    restart: unless-stopped
