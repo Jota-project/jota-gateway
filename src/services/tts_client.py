@@ -1,7 +1,9 @@
 import json
 import logging
+import re
 from typing import AsyncGenerator, Optional
 
+import httpx
 import websockets
 from websockets.exceptions import ConnectionClosed
 
@@ -102,3 +104,20 @@ class TTSClient:
             await self.ws.close(1000)
         except Exception:
             pass
+
+    @staticmethod
+    async def ping(url: str) -> bool:
+        """Return True if the TTS /health endpoint responds with 2xx.
+
+        Converts ws://host:port/path → http://host:port/health
+                 wss://host/path    → https://host/health
+        Empty or malformed URLs return False (caught by the except clause).
+        """
+        http_base = re.sub(r"^ws", "http", url.split("?")[0])  # ws→http, wss→https
+        http_base = "/".join(http_base.split("/")[:3])          # scheme+host+port only
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.get(f"{http_base}/health", timeout=5.0)
+                return r.is_success
+        except Exception:
+            return False
