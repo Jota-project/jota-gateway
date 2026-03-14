@@ -149,6 +149,10 @@ async def _cancel_active_turn(self) -> bool:
 
 #### 3d. Replace `_on_transcribed_text` with `_on_transcription(text, is_final)`
 
+All sends to `client_ws` inside `_on_transcription` are guarded with `try/except`,
+consistent with the principle established in section 3f — the client may disconnect
+at any point, including between barge-in detection and the send:
+
 ```python
 async def _on_transcription(self, text: str, is_final: bool):
     """Callback dispatched by TranscriberClient on every transcription event."""
@@ -157,15 +161,24 @@ async def _on_transcription(self, text: str, is_final: bool):
         if len(text) >= settings.BARGE_IN_MIN_CHARS:
             if await self._cancel_active_turn():
                 logger.info(f"[{self.client_id}] Barge-in: turno cancelado por parcial '{text[:30]}'")
-                await self.client_ws.send_json({"type": "interrupted"})
+                try:
+                    await self.client_ws.send_json({"type": "interrupted"})
+                except Exception:
+                    pass
         return  # partials never reach the orchestrator
 
     # Final: cancel any running turn, notify client, start new turn
     await self._cancel_active_turn()
     logger.info(f"[{self.client_id}] Transcripción final: '{text}'")
-    await self.client_ws.send_json({"type": "transcription", "text": text})
+    try:
+        await self.client_ws.send_json({"type": "transcription", "text": text})
+    except Exception:
+        return  # client disconnected — no point starting a new turn
     self._active_turn = asyncio.create_task(self._call_orchestrator(text))
 ```
+
+Note: when the client is disconnected and the `transcription` send fails, `_call_orchestrator`
+is not started — there is no receiver for the tokens or audio.
 
 Two coordinated renames are required:
 - `listen_loop` parameter: `on_text_callback` → `on_transcription_callback` (in `transcriber_client.py`, section 2 above)
@@ -240,6 +253,7 @@ accumulated partial response — rather than expecting a dedicated `done` or `en
 - `_cancel_active_turn` catches all exceptions from the awaited task — never raises.
 - `_call_orchestrator` tasks propagate `CancelledError` cleanly through the existing `finally: await tts.close()` block.
 - Send guards use bare `except Exception: pass/return` — errors are expected (disconnected client) and do not need logging.
+- `close_all()` awaits `_active_turn` (with exception suppression) but does **not** await the tasks in `self.tasks` — this is pre-existing intentional behavior. The `self.tasks` tasks (input_loop, listen_loop) are only cancelled; they are left to complete naturally or be garbage-collected. This asymmetry is out of scope for Spec A.
 
 ---
 
