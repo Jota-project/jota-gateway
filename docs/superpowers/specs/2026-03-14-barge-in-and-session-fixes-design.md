@@ -115,13 +115,20 @@ async def listen_loop(
 self._active_turn: Optional[asyncio.Task] = None
 ```
 
-#### 3b. `close_all()` — cancel active turn
+#### 3b. `close_all()` — cancel and await active turn
 
-Add before the existing task cancellation loop:
+Add before the existing task cancellation loop. The active turn must be awaited
+(with exception suppression) so that the TTS `finally: await tts.close()` block
+inside `_call_orchestrator` completes before `gather(*close_aws)` closes the
+orchestrator and transcriber clients:
 
 ```python
 if self._active_turn and not self._active_turn.done():
     self._active_turn.cancel()
+    try:
+        await self._active_turn
+    except (asyncio.CancelledError, Exception):
+        pass
 ```
 
 #### 3c. New method `_cancel_active_turn() -> bool`
@@ -160,7 +167,9 @@ async def _on_transcription(self, text: str, is_final: bool):
     self._active_turn = asyncio.create_task(self._call_orchestrator(text))
 ```
 
-Update `run()` to use the new callback name:
+Two coordinated renames are required:
+- `listen_loop` parameter: `on_text_callback` → `on_transcription_callback` (in `transcriber_client.py`, section 2 above)
+- Call site in `run()` (in `bridge.py`): keyword argument and callback method name both change:
 
 ```python
 self.transcriber.listen_loop(on_transcription_callback=self._on_transcription)
@@ -180,6 +189,9 @@ if message.get("type") == "websocket.disconnect":
 
 #### 3f. `_call_orchestrator` — send guards
 
+All three closures that send to `client_ws` must be guarded (bug 5 covers
+`_on_token`, `_on_event`, and `pipe_audio`):
+
 ```python
 async def _on_token(token_text: str):
     try:
@@ -187,6 +199,13 @@ async def _on_token(token_text: str):
             await self.client_ws.send_json({"type": "token", "content": token_text})
         if tts:
             await tts.send_text_chunk(token_text)
+    except Exception:
+        pass  # client disconnected mid-stream
+
+async def _on_event(data: dict):
+    try:
+        if data.get("type") == "error" or "status" in self.handshake.output_mode:
+            await self.client_ws.send_json(data)
     except Exception:
         pass  # client disconnected mid-stream
 
@@ -204,8 +223,15 @@ async def pipe_audio():
 
 | Message | When | Session continues? |
 |---|---|---|
-| `{"type":"interrupted"}` | Barge-in triggered by partial ≥ threshold | Yes |
+| `{"type":"interrupted"}` | Barge-in triggered by partial ≥ threshold while a turn was active | Yes |
 | `{"type":"transcription","text":"..."}` | Final transcription (unchanged) | Yes |
+
+**Stream termination on final-triggered cancellation:** when a final transcription
+cancels an in-progress turn, the client receives **no explicit end-of-stream marker**
+for the interrupted token stream. The new `{"type":"transcription","text":"..."}` event
+that immediately follows serves as the implicit signal that the previous stream has ended.
+Clients must treat any incoming `transcription` event as a stream reset — discarding any
+accumulated partial response — rather than expecting a dedicated `done` or `end` message.
 
 ---
 
