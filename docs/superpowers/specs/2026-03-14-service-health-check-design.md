@@ -76,7 +76,7 @@ WebSocket accepted
        │
   health_check()                ← NEW
        ├─ orchestrator.ping()   → fail → send error JSON → return False
-       ├─ transcriber.is_ready  → fail (audio input only) → send error JSON → return False
+       ├─ transcriber._is_ready → fail (audio input only) → send error JSON → return False
        └─ TTSClient.ping(url)   → fail (audio output only) → send warning JSON → continue
        │
   run()
@@ -89,6 +89,9 @@ WebSocket accepted
 ### 1. `OrchestratorClient.ping() -> bool`
 
 Uses the already-initialised `httpx.AsyncClient` to hit `GET {base_url}/health`.
+`OrchestratorClient.connect()` only creates an in-memory `httpx.AsyncClient` — no
+network I/O — so it is infallible; `self._http` is always non-None when `ping()` is
+called.
 
 ```python
 async def ping(self) -> bool:
@@ -101,16 +104,21 @@ async def ping(self) -> bool:
 
 ### 2. `TTSClient.ping(url: str) -> bool` (static method)
 
-Converts `ws://host:port/...` → `http://host:port/health` and performs a
-one-shot GET. Static because TTS has no persistent instance at session-start
-time.
+Converts `ws://host:port/...` → `http://host:port/health` (and `wss://` →
+`https://`) and performs a one-shot GET. Static because TTS has no persistent
+instance at session-start time.
+
+Empty or malformed URLs (e.g. the triggering `TTS_WS_URL=""`) will cause the
+regex/split to produce an invalid URL, which raises inside the `try` block and
+returns `False` — the session continues with a TTS warning, which is the correct
+degraded behaviour.
 
 ```python
 @staticmethod
 async def ping(url: str) -> bool:
     import re, httpx
-    http_base = re.sub(r'^wss?', 'http', url.split('?')[0])
-    http_base = '/'.join(http_base.split('/')[:3])  # keep only scheme+host+port
+    http_base = re.sub(r'^ws', 'http', url.split('?')[0])   # ws→http, wss→https
+    http_base = '/'.join(http_base.split('/')[:3])           # scheme+host+port only
     try:
         async with httpx.AsyncClient() as client:
             r = await client.get(f"{http_base}/health", timeout=5.0)
@@ -123,10 +131,19 @@ async def ping(url: str) -> bool:
 
 `connect()` already opens the WebSocket and waits for `{"type": "ready"}`.
 If that succeeds, `_is_ready` is `True`. The bridge reads `self.transcriber._is_ready`
-directly. If `connect_internal_services()` raised (transcriber down), routes.py
-catches it before reaching `health_check()`.
+directly.
+
+The primary failure path (transcriber unreachable) is: `connect_internal_services()`
+raises → `routes.py` catches it → session closed before `health_check()` is reached.
+The `_is_ready` guard inside `health_check()` is **defense-in-depth** for the race
+where the transcriber goes down between `connect()` returning and `health_check()`
+executing, or for future code paths that bypass the exception.
 
 ### 4. `JotaBridge.health_check() -> bool`
+
+`TTSClient` and `settings` are already imported at the top of `bridge.py`.
+`settings.TTS_WS_URL` is the canonical URL source — no TTSClient instance is
+stored on the bridge at this point.
 
 ```python
 async def health_check(self) -> bool:
