@@ -10,36 +10,35 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-@router.websocket("/ws/stream/{client_id}")
-async def gateway_websocket(websocket: WebSocket, client_id: str):
+@router.websocket("/ws/stream")
+async def gateway_websocket(websocket: WebSocket):
     await websocket.accept()
-    
+
     # 1. FASE DE HANDSHAKE INITIAL
     try:
-        # El primer mensaje esperado siempre es la config de modos JSON.
         raw_msg = await websocket.receive_text()
         msg_data = json.loads(raw_msg)
         handshake = Handshake(**msg_data)
+        client_id = handshake.client_key  # label de logs hasta que Fase 1 resuelva el UUID real
         logger.info(f"[{client_id}] Handshake completado exitosamente: {handshake}")
     except (json.JSONDecodeError, ValidationError) as e:
-        logger.error(f"[{client_id}] Payload inicial inválido de handshake. {e}")
+        logger.error(f"Payload inicial inválido de handshake. {e}")
         await websocket.close(code=1008, reason="Handshake invalido. Se esperaba JSON de configuración.")
         return
     except WebSocketDisconnect:
-        logger.info(f"[{client_id}] Se desconecto inmediatamente antes o durante el handshake.")
+        logger.info(f"Cliente desconectado antes o durante el handshake.")
         return
 
     # 2. INSTANCIAR EL PUENTE DE MICROSERVICIOS
     bridge = JotaBridge(client_id=client_id, client_ws=websocket)
     bridge.handshake = handshake
-    
+
     try:
-         # Tira las conexiones concurrentes a Orchestrator, Transcriber, TTS
-         await bridge.connect_internal_services()
+        await bridge.connect_internal_services()
     except Exception as e:
-         logger.error(f"[{client_id}] Fallo al inicializar puentes internos red docker. {e}")
-         await websocket.close(code=1011, reason="Problema estableciendo microservicios internos del hub.")
-         return
+        logger.error(f"[{client_id}] Fallo al inicializar puentes internos. {e}")
+        await websocket.close(code=1011, reason="Problema estableciendo microservicios internos del hub.")
+        return
 
     # 2.5 HEALTH CHECK — verifica disponibilidad de servicios antes de abrir la sesión
     if not await bridge.health_check():
@@ -49,18 +48,14 @@ async def gateway_websocket(websocket: WebSocket, client_id: str):
 
     # 3. LANZAR LOOPS CONCURRENTES
     try:
-        # Este thread se queda en el método run() asíncronamente mientras los bucles corren.
         await bridge.run()
     except Exception as e:
         logger.error(f"[{client_id}] Error crítico de Runtime en el Puente Principal: {e}")
     finally:
-        # Limpieza. bridge.run() o sus bucles detectaron quiebre / desconexión.
-        # Desconecta cliente si aún esta activo.
         if "DISCONNECTED" not in websocket.client_state.name:
-            # client_state se mapea de starlette, asumiendo lo cerramos si podemos
-           try:
-               await websocket.close()
-           except Exception:
-               pass
-               
-        logger.info(f"[{client_id}] --- Sesión de entrada WebSocket Concluida --- ")
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
+        logger.info(f"[{client_id}] --- Sesión de entrada WebSocket Concluida ---")

@@ -10,9 +10,10 @@ class Handshake(BaseModel):
     Configuración inicial que el ESP32 o la Web envían al Gateway al conectar
     por WebSocket. Define qué patas internas del ecosistema se deben encender.
     """
+    client_key: str
     input_mode: Literal["audio", "text"]
     output_mode: List[Literal["audio", "text", "status"]]
-    
+
     model_config = ConfigDict(extra="allow")
 
 # =====================================================================
