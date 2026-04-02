@@ -1,5 +1,7 @@
 import asyncio
+import json
 import logging
+import time
 from typing import Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -27,6 +29,8 @@ class JotaBridge:
 
         self.tasks: list[asyncio.Task] = []
         self._active_turn: Optional[asyncio.Task] = None
+        self._session_start: float = 0.0
+        self._first_audio_at: Optional[float] = None
 
     async def connect_internal_services(self):
         """Inicializa clientes de microservicios dependiendo del handshake."""
@@ -125,7 +129,42 @@ class JotaBridge:
             return True
         return False
 
+    async def _transcription_watchdog(self):
+        """Cierra la sesión si el transcriptor no emite nada en TRANSCRIBER_SILENCE_TIMEOUT_S segundos
+        contados desde que el cliente empezó a enviar audio."""
+        from src.core.config import settings
+        timeout = settings.TRANSCRIBER_SILENCE_TIMEOUT_S
+
+        # Esperar a que el cliente empiece a enviar audio antes de vigilar
+        while self._first_audio_at is None:
+            await asyncio.sleep(0.5)
+            if not self.transcriber or not self.transcriber._is_ready:
+                return
+
+        while True:
+            await asyncio.sleep(2)
+            if not self.transcriber or not self.transcriber._is_ready:
+                return
+
+            last = self.transcriber._last_transcription_at
+            elapsed = time.monotonic() - last if last else time.monotonic() - self._first_audio_at
+
+            if elapsed > timeout:
+                logger.warning(f"[{self.client_id}] Watchdog: {elapsed:.1f}s sin transcripción del transcriptor")
+                try:
+                    await self.client_ws.send_json({
+                        "type": "service_status",
+                        "service": "transcriber",
+                        "status": "degraded",
+                        "message": "No transcription received — check microphone or audio quality",
+                    })
+                except Exception:
+                    pass
+                return
+
     async def run(self):
+        self._session_start = time.monotonic()
+
         # Loop principal de lectura del cliente
         self.tasks.append(asyncio.create_task(self._client_input_loop()))
 
@@ -134,6 +173,7 @@ class JotaBridge:
             self.tasks.append(asyncio.create_task(
                 self.transcriber.listen_loop(on_transcription_callback=self._on_transcription)
             ))
+            self.tasks.append(asyncio.create_task(self._transcription_watchdog()))
 
         try:
             done, pending = await asyncio.wait(self.tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -141,6 +181,18 @@ class JotaBridge:
                 try: task.result()
                 except asyncio.CancelledError: pass
                 except Exception as e: logger.error(f"[{self.client_id}] Loop crasheó: {e}")
+
+            # Notificar al cliente si el transcriptor cayó inesperadamente
+            if self.transcriber and self.transcriber._dropped_unexpectedly:
+                try:
+                    await self.client_ws.send_json({
+                        "type": "service_status",
+                        "service": "transcriber",
+                        "status": "unavailable",
+                        "message": "Transcriber connection lost unexpectedly",
+                    })
+                except Exception:
+                    pass
         finally:
             await self.close_all()
 
@@ -157,12 +209,23 @@ class JotaBridge:
                 # AUDIO → Transcriber
                 if "bytes" in message:
                     if self.handshake.input_mode == "audio" and self.transcriber:
+                        if self._first_audio_at is None:
+                            self._first_audio_at = time.monotonic()
                         await self.transcriber.send_audio(message["bytes"])
 
                 # TEXTO → Orchestrator (prompt directo desde un cliente de texto)
                 elif "text" in message:
                     text_data = message["text"]
-                    if self.orchestrator:
+                    try:
+                        json_msg = json.loads(text_data)
+                    except Exception:
+                        json_msg = None
+
+                    if json_msg and json_msg.get("type") == "end":
+                        # Cliente terminó de hablar → señalizar fin al transcriber
+                        if self.handshake.input_mode == "audio" and self.transcriber:
+                            await self.transcriber.send_end()
+                    elif self.orchestrator:
                         await self._call_orchestrator(text_data)
 
         except WebSocketDisconnect:

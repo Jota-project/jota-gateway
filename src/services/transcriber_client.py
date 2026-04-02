@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 import websockets
 from websockets.exceptions import ConnectionClosed
 from typing import Optional, Callable, Awaitable
@@ -19,6 +20,8 @@ class TranscriberClient:
         self.client_id = client_id
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         self._is_ready = False
+        self._dropped_unexpectedly: bool = False
+        self._last_transcription_at: Optional[float] = None
 
     async def connect(self, language: str = "es"):
         """Abre el socket y manda el Handshake inicial de config"""
@@ -85,6 +88,8 @@ class TranscriberClient:
                     t_msg = TranscriberMessage(**data)
 
                     if t_msg.type == "transcription" and t_msg.text:
+                        self._last_transcription_at = time.monotonic()
+                        logger.debug(f"[{self.client_id}] Transcripción recibida: is_final={t_msg.is_final!r} text='{t_msg.text[:40]}'")
                         await on_transcription_callback(t_msg.text, bool(t_msg.is_final))
 
                     elif t_msg.type == "error":
@@ -95,6 +100,8 @@ class TranscriberClient:
                 except json.JSONDecodeError:
                     logger.warning(f"[{self.client_id}] Transcriber mandó un non-JSON: {message}")
         except ConnectionClosed:
+            if self._is_ready:
+                self._dropped_unexpectedly = True
             self._is_ready = False
             logger.info(f"[{self.client_id}] Loop de escucha del Transcriber finalizado.")
 
@@ -134,6 +141,15 @@ class TranscriberClient:
             raise e
         finally:
             await self.close()
+
+    async def send_end(self):
+        """Señaliza al transcriber que el audio terminó, disparando la transcripción final."""
+        if not self._is_ready or not self.ws:
+            return
+        try:
+            await self.ws.send(json.dumps({"type": "end"}))
+        except ConnectionClosed:
+            self._is_ready = False
 
     async def close(self):
         self._is_ready = False
