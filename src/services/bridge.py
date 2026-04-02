@@ -31,6 +31,7 @@ class JotaBridge:
         self._active_turn: Optional[asyncio.Task] = None
         self._session_start: float = 0.0
         self._first_audio_at: Optional[float] = None
+        self._last_final_text: Optional[str] = None
 
     async def connect_internal_services(self):
         """Inicializa clientes de microservicios dependiendo del handshake."""
@@ -250,6 +251,12 @@ class JotaBridge:
                     except Exception:
                         pass
             return  # partials never reach the orchestrator
+
+        # Final: deduplicate — transcriber may emit the same text more than once
+        if text == self._last_final_text:
+            logger.debug(f"[{self.client_id}] Transcripción final duplicada descartada: '{text[:40]}'")
+            return
+        self._last_final_text = text
 
         # Final: cancel any running turn, notify client, start new turn
         await self._cancel_active_turn()
