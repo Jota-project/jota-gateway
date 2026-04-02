@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     TTS_TOKEN: str = "gateway"
 
     BARGE_IN_MIN_CHARS: int = 5
+    TRANSCRIBER_SILENCE_TIMEOUT_S: int = 25
 
     class Config:
         env_file = ".env"
