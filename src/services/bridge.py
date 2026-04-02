@@ -242,6 +242,12 @@ class JotaBridge:
         All client_ws sends are guarded — the client may disconnect at any time.
         """
         if not is_final:
+            # Forward partial to client for live display
+            try:
+                await self.client_ws.send_json({"type": "transcription_partial", "text": text})
+            except Exception:
+                return  # client disconnected
+
             # Barge-in: interrupt active turn if partial is substantial enough
             if len(text) >= settings.BARGE_IN_MIN_CHARS:
                 if await self._cancel_active_turn():
