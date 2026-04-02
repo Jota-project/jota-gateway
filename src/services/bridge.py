@@ -40,7 +40,7 @@ class JotaBridge:
         # 1. Orchestrator — siempre activo (es el cerebro)
         self.orchestrator = OrchestratorClient(
             base_url=settings.ORCHESTRATOR_BASE_URL,
-            api_key=settings.ORCHESTRATOR_API_KEY,
+            api_key=self.handshake.client_key,
             client_id=self.client_id,
         )
         connect_tasks.append(self.orchestrator.connect())
@@ -51,7 +51,10 @@ class JotaBridge:
                 url=settings.TRANSCRIBER_WS_URL,
                 client_id=self.client_id
             )
-            connect_tasks.append(self.transcriber.connect(language="es"))
+            connect_tasks.append(self.transcriber.connect(
+                language=getattr(self.handshake, "language", "es"),
+                token=self.handshake.client_key,
+            ))
 
         await asyncio.gather(*connect_tasks)
 

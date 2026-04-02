@@ -23,19 +23,16 @@ class TranscriberClient:
         self._dropped_unexpectedly: bool = False
         self._last_transcription_at: Optional[float] = None
 
-    async def connect(self, language: str = "es"):
+    async def connect(self, language: str = "es", token: str = ""):
         """Abre el socket y manda el Handshake inicial de config"""
         try:
             logger.info(f"[{self.client_id}] Conectado a Transcriber WS ({self.url})")
-            
-            # El Transcriber requiere un JSON de configuración antes de recibir audio binario
-            # config_msg = TranscriberConfig(language=language)
+
             handshake = {
                 "type": "config",
                 "language": language,
-                "token": "pene",
-                "publish_mqtt": False,
-                "vad_thold": 0.0
+                "token": token,
+                "vad_thold": 0.0,
             }
             logger.info(f"[{self.client_id}] Configuracion transcriber: {handshake}")
 
