@@ -1,3 +1,11 @@
+## [1.2.1](https://github.com/Jota-project/jota-gateway/compare/v1.2.0...v1.2.1) (2026-04-03)
+
+
+### Bug Fixes
+
+* send x-client-id header to orchestrator ([#31](https://github.com/Jota-project/jota-gateway/issues/31)) ([799c96a](https://github.com/Jota-project/jota-gateway/commit/799c96ac51ff1383e11a48dd9b3421f051ea35d9)), closes [#20](https://github.com/Jota-project/jota-gateway/issues/20)
+* send x-client-id header to orchestrator (closes [#20](https://github.com/Jota-project/jota-gateway/issues/20)) ([d432f7f](https://github.com/Jota-project/jota-gateway/commit/d432f7f9c6d7ad6eba548903a581e9e433244f51))
+
 # [1.2.0](https://github.com/Jota-project/jota-gateway/compare/v1.1.0...v1.2.0) (2026-04-03)
 
 
