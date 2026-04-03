@@ -105,43 +105,6 @@ class TranscriberClient:
             self._is_ready = False
             logger.info(f"[{self.client_id}] Loop de escucha del Transcriber finalizado.")
 
-    async def transcribe_file(self, audio_bytes: bytes, language: str = "es") -> str:
-        """
-        Sube un archivo de audio completo (pcm_f32le) y espera la transcripción final pseudo-síncronamente.
-        """
-        try:
-            # 1. Conexión y Handshake
-            await self.connect(language=language)
-            
-            # 2. Envío de datos
-            await self.send_audio(audio_bytes)
-            
-            # 3. Indicar fin de stream (Trigger C++ inference commit)
-            await self.ws.send(json.dumps({"type": "end"}))
-            
-            # 4. Esperar la respuesta final
-            final_text = ""
-            async for message in self.ws:
-                try:
-                    data = json.loads(message)
-                    t_msg = TranscriberMessage(**data)
-                    
-                    if t_msg.type == "transcription" and t_msg.is_final:
-                         final_text += (t_msg.text or "")
-                         break
-                    elif t_msg.type == "error":
-                         raise Exception(f"Error desde transcriptor remoto: {t_msg.message}")
-                except json.JSONDecodeError:
-                    pass
-                    
-            return final_text
-            
-        except Exception as e:
-            logger.error(f"[{self.client_id}] Error extrayendo transcripción de archivo: {e}")
-            raise e
-        finally:
-            await self.close()
-
     async def send_end(self):
         """Señaliza al transcriber que el audio terminó, disparando la transcripción final."""
         if not self._is_ready or not self.ws:
