@@ -1,3 +1,15 @@
+# [1.1.0](https://github.com/Jota-project/jota-gateway/compare/v1.0.0...v1.1.0) (2026-04-03)
+
+
+### Bug Fixes
+
+* get_messages passes X-Client-Id for ownership validation; add get_models() ([272ea5b](https://github.com/Jota-project/jota-gateway/commit/272ea5bbe97fbdc5b36dcc5fac063406aeb58991))
+
+
+### Features
+
+* add TranscriberClient.ping() static method for health checks ([4727905](https://github.com/Jota-project/jota-gateway/commit/47279054d9b6b6b8d6283ace851f44c026c3197e))
+
 # 1.0.0 (2026-04-03)
 
 
