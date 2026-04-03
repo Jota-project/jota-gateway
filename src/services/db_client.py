@@ -138,10 +138,18 @@ class DbClient:
     # ------------------------------------------------------------------
 
     async def get_models(self) -> list:
+        """Lista de modelos disponibles. Resultado cacheado 300s."""
         assert self._http
+        _MODELS_KEY = "models"
+        async with self._models_lock:
+            if _MODELS_KEY in self._models_cache:
+                return self._models_cache[_MODELS_KEY]
         r = await self._http.get(f"{self.base_url}/models")
         r.raise_for_status()
-        return r.json()
+        result = r.json()
+        async with self._models_lock:
+            self._models_cache[_MODELS_KEY] = result
+        return result
 
 
 # Singleton — importar este objeto directamente
