@@ -1,3 +1,16 @@
+# [1.2.0](https://github.com/Jota-project/jota-gateway/compare/v1.1.0...v1.2.0) (2026-04-03)
+
+
+### Features
+
+* add config_routes — GET/PUT /api/config, POST /api/config/reset ([2c23b37](https://github.com/Jota-project/jota-gateway/commit/2c23b3776cc4c553b173a88b0da70b2f5c1fab8a))
+* add conversation_routes — GET /api/conversations and /messages ([a1f67e7](https://github.com/Jota-project/jota-gateway/commit/a1f67e787ee7033826a0795984baae2d8a7231ba))
+* add get_verified_client dependency for REST API auth ([4125fde](https://github.com/Jota-project/jota-gateway/commit/4125fde2f84e62e39b7286e7e4a2cf068b19bcfd))
+* add health_routes — GET /api/health with parallel service pings ([045c793](https://github.com/Jota-project/jota-gateway/commit/045c79352ed0b2fab8aa3e5a8a37753eee4828e5))
+* add models_routes — GET /api/models ([a3d2a68](https://github.com/Jota-project/jota-gateway/commit/a3d2a68595aab64b4b51c42f0109915b78d9ad82))
+* Fase 2 — REST API pública (config, conversations, models, health) ([#29](https://github.com/Jota-project/jota-gateway/issues/29)) ([3911f88](https://github.com/Jota-project/jota-gateway/commit/3911f8853bb927e57207a9b9d1ddcd200d1802fa)), closes [#26](https://github.com/Jota-project/jota-gateway/issues/26) [#25](https://github.com/Jota-project/jota-gateway/issues/25) [#1](https://github.com/Jota-project/jota-gateway/issues/1)
+* mount REST API routers — config, conversations, models, health (Fase 2, closes [#1](https://github.com/Jota-project/jota-gateway/issues/1)) ([9185995](https://github.com/Jota-project/jota-gateway/commit/91859958c8f6699572627f6abc9d4af4a1958c90))
+
 # [1.1.0](https://github.com/Jota-project/jota-gateway/compare/v1.0.0...v1.1.0) (2026-04-03)
 
 
