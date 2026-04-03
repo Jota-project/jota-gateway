@@ -2,14 +2,17 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from src.services.bridge import JotaBridge
-from src.models.schemas import Handshake
+from src.models.schemas import Client, ClientConfig, Handshake
+
+_CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
+_CONFIG = ClientConfig()
 
 
 @pytest.fixture
 def bridge():
     ws = AsyncMock()
-    b = JotaBridge(client_id="test", client_ws=ws)
-    b.handshake = Handshake(input_mode="text", output_mode=["text", "status"])
+    b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws)
+    b.handshake = Handshake(client_key="test-key", input_mode="text", output_mode=["text", "status"])
     b.orchestrator = AsyncMock()
     b.transcriber = None
     return b
@@ -53,8 +56,8 @@ async def test_audio_send_failure_does_not_propagate():
     """send_bytes raising inside pipe_audio must not crash _call_orchestrator."""
     ws = AsyncMock()
     ws.send_bytes = AsyncMock(side_effect=RuntimeError("disconnected"))
-    b = JotaBridge(client_id="test", client_ws=ws)
-    b.handshake = Handshake(input_mode="audio", output_mode=["audio", "text"])
+    b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws)
+    b.handshake = Handshake(client_key="test-key", input_mode="audio", output_mode=["audio", "text"])
     b.orchestrator = AsyncMock()
 
     # Orchestrator produces one token, TTS returns one audio chunk

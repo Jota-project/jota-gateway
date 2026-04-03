@@ -3,7 +3,10 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from src.services.bridge import JotaBridge
-from src.models.schemas import Handshake
+from src.models.schemas import Client, ClientConfig, Handshake
+
+_CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
+_CONFIG = ClientConfig()
 
 
 @pytest.fixture
@@ -12,8 +15,8 @@ def make_bridge():
         if output_mode is None:
             output_mode = ["audio", "text", "status"]
         ws = AsyncMock()
-        bridge = JotaBridge(client_id="test", client_ws=ws)
-        bridge.handshake = Handshake(input_mode=input_mode, output_mode=output_mode)
+        bridge = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws)
+        bridge.handshake = Handshake(client_key="test-key", input_mode=input_mode, output_mode=output_mode)
         bridge.orchestrator = AsyncMock()
         bridge.orchestrator.close = AsyncMock()
         bridge.transcriber = MagicMock()
@@ -70,36 +73,38 @@ async def test_cancel_active_turn_clears_active_turn(make_bridge):
 
 # ── _on_transcription ────────────────────────────────────────────────────────
 
-async def test_partial_below_threshold_is_ignored(make_bridge):
-    """Partials shorter than BARGE_IN_MIN_CHARS (5) are silently ignored."""
+async def test_partial_below_threshold_forwarded_but_no_barge_in(make_bridge):
+    """Partials shorter than BARGE_IN_MIN_CHARS are forwarded to client but don't trigger barge-in."""
     bridge = make_bridge()
     bridge._call_orchestrator = AsyncMock()
 
     await bridge._on_transcription("hi", False)  # 2 chars
 
-    bridge.client_ws.send_json.assert_not_called()
+    bridge.client_ws.send_json.assert_called_once_with({"type": "transcription_partial", "text": "hi"})
     assert bridge._active_turn is None
 
 
-async def test_partial_above_threshold_with_no_active_turn_is_ignored(make_bridge):
-    """Partial above threshold but no active turn — no barge-in needed."""
+async def test_partial_above_threshold_with_no_active_turn_forwarded_only(make_bridge):
+    """Partial above threshold but no active turn — forwarded to client, no barge-in needed."""
     bridge = make_bridge()
 
     await bridge._on_transcription("hello world", False)
 
-    bridge.client_ws.send_json.assert_not_called()
+    bridge.client_ws.send_json.assert_called_once_with({"type": "transcription_partial", "text": "hello world"})
     assert bridge._active_turn is None
 
 
 async def test_partial_above_threshold_with_active_turn_triggers_barge_in(make_bridge):
-    """Partial above threshold with active turn → cancel + send interrupted."""
+    """Partial above threshold with active turn → forward partial + cancel + send interrupted."""
     bridge = make_bridge()
     bridge._active_turn = asyncio.create_task(asyncio.sleep(60))
     await asyncio.sleep(0)
 
     await bridge._on_transcription("hello world", False)
 
-    bridge.client_ws.send_json.assert_called_once_with({"type": "interrupted"})
+    calls = bridge.client_ws.send_json.call_args_list
+    assert calls[0][0][0] == {"type": "transcription_partial", "text": "hello world"}
+    assert calls[1][0][0] == {"type": "interrupted"}
     assert bridge._active_turn is None
 
 

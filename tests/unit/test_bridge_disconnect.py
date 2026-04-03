@@ -2,14 +2,17 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, call
 from src.services.bridge import JotaBridge
-from src.models.schemas import Handshake
+from src.models.schemas import Client, ClientConfig, Handshake
+
+_CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
+_CONFIG = ClientConfig()
 
 
 @pytest.fixture
 def bridge():
     ws = AsyncMock()
-    b = JotaBridge(client_id="test", client_ws=ws)
-    b.handshake = Handshake(input_mode="audio", output_mode=["text"])
+    b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws)
+    b.handshake = Handshake(client_key="test-key", input_mode="audio", output_mode=["text"])
     b.transcriber = MagicMock()
     b.transcriber._is_ready = True
     return b
