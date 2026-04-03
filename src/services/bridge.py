@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 from src.core.config import settings
-from src.models.schemas import Handshake
+from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.orchestrator_client import OrchestratorClient
 from src.services.transcriber_client import TranscriberClient
 from src.services.tts_client import TTSClient
@@ -18,8 +18,10 @@ class JotaBridge:
     Titiritero principal. Gestiona la conexión de un cliente físico
     y enruta asincrónicamente los mensajes utilizando los adaptadores de microservicio.
     """
-    def __init__(self, client_id: str, client_ws: WebSocket):
-        self.client_id = client_id
+    def __init__(self, client: Client, config: ClientConfig, client_ws: WebSocket):
+        self.client = client
+        self.config = config
+        self.client_id = client.id  # UUID real — usado en logs y como user_id al orchestrator
         self.client_ws = client_ws
         self.handshake: Optional[Handshake] = None
 
@@ -40,8 +42,8 @@ class JotaBridge:
         # 1. Orchestrator — siempre activo (es el cerebro)
         self.orchestrator = OrchestratorClient(
             base_url=settings.ORCHESTRATOR_BASE_URL,
-            api_key=self.handshake.client_key,
-            client_id=self.client_id,
+            api_key=self.client.client_key,
+            client_id=self.client_id,  # UUID real → user_id correcto en jota-db
         )
         connect_tasks.append(self.orchestrator.connect())
 
@@ -52,8 +54,9 @@ class JotaBridge:
                 client_id=self.client_id
             )
             connect_tasks.append(self.transcriber.connect(
-                language=getattr(self.handshake, "language", "es"),
-                token=self.handshake.client_key,
+                language=self.config.stt_language,
+                token=self.client.client_key,
+                vad_thold=self.config.stt_vad_thold,
             ))
 
         await asyncio.gather(*connect_tasks)

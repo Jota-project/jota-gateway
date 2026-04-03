@@ -1,6 +1,10 @@
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
+    # jota-db (fuente de verdad de identidad y configuración)
+    JOTA_DB_BASE_URL: str = "http://localhost:8001"
+    JOTA_DB_API_KEY: str = ""
+
     # URL base HTTP del JotaOrchestrator (sin trailing slash)
     ORCHESTRATOR_BASE_URL: str = "http://localhost:8000"
 
