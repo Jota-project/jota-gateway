@@ -50,7 +50,7 @@ class OrchestratorClient:
         Llamar antes de usar send_text / stream_response.
         """
         self._http = httpx.AsyncClient(
-            headers={"x-client-key": self.api_key},
+            headers={"x-client-key": self.api_key, "x-client-id": self.client_id},
             timeout=httpx.Timeout(self.timeout, read=None),  # read=None → sin límite en streaming
         )
         logger.info(f"[{self.client_id}] OrchestratorClient listo → {self.base_url}/api/quick")
