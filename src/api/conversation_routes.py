@@ -1,11 +1,12 @@
 """
 conversation_routes.py
 ~~~~~~~~~~~~~~~~~~~~~~
-GET /api/conversations                      — listar conversaciones
-GET /api/conversations/{id}/messages        — mensajes de una conversación
+GET    /api/conversations                      — listar conversaciones
+GET    /api/conversations/{id}/messages        — mensajes de una conversación
+DELETE /api/conversations/{id}                 — archivar conversación
 """
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from src.api.deps import get_verified_client
 from src.models.schemas import Client, ClientConfig
@@ -41,5 +42,17 @@ async def get_messages(
     client, _ = auth
     try:
         return await db_client.get_messages(client.id, conversation_id)
+    except Exception as e:
+        _handle_db_error(e)
+
+
+@router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conversation(
+    conversation_id: str,
+    auth: tuple[Client, ClientConfig] = Depends(get_verified_client),
+) -> None:
+    client, _ = auth
+    try:
+        await db_client.archive_conversation(client.id, conversation_id)
     except Exception as e:
         _handle_db_error(e)

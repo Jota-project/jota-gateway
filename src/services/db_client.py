@@ -117,6 +117,16 @@ class DbClient:
         r.raise_for_status()
         return r.json()
 
+    async def archive_conversation(self, client_id: str, conversation_id: str) -> dict:
+        assert self._http
+        r = await self._http.patch(
+            f"{self.base_url}/conversations/{conversation_id}",
+            json={"status": "archived"},
+            headers={"X-Client-Id": client_id},
+        )
+        r.raise_for_status()
+        return r.json()
+
     # ------------------------------------------------------------------
     # Modelos (usado en la REST API — Fase 2)
     # ------------------------------------------------------------------
