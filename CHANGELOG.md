@@ -1,3 +1,13 @@
+# [1.3.0](https://github.com/Jota-project/jota-gateway/compare/v1.2.1...v1.3.0) (2026-04-03)
+
+
+### Features
+
+* add make_cache() utility in src/core/cache.py ([209e50e](https://github.com/Jota-project/jota-gateway/commit/209e50e830b3068c188375334f60ce94f28291f5))
+* cache get_models() with 300s TTL ([d987650](https://github.com/Jota-project/jota-gateway/commit/d987650ecd4ce5b6fa4714d7c1a63d2bb72e2f8a))
+* cache get_session() with 60s TTL — reduces jota-db round-trips (closes [#23](https://github.com/Jota-project/jota-gateway/issues/23), closes [#22](https://github.com/Jota-project/jota-gateway/issues/22)) ([49c2a3d](https://github.com/Jota-project/jota-gateway/commit/49c2a3d4db17098c52ee34bcfe221b5903824ae2))
+* in-memory TTL cache for get_session() and get_models() ([#33](https://github.com/Jota-project/jota-gateway/issues/33)) ([e5e1f7f](https://github.com/Jota-project/jota-gateway/commit/e5e1f7f044ed973963e2bd792b15945e7c2d0b20)), closes [#23](https://github.com/Jota-project/jota-gateway/issues/23) [#22](https://github.com/Jota-project/jota-gateway/issues/22)
+
 ## [1.2.1](https://github.com/Jota-project/jota-gateway/compare/v1.2.0...v1.2.1) (2026-04-03)
 
 
