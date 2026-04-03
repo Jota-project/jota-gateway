@@ -1,3 +1,11 @@
+# [1.4.0](https://github.com/Jota-project/jota-gateway/compare/v1.3.0...v1.4.0) (2026-04-03)
+
+
+### Features
+
+* DELETE /api/conversations/{id} — archivar conversación ([#32](https://github.com/Jota-project/jota-gateway/issues/32)) ([4405d74](https://github.com/Jota-project/jota-gateway/commit/4405d741cac51c0e8edb225224db9fede436a871)), closes [#24](https://github.com/Jota-project/jota-gateway/issues/24)
+* DELETE /api/conversations/{id} — archivar conversación (closes [#24](https://github.com/Jota-project/jota-gateway/issues/24)) ([0a6fd5d](https://github.com/Jota-project/jota-gateway/commit/0a6fd5de5dab35b0219aaa1c3ab9b4ad9df45ed2))
+
 # [1.3.0](https://github.com/Jota-project/jota-gateway/compare/v1.2.1...v1.3.0) (2026-04-03)
 
 
