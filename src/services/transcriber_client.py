@@ -23,7 +23,7 @@ class TranscriberClient:
         self._dropped_unexpectedly: bool = False
         self._last_transcription_at: Optional[float] = None
 
-    async def connect(self, language: str = "es", token: str = ""):
+    async def connect(self, language: str = "es", token: str = "", vad_thold: float = 0.0):
         """Abre el socket y manda el Handshake inicial de config"""
         try:
             logger.info(f"[{self.client_id}] Conectado a Transcriber WS ({self.url})")
@@ -32,7 +32,7 @@ class TranscriberClient:
                 "type": "config",
                 "language": language,
                 "token": token,
-                "vad_thold": 0.0,
+                "vad_thold": vad_thold,
             }
             logger.info(f"[{self.client_id}] Configuracion transcriber: {handshake}")
 

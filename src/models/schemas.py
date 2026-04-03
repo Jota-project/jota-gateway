@@ -2,6 +2,40 @@ from pydantic import BaseModel, ConfigDict
 from typing import List, Literal, Optional, Any
 
 # =====================================================================
+# jota-db — modelos que el gateway recibe de GET /auth/session
+# =====================================================================
+
+class Client(BaseModel):
+    """Registro de cliente tal como lo devuelve jota-db."""
+    id: str
+    client_key: str
+    is_active: bool
+
+    model_config = ConfigDict(extra="allow")
+
+
+class ClientConfig(BaseModel):
+    """Configuración por cliente tal como la devuelve jota-db."""
+    stt_language: str = "es"
+    stt_model: Optional[str] = None
+    stt_vad_thold: float = 0.0
+    tts_voice: str = "af_heart"
+    tts_speed: float = 1.0
+    preferred_model_id: Optional[str] = None
+    system_prompt_extra: Optional[str] = None
+    barge_in_enabled: bool = True
+    barge_in_min_chars: int = 5
+    conversation_memory_limit: int = 20
+
+    model_config = ConfigDict(extra="allow")
+
+
+class SessionResponse(BaseModel):
+    """Respuesta de GET /auth/session en jota-db."""
+    client: Client
+    config: ClientConfig
+
+# =====================================================================
 # Gateway (Client <-> Gateway)
 # =====================================================================
 

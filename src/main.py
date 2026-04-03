@@ -1,7 +1,8 @@
 import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from src.api.routes import router as stream_router
-from src.api.transcribe import router as transcribe_router
+from src.services.db_client import db_client
 
 # Configuración Base de Logs para el Gateway
 logging.basicConfig(
@@ -10,10 +11,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await db_client.connect()
+    yield
+    await db_client.close()
+
+
 app = FastAPI(
     title="JotaGateway (BFF)",
     description="Backend For Frontend - Enrutador principal de WebSockets. Titiritero del Ecosistema IA.",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Incluir routers
