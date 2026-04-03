@@ -20,44 +20,35 @@ class TranscriberClient:
         self.client_id = client_id
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         self._is_ready = False
+        self._session_id: Optional[str] = None  # recibido en el mensaje "ready"
         self._dropped_unexpectedly: bool = False
         self._last_transcription_at: Optional[float] = None
 
     async def connect(self, language: str = "es", token: str = "", vad_thold: float = 0.0):
-        """Abre el socket y manda el Handshake inicial de config"""
+        """Abre el socket y manda el Handshake inicial de config."""
         try:
-            logger.info(f"[{self.client_id}] Conectado a Transcriber WS ({self.url})")
-
-            handshake = {
-                "type": "config",
-                "language": language,
-                "token": token,
-                "vad_thold": vad_thold,
-            }
-            logger.info(f"[{self.client_id}] Configuracion transcriber: {handshake}")
-
             self.ws = await websockets.connect(self.url)
 
-            logger.info(f"[{self.client_id}] Enviando handshake...")
-            await self.ws.send(json.dumps(handshake))
-            logger.info(f"[{self.client_id}] Handshake enviado, esperando 'ready'...")
-            # Esperamos el evento de {"type": "ready"}
+            config = TranscriberConfig(language=language, token=token, vad_thold=vad_thold)
+            logger.info(f"[{self.client_id}] Conectando a Transcriber ({self.url}) lang={language!r} vad={vad_thold}")
+            await self.ws.send(config.model_dump_json())
+
             response = await self.ws.recv()
-            try:
-                data = json.loads(response)
-                msg = TranscriberMessage(**data)
-                if msg.type == "ready":
-                    self._is_ready = True
-                    logger.info(f"[{self.client_id}] Transcriber Listo para recibir audio (VAD/Lang Confirmed).")
-                elif msg.type == "error":
-                     raise Exception(f"Transcriber error on connect: {msg.message}")
-            except Exception as e:
-                logger.error(f"[{self.client_id}] Fallo interpretando el handshake de Transcriber: {e}")
-                raise e
-                
+            data = json.loads(response)
+            msg = TranscriberMessage(**data)
+
+            if msg.type == "ready":
+                self._is_ready = True
+                self._session_id = msg.session_id
+                logger.info(f"[{self.client_id}] Transcriber listo. session_id={self._session_id!r}")
+            elif msg.type == "error":
+                raise Exception(f"Transcriber auth/config error [{msg.code}]: {msg.message}")
+            else:
+                raise Exception(f"Respuesta inesperada del transcriber en handshake: {msg.type!r}")
+
         except Exception as e:
             logger.error(f"[{self.client_id}] Error conectando a Transcriber: {e}")
-            raise e
+            raise
 
     async def send_audio(self, audio_bytes: bytes):
         """Envía ráfagas PCM crudas al transcriptor si está habilitado."""
@@ -70,10 +61,18 @@ class TranscriberClient:
             self._is_ready = False
             logger.warning(f"[{self.client_id}] Intento de enviar audio a Transcriber cerrado.")
 
-    async def listen_loop(self, on_transcription_callback: Callable[[str, bool], Awaitable[None]]):
+    async def listen_loop(
+        self,
+        on_transcription_callback: Callable[[str, bool], Awaitable[None]],
+        on_warning_callback: Optional[Callable[[str, Optional[str]], Awaitable[None]]] = None,
+    ):
         """
-        Bucle que escucha transcripciones del C++ y ejecuta el callback con (text, is_final).
-        El loop no interpreta is_final — solo reenvía lo que llega.
+        Bucle que escucha mensajes del transcriber.
+
+        Args:
+            on_transcription_callback: llamado con (text, is_final) en cada transcripción.
+            on_warning_callback: llamado con (code, message) cuando llega un warning.
+                                 Si es None, los warnings solo se loguean.
         """
         if not self.ws:
             return
@@ -86,13 +85,16 @@ class TranscriberClient:
 
                     if t_msg.type == "transcription" and t_msg.text:
                         self._last_transcription_at = time.monotonic()
-                        logger.debug(f"[{self.client_id}] Transcripción recibida: is_final={t_msg.is_final!r} text='{t_msg.text[:40]}'")
+                        logger.debug(f"[{self.client_id}] Transcripción: is_final={t_msg.is_final!r} text='{t_msg.text[:40]}'")
                         await on_transcription_callback(t_msg.text, bool(t_msg.is_final))
 
-                    elif t_msg.type == "error":
-                        logger.error(f"[{self.client_id}] Transcriber Runtime Error: {t_msg.message}")
                     elif t_msg.type == "warning":
-                        pass  # Warning de buffer full
+                        logger.warning(f"[{self.client_id}] Transcriber warning [{t_msg.code}]: {t_msg.message}")
+                        if on_warning_callback:
+                            await on_warning_callback(t_msg.code or "unknown", t_msg.message)
+
+                    elif t_msg.type == "error":
+                        logger.error(f"[{self.client_id}] Transcriber error [{t_msg.code}]: {t_msg.message}")
 
                 except json.JSONDecodeError:
                     logger.warning(f"[{self.client_id}] Transcriber mandó un non-JSON: {message}")

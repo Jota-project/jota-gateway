@@ -61,18 +61,21 @@ class TranscriberConfig(BaseModel):
     """
     type: Literal["config"] = "config"
     language: str = "es"
-    token: str = "pene"
-    publish_mqtt: bool = False
+    token: str = ""
     vad_thold: float = 0.0
-    
+
+
 class TranscriberMessage(BaseModel):
     """
     Formato de salida proveniente del Transcriptor C++.
+    Tipos posibles: "transcription", "ready", "warning", "error".
     """
-    type: str # "transcription", "error", "warning", o "ready"
+    type: str
     text: Optional[str] = None
     is_final: Optional[bool] = None
-    message: Optional[str] = None # Para errors
+    message: Optional[str] = None   # descripción legible en warning/error
+    code: Optional[str] = None      # código de error/warning: AUTH_FAILED, buffer_full, etc.
+    session_id: Optional[str] = None  # presente en el mensaje "ready"
 
 # =====================================================================
 # Orchestrator (Gateway <-> JotaOrchestrator)

@@ -178,7 +178,10 @@ class JotaBridge:
         # Loop del Transcriptor (solo si hay audio de entrada)
         if self.transcriber:
             self.tasks.append(asyncio.create_task(
-                self.transcriber.listen_loop(on_transcription_callback=self._on_transcription)
+                self.transcriber.listen_loop(
+                    on_transcription_callback=self._on_transcription,
+                    on_warning_callback=self._on_transcriber_warning,
+                )
             ))
             self.tasks.append(asyncio.create_task(self._transcription_watchdog()))
 
@@ -239,6 +242,19 @@ class JotaBridge:
             logger.info(f"[{self.client_id}] Cliente físico desconectado.")
         except Exception as e:
             logger.error(f"[{self.client_id}] Error en input loop: {e}")
+
+    async def _on_transcriber_warning(self, code: str, message: Optional[str]):
+        """Reenvía warnings del transcriber al cliente (e.g. buffer_full)."""
+        try:
+            await self.client_ws.send_json({
+                "type": "service_status",
+                "service": "transcriber",
+                "status": "warning",
+                "code": code,
+                "message": message or code,
+            })
+        except Exception:
+            pass  # cliente desconectado
 
     async def _on_transcription(self, text: str, is_final: bool):
         """Callback dispatched by TranscriberClient on every transcription event.
