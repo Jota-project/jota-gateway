@@ -11,9 +11,12 @@ import logging
 from typing import Optional
 import httpx
 
+from src.core.cache import make_cache
 from src.models.schemas import Client, ClientConfig, SessionResponse
 
 logger = logging.getLogger(__name__)
+
+_MODELS_KEY = "models"
 
 
 class DbClient:
@@ -28,6 +31,8 @@ class DbClient:
         self.base_url = f"http://{base_url.rstrip('/')}"
         self._api_key = api_key
         self._http: Optional[httpx.AsyncClient] = None
+        self._session_cache, self._session_lock = make_cache(maxsize=500, ttl=60)
+        self._models_cache, self._models_lock = make_cache(maxsize=1, ttl=300)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -52,19 +57,32 @@ class DbClient:
     async def get_session(self, client_key: str) -> tuple[Client, ClientConfig]:
         """
         Llama a GET /auth/session en jota-db para resolver client_key → Client + ClientConfig.
+        Resultado cacheado 60s. Invalidación explícita en 401/403.
 
         Raises:
             httpx.HTTPStatusError: 401/403 si la key no es válida o el cliente está inactivo.
             httpx.RequestError:    Si jota-db no está disponible.
         """
         assert self._http, "DbClient no está conectado. Llama a connect() primero."
-        response = await self._http.get(
-            f"{self.base_url}/auth/session",
-            headers={"X-API-Key": client_key},
-        )
-        response.raise_for_status()
+        async with self._session_lock:
+            if client_key in self._session_cache:
+                return self._session_cache[client_key]
+        try:
+            response = await self._http.get(
+                f"{self.base_url}/auth/session",
+                headers={"X-API-Key": client_key},
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (401, 403):
+                async with self._session_lock:
+                    self._session_cache.pop(client_key, None)
+            raise
         data = SessionResponse.model_validate(response.json())
-        return data.client, data.config
+        result = (data.client, data.config)
+        async with self._session_lock:
+            self._session_cache[client_key] = result
+        return result
 
     # ------------------------------------------------------------------
     # Configuración (usado en la REST API — Fase 2)
@@ -122,10 +140,17 @@ class DbClient:
     # ------------------------------------------------------------------
 
     async def get_models(self) -> list:
+        """Lista de modelos disponibles. Resultado cacheado 300s."""
         assert self._http
+        async with self._models_lock:
+            if _MODELS_KEY in self._models_cache:
+                return self._models_cache[_MODELS_KEY]
         r = await self._http.get(f"{self.base_url}/models")
         r.raise_for_status()
-        return r.json()
+        result = r.json()
+        async with self._models_lock:
+            self._models_cache[_MODELS_KEY] = result
+        return result
 
 
 # Singleton — importar este objeto directamente
