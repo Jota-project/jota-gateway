@@ -16,6 +16,8 @@ from src.models.schemas import Client, ClientConfig, SessionResponse
 
 logger = logging.getLogger(__name__)
 
+_MODELS_KEY = "models"
+
 
 class DbClient:
     """
@@ -140,7 +142,6 @@ class DbClient:
     async def get_models(self) -> list:
         """Lista de modelos disponibles. Resultado cacheado 300s."""
         assert self._http
-        _MODELS_KEY = "models"
         async with self._models_lock:
             if _MODELS_KEY in self._models_cache:
                 return self._models_cache[_MODELS_KEY]
