@@ -1,4 +1,5 @@
 import asyncio
+import httpx
 import json
 import logging
 import time
@@ -149,6 +150,21 @@ class TranscriberClient:
             await self.ws.send(json.dumps({"type": "end"}))
         except ConnectionClosed:
             self._is_ready = False
+
+    @staticmethod
+    async def ping(url: str) -> bool:
+        """Return True if the transcriber HTTP /health responds with 2xx.
+
+        Expects url as host:port (no protocol).
+        """
+        if not url:
+            return False
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.get(f"http://{url}/health", timeout=5.0)
+                return r.is_success
+        except Exception:
+            return False
 
     async def close(self):
         self._is_ready = False
