@@ -34,7 +34,7 @@ class OrchestratorClient:
             client_id:  Identificador del cliente (usado como user_id en el payload).
             timeout:    Segundos máximos esperando el inicio de la respuesta streaming.
         """
-        self.base_url = base_url.rstrip("/")
+        self.base_url = f"http://{base_url.rstrip('/')}"
         self.api_key = api_key
         self.client_id = client_id
         self.timeout = timeout

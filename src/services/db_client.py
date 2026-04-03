@@ -25,7 +25,7 @@ class DbClient:
     """
 
     def __init__(self, base_url: str, api_key: str):
-        self.base_url = base_url.rstrip("/")
+        self.base_url = f"http://{base_url.rstrip('/')}"
         self._api_key = api_key
         self._http: Optional[httpx.AsyncClient] = None
 
@@ -108,9 +108,22 @@ class DbClient:
         r.raise_for_status()
         return r.json()
 
-    async def get_messages(self, conversation_id: str) -> list:
+    async def get_messages(self, client_id: str, conversation_id: str) -> list:
         assert self._http
-        r = await self._http.get(f"{self.base_url}/conversations/{conversation_id}/messages")
+        r = await self._http.get(
+            f"{self.base_url}/conversations/{conversation_id}/messages",
+            headers={"X-Client-Id": client_id},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    # ------------------------------------------------------------------
+    # Modelos (usado en la REST API — Fase 2)
+    # ------------------------------------------------------------------
+
+    async def get_models(self) -> list:
+        assert self._http
+        r = await self._http.get(f"{self.base_url}/models")
         r.raise_for_status()
         return r.json()
 

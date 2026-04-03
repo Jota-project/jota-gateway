@@ -1,4 +1,5 @@
 import asyncio
+import httpx
 import json
 import logging
 import time
@@ -27,10 +28,10 @@ class TranscriberClient:
     async def connect(self, language: str = "es", token: str = "", vad_thold: float = 0.0):
         """Abre el socket y manda el Handshake inicial de config."""
         try:
-            self.ws = await websockets.connect(self.url)
+            self.ws = await websockets.connect(f"ws://{self.url}/api/stt")
 
             config = TranscriberConfig(language=language, token=token, vad_thold=vad_thold)
-            logger.info(f"[{self.client_id}] Conectando a Transcriber ({self.url}) lang={language!r} vad={vad_thold}")
+            logger.info(f"[{self.client_id}] Conectando a Transcriber (ws://{self.url}/api/stt) lang={language!r} vad={vad_thold}")
             await self.ws.send(config.model_dump_json())
 
             response = await self.ws.recv()
@@ -149,6 +150,21 @@ class TranscriberClient:
             await self.ws.send(json.dumps({"type": "end"}))
         except ConnectionClosed:
             self._is_ready = False
+
+    @staticmethod
+    async def ping(url: str) -> bool:
+        """Return True if the transcriber HTTP /health responds with 2xx.
+
+        Expects url as host:port (no protocol).
+        """
+        if not url:
+            return False
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.get(f"http://{url}/health", timeout=5.0)
+                return r.is_success
+        except Exception:
+            return False
 
     async def close(self):
         self._is_ready = False
