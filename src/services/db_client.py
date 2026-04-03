@@ -25,7 +25,7 @@ class DbClient:
     """
 
     def __init__(self, base_url: str, api_key: str):
-        self.base_url = base_url.rstrip("/")
+        self.base_url = f"http://{base_url.rstrip('/')}"
         self._api_key = api_key
         self._http: Optional[httpx.AsyncClient] = None
 

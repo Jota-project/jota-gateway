@@ -1,6 +1,5 @@
 import json
 import logging
-import re
 from typing import AsyncGenerator, Optional
 
 import httpx
@@ -26,7 +25,8 @@ class TTSClient:
 
     async def connect(self) -> None:
         """Open WS and authenticate. Raises RuntimeError on auth failure."""
-        self.ws = await websockets.connect(self.url)
+        ws_url = f"ws://{self.url}/ws"
+        self.ws = await websockets.connect(ws_url)
         await self.ws.send(json.dumps({"type": "auth", "token": self.token}))
         try:
             raw = await self.ws.recv()
@@ -45,7 +45,7 @@ class TTSClient:
         if msg.get("type") != "auth_ok":
             raise RuntimeError(f"[{self.client_id}] TTS auth failed: {msg}")
 
-        logger.info("[%s] Connected to TTS at %s", self.client_id, self.url)
+        logger.info("[%s] Connected to TTS at ws://%s/ws", self.client_id, self.url)
 
     async def send_text_chunk(self, text: str) -> None:
         """Send one LLM token. No-op if WS is unavailable."""
@@ -109,15 +109,14 @@ class TTSClient:
     async def ping(url: str) -> bool:
         """Return True if the TTS /health endpoint responds with 2xx.
 
-        Converts ws://host:port/path → http://host:port/health
-                 wss://host/path    → https://host/health
-        Empty or malformed URLs return False (caught by the except clause).
+        Expects url as host:port (no protocol, no path).
+        Empty URLs return False.
         """
-        http_base = re.sub(r"^ws", "http", url.split("?")[0])  # ws→http, wss→https
-        http_base = "/".join(http_base.split("/")[:3])          # scheme+host+port only
+        if not url:
+            return False
         try:
             async with httpx.AsyncClient() as client:
-                r = await client.get(f"{http_base}/health", timeout=5.0)
+                r = await client.get(f"http://{url}/health", timeout=5.0)
                 return r.is_success
         except Exception:
             return False

@@ -27,10 +27,10 @@ class TranscriberClient:
     async def connect(self, language: str = "es", token: str = "", vad_thold: float = 0.0):
         """Abre el socket y manda el Handshake inicial de config."""
         try:
-            self.ws = await websockets.connect(self.url)
+            self.ws = await websockets.connect(f"ws://{self.url}/api/stt")
 
             config = TranscriberConfig(language=language, token=token, vad_thold=vad_thold)
-            logger.info(f"[{self.client_id}] Conectando a Transcriber ({self.url}) lang={language!r} vad={vad_thold}")
+            logger.info(f"[{self.client_id}] Conectando a Transcriber (ws://{self.url}/api/stt) lang={language!r} vad={vad_thold}")
             await self.ws.send(config.model_dump_json())
 
             response = await self.ws.recv()
