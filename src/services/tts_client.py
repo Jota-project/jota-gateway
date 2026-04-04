@@ -23,11 +23,20 @@ class TTSClient:
         self.client_id = client_id
         self.ws = None
 
-    async def connect(self) -> None:
+    async def connect(
+        self,
+        voice: Optional[str] = None,
+        speed: Optional[float] = None,
+    ) -> None:
         """Open WS and authenticate. Raises RuntimeError on auth failure."""
         ws_url = f"ws://{self.url}/ws"
         self.ws = await websockets.connect(ws_url)
-        await self.ws.send(json.dumps({"type": "auth", "token": self.token}))
+        auth_msg: dict = {"type": "auth", "token": self.token}
+        if voice is not None:
+            auth_msg["voice"] = voice
+        if speed is not None:
+            auth_msg["speed"] = speed
+        await self.ws.send(json.dumps(auth_msg))
         try:
             raw = await self.ws.recv()
         except ConnectionClosed as exc:
