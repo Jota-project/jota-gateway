@@ -140,8 +140,9 @@ class OrchestratorClient:
             text:       Texto del usuario a enviar.
             on_token:   Callback para fragmentos de texto ("type": "token").
             on_event:   Callback para eventos estructurales ("type": "status" | "error" | ...).
-            user_id:    user_id opcional para el payload.
-            model_id:   model_id opcional para seleccionar modelo.
+            user_id:            user_id opcional para el payload.
+            model_id:           model_id opcional para seleccionar modelo.
+            system_prompt_extra: instrucciones extra opcionales para el system prompt.
         """
         async for event in self.stream_response(
             text,
