@@ -271,7 +271,7 @@ class JotaBridge:
                 return  # client disconnected
 
             # Barge-in: interrupt active turn if partial is substantial enough
-            if len(text) >= settings.BARGE_IN_MIN_CHARS:
+            if len(text) >= self.config.barge_in_min_chars:
                 if await self._cancel_active_turn():
                     logger.info(f"[{self.client_id}] Barge-in: turno cancelado por parcial '{text[:30]}'")
                     try:
@@ -311,7 +311,10 @@ class JotaBridge:
                 token=settings.TTS_TOKEN,
                 client_id=self.client_id,
             )
-            await tts.connect()
+            await tts.connect(
+                voice=self.config.tts_voice,
+                speed=self.config.tts_speed,
+            )
 
         async def _on_token(token_text: str):
             try:
@@ -334,6 +337,8 @@ class JotaBridge:
                 text=text,
                 on_token=_on_token,
                 on_event=_on_event,
+                model_id=self.config.preferred_model_id,
+                system_prompt_extra=self.config.system_prompt_extra,
             )
             if tts:
                 await tts.end()
