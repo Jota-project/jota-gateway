@@ -215,3 +215,46 @@ async def test_close_all_cancels_and_awaits_active_turn(make_bridge):
     await bridge.close_all()
 
     assert cleanup_ran.is_set()
+
+
+async def test_barge_in_uses_config_threshold_not_global(make_bridge):
+    """Bridge uses config.barge_in_min_chars, not settings.BARGE_IN_MIN_CHARS."""
+    from src.models.schemas import ClientConfig
+    ws = AsyncMock()
+    config = ClientConfig(barge_in_min_chars=50)
+    bridge = JotaBridge(client=_CLIENT, config=config, client_ws=ws)
+    bridge.handshake = Handshake(
+        client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]
+    )
+    bridge._active_turn = asyncio.create_task(asyncio.sleep(60))
+    await asyncio.sleep(0)
+
+    # 11 chars < 50 → no barge-in
+    await bridge._on_transcription("hello world", False)
+
+    calls = ws.send_json.call_args_list
+    assert len(calls) == 1  # only the partial, no "interrupted"
+    assert calls[0][0][0] == {"type": "transcription_partial", "text": "hello world"}
+    bridge._active_turn.cancel()
+    try:
+        await bridge._active_turn
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
+async def test_barge_in_triggers_when_above_custom_threshold(make_bridge):
+    """Barge-in fires when partial >= config.barge_in_min_chars."""
+    from src.models.schemas import ClientConfig
+    ws = AsyncMock()
+    config = ClientConfig(barge_in_min_chars=3)
+    bridge = JotaBridge(client=_CLIENT, config=config, client_ws=ws)
+    bridge.handshake = Handshake(
+        client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]
+    )
+    bridge._active_turn = asyncio.create_task(asyncio.sleep(60))
+    await asyncio.sleep(0)
+
+    await bridge._on_transcription("hola", False)  # 4 chars >= 3
+
+    calls = ws.send_json.call_args_list
+    assert any(c[0][0].get("type") == "interrupted" for c in calls)

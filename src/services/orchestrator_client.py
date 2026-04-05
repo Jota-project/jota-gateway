@@ -82,6 +82,7 @@ class OrchestratorClient:
         text: str,
         user_id: Optional[str] = None,
         model_id: Optional[str] = None,
+        system_prompt_extra: Optional[str] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """
         Envía un prompt al orquestador y produce los eventos NDJSON conforme llegan.
@@ -99,6 +100,8 @@ class OrchestratorClient:
         }
         if model_id:
             payload["model_id"] = model_id
+        if system_prompt_extra is not None:
+            payload["system_prompt_extra"] = system_prompt_extra
 
         url = f"{self.base_url}/api/quick"
 
@@ -128,6 +131,7 @@ class OrchestratorClient:
         on_event: Callable[[Dict[str, Any]], Awaitable[None]],
         user_id: Optional[str] = None,
         model_id: Optional[str] = None,
+        system_prompt_extra: Optional[str] = None,
     ):
         """
         Variante de alto nivel: lanza stream_response y despacha callbacks.
@@ -136,10 +140,16 @@ class OrchestratorClient:
             text:       Texto del usuario a enviar.
             on_token:   Callback para fragmentos de texto ("type": "token").
             on_event:   Callback para eventos estructurales ("type": "status" | "error" | ...).
-            user_id:    user_id opcional para el payload.
-            model_id:   model_id opcional para seleccionar modelo.
+            user_id:            user_id opcional para el payload.
+            model_id:           model_id opcional para seleccionar modelo.
+            system_prompt_extra: instrucciones extra opcionales para el system prompt.
         """
-        async for event in self.stream_response(text, user_id=user_id, model_id=model_id):
+        async for event in self.stream_response(
+            text,
+            user_id=user_id,
+            model_id=model_id,
+            system_prompt_extra=system_prompt_extra,
+        ):
             if event.get("type") == "token" and event.get("content") is not None:
                 await on_token(event["content"])
             else:

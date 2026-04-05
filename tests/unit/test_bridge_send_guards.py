@@ -70,7 +70,7 @@ async def test_audio_send_failure_does_not_propagate():
 
     class FakeTTS:
         def __init__(self, **kwargs): pass
-        async def connect(self): pass
+        async def connect(self, **kwargs): pass
         async def send_text_chunk(self, t): pass
         async def end(self): pass
         async def close(self): pass
