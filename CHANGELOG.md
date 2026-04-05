@@ -1,3 +1,13 @@
+# [1.5.0](https://github.com/Jota-project/jota-gateway/compare/v1.4.0...v1.5.0) (2026-04-05)
+
+
+### Features
+
+* Fase 3 — propagate ClientConfig to TTS, Orchestrator, and barge-in ([#34](https://github.com/Jota-project/jota-gateway/issues/34)) ([4a490ba](https://github.com/Jota-project/jota-gateway/commit/4a490bac49ef5fa8f1a7e9a94eb66d5d63a5ffc7)), closes [#8](https://github.com/Jota-project/jota-gateway/issues/8)
+* OrchestratorClient passes system_prompt_extra in payload ([fc275fb](https://github.com/Jota-project/jota-gateway/commit/fc275fb6735d7eabb45d93b978de75b7acbb7bec))
+* propagate ClientConfig to TTS, Orchestrator, and barge-in threshold ([2532a20](https://github.com/Jota-project/jota-gateway/commit/2532a20b3c7403db13b54b46b8bdca3b3fd9c766))
+* TTSClient.connect() accepts optional voice and speed params ([fe390ac](https://github.com/Jota-project/jota-gateway/commit/fe390acb89b941782645670d4198f39fb5a61fb2))
+
 # [1.4.0](https://github.com/Jota-project/jota-gateway/compare/v1.3.0...v1.4.0) (2026-04-03)
 
 
