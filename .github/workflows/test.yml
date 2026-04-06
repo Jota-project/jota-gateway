@@ -24,9 +24,15 @@ jobs:
 
       - name: Lint (ruff)
         run: ruff check src/ tests/
+        env:
+          PYTHONPATH: .
 
       - name: Unit tests
         run: pytest tests/unit/ -v
+        env:
+          PYTHONPATH: .
 
       - name: Integration tests
         run: pytest tests/integration/ -v
+        env:
+          PYTHONPATH: .
