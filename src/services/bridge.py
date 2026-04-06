@@ -76,8 +76,10 @@ class JotaBridge:
                 task.cancel()
 
         close_aws = []
-        if self.orchestrator: close_aws.append(self.orchestrator.close())
-        if self.transcriber: close_aws.append(self.transcriber.close())
+        if self.orchestrator:
+            close_aws.append(self.orchestrator.close())
+        if self.transcriber:
+            close_aws.append(self.transcriber.close())
 
         if close_aws:
             await asyncio.gather(*close_aws, return_exceptions=True)
@@ -188,9 +190,12 @@ class JotaBridge:
         try:
             done, pending = await asyncio.wait(self.tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
-                try: task.result()
-                except asyncio.CancelledError: pass
-                except Exception as e: logger.error(f"[{self.client_id}] Loop crasheó: {e}")
+                try:
+                    task.result()
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.error(f"[{self.client_id}] Loop crasheó: {e}")
 
             # Notificar al cliente si el transcriptor cayó inesperadamente
             if self.transcriber and self.transcriber._dropped_unexpectedly:

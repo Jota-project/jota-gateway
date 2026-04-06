@@ -1,6 +1,6 @@
 """Tests for _client_input_loop raw disconnect handling."""
 import pytest
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock
 from src.services.bridge import JotaBridge
 from src.models.schemas import Client, ClientConfig, Handshake
 

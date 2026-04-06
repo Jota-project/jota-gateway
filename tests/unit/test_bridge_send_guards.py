@@ -1,6 +1,6 @@
 """Tests for send guards in _call_orchestrator closures."""
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from src.services.bridge import JotaBridge
 from src.models.schemas import Client, ClientConfig, Handshake
 
