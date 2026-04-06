@@ -65,8 +65,9 @@ def mock_services():
     Activa respx e intercepta todas las rutas HTTP que el gateway llama.
     Los tests individuales pueden sobreescribir rutas concretas.
     assert_all_mocked=False permite que routes no usadas no rompan el test.
+    assert_all_called=False permite que routes registradas pero no usadas no rompan el test.
     """
-    with respx.mock(assert_all_mocked=False) as router:
+    with respx.mock(assert_all_mocked=False, assert_all_called=False) as router:
         # --- jota-db: auth ---
         router.get("http://localhost:8001/auth/session").mock(
             side_effect=lambda req: (
