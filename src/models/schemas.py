@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict
-from typing import List, Literal, Optional, Any
+from typing import List, Literal, Optional
 
 # =====================================================================
 # jota-db — modelos que el gateway recibe de GET /auth/session

@@ -4,7 +4,6 @@ Fixtures de integración.
 HTTP (jota-db, orchestrator) interceptado por respx.
 WebSocket (transcriber, TTS) con fake servers en hilos de background.
 """
-import json
 import pytest
 import httpx
 import respx

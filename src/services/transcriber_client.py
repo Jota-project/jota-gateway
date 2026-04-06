@@ -1,4 +1,3 @@
-import asyncio
 import httpx
 import json
 import logging

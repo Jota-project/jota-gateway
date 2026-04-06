@@ -12,6 +12,7 @@ from typing import Optional
 import httpx
 
 from src.core.cache import make_cache
+from src.core.config import settings
 from src.models.schemas import Client, ClientConfig, SessionResponse
 
 logger = logging.getLogger(__name__)
@@ -164,8 +165,6 @@ class DbClient:
 
 
 # Singleton — importar este objeto directamente
-from src.core.config import settings
-
 db_client = DbClient(
     base_url=settings.JOTA_DB_BASE_URL,
     api_key=settings.JOTA_DB_API_KEY,
