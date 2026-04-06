@@ -1,6 +1,8 @@
 """Tests para WebSocket handshake (/ws/stream)."""
 import pytest
 
+from tests.integration.conftest import VALID_KEY
+
 
 def test_malformed_json_closes_ws(client):
     """JSON malformado como primer mensaje → WS se cierra (código 1008)."""
@@ -30,7 +32,7 @@ def test_missing_required_handshake_field_closes_ws(client):
     """Handshake sin campo requerido (input_mode) → WS se cierra."""
     with pytest.raises(Exception):
         with client.websocket_connect("/ws/stream") as ws:
-            ws.send_json({"client_key": "valid-key-abc", "output_mode": ["text"]})
+            ws.send_json({"client_key": VALID_KEY, "output_mode": ["text"]})
             ws.receive_text()
 
 
@@ -38,7 +40,7 @@ def test_valid_text_mode_handshake_connection_stays_open(client):
     """Handshake válido con input_mode=text — conexión permanece abierta."""
     with client.websocket_connect("/ws/stream") as ws:
         ws.send_json({
-            "client_key": "valid-key-abc",
+            "client_key": VALID_KEY,
             "input_mode": "text",
             "output_mode": ["text"],
         })
