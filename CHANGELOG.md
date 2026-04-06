@@ -1,3 +1,11 @@
+## [1.5.1](https://github.com/Jota-project/jota-gateway/compare/v1.5.0...v1.5.1) (2026-04-06)
+
+
+### Bug Fixes
+
+* **ci:** add ruff to requirements.txt so lint step finds the binary ([c24ff19](https://github.com/Jota-project/jota-gateway/commit/c24ff19cdc0940333b1cda012423682cad539d4b))
+* **ci:** set PYTHONPATH=. so pytest can resolve the src package ([df84c5d](https://github.com/Jota-project/jota-gateway/commit/df84c5d3642043ff7db462944c678b6c07bdf791))
+
 # [1.5.0](https://github.com/Jota-project/jota-gateway/compare/v1.4.0...v1.5.0) (2026-04-05)
 
 
