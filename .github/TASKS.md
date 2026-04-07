@@ -1,19 +1,34 @@
 # TASKS — jota-gateway
 
-Estado actual del proyecto y trabajo pendiente. Actualizado: 2026-04-04.
+Estado actual del proyecto y trabajo pendiente. Actualizado: 2026-04-07.
 
 ---
 
-## Estado actual: v1.4.0
+## Estado actual: v1.6.0
 
 El gateway está completo en su fase BFF (Backend-For-Frontend). Expone:
 
 - **WebSocket** `/ws/stream` — sesión bidireccional con transcriber + orchestrator + TTS
 - **REST API** `/api/*` — endpoints para config, historial, modelos y health
 
+### Protocolo de voz (desde v1.6.0)
+
+El flujo de audio ahora es **review & send**: la transcripción final no se envía automáticamente al orquestador. El cliente la muestra al usuario, que puede editarla, y la confirma con `{"type":"send","text":"..."}`.
+
+```
+cliente → <PCM audio>               # frames de audio
+gateway → transcription_partial     # parciales en tiempo real (opcional)
+cliente → {"type":"end"}            # fin de grabación
+gateway → {"type":"transcription"}  # transcripción final — cliente la muestra
+cliente → {"type":"send","text":"..."} # usuario confirma (puede editar)
+gateway → token, token, ...         # respuesta del orquestador
+```
+
+Ver [`docs/client-protocol.md`](../docs/client-protocol.md) para la guía completa.
+
 ---
 
-## Arquitectura (v1.4.0)
+## Arquitectura (v1.6.0)
 
 ```
 ESP32 / Web Client
@@ -68,6 +83,9 @@ El lock envuelve solo el acceso al dict, nunca la llamada IO.
 | v1.2.1  | Fix: header `x-client-id` enviado al orchestrator                          |
 | v1.3.0  | Cache TTL en `get_session()` y `get_models()` (cierra #22, #23)            |
 | v1.4.0  | `DELETE /api/conversations/{id}` — archiva conversación (cierra #24)       |
+| v1.5.0  | Fase 3: propagar ClientConfig a TTS, Orchestrator y barge-in               |
+| v1.5.1  | Fix CI: ruff + PYTHONPATH en pytest                                        |
+| v1.6.0  | Fix pipeline de voz: TTS no bloquea, protocolo review & send (cierra #36)  |
 
 ---
 
@@ -81,6 +99,7 @@ El lock envuelve solo el acceso al dict, nunca la llamada IO.
 | #22   | Resiliencia jota-db — caché ante caídas breves               |
 | #23   | Reducir latencia de sesión con caché de `get_session()`       |
 | #24   | `DELETE /api/conversations/{id}` — archivar conversación      |
+| #36   | Fix pipeline de voz + protocolo review & send                 |
 
 ---
 
