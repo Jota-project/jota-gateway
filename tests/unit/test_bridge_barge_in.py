@@ -133,25 +133,20 @@ async def test_final_sends_transcription_to_client(make_bridge):
     )
 
 
-async def test_final_starts_new_active_turn(make_bridge):
-    """Final transcription starts a new _active_turn task."""
+async def test_final_does_not_start_active_turn(make_bridge):
+    """Final transcription no longer auto-dispatches to orchestrator.
+    _active_turn stays None — client must send {"type":"send"} explicitly."""
     bridge = make_bridge()
     bridge._call_orchestrator = AsyncMock()
 
     await bridge._on_transcription("hola", True)
     await asyncio.sleep(0)
 
-    assert bridge._active_turn is not None
-    # cleanup
-    bridge._active_turn.cancel()
-    try:
-        await bridge._active_turn
-    except (asyncio.CancelledError, Exception):
-        pass
+    assert bridge._active_turn is None
 
 
 async def test_final_cancels_previous_active_turn(make_bridge):
-    """Final transcription cancels any in-progress turn before starting a new one."""
+    """Final transcription cancels any in-progress turn but does NOT start a new one."""
     bridge = make_bridge()
     bridge._call_orchestrator = AsyncMock()
     old_turn = asyncio.create_task(asyncio.sleep(60))
@@ -162,13 +157,7 @@ async def test_final_cancels_previous_active_turn(make_bridge):
     await asyncio.sleep(0)
 
     assert old_turn.cancelled()
-    assert bridge._active_turn is not None
-    assert bridge._active_turn is not old_turn
-    bridge._active_turn.cancel()
-    try:
-        await bridge._active_turn
-    except (asyncio.CancelledError, Exception):
-        pass
+    assert bridge._active_turn is None
 
 
 async def test_final_with_disconnected_client_does_not_start_turn(make_bridge):
@@ -195,26 +184,22 @@ async def test_barge_in_interrupted_send_failure_is_silent(make_bridge):
 
 # ── close_all ────────────────────────────────────────────────────────────────
 
-async def test_close_all_cancels_and_awaits_active_turn(make_bridge):
-    """close_all() cancels _active_turn and waits for cleanup (e.g. tts.close())
-    to complete before closing other clients."""
+async def test_close_all_awaits_active_turn(make_bridge):
+    """close_all() awaits _active_turn to completion (does not cancel it),
+    so the orchestrator response is delivered before tearing down clients."""
     bridge = make_bridge()
 
-    cleanup_ran = asyncio.Event()
+    turn_ran = asyncio.Event()
 
     async def mock_turn():
-        try:
-            await asyncio.sleep(60)
-        except asyncio.CancelledError:
-            cleanup_ran.set()
-            raise
+        turn_ran.set()
 
     bridge._active_turn = asyncio.create_task(mock_turn())
     await asyncio.sleep(0)
 
     await bridge.close_all()
 
-    assert cleanup_ran.is_set()
+    assert turn_ran.is_set()
 
 
 async def test_barge_in_uses_config_threshold_not_global(make_bridge):
