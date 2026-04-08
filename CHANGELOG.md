@@ -1,3 +1,11 @@
+## [1.5.2](https://github.com/Jota-project/jota-gateway/compare/v1.5.1...v1.5.2) (2026-04-08)
+
+
+### Bug Fixes
+
+* **gateway:** orchestrator not reached due to TTS failure and premature session teardown ([#36](https://github.com/Jota-project/jota-gateway/issues/36)) ([69d7bbf](https://github.com/Jota-project/jota-gateway/commit/69d7bbfdd77c1a0ae8b2d40d6a9ac734863aecd2))
+* **gateway:** TTS failure no longer blocks orchestrator, transcriber clean close not treated as drop ([51a74af](https://github.com/Jota-project/jota-gateway/commit/51a74af8ae622b254432fd21176a7a4513431d76))
+
 ## [1.5.1](https://github.com/Jota-project/jota-gateway/compare/v1.5.0...v1.5.1) (2026-04-06)
 
 
