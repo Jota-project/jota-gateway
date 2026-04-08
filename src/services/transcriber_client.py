@@ -98,11 +98,12 @@ class TranscriberClient:
 
                 except json.JSONDecodeError:
                     logger.warning(f"[{self.client_id}] Transcriber mandó un non-JSON: {message}")
-        except ConnectionClosed:
-            if self._is_ready:
+        except ConnectionClosed as e:
+            clean_close = e.rcvd is not None and e.rcvd.code == 1000
+            if self._is_ready and not clean_close:
                 self._dropped_unexpectedly = True
             self._is_ready = False
-            logger.info(f"[{self.client_id}] Loop de escucha del Transcriber finalizado.")
+            logger.info(f"[{self.client_id}] Loop de escucha del Transcriber finalizado (code={e.rcvd.code if e.rcvd else 'none'}).")
 
     async def send_end(self):
         """Señaliza al transcriber que el audio terminó, disparando la transcripción final."""

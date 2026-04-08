@@ -62,14 +62,17 @@ class JotaBridge:
         await asyncio.gather(*connect_tasks)
 
     async def close_all(self):
-        # Cancel and await the active turn first so TTS finally-blocks run before
-        # orchestrator/transcriber clients are closed.
+        # Await (don't cancel) the active turn so the orchestrator response is
+        # delivered before we tear down microservice clients.  Explicit cancellation
+        # only happens via _cancel_active_turn() (barge-in) or task cancellation
+        # from outside; close_all() itself should let the turn finish naturally.
         if self._active_turn and not self._active_turn.done():
-            self._active_turn.cancel()
             try:
                 await self._active_turn
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
+            except Exception as e:
+                logger.error(f"[{self.client_id}] _active_turn falló: {e}")
 
         for task in self.tasks:
             if not task.done():
@@ -187,18 +190,19 @@ class JotaBridge:
             ))
             self.tasks.append(asyncio.create_task(self._transcription_watchdog()))
 
+        # El ciclo de vida de la sesión lo marca _client_input_loop.
+        # listen_loop y watchdog corren en background y terminan solos sin cerrar la sesión.
+        client_task = self.tasks[0]  # siempre el primero (ver arriba)
         try:
-            done, pending = await asyncio.wait(self.tasks, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                try:
-                    task.result()
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    logger.error(f"[{self.client_id}] Loop crasheó: {e}")
-
+            await client_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"[{self.client_id}] client_input_loop crasheó: {e}")
+        finally:
             # Notificar al cliente si el transcriptor cayó inesperadamente
-            if self.transcriber and self.transcriber._dropped_unexpectedly:
+            # (no notificar si ya recibimos una transcripción final — el cierre es esperado)
+            if self.transcriber and self.transcriber._dropped_unexpectedly and not self._last_final_text:
                 try:
                     await self.client_ws.send_json({
                         "type": "service_status",
@@ -208,7 +212,6 @@ class JotaBridge:
                     })
                 except Exception:
                     pass
-        finally:
             await self.close_all()
 
     async def _client_input_loop(self):
@@ -240,7 +243,16 @@ class JotaBridge:
                         # Cliente terminó de hablar → señalizar fin al transcriber
                         if self.handshake.input_mode == "audio" and self.transcriber:
                             await self.transcriber.send_end()
-                    elif self.orchestrator:
+
+                    elif json_msg and json_msg.get("type") == "send":
+                        # Cliente confirma/edita la transcripción y la envía al orquestador
+                        text = json_msg.get("text", "").strip()
+                        if text and self.orchestrator:
+                            logger.info(f"[{self.client_id}] send recibido: '{text[:60]}'")
+                            self._active_turn = asyncio.create_task(self._call_orchestrator(text))
+
+                    elif json_msg is None and self.handshake.input_mode == "text":
+                        # Texto plano en modo texto — compatibilidad con clientes de texto puro
                         await self._call_orchestrator(text_data)
 
         except WebSocketDisconnect:
@@ -291,14 +303,14 @@ class JotaBridge:
             return
         self._last_final_text = text
 
-        # Final: cancel any running turn, notify client, start new turn
+        # Final: cancel any running turn, notify client.
+        # El orquestador se llama cuando el cliente envíe {"type": "send", "text": "..."}.
         await self._cancel_active_turn()
         logger.info(f"[{self.client_id}] Transcripción final: '{text}'")
         try:
             await self.client_ws.send_json({"type": "transcription", "text": text})
-        except Exception:
-            return  # client disconnected — no point starting a new turn
-        self._active_turn = asyncio.create_task(self._call_orchestrator(text))
+        except Exception as e:
+            logger.warning(f"[{self.client_id}] send_json(transcription) falló: {e}")
 
     async def _call_orchestrator(self, text: str):
         """
@@ -316,10 +328,14 @@ class JotaBridge:
                 token=settings.TTS_TOKEN,
                 client_id=self.client_id,
             )
-            await tts.connect(
-                voice=self.config.tts_voice,
-                speed=self.config.tts_speed,
-            )
+            try:
+                await tts.connect(
+                    voice=self.config.tts_voice,
+                    speed=self.config.tts_speed,
+                )
+            except Exception as e:
+                logger.warning(f"[{self.client_id}] TTS no disponible, continuando en modo texto: {e}")
+                tts = None
 
         async def _on_token(token_text: str):
             try:

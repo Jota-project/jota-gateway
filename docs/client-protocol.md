@@ -87,13 +87,49 @@ Envía **frames binarios** de audio crudo en formato:
 | Sample rate | 16000 Hz |
 | Canales | 1 (mono) |
 
-Puedes enviar frames de cualquier tamaño. El transcriptor detecta automáticamente los finales de frase (VAD) y cuando obtiene una transcripción final:
+### Flujo de voz — review & send
 
-1. El gateway te envía una confirmación:
-   ```json
-   {"type": "transcription", "text": "lo que dijiste"}
-   ```
-2. El texto se envía automáticamente al orquestador — no necesitas hacer nada más.
+> **Cambio importante desde v1.6.0:** la transcripción final ya **no se envía automáticamente al orquestador**. El cliente debe confirmarla explícitamente con `{"type": "send"}`. Esto permite que el usuario revise y corrija errores antes de procesar.
+
+```
+1. El cliente envía frames de audio PCM:
+   → <PCM Float32 bytes>
+   → <PCM Float32 bytes>
+
+2. Llegan parciales opcionales mientras el transcriptor procesa:
+   ← {"type": "transcription_partial", "text": "hola mun..."}
+
+3. El cliente señaliza fin de audio:
+   → {"type": "end"}
+
+4. El transcriptor entrega la transcripción final — el cliente la muestra al usuario:
+   ← {"type": "transcription", "text": "hola mundo"}
+
+5. El usuario revisa/edita el texto. El cliente confirma enviando:
+   → {"type": "send", "text": "hola mundo"}
+      (puede ser diferente al original si el usuario lo corrigió)
+
+6. El gateway lo envía al orquestador y llegan los tokens:
+   ← {"type": "token", "content": "Hola, ¿en qué puedo ayudarte?"}
+```
+
+### Señal de fin de audio
+
+Enviar `{"type": "end"}` es la forma de indicar al transcriptor que el usuario terminó de hablar y debe emitir la transcripción final. Úsalo cuando:
+
+- El usuario suelta el botón de micrófono
+- Detectas silencio prolongado en el cliente
+- El VAD del cliente decide que la frase ha terminado
+
+### Barge-in (interrumpir respuesta en curso)
+
+Si el usuario empieza a hablar mientras llegan tokens del orquestador, el gateway detecta el nuevo audio y cancela el turno activo. Recibirás:
+
+```json
+{"type": "interrupted"}
+```
+
+Tras esto el flujo reinicia desde el paso 1 — sigue enviando audio normalmente.
 
 ---
 
@@ -129,6 +165,8 @@ async for msg in ws:
         elif data["type"] == "end":
             on_response_complete(buffer)
             buffer = ""
+        elif data["type"] == "transcription":
+            show_editable_transcription(data["text"])  # usuario puede editar
         elif data["type"] == "error":
             show_error(data["content"])
 ```
@@ -140,6 +178,8 @@ async for msg in ws:
 Requiere `"audio"` en `output_mode`.
 
 Cuando el orquestador genera tokens, el gateway los envía en paralelo al TTS. El audio llega como **frames binarios** intercalados con mensajes JSON de control.
+
+> Si el servicio TTS no está disponible, el gateway continúa en modo texto — los tokens llegan igualmente, solo sin audio.
 
 ### Flujo de mensajes por segmento sintetizado
 
@@ -175,29 +215,16 @@ async for msg in ws:
         data = json.loads(msg)
         match data["type"]:
             case "audio_start":
-                # Opcional: preparar buffer para nuevo chunk
-                pass
+                pass  # opcional: preparar buffer para nuevo chunk
             case "audio_end":
-                # Opcional: marcar fin de frase para sincronización
-                pass
+                pass  # opcional: marcar fin de frase para sincronización
             case "end":
-                # Respuesta completa
                 audio_player.flush()
+            case "transcription":
+                show_editable_transcription(data["text"])
             case "error":
                 handle_error(data["content"])
-            case "transcription":
-                show_transcription(data["text"])
 ```
-
-### Interrumpir audio (barge-in)
-
-Si el usuario empieza a hablar mientras el TTS está sonando:
-
-1. Para la reproducción en el cliente.
-2. Cierra la conexión WebSocket con código **1000**.
-3. Abre una nueva conexión con un nuevo handshake.
-
-La reconexión en LAN es típicamente < 100 ms.
 
 ---
 
@@ -211,6 +238,22 @@ El orquestador emite eventos de estado internos durante el procesamiento (p.ej. 
 {"type": "status", "content": "Buscando en base de datos..."}
 ```
 
+### Estado de microservicios (`service_status`)
+
+El gateway notifica degradaciones en los servicios internos:
+
+```json
+{"type": "service_status", "service": "tts", "status": "unavailable", "message": "..."}
+```
+
+| `service` | `status` | Impacto |
+|---|---|---|
+| `orchestrator` | `unavailable` | **Fatal** — la sesión se cierra, no hay respuesta posible |
+| `transcriber` | `unavailable` | Degradado — sin transcripción, el cliente puede seguir en modo texto |
+| `tts` | `unavailable` | Degradado — sin audio, los tokens de texto siguen llegando |
+
+> Ante un `service_status` con `status: "unavailable"`, solo cierra la sesión si el servicio es `orchestrator`. Para `transcriber` y `tts` la sesión continúa en modo degradado.
+
 ### Errores (siempre enviados)
 
 Los errores llegan independientemente de `output_mode`:
@@ -221,7 +264,7 @@ Los errores llegan independientemente de `output_mode`:
 
 | Origen | Cuándo ocurre |
 |---|---|
-| Gateway | JSON inválido, `text` vacío, fallo al conectar a microservicios |
+| Gateway | JSON inválido, fallo al conectar a microservicios |
 | Orquestador | Error HTTP, timeout, fallo interno del modelo |
 | TTS | `session_timeout`, `queue_full` (el audio de esa respuesta se pierde) |
 
@@ -245,7 +288,7 @@ Cliente                         Gateway
    │◄── {"type":"end"} ─────────│
 ```
 
-### Asistente de voz completo
+### Asistente de voz con review & send
 
 ```
 Cliente                         Gateway
@@ -257,8 +300,13 @@ Cliente                         Gateway
    │                            │
    │── <PCM Float32 mic> ──────►│──► Transcriber
    │── <PCM Float32 mic> ──────►│
+   │◄── {"type":"transcription_partial","text":"¿qué tiem..."} │
+   │── {"type":"end"} ──────────►│   (usuario suelta el mic)
    │◄── {"type":"transcription","text":"¿qué tiempo hace?"} │
-   │                            │──► Orchestrator (streaming tokens)
+   │                            │   (usuario revisa, opcionalmente edita)
+   │── {"type":"send",          │
+   │    "text":"¿qué tiempo     │
+   │           hace?"} ────────►│──► Orchestrator (streaming tokens)
    │                            │──► jota-speaker TTS (tokens en paralelo)
    │◄── {"type":"token","content":"Hoy"} ────────│
    │◄── {"type":"audio_start","chunk_id":0} ─────│
@@ -280,18 +328,23 @@ Cliente                         Gateway
 | Mensaje | Formato | Cuándo |
 |---|---|---|
 | Handshake | `{"input_mode":"...", "output_mode":[...]}` | Primer mensaje, obligatorio |
-| Texto | `{"text":"...", "model_id":"..."}` | Enviar prompt, `model_id` opcional |
+| Fin de audio | `{"type":"end"}` | `input_mode="audio"` — usuario termina de hablar |
+| Confirmar y enviar | `{"type":"send","text":"..."}` | Tras recibir `transcription` — lanza la respuesta del orquestador |
+| Texto directo | `{"text":"...", "model_id":"..."}` | `input_mode="text"` — prompt directo, `model_id` opcional |
 | Audio mic | frame binario PCM Float32 16kHz | `input_mode="audio"` |
 
 ### Gateway → Cliente
 
 | Tipo | Formato | Condición |
 |---|---|---|
-| `token` | `{"type":"token","content":"..."}` | `"text"` en `output_mode` |
+| `transcription_partial` | `{"type":"transcription_partial","text":"..."}` | `input_mode="audio"`, parciales en tiempo real |
+| `transcription` | `{"type":"transcription","text":"..."}` | `input_mode="audio"`, transcripción final — esperar `send` |
+| `token` | `{"type":"token","content":"..."}` | `"text"` en `output_mode` — tras recibir `send` |
 | `end` | `{"type":"end"}` | `"text"` en `output_mode`, fin de respuesta |
-| `transcription` | `{"type":"transcription","text":"..."}` | `input_mode="audio"` |
+| `interrupted` | `{"type":"interrupted"}` | Barge-in confirmado — turno anterior cancelado |
 | `audio_start` | `{"type":"audio_start","chunk_id":N}` | `"audio"` en `output_mode` |
 | audio frame | frame binario PCM16 24kHz | `"audio"` en `output_mode` |
 | `audio_end` | `{"type":"audio_end","chunk_id":N}` | `"audio"` en `output_mode` |
 | `status` | `{"type":"status","content":"..."}` | `"status"` en `output_mode` |
+| `service_status` | `{"type":"service_status","service":"...","status":"...","message":"..."}` | Siempre — degradación de microservicio |
 | `error` | `{"type":"error","content":"..."}` | Siempre |
