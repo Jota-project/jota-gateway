@@ -90,7 +90,8 @@ def start_fake_transcriber():
 
 
 def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(mock_services):
-    """PCM → transcriber fake emite is_final → orchestrator llamado con el texto."""
+    """PCM → transcriber fake emite is_final → cliente recibe transcripción
+    → cliente envía {"type":"send"} → orchestrator llamado con el texto."""
     called_with_text = {}
 
     def capture(req):
@@ -107,7 +108,16 @@ def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(mock_services):
         with client.websocket_connect("/ws/stream") as ws:
             ws.send_json(HANDSHAKE_AUDIO)
             ws.send_bytes(b"\x00" * 512)  # PCM fake
-            # Esperar token (pueden llegar mensajes intermedios)
+            # Esperar transcripción final (nuevo protocolo: gateway no auto-despacha)
+            for _ in range(10):
+                msg = ws.receive_json()
+                if msg.get("type") == "transcription":
+                    break
+            assert msg["type"] == "transcription"
+            assert msg["text"] == "hola desde audio"
+            # Cliente confirma y envía al orquestador
+            ws.send_json({"type": "send", "text": msg["text"]})
+            # Esperar token del orquestador
             for _ in range(10):
                 msg = ws.receive_json()
                 if msg.get("type") == "token":
