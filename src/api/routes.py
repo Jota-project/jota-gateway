@@ -44,7 +44,8 @@ async def gateway_websocket(websocket: WebSocket):
     logger.info(f"[{client.id}] Handshake verificado: key={handshake.client_key!r}")
 
     # 3. INSTANCIAR EL PUENTE DE MICROSERVICIOS
-    bridge = JotaBridge(client=client, config=config, client_ws=websocket)
+    orchestrator = websocket.scope["app"].state.orchestrators.default()
+    bridge = JotaBridge(client=client, config=config, client_ws=websocket, orchestrator=orchestrator)
     bridge.handshake = handshake
 
     try:
