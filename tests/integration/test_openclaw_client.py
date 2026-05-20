@@ -2,10 +2,9 @@
 import asyncio
 import json
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 from src.services.orchestrators.openclaw_client import OpenClawClient
-from src.services.orchestrators.protocol import OrchestratorEvent
 
 
 def challenge_frame():

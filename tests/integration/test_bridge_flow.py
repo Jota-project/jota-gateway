@@ -6,7 +6,6 @@ recibe tokens del orchestrator.
 import httpx
 from tests.integration.conftest import (
     VALID_KEY, CLIENT_UUID, SESSION_RESPONSE,
-    make_mock_orchestrator, make_mock_registry,
 )
 from src.services.orchestrators.protocol import OrchestratorEvent
 

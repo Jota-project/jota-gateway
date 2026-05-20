@@ -7,7 +7,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from src.core.config import settings
 from src.models.schemas import Client, ClientConfig, Handshake
-from src.services.orchestrators.protocol import OrchestratorProtocol, OrchestratorEvent
+from src.services.orchestrators.protocol import OrchestratorProtocol
 from src.services.transcriber_client import TranscriberClient
 from src.services.tts_client import TTSClient
 

@@ -1,9 +1,5 @@
 # tests/integration/test_rest_openai.py
-import json
-import pytest
-from starlette.testclient import TestClient
 
-from tests.integration.conftest import VALID_KEY
 
 
 def test_get_models_returns_list(client):
