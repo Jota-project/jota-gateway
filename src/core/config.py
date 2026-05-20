@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     JOTA_DB_BASE_URL: str = "localhost:8001"
     JOTA_DB_API_KEY: str = ""
 
-    # URL base del JotaOrchestrator
+    # URL base del JotaOrchestrator (legacy — kept for reference)
     # Solo host[:puerto] — el código inyecta http:// en OrchestratorClient
     ORCHESTRATOR_BASE_URL: str = "localhost:8000"
     GATEWAY_KEY: str = ""
@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     # Solo host[:puerto] — el código inyecta ws:// y path /ws en TTSClient
     TTS_WS_URL: str = "localhost:8005"
     TTS_TOKEN: str = "gateway"
+
+    # Orchestrator selection
+    DEFAULT_ORCHESTRATOR: str = "openclaw"
+
+    # OpenClaw orchestrator
+    OPENCLAW_PORT: int = 18789
+    OPENCLAW_TOKEN: str = ""
 
     BARGE_IN_MIN_CHARS: int = 5
     TRANSCRIBER_SILENCE_TIMEOUT_S: int = 25
