@@ -17,7 +17,10 @@ import websockets
 from src.main import app
 from src.core.config import settings
 from starlette.testclient import TestClient
-from tests.integration.conftest import VALID_KEY, SESSION_RESPONSE
+from tests.integration.conftest import (
+    VALID_KEY, SESSION_RESPONSE,
+    make_mock_orchestrator, make_mock_registry,
+)
 
 HANDSHAKE_AUDIO = {
     "client_key": VALID_KEY,
@@ -89,20 +92,23 @@ def start_fake_transcriber():
 # ---------------------------------------------------------------------------
 
 
-def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(mock_services):
+def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(mock_services, monkeypatch):
     """PCM → transcriber fake emite is_final → cliente recibe transcripción
     → cliente envía {"type":"send"} → orchestrator llamado con el texto."""
+    from src.services.orchestrators.protocol import OrchestratorEvent
+
     called_with_text = {}
+    mock_orch = make_mock_orchestrator()
 
-    def capture(req):
-        called_with_text["text"] = json.loads(req.content).get("text")
-        return httpx.Response(
-            200,
-            content=b'{"type":"token","content":"ok"}\n',
-            headers={"content-type": "application/x-ndjson"},
-        )
+    async def _stream(text, user_id, model_id=None, system_prompt_extra=None):
+        called_with_text["text"] = text
+        yield OrchestratorEvent(type="token", content="ok")
+        yield OrchestratorEvent(type="status", content="done")
 
-    mock_services.post("http://localhost:8000/api/quick").mock(side_effect=capture)
+    mock_orch.stream_response = _stream
+    mock_reg = make_mock_registry(mock_orch)
+
+    monkeypatch.setattr("src.main.build_registry", lambda: mock_reg)
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws/stream") as ws:
@@ -127,7 +133,7 @@ def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(mock_services):
     assert called_with_text.get("text") == "hola desde audio"
 
 
-def test_transcriber_connect_uses_stt_language_from_config(mock_services):
+def test_transcriber_connect_uses_stt_language_from_config(mock_services, monkeypatch):
     """stt_language de ClientConfig se pasa a TranscriberClient.connect()."""
     session_fr = {
         **SESSION_RESPONSE,
@@ -136,6 +142,9 @@ def test_transcriber_connect_uses_stt_language_from_config(mock_services):
     mock_services.get("http://localhost:8001/auth/session").mock(
         return_value=httpx.Response(200, json=session_fr)
     )
+
+    mock_reg = make_mock_registry()
+    monkeypatch.setattr("src.main.build_registry", lambda: mock_reg)
 
     connect_calls = []
     original_connect = __import__(
@@ -160,7 +169,7 @@ def test_transcriber_connect_uses_stt_language_from_config(mock_services):
     assert connect_calls[0]["language"] == "fr"
 
 
-def test_tts_connect_uses_voice_and_speed_from_config(mock_services):
+def test_tts_connect_uses_voice_and_speed_from_config(mock_services, monkeypatch):
     """tts_voice y tts_speed de ClientConfig se pasan a TTSClient.connect()."""
     session = {
         **SESSION_RESPONSE,
@@ -169,6 +178,9 @@ def test_tts_connect_uses_voice_and_speed_from_config(mock_services):
     mock_services.get("http://localhost:8001/auth/session").mock(
         return_value=httpx.Response(200, json=session)
     )
+
+    mock_reg = make_mock_registry()
+    monkeypatch.setattr("src.main.build_registry", lambda: mock_reg)
 
     connect_calls = []
 

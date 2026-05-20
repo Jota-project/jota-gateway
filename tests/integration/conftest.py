@@ -1,16 +1,20 @@
 """
 Fixtures de integración.
 
-HTTP (jota-db, orchestrator) interceptado por respx.
+HTTP (jota-db) interceptado por respx.
 WebSocket (transcriber, TTS) con fake servers en hilos de background.
+Orchestrator inyectado via MockOrchestrator (OrchestratorProtocol).
 """
 import pytest
 import httpx
 import respx
+from unittest.mock import AsyncMock, MagicMock
 from starlette.testclient import TestClient
 
 from src.main import app
 from src.services.db_client import db_client
+from src.services.orchestrators.protocol import OrchestratorProtocol, OrchestratorEvent
+from src.services.orchestrators.registry import OrchestratorRegistry
 
 # ---------------------------------------------------------------------------
 # Datos de test estándar
@@ -36,17 +40,12 @@ SESSION_RESPONSE = {
 
 CONFIG_RESPONSE = SESSION_RESPONSE["config"]
 
-# Un token NDJSON mínimo para respuestas del orchestrator
-NDJSON_ONE_TOKEN = b'{"type":"token","content":"Hola"}\n'
-
 # ---------------------------------------------------------------------------
-# Cache cleanup (autouse — moved here from global conftest so it only runs
-# for integration tests, not unit tests)
+# Cache cleanup
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
 def clear_db_cache():
-    """Limpia caché del db_client entre tests para evitar state leakage."""
     db_client._session_cache.clear()
     db_client._models_cache.clear()
     yield
@@ -54,18 +53,43 @@ def clear_db_cache():
     db_client._models_cache.clear()
 
 # ---------------------------------------------------------------------------
-# respx: intercepta tráfico HTTP hacia jota-db y orchestrator
+# Mock Orchestrator
 # ---------------------------------------------------------------------------
 
+def make_mock_orchestrator(tokens: list[str] = None) -> OrchestratorProtocol:
+    """Creates a mock orchestrator that yields the given tokens then status:done."""
+    if tokens is None:
+        tokens = ["Hola"]
+
+    async def _stream(*args, **kwargs):
+        for t in tokens:
+            yield OrchestratorEvent(type="token", content=t)
+        yield OrchestratorEvent(type="status", content="done")
+
+    mock = MagicMock(spec=OrchestratorProtocol)
+    mock.connect = AsyncMock()
+    mock.close = AsyncMock()
+    mock.ping = AsyncMock(return_value=True)
+    mock.stream_response = _stream
+    return mock
+
+
+def make_mock_registry(orchestrator=None) -> OrchestratorRegistry:
+    if orchestrator is None:
+        orchestrator = make_mock_orchestrator()
+    registry = MagicMock(spec=OrchestratorRegistry)
+    registry.connect_all = AsyncMock()
+    registry.close_all = AsyncMock()
+    registry.default = MagicMock(return_value=orchestrator)
+    registry.get = MagicMock(return_value=orchestrator)
+    return registry
+
+# ---------------------------------------------------------------------------
+# respx: intercepta tráfico HTTP hacia jota-db
+# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def mock_services():
-    """
-    Activa respx e intercepta todas las rutas HTTP que el gateway llama.
-    Los tests individuales pueden sobreescribir rutas concretas.
-    assert_all_mocked=False permite que routes no usadas no rompan el test.
-    assert_all_called=False permite que routes registradas pero no usadas no rompan el test.
-    """
     with respx.mock(assert_all_mocked=False, assert_all_called=False) as router:
         # --- jota-db: auth ---
         router.get("http://localhost:8001/auth/session").mock(
@@ -99,18 +123,6 @@ def mock_services():
         router.get("http://localhost:8001/models").mock(
             return_value=httpx.Response(200, json=[{"id": "llama3", "name": "LLaMA 3"}])
         )
-        # --- orchestrator: health ---
-        router.get("http://localhost:8000/health").mock(
-            return_value=httpx.Response(200, json={"status": "ok"})
-        )
-        # --- orchestrator: quick (NDJSON streaming) ---
-        router.post("http://localhost:8000/api/quick").mock(
-            return_value=httpx.Response(
-                200,
-                content=NDJSON_ONE_TOKEN,
-                headers={"content-type": "application/x-ndjson"},
-            )
-        )
         # --- transcriber: health ---
         router.get("http://localhost:9000/health").mock(
             return_value=httpx.Response(200)
@@ -123,8 +135,19 @@ def mock_services():
 
 
 @pytest.fixture
-def client(mock_services):
-    """TestClient con todos los servicios HTTP mockeados."""
+def mock_orchestrator():
+    return make_mock_orchestrator()
+
+
+@pytest.fixture
+def mock_registry(mock_orchestrator):
+    return make_mock_registry(mock_orchestrator)
+
+
+@pytest.fixture
+def client(mock_services, mock_registry, monkeypatch):
+    """TestClient con jota-db mockeado y orchestrator mock inyectado."""
+    monkeypatch.setattr("src.main.build_registry", lambda: mock_registry)
     with TestClient(app) as c:
         yield c
 
