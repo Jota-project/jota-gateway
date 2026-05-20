@@ -6,28 +6,21 @@ GET /api/health — estado de los servicios internos (sin auth, uso de operador)
 Siempre devuelve 200. Los valores por servicio son "ok" o "unavailable".
 """
 import asyncio
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from src.core.config import settings
-from src.services.orchestrator_client import OrchestratorClient
 from src.services.transcriber_client import TranscriberClient
 from src.services.tts_client import TTSClient
 
 router = APIRouter()
 
 
-async def _ping_orchestrator() -> str:
-    client = OrchestratorClient(
-        base_url=settings.ORCHESTRATOR_BASE_URL,
-        api_key=settings.GATEWAY_KEY,
-        client_id="gateway",
-    )
-    await client.connect()
+async def _ping_orchestrator(request: Request) -> str:
     try:
-        ok = await client.ping()
+        ok = await request.app.state.orchestrators.default().ping()
         return "ok" if ok else "unavailable"
-    finally:
-        await client.close()
+    except Exception:
+        return "unavailable"
 
 
 async def _ping_transcriber() -> str:
@@ -41,9 +34,9 @@ async def _ping_tts() -> str:
 
 
 @router.get("/health")
-async def health() -> dict:
+async def health(request: Request) -> dict:
     results = await asyncio.gather(
-        _ping_orchestrator(),
+        _ping_orchestrator(request),
         _ping_transcriber(),
         _ping_tts(),
         return_exceptions=True,
