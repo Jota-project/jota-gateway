@@ -7,7 +7,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from src.core.config import settings
 from src.models.schemas import Client, ClientConfig, Handshake
-from src.services.orchestrator_client import OrchestratorClient
+from src.services.orchestrators.protocol import OrchestratorProtocol, OrchestratorEvent
 from src.services.transcriber_client import TranscriberClient
 from src.services.tts_client import TTSClient
 
@@ -18,15 +18,13 @@ class JotaBridge:
     Titiritero principal. Gestiona la conexión de un cliente físico
     y enruta asincrónicamente los mensajes utilizando los adaptadores de microservicio.
     """
-    def __init__(self, client: Client, config: ClientConfig, client_ws: WebSocket):
+    def __init__(self, client: Client, config: ClientConfig, client_ws: WebSocket, orchestrator: OrchestratorProtocol):
         self.client = client
         self.config = config
         self.client_id = client.id  # UUID real — usado en logs y como user_id al orchestrator
         self.client_ws = client_ws
         self.handshake: Optional[Handshake] = None
-
-        # Microservicios Clients
-        self.orchestrator: Optional[OrchestratorClient] = None
+        self.orchestrator: OrchestratorProtocol = orchestrator   # injected, not created here
         self.transcriber: Optional[TranscriberClient] = None
 
         self.tasks: list[asyncio.Task] = []
@@ -39,15 +37,7 @@ class JotaBridge:
         """Inicializa clientes de microservicios dependiendo del handshake."""
         connect_tasks = []
 
-        # 1. Orchestrator — siempre activo (es el cerebro)
-        self.orchestrator = OrchestratorClient(
-            base_url=settings.ORCHESTRATOR_BASE_URL,
-            api_key=self.client.client_key,
-            client_id=self.client_id,  # UUID real → user_id correcto en jota-db
-        )
-        connect_tasks.append(self.orchestrator.connect())
-
-        # 2. Transcriber (solo si el dispositivo mandará audio)
+        # Transcriber (solo si el dispositivo mandará audio)
         if self.handshake.input_mode == "audio":
             self.transcriber = TranscriberClient(
                 url=settings.TRANSCRIBER_WS_URL,
@@ -59,7 +49,8 @@ class JotaBridge:
                 vad_thold=self.config.stt_vad_thold,
             ))
 
-        await asyncio.gather(*connect_tasks)
+        if connect_tasks:
+            await asyncio.gather(*connect_tasks)
 
     async def close_all(self):
         # Await (don't cancel) the active turn so the orchestrator response is
@@ -79,8 +70,6 @@ class JotaBridge:
                 task.cancel()
 
         close_aws = []
-        if self.orchestrator:
-            close_aws.append(self.orchestrator.close())
         if self.transcriber:
             close_aws.append(self.transcriber.close())
 
@@ -354,13 +343,16 @@ class JotaBridge:
                 pass  # client disconnected mid-stream
 
         async def pipe_tokens():
-            await self.orchestrator.listen_loop(
+            async for event in self.orchestrator.stream_response(
                 text=text,
-                on_token=_on_token,
-                on_event=_on_event,
+                user_id=self.client_id,
                 model_id=self.config.preferred_model_id,
                 system_prompt_extra=self.config.system_prompt_extra,
-            )
+            ):
+                if event.type == "token":
+                    await _on_token(event.content)
+                else:
+                    await _on_event({"type": event.type, "content": event.content})
             if tts:
                 await tts.end()
 
