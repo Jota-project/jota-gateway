@@ -1,0 +1,57 @@
+# src/services/orchestrators/registry.py
+import logging
+from src.services.orchestrators.protocol import OrchestratorProtocol
+
+logger = logging.getLogger(__name__)
+
+
+class OrchestratorRegistry:
+    def __init__(self, clients: dict[str, OrchestratorProtocol]):
+        self._clients = clients
+
+    async def connect_all(self) -> None:
+        for name, client in self._clients.items():
+            try:
+                await client.connect()
+                logger.info(f"Orchestrator '{name}' connected.")
+            except Exception as e:
+                logger.error(f"Orchestrator '{name}' failed to connect: {e}")
+                raise
+
+    async def close_all(self) -> None:
+        for name, client in self._clients.items():
+            try:
+                await client.close()
+                logger.info(f"Orchestrator '{name}' closed.")
+            except Exception as e:
+                logger.warning(f"Orchestrator '{name}' error on close: {e}")
+
+    def get(self, name: str) -> OrchestratorProtocol:
+        if name not in self._clients:
+            available = list(self._clients)
+            raise KeyError(f"Orchestrator '{name}' not registered. Available: {available}")
+        return self._clients[name]
+
+    def default(self) -> OrchestratorProtocol:
+        from src.core.config import settings
+        return self.get(settings.DEFAULT_ORCHESTRATOR)
+
+
+def build_registry() -> OrchestratorRegistry:
+    from src.core.config import settings
+    from src.services.orchestrators.openclaw_client import OpenClawClient
+
+    clients: dict[str, OrchestratorProtocol] = {}
+
+    if settings.OPENCLAW_TOKEN:
+        clients["openclaw"] = OpenClawClient(
+            host="127.0.0.1",
+            port=settings.OPENCLAW_PORT,
+            token=settings.OPENCLAW_TOKEN,
+            session_key="jota-gateway-default",
+        )
+        logger.info("OpenClawClient registered.")
+    else:
+        logger.warning("OPENCLAW_TOKEN not set — openclaw orchestrator not registered.")
+
+    return OrchestratorRegistry(clients)
