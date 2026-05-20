@@ -7,7 +7,9 @@ from src.api.config_routes import router as config_router
 from src.api.conversation_routes import router as conversation_router
 from src.api.models_routes import router as models_router
 from src.api.health_routes import router as health_router
+from src.api.openai_routes import router as openai_router
 from src.services.db_client import db_client
+from src.services.orchestrators.registry import build_registry
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,7 +21,11 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db_client.connect()
+    registry = build_registry()
+    await registry.connect_all()
+    app.state.orchestrators = registry
     yield
+    await registry.close_all()
     await db_client.close()
 
 
@@ -32,6 +38,9 @@ app = FastAPI(
 
 # WebSocket
 app.include_router(stream_router)
+
+# OpenAI-compatible REST (no prefix — /v1/ is in the router itself)
+app.include_router(openai_router)
 
 # REST API
 app.include_router(config_router, prefix="/api")
