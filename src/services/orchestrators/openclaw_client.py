@@ -63,7 +63,7 @@ class OpenClawClient:
                 "minProtocol": 3,
                 "maxProtocol": 4,
                 "client": {
-                    "id": "jota-gateway",
+                    "id": "gateway-client",
                     "version": "1.0.0",
                     "platform": "linux",
                     "mode": "backend",
@@ -129,20 +129,26 @@ class OpenClawClient:
 
                 if ftype == "res":
                     req_id = frame.get("id")
+                    payload = frame.get("payload", {})
+
                     # Health ping response
                     if req_id in self._health_futures:
                         fut = self._health_futures.pop(req_id)
                         if not fut.done():
                             fut.set_result(frame)
+
                     # Active turn response
                     elif req_id == self._active_req_id and self._turn_queue is not None:
+                        # Chat.send ok with "started" status means turn is running (events coming)
+                        # Final res arrives after all events
                         await self._turn_queue.put(("done", frame))
 
                 elif ftype == "event":
                     event_name = frame.get("event")
+                    payload = frame.get("payload", {})
+
                     # Chat delta → active turn queue
                     if event_name == "chat" and self._turn_queue is not None:
-                        payload = frame.get("payload", {})
                         await self._turn_queue.put(("chat", payload))
 
         except asyncio.CancelledError:
@@ -177,7 +183,7 @@ class OpenClawClient:
                 "id": req_id,
                 "method": "chat.send",
                 "params": {
-                    "session": {"key": self._session_key},
+                    "sessionKey": self._session_key,
                     "message": text,
                     "idempotencyKey": str(uuid.uuid4()),
                 },
@@ -190,8 +196,17 @@ class OpenClawClient:
                     delta = data.get("deltaText", "")
                     if delta:
                         yield OrchestratorEvent(type="token", content=delta)
+                    # state == "final" means turn is complete (no more events, no final res)
+                    if data.get("state") == "final":
+                        yield OrchestratorEvent(type="status", content="done")
+                        break
 
                 elif kind == "done":
+                    # Initial res with status=started means turn is running (events coming)
+                    # Final res without status means turn is complete
+                    payload = data.get("payload", {})
+                    if payload.get("status") == "started":
+                        continue  # Keep waiting for events
                     if not data.get("ok"):
                         yield OrchestratorEvent(type="error", content=str(data.get("error", {})))
                     else:

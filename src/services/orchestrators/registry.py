@@ -48,7 +48,7 @@ def build_registry() -> OrchestratorRegistry:
             host="127.0.0.1",
             port=settings.OPENCLAW_PORT,
             token=settings.OPENCLAW_TOKEN,
-            session_key="jota-gateway-default",
+            session_key="agent:main:main",
         )
         logger.info("OpenClawClient registered.")
     else:
