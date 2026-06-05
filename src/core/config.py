@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     OPENCLAW_PORT: int = 18789
     OPENCLAW_TOKEN: str = ""
 
+    # Orchestrator reconnect policy
+    ORCHESTRATOR_RECONNECT_INITIAL_BACKOFF: float = 1.0   # seconds
+    ORCHESTRATOR_RECONNECT_MAX_BACKOFF: float = 60.0      # seconds
+    ORCHESTRATOR_RECONNECT_MAX_DURATION: float = 300.0    # seconds before entering DEGRADED
+
     BARGE_IN_MIN_CHARS: int = 5
     TRANSCRIBER_SILENCE_TIMEOUT_S: int = 25
 
