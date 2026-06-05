@@ -1,12 +1,15 @@
-# src/services/orchestrators/registry.py
 import logging
 from src.services.orchestrators.protocol import OrchestratorProtocol
+from src.services.orchestrators.reconnecting import (
+    OrchestratorStatus,
+    ReconnectingOrchestrator,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class OrchestratorRegistry:
-    def __init__(self, clients: dict[str, OrchestratorProtocol]):
+    def __init__(self, clients: dict[str, ReconnectingOrchestrator]):
         self._clients = clients
 
     async def connect_all(self) -> None:
@@ -36,21 +39,32 @@ class OrchestratorRegistry:
         from src.core.config import settings
         return self.get(settings.DEFAULT_ORCHESTRATOR)
 
+    def get_status(self, name: str) -> OrchestratorStatus:
+        if name not in self._clients:
+            raise KeyError(f"Orchestrator '{name}' not registered.")
+        return self._clients[name].status()
+
+    async def reconnect(self, name: str) -> None:
+        if name not in self._clients:
+            raise KeyError(f"Orchestrator '{name}' not registered.")
+        await self._clients[name].trigger_reconnect()
+
 
 def build_registry() -> OrchestratorRegistry:
     from src.core.config import settings
     from src.services.orchestrators.openclaw_client import OpenClawClient
 
-    clients: dict[str, OrchestratorProtocol] = {}
+    clients: dict[str, ReconnectingOrchestrator] = {}
 
     if settings.OPENCLAW_TOKEN:
-        clients["openclaw"] = OpenClawClient(
+        inner = OpenClawClient(
             host="127.0.0.1",
             port=settings.OPENCLAW_PORT,
             token=settings.OPENCLAW_TOKEN,
             session_key="agent:main:main",
         )
-        logger.info("OpenClawClient registered.")
+        clients["openclaw"] = ReconnectingOrchestrator(inner, name="openclaw")
+        logger.info("OpenClawClient registered (wrapped in ReconnectingOrchestrator).")
     else:
         logger.warning("OPENCLAW_TOKEN not set — openclaw orchestrator not registered.")
 

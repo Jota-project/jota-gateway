@@ -8,12 +8,14 @@ Orchestrator inyectado via MockOrchestrator (OrchestratorProtocol).
 import pytest
 import httpx
 import respx
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from starlette.testclient import TestClient
 
 from src.main import app
 from src.services.db_client import db_client
 from src.services.orchestrators.protocol import OrchestratorProtocol, OrchestratorEvent
+from src.services.orchestrators.reconnecting import OrchestratorState, OrchestratorStatus
 from src.services.orchestrators.registry import OrchestratorRegistry
 
 # ---------------------------------------------------------------------------
@@ -82,6 +84,29 @@ def make_mock_registry(orchestrator=None) -> OrchestratorRegistry:
     registry.close_all = AsyncMock()
     registry.default = MagicMock(return_value=orchestrator)
     registry.get = MagicMock(return_value=orchestrator)
+
+    _known = {
+        "openclaw": OrchestratorStatus(
+            name="openclaw",
+            state=OrchestratorState.CONNECTED,
+            connected_at=datetime(2026, 6, 4, 10, 0, tzinfo=timezone.utc),
+            disconnected_at=None,
+            reconnect_attempts=0,
+            last_error=None,
+        )
+    }
+
+    def _get_status(name: str) -> OrchestratorStatus:
+        if name not in _known:
+            raise KeyError(f"Orchestrator '{name}' not registered.")
+        return _known[name]
+
+    async def _reconnect(name: str) -> None:
+        if name not in _known:
+            raise KeyError(f"Orchestrator '{name}' not registered.")
+
+    registry.get_status = MagicMock(side_effect=_get_status)
+    registry.reconnect = AsyncMock(side_effect=_reconnect)
     return registry
 
 # ---------------------------------------------------------------------------
