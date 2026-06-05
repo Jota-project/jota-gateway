@@ -8,6 +8,7 @@ from src.api.conversation_routes import router as conversation_router
 from src.api.models_routes import router as models_router
 from src.api.health_routes import router as health_router
 from src.api.openai_routes import router as openai_router
+from src.api.orchestrator_routes import router as orchestrator_router
 from src.services.db_client import db_client
 from src.services.orchestrators.registry import build_registry
 
@@ -47,6 +48,7 @@ app.include_router(config_router, prefix="/api")
 app.include_router(conversation_router, prefix="/api")
 app.include_router(models_router, prefix="/api")
 app.include_router(health_router, prefix="/api")
+app.include_router(orchestrator_router, prefix="/api")
 
 
 @app.get("/health")

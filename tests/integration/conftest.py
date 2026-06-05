@@ -12,11 +12,14 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from starlette.testclient import TestClient
 
+from src.core.config import settings
 from src.main import app
 from src.services.db_client import db_client
 from src.services.orchestrators.protocol import OrchestratorProtocol, OrchestratorEvent
 from src.services.orchestrators.reconnecting import OrchestratorState, OrchestratorStatus
 from src.services.orchestrators.registry import OrchestratorRegistry
+
+_DB_BASE = f"http://{settings.JOTA_DB_BASE_URL}"
 
 # ---------------------------------------------------------------------------
 # Datos de test estándar
@@ -117,7 +120,7 @@ def make_mock_registry(orchestrator=None) -> OrchestratorRegistry:
 def mock_services():
     with respx.mock(assert_all_mocked=False, assert_all_called=False) as router:
         # --- jota-db: auth ---
-        router.get("http://localhost:8001/auth/session").mock(
+        router.get(f"{_DB_BASE}/auth/session").mock(
             side_effect=lambda req: (
                 httpx.Response(200, json=SESSION_RESPONSE)
                 if req.headers.get("x-api-key") == VALID_KEY
@@ -125,27 +128,27 @@ def mock_services():
             )
         )
         # --- jota-db: config ---
-        router.get("http://localhost:8001/config/me").mock(
+        router.get(f"{_DB_BASE}/config/me").mock(
             return_value=httpx.Response(200, json=CONFIG_RESPONSE)
         )
-        router.put("http://localhost:8001/config/me").mock(
+        router.put(f"{_DB_BASE}/config/me").mock(
             return_value=httpx.Response(200, json=CONFIG_RESPONSE)
         )
-        router.post("http://localhost:8001/config/me/reset").mock(
+        router.post(f"{_DB_BASE}/config/me/reset").mock(
             return_value=httpx.Response(200, json=CONFIG_RESPONSE)
         )
         # --- jota-db: conversations ---
-        router.get("http://localhost:8001/conversations").mock(
+        router.get(f"{_DB_BASE}/conversations").mock(
             return_value=httpx.Response(200, json=[{"id": "conv-1", "title": "Test"}])
         )
-        router.get(url__regex=r"http://localhost:8001/conversations/.+/messages").mock(
+        router.get(url__regex=rf"{_DB_BASE}/conversations/.+/messages").mock(
             return_value=httpx.Response(200, json=[{"id": "msg-1", "content": "hola"}])
         )
-        router.patch(url__regex=r"http://localhost:8001/conversations/.+").mock(
+        router.patch(url__regex=rf"{_DB_BASE}/conversations/.+").mock(
             return_value=httpx.Response(200, json={"id": "conv-1", "status": "archived"})
         )
         # --- jota-db: models ---
-        router.get("http://localhost:8001/models").mock(
+        router.get(f"{_DB_BASE}/models").mock(
             return_value=httpx.Response(200, json=[{"id": "llama3", "name": "LLaMA 3"}])
         )
         # --- transcriber: health ---
