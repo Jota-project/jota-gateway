@@ -3,7 +3,7 @@ import asyncio
 import json
 import logging
 import uuid
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Callable, Optional
 
 import websockets
 from websockets.legacy.client import WebSocketClientProtocol
@@ -39,6 +39,8 @@ class OpenClawClient:
         self._turn_queue: Optional[asyncio.Queue] = None
         # Health ping state
         self._health_futures: dict[str, asyncio.Future] = {}
+        # Disconnect notification — set by ReconnectingOrchestrator at wrap time
+        self.on_disconnect: Optional[Callable[[], None]] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -129,34 +131,32 @@ class OpenClawClient:
 
                 if ftype == "res":
                     req_id = frame.get("id")
-                    payload = frame.get("payload", {})
 
-                    # Health ping response
                     if req_id in self._health_futures:
                         fut = self._health_futures.pop(req_id)
                         if not fut.done():
                             fut.set_result(frame)
 
-                    # Active turn response
                     elif req_id == self._active_req_id and self._turn_queue is not None:
-                        # Chat.send ok with "started" status means turn is running (events coming)
-                        # Final res arrives after all events
                         await self._turn_queue.put(("done", frame))
 
                 elif ftype == "event":
                     event_name = frame.get("event")
                     payload = frame.get("payload", {})
 
-                    # Chat delta → active turn queue
                     if event_name == "chat" and self._turn_queue is not None:
                         await self._turn_queue.put(("chat", payload))
 
         except asyncio.CancelledError:
-            pass
+            return  # clean shutdown — do not notify wrapper
         except Exception as e:
             logger.error(f"OpenClawClient listener error: {e}")
             if self._turn_queue is not None:
                 await self._turn_queue.put(("error", str(e)))
+
+        # Connection dropped (not a clean shutdown via close())
+        if self.on_disconnect:
+            self.on_disconnect()
 
     # ------------------------------------------------------------------
     # Streaming
@@ -178,16 +178,20 @@ class OpenClawClient:
         self._turn_queue = asyncio.Queue()
 
         try:
-            await self._ws.send(json.dumps({
-                "type": "req",
-                "id": req_id,
-                "method": "chat.send",
-                "params": {
-                    "sessionKey": self._session_key,
-                    "message": text,
-                    "idempotencyKey": str(uuid.uuid4()),
-                },
-            }))
+            try:
+                await self._ws.send(json.dumps({
+                    "type": "req",
+                    "id": req_id,
+                    "method": "chat.send",
+                    "params": {
+                        "sessionKey": self._session_key,
+                        "message": text,
+                        "idempotencyKey": str(uuid.uuid4()),
+                    },
+                }))
+            except Exception as e:
+                yield OrchestratorEvent(type="error", content=f"orchestrator send failed: {e}")
+                return
 
             while True:
                 kind, data = await self._turn_queue.get()
