@@ -1,5 +1,6 @@
 """Tests para GET/PUT/POST /api/config."""
 import httpx
+from tests.integration.conftest import DB_BASE
 
 
 def test_get_config_returns_client_config(client, auth_headers):
@@ -14,7 +15,7 @@ def test_get_config_returns_client_config(client, auth_headers):
 
 def test_put_config_returns_updated_config(client, auth_headers, mock_services):
     """PUT /api/config llama a jota-db y devuelve la config actualizada."""
-    mock_services.put("http://localhost:8001/config/me").mock(
+    mock_services.put(f"{DB_BASE}/config/me").mock(
         return_value=httpx.Response(200, json={
             "stt_language": "en", "stt_vad_thold": 0.0,
             "tts_voice": "af_heart", "tts_speed": 1.0,

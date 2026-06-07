@@ -44,7 +44,12 @@ async def gateway_websocket(websocket: WebSocket):
     logger.info(f"[{client.id}] Handshake verificado: key={handshake.client_key!r}")
 
     # 3. INSTANCIAR EL PUENTE DE MICROSERVICIOS
-    orchestrator = websocket.scope["app"].state.orchestrators.default()
+    try:
+        orchestrator = websocket.scope["app"].state.orchestrators.default()
+    except KeyError as e:
+        logger.error(f"[{client.id}] No hay orquestador disponible: {e}")
+        await websocket.close(code=1011, reason="No orchestrator available.")
+        return
     bridge = JotaBridge(client=client, config=config, client_ws=websocket, orchestrator=orchestrator)
     bridge.handshake = handshake
 

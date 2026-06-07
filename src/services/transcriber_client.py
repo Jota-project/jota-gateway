@@ -3,6 +3,7 @@ import json
 import logging
 import time
 import websockets
+from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 from typing import Optional, Callable, Awaitable
 
@@ -18,7 +19,7 @@ class TranscriberClient:
     def __init__(self, url: str, client_id: str):
         self.url = url
         self.client_id = client_id
-        self.ws: Optional[websockets.WebSocketClientProtocol] = None
+        self.ws: Optional[ClientConnection] = None
         self._is_ready = False
         self._session_id: Optional[str] = None  # recibido en el mensaje "ready"
         self._dropped_unexpectedly: bool = False

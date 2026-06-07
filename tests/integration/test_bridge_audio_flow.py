@@ -18,7 +18,7 @@ from src.main import app
 from src.core.config import settings
 from starlette.testclient import TestClient
 from tests.integration.conftest import (
-    VALID_KEY, SESSION_RESPONSE,
+    VALID_KEY, SESSION_RESPONSE, DB_BASE,
     make_mock_orchestrator, make_mock_registry,
 )
 
@@ -139,7 +139,7 @@ def test_transcriber_connect_uses_stt_language_from_config(mock_services, monkey
         **SESSION_RESPONSE,
         "config": {**SESSION_RESPONSE["config"], "stt_language": "fr"},
     }
-    mock_services.get("http://localhost:8001/auth/session").mock(
+    mock_services.get(f"{DB_BASE}/auth/session").mock(
         return_value=httpx.Response(200, json=session_fr)
     )
 
@@ -175,7 +175,7 @@ def test_tts_connect_uses_voice_and_speed_from_config(mock_services, monkeypatch
         **SESSION_RESPONSE,
         "config": {**SESSION_RESPONSE["config"], "tts_voice": "bf_emma", "tts_speed": 1.2},
     }
-    mock_services.get("http://localhost:8001/auth/session").mock(
+    mock_services.get(f"{DB_BASE}/auth/session").mock(
         return_value=httpx.Response(200, json=session)
     )
 

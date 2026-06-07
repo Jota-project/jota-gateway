@@ -1,6 +1,7 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env")
     # jota-db (fuente de verdad de identidad y configuración)
     # Solo host[:puerto] — el código inyecta http:// en DbClient
     JOTA_DB_BASE_URL: str = "localhost:8001"
@@ -34,8 +35,5 @@ class Settings(BaseSettings):
 
     BARGE_IN_MIN_CHARS: int = 5
     TRANSCRIBER_SILENCE_TIMEOUT_S: int = 25
-
-    class Config:
-        env_file = ".env"
 
 settings = Settings()

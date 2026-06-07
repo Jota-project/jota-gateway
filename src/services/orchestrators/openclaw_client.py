@@ -6,7 +6,7 @@ import uuid
 from typing import AsyncIterator, Callable, Optional
 
 import websockets
-from websockets.legacy.client import WebSocketClientProtocol
+from websockets.asyncio.client import ClientConnection
 
 from src.services.orchestrators.protocol import OrchestratorEvent
 
@@ -32,7 +32,7 @@ class OpenClawClient:
         self._uri = f"ws://{host}:{port}"
         self._token = token
         self._session_key = session_key
-        self._ws: Optional[WebSocketClientProtocol] = None
+        self._ws: Optional[ClientConnection] = None
         self._listener_task: Optional[asyncio.Task] = None
         # Active turn state (one turn at a time)
         self._active_req_id: Optional[str] = None
@@ -103,7 +103,7 @@ class OpenClawClient:
             return False
         req_id = str(uuid.uuid4())
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             fut: asyncio.Future = loop.create_future()
             self._health_futures[req_id] = fut
             await self._ws.send(json.dumps({

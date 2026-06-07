@@ -77,25 +77,3 @@ class TranscriberMessage(BaseModel):
     code: Optional[str] = None      # código de error/warning: AUTH_FAILED, buffer_full, etc.
     session_id: Optional[str] = None  # presente en el mensaje "ready"
 
-# =====================================================================
-# Orchestrator (Gateway <-> JotaOrchestrator)
-# =====================================================================
-
-class OrchestratorControlMessage(BaseModel):
-    """
-    Mensaje de control mid-session hacia el JotaOrchestrator.
-    (Para enviar texto llano, se manda el String suelto sin este envelope).
-    """
-    type: str
-    model_id: Optional[str] = None
-
-class OrchestratorResponse(BaseModel):
-    """
-    Formato general de los paquetes devueltos por Orchestrator.
-    Puede ser "token" o eventos estructurales (estado, error, tool_usage).
-    """
-    type: str
-    content: Optional[str] = None
-    message: Optional[str] = None 
-    
-    model_config = ConfigDict(extra="allow")

@@ -20,6 +20,7 @@ from src.services.orchestrators.reconnecting import OrchestratorState, Orchestra
 from src.services.orchestrators.registry import OrchestratorRegistry
 
 _DB_BASE = f"http://{settings.JOTA_DB_BASE_URL}"
+DB_BASE = _DB_BASE  # public alias for use in individual test files
 
 # ---------------------------------------------------------------------------
 # Datos de test estándar

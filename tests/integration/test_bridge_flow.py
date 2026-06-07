@@ -5,7 +5,7 @@ recibe tokens del orchestrator.
 """
 import httpx
 from tests.integration.conftest import (
-    VALID_KEY, CLIENT_UUID, SESSION_RESPONSE,
+    VALID_KEY, CLIENT_UUID, SESSION_RESPONSE, DB_BASE,
 )
 from src.services.orchestrators.protocol import OrchestratorEvent
 
@@ -56,7 +56,7 @@ def test_preferred_model_id_included_in_orchestrator_payload(
         **SESSION_RESPONSE,
         "config": {**SESSION_RESPONSE["config"], "preferred_model_id": "llama3-70b"},
     }
-    mock_services.get("http://localhost:8001/auth/session").mock(
+    mock_services.get(f"{DB_BASE}/auth/session").mock(
         return_value=httpx.Response(200, json=session)
     )
 
@@ -90,7 +90,7 @@ def test_system_prompt_extra_included_in_orchestrator_payload(
         **SESSION_RESPONSE,
         "config": {**SESSION_RESPONSE["config"], "system_prompt_extra": "Habla en inglés"},
     }
-    mock_services.get("http://localhost:8001/auth/session").mock(
+    mock_services.get(f"{DB_BASE}/auth/session").mock(
         return_value=httpx.Response(200, json=session)
     )
 
