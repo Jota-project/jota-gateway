@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     DEFAULT_ORCHESTRATOR: str = "openclaw"
     OPENCLAW_PORT: int = 18789
     OPENCLAW_TOKEN: str = ""
+    OPENCLAW_SESSION_KEY: str = "agent:main:main"
     ORCHESTRATOR_RECONNECT_INITIAL_BACKOFF: float = 1.0
     ORCHESTRATOR_RECONNECT_MAX_BACKOFF: float = 60.0
     ORCHESTRATOR_RECONNECT_MAX_DURATION: float = 300.0
