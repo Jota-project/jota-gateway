@@ -1,6 +1,6 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
-from src.services.pipeline_tracker import PipelineTracker, PipelineEvent
+from src.services.pipeline_tracker import PipelineTracker
 
 
 def _make_tracker(ws=None, output_mode=None):

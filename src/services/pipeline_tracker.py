@@ -9,11 +9,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True)
 class PipelineEvent:
     stage: str
     ts_ms: float
     elapsed_ms: float
+    turn: int = 0
     meta: dict = field(default_factory=dict)
 
 
@@ -52,7 +53,7 @@ class PipelineTracker:
         elapsed_ms = (now - self._last_event_at) * 1000
         self._last_event_at = now
 
-        event = PipelineEvent(stage=stage, ts_ms=ts_ms, elapsed_ms=elapsed_ms, meta=meta)
+        event = PipelineEvent(stage=stage, ts_ms=ts_ms, elapsed_ms=elapsed_ms, turn=self._turn, meta=meta)
         self.events.append(event)
 
         logger.info(
@@ -78,29 +79,35 @@ class PipelineTracker:
         await self.record("session_end", turn_count=self._turn, duration_s=duration_s)
         self._registry.close(self.session_id, status)
 
-    def _find_last(self, stage: str) -> Optional[PipelineEvent]:
+    def _find_last(self, stage: str, turn: Optional[int] = None) -> Optional[PipelineEvent]:
         for e in reversed(self.events):
-            if e.stage == stage:
+            if e.stage == stage and (turn is None or e.turn == turn):
                 return e
         return None
 
     def llm_first_token_ms(self) -> Optional[float]:
-        start = self._find_last("llm_start")
         first_token = self._find_last("llm_first_token")
-        if start and first_token:
-            return round(first_token.ts_ms - start.ts_ms, 1)
-        return None
+        if first_token is None:
+            return None
+        start = self._find_last("llm_start", turn=first_token.turn)
+        if start is None:
+            return None
+        return round(first_token.ts_ms - start.ts_ms, 1)
 
     def tts_first_chunk_ms(self) -> Optional[float]:
-        start = self._find_last("tts_start")
         first_chunk = self._find_last("tts_first_chunk")
-        if start and first_chunk:
-            return round(first_chunk.ts_ms - start.ts_ms, 1)
-        return None
+        if first_chunk is None:
+            return None
+        start = self._find_last("tts_start", turn=first_chunk.turn)
+        if start is None:
+            return None
+        return round(first_chunk.ts_ms - start.ts_ms, 1)
 
     def turn_e2e_ms(self) -> Optional[float]:
-        final = self._find_last("transcription_final")
         done = self._find_last("tts_done")
-        if final and done:
-            return round(done.ts_ms - final.ts_ms, 1)
-        return None
+        if done is None:
+            return None
+        final = self._find_last("transcription_final", turn=done.turn)
+        if final is None:
+            return None
+        return round(done.ts_ms - final.ts_ms, 1)
