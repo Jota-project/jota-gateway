@@ -9,8 +9,10 @@ from src.api.models_routes import router as models_router
 from src.api.health_routes import router as health_router
 from src.api.openai_routes import router as openai_router
 from src.api.orchestrator_routes import router as orchestrator_router
+from src.api.sessions_routes import router as sessions_router
 from src.services.db_client import db_client
 from src.services.orchestrators.registry import build_registry
+from src.services.session_registry import SessionRegistry
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,6 +27,7 @@ async def lifespan(app: FastAPI):
     registry = build_registry()
     await registry.connect_all()
     app.state.orchestrators = registry
+    app.state.session_registry = SessionRegistry()
     yield
     await registry.close_all()
     await db_client.close()
@@ -49,6 +52,7 @@ app.include_router(conversation_router, prefix="/api")
 app.include_router(models_router, prefix="/api")
 app.include_router(health_router, prefix="/api")
 app.include_router(orchestrator_router, prefix="/api")
+app.include_router(sessions_router, prefix="/api")
 
 
 @app.get("/health")
