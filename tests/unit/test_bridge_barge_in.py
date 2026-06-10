@@ -9,13 +9,21 @@ _CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
 _CONFIG = ClientConfig()
 
 
+def _mock_tracker():
+    t = MagicMock()
+    t.start_turn = MagicMock(return_value=1)
+    t.record = AsyncMock()
+    t.close = AsyncMock()
+    return t
+
+
 @pytest.fixture
 def make_bridge():
     def _make(input_mode="audio", output_mode=None):
         if output_mode is None:
             output_mode = ["audio", "text", "status"]
         ws = AsyncMock()
-        bridge = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock())
+        bridge = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=_mock_tracker())
         bridge.handshake = Handshake(client_key="test-key", input_mode=input_mode, output_mode=output_mode)
         bridge.orchestrator = AsyncMock()
         bridge.orchestrator.close = AsyncMock()
@@ -207,7 +215,7 @@ async def test_barge_in_uses_config_threshold_not_global(make_bridge):
     from src.models.schemas import ClientConfig
     ws = AsyncMock()
     config = ClientConfig(barge_in_min_chars=50)
-    bridge = JotaBridge(client=_CLIENT, config=config, client_ws=ws, orchestrator=AsyncMock())
+    bridge = JotaBridge(client=_CLIENT, config=config, client_ws=ws, orchestrator=AsyncMock(), tracker=_mock_tracker())
     bridge.handshake = Handshake(
         client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]
     )
@@ -232,7 +240,7 @@ async def test_barge_in_triggers_when_above_custom_threshold(make_bridge):
     from src.models.schemas import ClientConfig
     ws = AsyncMock()
     config = ClientConfig(barge_in_min_chars=3)
-    bridge = JotaBridge(client=_CLIENT, config=config, client_ws=ws, orchestrator=AsyncMock())
+    bridge = JotaBridge(client=_CLIENT, config=config, client_ws=ws, orchestrator=AsyncMock(), tracker=_mock_tracker())
     bridge.handshake = Handshake(
         client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]
     )

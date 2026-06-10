@@ -3,10 +3,12 @@ from pydantic import ValidationError
 import httpx
 import logging
 import json
+import time
 
 from src.models.schemas import Handshake
 from src.services.bridge import JotaBridge
 from src.services.db_client import db_client
+from src.services.pipeline_tracker import PipelineTracker
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +52,18 @@ async def gateway_websocket(websocket: WebSocket):
         logger.error(f"[{client.id}] No hay orquestador disponible: {e}")
         await websocket.close(code=1011, reason="No orchestrator available.")
         return
-    bridge = JotaBridge(client=client, config=config, client_ws=websocket, orchestrator=orchestrator)
+    session_id = f"{client.id}:{int(time.time() * 1000)}"
+    session_registry = websocket.scope["app"].state.session_registry
+    tracker = PipelineTracker(
+        session_id=session_id,
+        client_id=client.id,
+        input_mode=handshake.input_mode,
+        output_mode=handshake.output_mode,
+        client_ws=websocket,
+        registry=session_registry,
+    )
+    session_registry.register(tracker)
+    bridge = JotaBridge(client=client, config=config, client_ws=websocket, orchestrator=orchestrator, tracker=tracker)
     bridge.handshake = handshake
 
     try:
