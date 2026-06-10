@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from src.api.deps import get_verified_client
 
@@ -42,23 +44,23 @@ def _session_detail(record) -> dict:
     end_event = next((e for e in reversed(events) if e.stage == "session_end"), None)
     duration_s = end_event.meta.get("duration_s") if end_event else None
 
-    starts = [e for e in events if e.stage == "llm_start"]
-    first_tokens = [e for e in events if e.stage == "llm_first_token"]
-    avg_llm_first_token_ms = None
-    pairs = list(zip(starts, first_tokens))
-    if pairs:
-        latencies = [round(ft.ts_ms - s.ts_ms, 1) for s, ft in pairs if ft.ts_ms > s.ts_ms]
-        if latencies:
-            avg_llm_first_token_ms = round(sum(latencies) / len(latencies), 1)
+    by_turn: dict[int, dict] = defaultdict(dict)
+    for e in events:
+        by_turn[e.turn][e.stage] = e
 
-    t_finals = [e for e in events if e.stage == "transcription_final"]
-    tts_dones = [e for e in events if e.stage == "tts_done"]
-    avg_turn_e2e_ms = None
-    e2e_pairs = list(zip(t_finals, tts_dones))
-    if e2e_pairs:
-        e2e_latencies = [round(d.ts_ms - f.ts_ms, 1) for f, d in e2e_pairs if d.ts_ms > f.ts_ms]
-        if e2e_latencies:
-            avg_turn_e2e_ms = round(sum(e2e_latencies) / len(e2e_latencies), 1)
+    llm_latencies = [
+        round(turn_events["llm_first_token"].ts_ms - turn_events["llm_start"].ts_ms, 1)
+        for turn_events in by_turn.values()
+        if "llm_start" in turn_events and "llm_first_token" in turn_events
+    ]
+    avg_llm_first_token_ms = round(sum(llm_latencies) / len(llm_latencies), 1) if llm_latencies else None
+
+    e2e_latencies = [
+        round(turn_events["tts_done"].ts_ms - turn_events["transcription_final"].ts_ms, 1)
+        for turn_events in by_turn.values()
+        if "transcription_final" in turn_events and "tts_done" in turn_events
+    ]
+    avg_turn_e2e_ms = round(sum(e2e_latencies) / len(e2e_latencies), 1) if e2e_latencies else None
 
     return {
         **_session_summary(record),
