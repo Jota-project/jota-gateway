@@ -92,4 +92,4 @@ def test_session_registered_in_registry_after_connect(client):
         _collect_until_token(ws)
 
     sessions = app.state.session_registry.get_all()
-    assert len(sessions) >= 1
+    assert len(sessions) == 1

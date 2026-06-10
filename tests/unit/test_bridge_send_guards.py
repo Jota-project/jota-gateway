@@ -1,6 +1,6 @@
 """Tests for send guards in _call_orchestrator closures."""
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from src.services.bridge import JotaBridge
 from src.services.orchestrators.protocol import OrchestratorEvent
 from src.models.schemas import Client, ClientConfig, Handshake
@@ -9,18 +9,10 @@ _CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
 _CONFIG = ClientConfig()
 
 
-def _mock_tracker():
-    t = MagicMock()
-    t.start_turn = MagicMock(return_value=1)
-    t.record = AsyncMock()
-    t.close = AsyncMock()
-    return t
-
-
 @pytest.fixture
-def bridge():
+def bridge(mock_tracker):
     ws = AsyncMock()
-    b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=_mock_tracker())
+    b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker)
     b.handshake = Handshake(client_key="test-key", input_mode="text", output_mode=["text", "status"])
     b.transcriber = None
     return b
@@ -58,11 +50,11 @@ async def test_event_send_failure_does_not_propagate(bridge):
     await bridge._call_orchestrator("test")
 
 
-async def test_audio_send_failure_does_not_propagate():
+async def test_audio_send_failure_does_not_propagate(mock_tracker):
     """send_bytes raising inside pipe_audio must not crash _call_orchestrator."""
     ws = AsyncMock()
     ws.send_bytes = AsyncMock(side_effect=RuntimeError("disconnected"))
-    b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=_mock_tracker())
+    b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker)
     b.handshake = Handshake(client_key="test-key", input_mode="audio", output_mode=["audio", "text"])
 
     async def stream_with_token(*args, **kwargs):
