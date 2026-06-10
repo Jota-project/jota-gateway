@@ -25,6 +25,8 @@ class SessionRegistry:
         self._maxsize = maxsize
 
     def register(self, tracker: "PipelineTracker") -> SessionRecord:
+        if tracker.session_id in self._sessions:
+            del self._sessions[tracker.session_id]
         record = SessionRecord(
             session_id=tracker.session_id,
             client_id=tracker.client_id,
@@ -40,14 +42,14 @@ class SessionRegistry:
         self._evict_if_needed()
         return record
 
-    def close(self, session_id: str, status: str = "completed") -> None:
+    def close(self, session_id: str, status: Literal["active", "completed", "error"] = "completed") -> None:
         record = self._sessions.get(session_id)
         if record:
             record.status = status
             record.ended_at = datetime.now(timezone.utc)
 
     def get_all(self) -> list[SessionRecord]:
-        return list(reversed(list(self._sessions.values())))
+        return list(reversed(self._sessions.values()))
 
     def get(self, session_id: str) -> Optional[SessionRecord]:
         return self._sessions.get(session_id)
