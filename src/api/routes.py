@@ -63,8 +63,7 @@ async def gateway_websocket(websocket: WebSocket):
         registry=session_registry,
     )
     session_registry.register(tracker)
-    bridge = JotaBridge(client=client, config=config, client_ws=websocket, orchestrator=orchestrator, tracker=tracker)
-    bridge.handshake = handshake
+    bridge = JotaBridge(client=client, config=config, client_ws=websocket, orchestrator=orchestrator, tracker=tracker, handshake=handshake)
 
     try:
         await bridge.connect_internal_services()

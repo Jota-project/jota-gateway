@@ -19,12 +19,12 @@ class JotaBridge:
     Titiritero principal. Gestiona la conexión de un cliente físico
     y enruta asincrónicamente los mensajes utilizando los adaptadores de microservicio.
     """
-    def __init__(self, client: Client, config: ClientConfig, client_ws: WebSocket, orchestrator: OrchestratorProtocol, tracker: PipelineTracker):
+    def __init__(self, client: Client, config: ClientConfig, client_ws: WebSocket, orchestrator: OrchestratorProtocol, tracker: PipelineTracker, handshake: Handshake):
         self.client = client
         self.config = config
         self.client_id = client.id  # nombre legible del cliente (hab_sito, jota_desktop…)
         self.client_ws = client_ws
-        self.handshake: Optional[Handshake] = None
+        self.handshake: Handshake = handshake
         self.orchestrator: OrchestratorProtocol = orchestrator   # injected, not created here
         self.tracker: PipelineTracker = tracker
         self.transcriber: Optional[TranscriberClient] = None
@@ -318,6 +318,9 @@ class JotaBridge:
         Si el cliente pidió audio, crea un TTSClient por petición y corre
         pipe_tokens + pipe_audio concurrentemente vía asyncio.gather.
         """
+        from src.services.orchestration import call_orchestrator
+        from src.core.session_key import make_session_key
+
         self.tracker.start_turn()
 
         needs_audio = "audio" in self.handshake.output_mode
@@ -339,45 +342,32 @@ class JotaBridge:
                 logger.warning(f"[{self.client_id}] TTS no disponible, continuando en modo texto: {e}")
                 tts = None
 
+        agent = self.handshake.agent or settings.OPENCLAW_DEFAULT_AGENT
+        session_key = make_session_key(agent, self.client_id)
+
         async def _on_token(token_text: str):
             try:
                 if "text" in self.handshake.output_mode:
                     await self.client_ws.send_json({"type": "token", "content": token_text})
             except Exception:
-                pass  # client disconnected mid-stream
+                pass
             if tts:
                 await tts.send_text_chunk(token_text)
 
-        async def _on_event(data: dict):
-            try:
-                if data.get("type") == "error" or "status" in self.handshake.output_mode:
-                    await self.client_ws.send_json(data)
-            except Exception:
-                pass  # client disconnected mid-stream
-
-        agent = self.handshake.agent or settings.OPENCLAW_DEFAULT_AGENT
-        session_key = f"agent:{agent}:{self.client_id}"
-
         async def pipe_tokens():
-            await self.tracker.record("llm_start")
-            _first_token = True
-            _token_count = 0
-            async for event in self.orchestrator.stream_response(
-                text=text,
-                user_id=self.client_id,
-                model_id=self.config.preferred_model_id,
-                system_prompt_extra=self.config.system_prompt_extra,
-                session_key=session_key,
-            ):
-                if event.type == "token":
-                    if _first_token:
-                        await self.tracker.record("llm_first_token")
-                        _first_token = False
-                    _token_count += 1
-                    await _on_token(event.content)
-                else:
-                    await _on_event({"type": event.type, "content": event.content})
-            await self.tracker.record("llm_done", token_count=_token_count)
+            try:
+                await call_orchestrator(
+                    self.orchestrator, text, session_key, self.client_id,
+                    model_id=self.config.preferred_model_id,
+                    system_prompt_extra=self.config.system_prompt_extra,
+                    tracker=self.tracker,
+                    on_token=_on_token,
+                )
+            except RuntimeError as e:
+                try:
+                    await self.client_ws.send_json({"type": "error", "content": str(e)})
+                except Exception:
+                    pass
             if tts:
                 await tts.end()
 
@@ -390,7 +380,7 @@ class JotaBridge:
                 try:
                     await self.client_ws.send_bytes(chunk)
                 except Exception:
-                    return  # client disconnected, abort audio stream
+                    return
             await self.tracker.record("tts_done")
 
         if tts:
@@ -401,7 +391,6 @@ class JotaBridge:
         else:
             await pipe_tokens()
 
-        # Señalizar al cliente que la respuesta está completa
         try:
             await self.client_ws.send_json({"type": "done"})
         except Exception:

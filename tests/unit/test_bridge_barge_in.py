@@ -15,8 +15,8 @@ def make_bridge(mock_tracker):
         if output_mode is None:
             output_mode = ["audio", "text", "status"]
         ws = AsyncMock()
-        bridge = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker)
-        bridge.handshake = Handshake(client_key="test-key", input_mode=input_mode, output_mode=output_mode)
+        bridge = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker,
+                            handshake=Handshake(client_key="test-key", input_mode=input_mode, output_mode=output_mode))
         bridge.orchestrator = AsyncMock()
         bridge.orchestrator.close = AsyncMock()
         bridge.transcriber = MagicMock()
@@ -207,10 +207,8 @@ async def test_barge_in_uses_config_threshold_not_global(mock_tracker):
     from src.models.schemas import ClientConfig
     ws = AsyncMock()
     config = ClientConfig(barge_in_min_chars=50)
-    bridge = JotaBridge(client=_CLIENT, config=config, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker)
-    bridge.handshake = Handshake(
-        client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]
-    )
+    bridge = JotaBridge(client=_CLIENT, config=config, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker,
+                        handshake=Handshake(client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]))
     bridge._active_turn = asyncio.create_task(asyncio.sleep(60))
     await asyncio.sleep(0)
 
@@ -232,10 +230,8 @@ async def test_barge_in_triggers_when_above_custom_threshold(mock_tracker):
     from src.models.schemas import ClientConfig
     ws = AsyncMock()
     config = ClientConfig(barge_in_min_chars=3)
-    bridge = JotaBridge(client=_CLIENT, config=config, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker)
-    bridge.handshake = Handshake(
-        client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]
-    )
+    bridge = JotaBridge(client=_CLIENT, config=config, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker,
+                        handshake=Handshake(client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]))
     bridge._active_turn = asyncio.create_task(asyncio.sleep(60))
     await asyncio.sleep(0)
 

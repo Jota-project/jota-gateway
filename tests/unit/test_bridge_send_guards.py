@@ -12,8 +12,8 @@ _CONFIG = ClientConfig()
 @pytest.fixture
 def bridge(mock_tracker):
     ws = AsyncMock()
-    b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker)
-    b.handshake = Handshake(client_key="test-key", input_mode="text", output_mode=["text", "status"])
+    b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker,
+                   handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text", "status"]))
     b.transcriber = None
     return b
 
@@ -54,8 +54,8 @@ async def test_audio_send_failure_does_not_propagate(mock_tracker):
     """send_bytes raising inside pipe_audio must not crash _call_orchestrator."""
     ws = AsyncMock()
     ws.send_bytes = AsyncMock(side_effect=RuntimeError("disconnected"))
-    b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker)
-    b.handshake = Handshake(client_key="test-key", input_mode="audio", output_mode=["audio", "text"])
+    b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker,
+                   handshake=Handshake(client_key="test-key", input_mode="audio", output_mode=["audio", "text"]))
 
     async def stream_with_token(*args, **kwargs):
         yield OrchestratorEvent(type="token", content="hi")

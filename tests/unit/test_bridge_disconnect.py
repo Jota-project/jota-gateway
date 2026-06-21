@@ -11,8 +11,8 @@ _CONFIG = ClientConfig()
 @pytest.fixture
 def bridge(mock_tracker):
     ws = AsyncMock()
-    b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker)
-    b.handshake = Handshake(client_key="test-key", input_mode="audio", output_mode=["text"])
+    b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker,
+                   handshake=Handshake(client_key="test-key", input_mode="audio", output_mode=["text"]))
     b.transcriber = MagicMock()
     b.transcriber._is_ready = True
     return b
