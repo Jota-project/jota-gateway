@@ -27,13 +27,15 @@ class OpenClawClient:
         host: str,
         port: int,
         token: str,
-        session_key: str = "jota-gateway-default",
+        default_agent: str = "main",
     ):
         self._uri = f"ws://{host}:{port}"
         self._token = token
-        self._session_key = session_key
+        self._default_agent = default_agent
         self._ws: Optional[ClientConnection] = None
         self._listener_task: Optional[asyncio.Task] = None
+        self._keepalive_task: Optional[asyncio.Task] = None
+        self._tick_interval: float = 15.0  # overwritten by hello-ok policy
         # Active turn state (one turn at a time)
         self._active_req_id: Optional[str] = None
         self._turn_queue: Optional[asyncio.Queue] = None
@@ -65,7 +67,7 @@ class OpenClawClient:
                 "minProtocol": 3,
                 "maxProtocol": 4,
                 "client": {
-                    "id": "gateway-client",
+                    "id": "jota-gateway",
                     "version": "1.0.0",
                     "platform": "linux",
                     "mode": "backend",
@@ -82,17 +84,25 @@ class OpenClawClient:
         if not hello.get("ok"):
             raise RuntimeError(f"OpenClaw handshake failed: {hello.get('error')}")
 
-        # 4. Start background listener
+        # Parse keepalive interval from policy (default 15 s if not provided)
+        policy = hello.get("payload", {}).get("policy", {})
+        self._tick_interval = policy.get("tickIntervalMs", 15000) / 1000.0
+
+        # 4. Start background tasks
         self._listener_task = asyncio.create_task(self._listen())
-        logger.info(f"OpenClawClient connected → {self._uri}")
+        self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+        logger.info(f"OpenClawClient connected → {self._uri} (tick {self._tick_interval:.0f}s)")
 
     async def close(self) -> None:
-        if self._listener_task:
-            self._listener_task.cancel()
-            try:
-                await self._listener_task
-            except asyncio.CancelledError:
-                pass
+        for task in (self._keepalive_task, self._listener_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._keepalive_task = None
+        self._listener_task = None
         if self._ws:
             await self._ws.close()
             self._ws = None
@@ -120,8 +130,23 @@ class OpenClawClient:
             return False
 
     # ------------------------------------------------------------------
-    # Listener (background task)
+    # Background tasks
     # ------------------------------------------------------------------
+
+    async def _keepalive_loop(self) -> None:
+        """Send periodic health pings to keep the connection alive.
+
+        OpenClaw closes with code 4000 after tickIntervalMs × 2 silence.
+        We ping at 80 % of the interval to stay well within the window.
+        """
+        interval = self._tick_interval * 0.8
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                if self._ws:
+                    await self.ping()
+        except asyncio.CancelledError:
+            return
 
     async def _listen(self) -> None:
         try:
@@ -168,14 +193,22 @@ class OpenClawClient:
         user_id: str,
         model_id: Optional[str] = None,
         system_prompt_extra: Optional[str] = None,
+        session_key: Optional[str] = None,
     ) -> AsyncIterator[OrchestratorEvent]:
         if not self._ws:
             yield OrchestratorEvent(type="error", content="OpenClawClient not connected")
             return
 
+        # session_key is required — callers must provide it via make_session_key()
+        if not session_key:
+            raise ValueError("session_key is required — callers must provide it via make_session_key()")
+        key = session_key
+
         req_id = str(uuid.uuid4())
         self._active_req_id = req_id
         self._turn_queue = asyncio.Queue()
+        _sent = False
+        _finished = False
 
         try:
             try:
@@ -184,43 +217,57 @@ class OpenClawClient:
                     "id": req_id,
                     "method": "chat.send",
                     "params": {
-                        "sessionKey": self._session_key,
+                        "session": {"key": key},
                         "message": text,
                         "idempotencyKey": str(uuid.uuid4()),
                     },
                 }))
+                _sent = True
             except Exception as e:
                 yield OrchestratorEvent(type="error", content=f"orchestrator send failed: {e}")
+                _finished = True
                 return
 
             while True:
                 kind, data = await self._turn_queue.get()
 
                 if kind == "chat":
+                    if data.get("replace"):
+                        logger.warning(
+                            "OpenClaw sent replace=true mid-stream — content may be inconsistent"
+                        )
                     delta = data.get("deltaText", "")
                     if delta:
                         yield OrchestratorEvent(type="token", content=delta)
-                    # state == "final" means turn is complete (no more events, no final res)
-                    if data.get("state") == "final":
-                        yield OrchestratorEvent(type="status", content="done")
-                        break
 
                 elif kind == "done":
-                    # Initial res with status=started means turn is running (events coming)
-                    # Final res without status means turn is complete
+                    # res with status=started is an acknowledgement — events still coming
                     payload = data.get("payload", {})
                     if payload.get("status") == "started":
-                        continue  # Keep waiting for events
+                        continue
                     if not data.get("ok"):
                         yield OrchestratorEvent(type="error", content=str(data.get("error", {})))
                     else:
                         yield OrchestratorEvent(type="status", content="done")
+                    _finished = True
                     break
 
                 elif kind == "error":
                     yield OrchestratorEvent(type="error", content=str(data))
+                    _finished = True
                     break
 
         finally:
             self._active_req_id = None
             self._turn_queue = None
+            if _sent and not _finished and self._ws:
+                # Turn was cancelled before completing — stop generation on OpenClaw side
+                try:
+                    await asyncio.shield(self._ws.send(json.dumps({
+                        "type": "req",
+                        "id": str(uuid.uuid4()),
+                        "method": "chat.abort",
+                        "params": {"session": {"key": key}},
+                    })))
+                except Exception:
+                    pass
