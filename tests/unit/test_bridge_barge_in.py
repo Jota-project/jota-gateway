@@ -239,3 +239,31 @@ async def test_barge_in_triggers_when_above_custom_threshold(mock_tracker):
 
     calls = ws.send_json.call_args_list
     assert any(c[0][0].get("type") == "interrupted" for c in calls)
+
+
+# ── _on_transcriber_warning ──────────────────────────────────────────────────
+
+async def test_transcriber_warning_forwarded_to_client(make_bridge):
+    bridge = make_bridge()
+    await bridge._on_transcriber_warning("buffer_full", "Buffer full")
+    bridge.client_ws.send_json.assert_called_once_with({
+        "type": "service_status",
+        "service": "transcriber",
+        "status": "warning",
+        "code": "buffer_full",
+        "message": "Buffer full",
+    })
+
+
+async def test_transcriber_warning_uses_code_when_no_message(make_bridge):
+    bridge = make_bridge()
+    await bridge._on_transcriber_warning("timeout", None)
+    payload = bridge.client_ws.send_json.call_args[0][0]
+    assert payload["message"] == "timeout"
+
+
+async def test_transcriber_warning_send_failure_is_silent(make_bridge):
+    bridge = make_bridge()
+    bridge.client_ws.send_json = AsyncMock(side_effect=RuntimeError("disconnected"))
+    await bridge._on_transcriber_warning("buffer_full", "Buffer full")
+    # Must not raise
