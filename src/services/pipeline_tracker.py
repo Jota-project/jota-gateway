@@ -111,3 +111,10 @@ class PipelineTracker:
         if final is None:
             return None
         return round(done.ts_ms - final.ts_ms, 1)
+
+
+class _NullWS:
+    """Absorbs send_json calls silently. Used by HTTP sessions that have no WebSocket."""
+
+    async def send_json(self, data: dict) -> None:
+        pass
