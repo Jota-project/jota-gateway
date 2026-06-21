@@ -17,7 +17,6 @@ class Client(BaseModel):
 class ClientConfig(BaseModel):
     """Configuración por cliente tal como la devuelve jota-db."""
     stt_language: str = "es"
-    stt_model: Optional[str] = None
     stt_vad_thold: float = 0.0
     tts_voice: str = "af_heart"
     tts_speed: float = 1.0
@@ -25,7 +24,6 @@ class ClientConfig(BaseModel):
     system_prompt_extra: Optional[str] = None
     barge_in_enabled: bool = True
     barge_in_min_chars: int = 5
-    conversation_memory_limit: int = 20
 
     model_config = ConfigDict(extra="allow")
 
@@ -47,6 +45,7 @@ class Handshake(BaseModel):
     client_key: str
     input_mode: Literal["audio", "text"]
     output_mode: List[Literal["audio", "text", "status"]]
+    agent: Optional[str] = None  # OpenClaw agent name; None → gateway default
 
     model_config = ConfigDict(extra="allow")
 
