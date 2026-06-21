@@ -27,10 +27,10 @@ DB_BASE = _DB_BASE  # public alias for use in individual test files
 # ---------------------------------------------------------------------------
 
 VALID_KEY = "valid-key-abc"
-CLIENT_UUID = "uuid-client-123"
+CLIENT_ID = "hab_sito"
 
 SESSION_RESPONSE = {
-    "client": {"id": CLIENT_UUID, "client_key": VALID_KEY, "is_active": True},
+    "client": {"id": CLIENT_ID, "client_key": VALID_KEY, "is_active": True, "name": CLIENT_ID},
     "config": {
         "stt_language": "es",
         "stt_vad_thold": 0.0,

@@ -22,7 +22,7 @@ class JotaBridge:
     def __init__(self, client: Client, config: ClientConfig, client_ws: WebSocket, orchestrator: OrchestratorProtocol, tracker: PipelineTracker):
         self.client = client
         self.config = config
-        self.client_id = client.id  # UUID real — usado en logs y como user_id al orchestrator
+        self.client_id = client.id  # nombre legible del cliente (hab_sito, jota_desktop…)
         self.client_ws = client_ws
         self.handshake: Optional[Handshake] = None
         self.orchestrator: OrchestratorProtocol = orchestrator   # injected, not created here
@@ -355,6 +355,9 @@ class JotaBridge:
             except Exception:
                 pass  # client disconnected mid-stream
 
+        agent = self.handshake.agent or settings.OPENCLAW_DEFAULT_AGENT
+        session_key = f"agent:{agent}:{self.client_id}"
+
         async def pipe_tokens():
             await self.tracker.record("llm_start")
             _first_token = True
@@ -364,6 +367,7 @@ class JotaBridge:
                 user_id=self.client_id,
                 model_id=self.config.preferred_model_id,
                 system_prompt_extra=self.config.system_prompt_extra,
+                session_key=session_key,
             ):
                 if event.type == "token":
                     if _first_token:
@@ -396,3 +400,9 @@ class JotaBridge:
                 await tts.close()
         else:
             await pipe_tokens()
+
+        # Señalizar al cliente que la respuesta está completa
+        try:
+            await self.client_ws.send_json({"type": "done"})
+        except Exception:
+            pass

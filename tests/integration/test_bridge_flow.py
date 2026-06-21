@@ -5,7 +5,7 @@ recibe tokens del orchestrator.
 """
 import httpx
 from tests.integration.conftest import (
-    VALID_KEY, CLIENT_UUID, SESSION_RESPONSE, DB_BASE,
+    VALID_KEY, CLIENT_ID, SESSION_RESPONSE, DB_BASE,
 )
 from src.services.orchestrators.protocol import OrchestratorEvent
 
@@ -30,7 +30,7 @@ def test_orchestrator_receives_correct_user_id(client, mock_registry, mock_orche
     """El user_id pasado a stream_response coincide con el client UUID."""
     captured = {}
 
-    async def _stream(text, user_id, model_id=None, system_prompt_extra=None):
+    async def _stream(text, user_id, model_id=None, system_prompt_extra=None, session_key=None):
         captured["user_id"] = user_id
         yield OrchestratorEvent(type="token", content="ok")
         yield OrchestratorEvent(type="status", content="done")
@@ -42,7 +42,7 @@ def test_orchestrator_receives_correct_user_id(client, mock_registry, mock_orche
         ws.send_text("test")
         ws.receive_json()  # consumir token
 
-    assert captured["user_id"] == CLIENT_UUID
+    assert captured["user_id"] == CLIENT_ID
 
 
 def test_preferred_model_id_included_in_orchestrator_payload(
@@ -62,7 +62,7 @@ def test_preferred_model_id_included_in_orchestrator_payload(
 
     captured = {}
 
-    async def _stream(text, user_id, model_id=None, system_prompt_extra=None):
+    async def _stream(text, user_id, model_id=None, system_prompt_extra=None, session_key=None):
         captured["model_id"] = model_id
         yield OrchestratorEvent(type="token", content="ok")
         yield OrchestratorEvent(type="status", content="done")
@@ -96,7 +96,7 @@ def test_system_prompt_extra_included_in_orchestrator_payload(
 
     captured = {}
 
-    async def _stream(text, user_id, model_id=None, system_prompt_extra=None):
+    async def _stream(text, user_id, model_id=None, system_prompt_extra=None, session_key=None):
         captured["system_prompt_extra"] = system_prompt_extra
         yield OrchestratorEvent(type="token", content="ok")
         yield OrchestratorEvent(type="status", content="done")
