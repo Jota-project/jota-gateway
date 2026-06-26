@@ -1,3 +1,10 @@
+## [1.6.4](https://github.com/Jota-project/jota-gateway/compare/v1.6.3...v1.6.4) (2026-06-26)
+
+
+### Bug Fixes
+
+* use gateway-client id in OpenClaw connect handshake ([#57](https://github.com/Jota-project/jota-gateway/issues/57)) ([70e4f14](https://github.com/Jota-project/jota-gateway/commit/70e4f144bb4cfc2ae52eca05216300940fbc10f5)), closes [#53](https://github.com/Jota-project/jota-gateway/issues/53)
+
 ## [1.6.3](https://github.com/Jota-project/jota-gateway/compare/v1.6.2...v1.6.3) (2026-06-26)
 
 
