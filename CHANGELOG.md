@@ -1,3 +1,10 @@
+## [1.6.3](https://github.com/Jota-project/jota-gateway/compare/v1.6.2...v1.6.3) (2026-06-26)
+
+
+### Bug Fixes
+
+* don't crash on startup if orchestrator is unreachable ([#56](https://github.com/Jota-project/jota-gateway/issues/56)) ([4053761](https://github.com/Jota-project/jota-gateway/commit/4053761ef3568244c25ad27e9f3efc050a8f2a38))
+
 ## [1.6.2](https://github.com/Jota-project/jota-gateway/compare/v1.6.1...v1.6.2) (2026-06-26)
 
 
