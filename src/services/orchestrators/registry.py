@@ -61,7 +61,7 @@ def build_registry() -> OrchestratorRegistry:
             host="127.0.0.1",
             port=settings.OPENCLAW_PORT,
             token=settings.OPENCLAW_TOKEN,
-            session_key=settings.OPENCLAW_SESSION_KEY,
+            default_agent=settings.OPENCLAW_DEFAULT_AGENT,
         )
         clients["openclaw"] = ReconnectingOrchestrator(inner, name="openclaw")
         logger.info("OpenClawClient registered (wrapped in ReconnectingOrchestrator).")
