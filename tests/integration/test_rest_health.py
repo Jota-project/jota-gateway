@@ -12,11 +12,10 @@ def test_health_all_ok(client):
     assert body["tts"] == "ok"
 
 
-def test_health_never_returns_5xx(client, mock_services):
+def test_health_never_returns_5xx(client, mock_orchestrator):
     """Aunque el orchestrator esté caído, health devuelve 200."""
-    mock_services.get("http://localhost:8000/health").mock(
-        side_effect=httpx.ConnectError("down")
-    )
+    from unittest.mock import AsyncMock
+    mock_orchestrator.ping = AsyncMock(return_value=False)
     r = client.get("/api/health")
     assert r.status_code == 200
     assert r.json()["orchestrator"] == "unavailable"

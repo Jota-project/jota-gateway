@@ -10,6 +10,14 @@ from src.models.schemas import Client, ClientConfig
 from src.services.db_client import db_client
 
 
+def handle_db_error(e: Exception) -> None:
+    if isinstance(e, httpx.HTTPStatusError):
+        raise HTTPException(status_code=e.response.status_code)
+    if isinstance(e, httpx.RequestError):
+        raise HTTPException(status_code=503, detail="jota-db unavailable")
+    raise HTTPException(status_code=502, detail="Unexpected error")
+
+
 async def get_verified_client(
     x_api_key: str = Header(...),
 ) -> tuple[Client, ClientConfig]:

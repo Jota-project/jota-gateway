@@ -10,13 +10,13 @@ _CONFIG = ClientConfig()
 
 
 @pytest.fixture
-def make_bridge():
+def make_bridge(mock_tracker):
     def _make(input_mode="audio", output_mode=None):
         if output_mode is None:
             output_mode = ["audio", "text", "status"]
         ws = AsyncMock()
-        bridge = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws)
-        bridge.handshake = Handshake(client_key="test-key", input_mode=input_mode, output_mode=output_mode)
+        bridge = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker,
+                            handshake=Handshake(client_key="test-key", input_mode=input_mode, output_mode=output_mode))
         bridge.orchestrator = AsyncMock()
         bridge.orchestrator.close = AsyncMock()
         bridge.transcriber = MagicMock()
@@ -202,15 +202,13 @@ async def test_close_all_awaits_active_turn(make_bridge):
     assert turn_ran.is_set()
 
 
-async def test_barge_in_uses_config_threshold_not_global(make_bridge):
+async def test_barge_in_uses_config_threshold_not_global(mock_tracker):
     """Bridge uses config.barge_in_min_chars, not settings.BARGE_IN_MIN_CHARS."""
     from src.models.schemas import ClientConfig
     ws = AsyncMock()
     config = ClientConfig(barge_in_min_chars=50)
-    bridge = JotaBridge(client=_CLIENT, config=config, client_ws=ws)
-    bridge.handshake = Handshake(
-        client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]
-    )
+    bridge = JotaBridge(client=_CLIENT, config=config, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker,
+                        handshake=Handshake(client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]))
     bridge._active_turn = asyncio.create_task(asyncio.sleep(60))
     await asyncio.sleep(0)
 
@@ -227,15 +225,13 @@ async def test_barge_in_uses_config_threshold_not_global(make_bridge):
         pass
 
 
-async def test_barge_in_triggers_when_above_custom_threshold(make_bridge):
+async def test_barge_in_triggers_when_above_custom_threshold(mock_tracker):
     """Barge-in fires when partial >= config.barge_in_min_chars."""
     from src.models.schemas import ClientConfig
     ws = AsyncMock()
     config = ClientConfig(barge_in_min_chars=3)
-    bridge = JotaBridge(client=_CLIENT, config=config, client_ws=ws)
-    bridge.handshake = Handshake(
-        client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]
-    )
+    bridge = JotaBridge(client=_CLIENT, config=config, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker,
+                        handshake=Handshake(client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]))
     bridge._active_turn = asyncio.create_task(asyncio.sleep(60))
     await asyncio.sleep(0)
 
@@ -243,3 +239,31 @@ async def test_barge_in_triggers_when_above_custom_threshold(make_bridge):
 
     calls = ws.send_json.call_args_list
     assert any(c[0][0].get("type") == "interrupted" for c in calls)
+
+
+# ── _on_transcriber_warning ──────────────────────────────────────────────────
+
+async def test_transcriber_warning_forwarded_to_client(make_bridge):
+    bridge = make_bridge()
+    await bridge._on_transcriber_warning("buffer_full", "Buffer full")
+    bridge.client_ws.send_json.assert_called_once_with({
+        "type": "service_status",
+        "service": "transcriber",
+        "status": "warning",
+        "code": "buffer_full",
+        "message": "Buffer full",
+    })
+
+
+async def test_transcriber_warning_uses_code_when_no_message(make_bridge):
+    bridge = make_bridge()
+    await bridge._on_transcriber_warning("timeout", None)
+    payload = bridge.client_ws.send_json.call_args[0][0]
+    assert payload["message"] == "timeout"
+
+
+async def test_transcriber_warning_send_failure_is_silent(make_bridge):
+    bridge = make_bridge()
+    bridge.client_ws.send_json = AsyncMock(side_effect=RuntimeError("disconnected"))
+    await bridge._on_transcriber_warning("buffer_full", "Buffer full")
+    # Must not raise

@@ -2,6 +2,7 @@
 import pytest
 from unittest.mock import AsyncMock
 from src.services.bridge import JotaBridge
+from src.services.orchestrators.protocol import OrchestratorEvent
 from src.models.schemas import Client, ClientConfig, Handshake
 
 _CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
@@ -9,33 +10,32 @@ _CONFIG = ClientConfig()
 
 
 @pytest.fixture
-def bridge():
+def bridge(mock_tracker):
     ws = AsyncMock()
-    b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws)
-    b.handshake = Handshake(client_key="test-key", input_mode="text", output_mode=["text", "status"])
-    b.orchestrator = AsyncMock()
+    b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker,
+                   handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text", "status"]))
     b.transcriber = None
     return b
 
 
-def make_listen_loop_with_token(token: str):
-    """Return an orchestrator.listen_loop side_effect that yields one token."""
-    async def _listen(text, on_token, on_event, **kwargs):
-        await on_token(token)
-    return _listen
+def make_stream_with_token(token: str):
+    """Return an async generator that yields one token event."""
+    async def _stream(*args, **kwargs):
+        yield OrchestratorEvent(type="token", content=token)
+    return _stream
 
 
-def make_listen_loop_with_event(event: dict):
-    """Return an orchestrator.listen_loop side_effect that yields one event."""
-    async def _listen(text, on_token, on_event, **kwargs):
-        await on_event(event)
-    return _listen
+def make_stream_with_event(event_type: str, content: str):
+    """Return an async generator that yields one non-token event."""
+    async def _stream(*args, **kwargs):
+        yield OrchestratorEvent(type=event_type, content=content)
+    return _stream
 
 
 async def test_token_send_failure_does_not_propagate(bridge):
     """send_json raising inside _on_token must not crash _call_orchestrator."""
     bridge.client_ws.send_json = AsyncMock(side_effect=RuntimeError("disconnected"))
-    bridge.orchestrator.listen_loop = make_listen_loop_with_token("hello")
+    bridge.orchestrator.stream_response = make_stream_with_token("hello")
 
     # Must not raise
     await bridge._call_orchestrator("test")
@@ -44,27 +44,23 @@ async def test_token_send_failure_does_not_propagate(bridge):
 async def test_event_send_failure_does_not_propagate(bridge):
     """send_json raising inside _on_event must not crash _call_orchestrator."""
     bridge.client_ws.send_json = AsyncMock(side_effect=RuntimeError("disconnected"))
-    bridge.orchestrator.listen_loop = make_listen_loop_with_event(
-        {"type": "status", "content": "thinking"}
-    )
+    bridge.orchestrator.stream_response = make_stream_with_event("status", "thinking")
 
     # Must not raise
     await bridge._call_orchestrator("test")
 
 
-async def test_audio_send_failure_does_not_propagate():
+async def test_audio_send_failure_does_not_propagate(mock_tracker):
     """send_bytes raising inside pipe_audio must not crash _call_orchestrator."""
     ws = AsyncMock()
     ws.send_bytes = AsyncMock(side_effect=RuntimeError("disconnected"))
-    b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws)
-    b.handshake = Handshake(client_key="test-key", input_mode="audio", output_mode=["audio", "text"])
-    b.orchestrator = AsyncMock()
+    b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker,
+                   handshake=Handshake(client_key="test-key", input_mode="audio", output_mode=["audio", "text"]))
 
-    # Orchestrator produces one token, TTS returns one audio chunk
-    async def listen_with_token(text, on_token, on_event, **kwargs):
-        await on_token("hi")
+    async def stream_with_token(*args, **kwargs):
+        yield OrchestratorEvent(type="token", content="hi")
 
-    b.orchestrator.listen_loop = listen_with_token
+    b.orchestrator.stream_response = stream_with_token
 
     import src.services.bridge as bridge_module
 

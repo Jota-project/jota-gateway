@@ -1,5 +1,6 @@
 """Tests para endpoints de conversaciones."""
 import httpx
+from tests.integration.conftest import DB_BASE
 
 
 def test_get_conversations_returns_list(client, auth_headers):
@@ -25,7 +26,7 @@ def test_delete_conversation_returns_204(client, auth_headers, mock_services):
         patch_called["body"] = req.content
         return httpx.Response(200, json={"id": "conv-1", "status": "archived"})
 
-    mock_services.patch(url__regex=r"http://localhost:8001/conversations/.+").mock(
+    mock_services.patch(url__regex=rf"{DB_BASE}/conversations/.+").mock(
         side_effect=capture
     )
     r = client.delete("/api/conversations/conv-1", headers=auth_headers)
@@ -37,7 +38,7 @@ def test_delete_conversation_returns_204(client, auth_headers, mock_services):
 def test_get_messages_not_found_propagates_404(client, auth_headers, mock_services):
     """404 de jota-db se propaga como 404 al cliente."""
     mock_services.get(
-        url__regex=r"http://localhost:8001/conversations/.+/messages"
+        url__regex=rf"{DB_BASE}/conversations/.+/messages"
     ).mock(return_value=httpx.Response(404, json={"detail": "Not found"}))
     r = client.get("/api/conversations/nonexistent/messages", headers=auth_headers)
     assert r.status_code == 404
