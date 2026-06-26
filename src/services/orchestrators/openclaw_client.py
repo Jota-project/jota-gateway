@@ -67,7 +67,7 @@ class OpenClawClient:
                 "minProtocol": 3,
                 "maxProtocol": 4,
                 "client": {
-                    "id": "jota-gateway",
+                    "id": "gateway-client",
                     "version": "1.0.0",
                     "platform": "linux",
                     "mode": "backend",
