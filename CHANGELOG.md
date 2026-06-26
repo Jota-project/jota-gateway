@@ -1,3 +1,10 @@
+## [1.6.2](https://github.com/Jota-project/jota-gateway/compare/v1.6.1...v1.6.2) (2026-06-26)
+
+
+### Bug Fixes
+
+* remove spurious session_key from OpenClawClient constructor in registry ([#55](https://github.com/Jota-project/jota-gateway/issues/55)) ([fdaf662](https://github.com/Jota-project/jota-gateway/commit/fdaf662bc753017a17a9cff9f1d86a31104bf984)), closes [#53](https://github.com/Jota-project/jota-gateway/issues/53)
+
 ## [1.6.1](https://github.com/Jota-project/jota-gateway/compare/v1.6.0...v1.6.1) (2026-06-26)
 
 
