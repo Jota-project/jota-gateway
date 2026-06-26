@@ -1,3 +1,42 @@
+# [1.6.0](https://github.com/Jota-project/jota-gateway/compare/v1.5.2...v1.6.0) (2026-06-26)
+
+
+### Bug Fixes
+
+* add agent field to Handshake schema, remove unused ClientConfig fields ([9cd454b](https://github.com/Jota-project/jota-gateway/commit/9cd454be5f0f5b7042299dd05a4f54a2355e4587))
+* **monitoring:** scope latency helpers by turn, freeze PipelineEvent ([0869b30](https://github.com/Jota-project/jota-gateway/commit/0869b301eae0e9082f80e9112fd0d8ec550bfc8a))
+* **monitoring:** scope session avg latencies by turn, add averaging tests ([8a5c7e2](https://github.com/Jota-project/jota-gateway/commit/8a5c7e24311e9b436ab48ff9a47e53ba617f77cf))
+* **monitoring:** tighten SessionRegistry types and re-register ordering ([ba475dc](https://github.com/Jota-project/jota-gateway/commit/ba475dcd8924265f5a53ab512d22b3f35b1ce7bb))
+* **orchestrators:** use gateway-client id, backend mode, and sessionKey format for OpenClaw protocol v4 ([9f8b55d](https://github.com/Jota-project/jota-gateway/commit/9f8b55dedf28eaf96688acc6b3cce83cf2a002ec))
+* pin pytest and pytest-asyncio versions to avoid CI hang ([823657c](https://github.com/Jota-project/jota-gateway/commit/823657cf8012de728dcb51cd96e5fe849393b30d))
+
+
+### Features
+
+* add _NullWS for HTTP pipeline tracking ([93ba5dd](https://github.com/Jota-project/jota-gateway/commit/93ba5dd1a786d3402f672608423aa81da3336ae3))
+* add call_orchestrator shared helper ([b1f95f8](https://github.com/Jota-project/jota-gateway/commit/b1f95f8ee021a01b4e859469673c172bfb5c6fe6))
+* add make_session_key pure function ([e540099](https://github.com/Jota-project/jota-gateway/commit/e5400998aec1bb2901c6f0cb0ff4bc83719538c9))
+* **api:** add GET /orchestrators/{name}/status and POST .../reconnect endpoints ([37620cb](https://github.com/Jota-project/jota-gateway/commit/37620cbe7a696aab14309e779ecac7ed59eba21a))
+* **api:** add OpenAI-compatible /v1/chat/completions and /v1/models endpoints ([6a2be16](https://github.com/Jota-project/jota-gateway/commit/6a2be16cc7fb967ba4c2fb5bc4f547fd03b6fb34))
+* bypass OpenClaw para /v1/chat/completions con LLM directo ([20582e6](https://github.com/Jota-project/jota-gateway/commit/20582e65eb41b1bdd65913d08f1d815538c27dea))
+* **config:** add DEFAULT_ORCHESTRATOR, OPENCLAW_PORT, OPENCLAW_TOKEN ([bcf992f](https://github.com/Jota-project/jota-gateway/commit/bcf992fe3a03ad97bd9e5b610d1d6118dcd1aa88))
+* **config:** add orchestrator reconnect settings ([273d42c](https://github.com/Jota-project/jota-gateway/commit/273d42c87a9ee0ddb9bc21499771b480d1b0eff2))
+* **main:** build OrchestratorRegistry in lifespan, register openai_router ([827bd1c](https://github.com/Jota-project/jota-gateway/commit/827bd1c249362b5617ba0ceffb36159b6a5cc53d))
+* **monitoring:** add PipelineEvent and PipelineTracker ([b574ec7](https://github.com/Jota-project/jota-gateway/commit/b574ec794e04d5efaacfa82f8b50a4e4ec8198d8))
+* **monitoring:** add SessionRecord and SessionRegistry ([61804ae](https://github.com/Jota-project/jota-gateway/commit/61804aec34a23807aa8aa337a1d1a8a3ca3060ac))
+* **monitoring:** add sessions REST API and wire SessionRegistry into lifespan ([c4c2ae7](https://github.com/Jota-project/jota-gateway/commit/c4c2ae77a9d64b25b67c7af10c2b1e521d82e4a7))
+* **monitoring:** instrument JotaBridge with PipelineTracker ([ec02ad9](https://github.com/Jota-project/jota-gateway/commit/ec02ad9b96384c1b713b7c2dcd1ce9f882b936cc))
+* openai endpoint always uses orchestrator, add HTTP pipeline tracking, remove LLM bypass ([f402ded](https://github.com/Jota-project/jota-gateway/commit/f402dede9ba26d89bf688f72ecaad066982afb05))
+* OPENCLAW_SESSION_KEY configurable via .env ([2a4a5c2](https://github.com/Jota-project/jota-gateway/commit/2a4a5c2cab2d17174a040b028343b25ddb719a01))
+* **openclaw:** add on_disconnect callback and guard stream send ([022377f](https://github.com/Jota-project/jota-gateway/commit/022377f21abc89a7884d313522f0eed217a32526))
+* **orchestrators:** add OpenClawClient (WebSocket, protocol v4) ([8cfca7d](https://github.com/Jota-project/jota-gateway/commit/8cfca7db774ac32b64f050500439be16070b853e))
+* **orchestrators:** add OrchestratorEvent and OrchestratorProtocol ([c423d48](https://github.com/Jota-project/jota-gateway/commit/c423d48134b2dd65c2b7cf2bba44184e140ed261))
+* **orchestrators:** add OrchestratorRegistry and build_registry ([5356bd2](https://github.com/Jota-project/jota-gateway/commit/5356bd2fc044dd67ed8113af90ad1ee26b8a60e0))
+* **orchestrators:** add ReconnectingOrchestrator wrapper with state machine ([3837926](https://github.com/Jota-project/jota-gateway/commit/3837926192912e2dd5cd21b30422d07b99d61dbc))
+* **registry:** wrap orchestrators in ReconnectingOrchestrator, add get_status/reconnect ([fc2f0a1](https://github.com/Jota-project/jota-gateway/commit/fc2f0a1aa0b5b228394eacaa4c8b68adfd32e58e))
+* **routes:** inject orchestrator from registry into JotaBridge ([351a049](https://github.com/Jota-project/jota-gateway/commit/351a049f01ff64abf1210d6936378d79df3c5ee8))
+* WS/HTTP coherence — shared session key, call_orchestrator, remove LLM bypass ([#53](https://github.com/Jota-project/jota-gateway/issues/53)) ([237ae52](https://github.com/Jota-project/jota-gateway/commit/237ae52fd2c1e9a6117d686f9972d3e670fbe391))
+
 ## [1.5.2](https://github.com/Jota-project/jota-gateway/compare/v1.5.1...v1.5.2) (2026-04-08)
 
 
