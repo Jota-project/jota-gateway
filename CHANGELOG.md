@@ -1,3 +1,10 @@
+## [1.6.1](https://github.com/Jota-project/jota-gateway/compare/v1.6.0...v1.6.1) (2026-06-26)
+
+
+### Bug Fixes
+
+* add session_key to OrchestratorProtocol and propagate through stack ([#54](https://github.com/Jota-project/jota-gateway/issues/54)) ([9e2d6fe](https://github.com/Jota-project/jota-gateway/commit/9e2d6fedf7f0575dd599793c790ac34d0f115e63)), closes [#40](https://github.com/Jota-project/jota-gateway/issues/40) [#41](https://github.com/Jota-project/jota-gateway/issues/41) [#42](https://github.com/Jota-project/jota-gateway/issues/42) [#53](https://github.com/Jota-project/jota-gateway/issues/53) [#44](https://github.com/Jota-project/jota-gateway/issues/44) [#45](https://github.com/Jota-project/jota-gateway/issues/45)
+
 # [1.6.0](https://github.com/Jota-project/jota-gateway/compare/v1.5.2...v1.6.0) (2026-06-26)
 
 
