@@ -18,8 +18,8 @@ class OrchestratorRegistry:
                 await client.connect()
                 logger.info(f"Orchestrator '{name}' connected.")
             except Exception as e:
-                logger.error(f"Orchestrator '{name}' failed to connect: {e}")
-                raise
+                logger.error(f"Orchestrator '{name}' failed to connect: {e} — starting background retry")
+                await client.trigger_reconnect()
 
     async def close_all(self) -> None:
         for name, client in self._clients.items():
