@@ -75,6 +75,7 @@ class ReconnectingOrchestrator:
         user_id: str,
         model_id: Optional[str] = None,
         system_prompt_extra: Optional[str] = None,
+        session_key: Optional[str] = None,
     ) -> AsyncIterator[OrchestratorEvent]:
         if self._state != OrchestratorState.CONNECTED:
             if self._state == OrchestratorState.DEGRADED:
@@ -87,6 +88,7 @@ class ReconnectingOrchestrator:
             user_id=user_id,
             model_id=model_id,
             system_prompt_extra=system_prompt_extra,
+            session_key=session_key,
         ):
             yield event
 
