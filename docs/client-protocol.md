@@ -19,25 +19,27 @@ Esta guía describe cómo conectarse al gateway, qué mensajes enviar y recibir,
 
 ## 1. Conexión y handshake
 
-**Endpoint:** `ws://<host>:8004/ws/stream/<client_id>`
+**Endpoint:** `ws://<host>:8004/ws/stream`
 
-`client_id` es un identificador libre que eliges tú (p.ej. `"esp32-salon"`, `"web-user-42"`). Se usa para logs y como `user_id` en el orquestador.
-
-**El primer mensaje que envíes DEBE ser el handshake** — un JSON que declara qué modos usará este cliente:
+**El primer mensaje que envíes DEBE ser el handshake** — un JSON que declara tu identidad y los modos que usará este cliente:
 
 ```json
 {
-  "input_mode": "text",
-  "output_mode": ["text", "status"]
+  "client_key": "tu-api-key",
+  "input_mode": "audio",
+  "output_mode": ["audio", "text", "status"],
+  "agent": "main"
 }
 ```
 
-| Campo | Tipo | Valores | Descripción |
+| Campo | Tipo | Obligatorio | Descripción |
 |---|---|---|---|
-| `input_mode` | string | `"text"` \| `"audio"` | Cómo enviará datos el cliente |
-| `output_mode` | array | `"text"`, `"audio"`, `"status"` | Qué quiere recibir el cliente |
+| `client_key` | string | ✓ | API key del cliente — validada contra jota-db |
+| `input_mode` | string | ✓ | `"text"` o `"audio"` |
+| `output_mode` | array | ✓ | Qué quiere recibir: `"text"`, `"audio"`, `"status"` |
+| `agent` | string | — | Agente OpenClaw a usar; por defecto el configurado en el gateway |
 
-Si el handshake es inválido el servidor cierra con código **1008**.
+Si `client_key` no es válida o el cliente está inactivo, el servidor cierra con código **1008**.
 
 ### Ejemplos de handshake por caso de uso
 
@@ -59,7 +61,21 @@ Si el handshake es inválido el servidor cierra con código **1008**.
 
 ## 2. Enviar texto
 
-Tras el handshake (con cualquier `input_mode`), envía un mensaje JSON con el prompt:
+Hay dos formas de enviar texto al orquestador:
+
+### Flujo review & send (canónico)
+
+Este es el flujo principal, tanto en modo audio como en modo texto con revisión. El cliente envía un mensaje con `type: "send"`:
+
+```json
+{"type": "send", "text": "¿Cuál es la capital de Francia?"}
+```
+
+Este es el mismo mensaje que se usa tras recibir una transcripción de audio (ver sección 3). El campo `text` puede ser diferente al transcrito original si el usuario lo editó.
+
+### Texto directo (atajo)
+
+En modo texto puro, también puedes enviar el prompt directamente como un JSON con campo `text` (sin `type`):
 
 ```json
 {"text": "¿Cuál es la capital de Francia?"}
@@ -327,10 +343,10 @@ Cliente                         Gateway
 
 | Mensaje | Formato | Cuándo |
 |---|---|---|
-| Handshake | `{"input_mode":"...", "output_mode":[...]}` | Primer mensaje, obligatorio |
+| Handshake | `{"client_key":"...", "input_mode":"...", "output_mode":[...], "agent":"..."}` | Primer mensaje, obligatorio — `agent` es opcional |
 | Fin de audio | `{"type":"end"}` | `input_mode="audio"` — usuario termina de hablar |
 | Confirmar y enviar | `{"type":"send","text":"..."}` | Tras recibir `transcription` — lanza la respuesta del orquestador |
-| Texto directo | `{"text":"...", "model_id":"..."}` | `input_mode="text"` — prompt directo, `model_id` opcional |
+| Texto directo | `{"text":"...", "model_id":"..."}` | Atajo de texto plano — alternativa a `{"type":"send","text":"..."}` |
 | Audio mic | frame binario PCM Float32 16kHz | `input_mode="audio"` |
 
 ### Gateway → Cliente
