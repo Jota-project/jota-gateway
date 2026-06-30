@@ -7,7 +7,7 @@ from enum import Enum
 from typing import AsyncIterator, Optional
 
 from src.core.config import settings
-from src.services.orchestrators.protocol import OrchestratorEvent, OrchestratorProtocol
+from src.services.protocol import OrchestratorEvent, OrchestratorProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,7 @@ class ReconnectingOrchestrator:
         self._reconnect_attempts: int = 0
         self._last_error: Optional[str] = None
         self._reconnect_task: Optional[asyncio.Task] = None
+        self._reconnect_exhausted: bool = False
 
         if hasattr(client, "on_disconnect"):
             client.on_disconnect = self._handle_disconnect
@@ -52,6 +53,7 @@ class ReconnectingOrchestrator:
         self._connected_at = datetime.now(timezone.utc)
         self._reconnect_attempts = 0
         self._last_error = None
+        self._reconnect_exhausted = False
 
     async def close(self) -> None:
         if self._reconnect_task and not self._reconnect_task.done():
@@ -83,14 +85,20 @@ class ReconnectingOrchestrator:
             yield OrchestratorEvent(type="error", content="orchestrator_unavailable")
             return
 
-        async for event in self._client.stream_response(
-            text=text,
-            user_id=user_id,
-            model_id=model_id,
-            system_prompt_extra=system_prompt_extra,
-            session_key=session_key,
-        ):
-            yield event
+        try:
+            async for event in self._client.stream_response(
+                text=text,
+                user_id=user_id,
+                model_id=model_id,
+                system_prompt_extra=system_prompt_extra,
+                session_key=session_key,
+            ):
+                yield event
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"[{self._name}] stream_response inner exception: {e}")
+            yield OrchestratorEvent(type="error", content=str(e))
 
     # ------------------------------------------------------------------
     # Observability / control
@@ -113,6 +121,7 @@ class ReconnectingOrchestrator:
                 await self._reconnect_task
             except asyncio.CancelledError:
                 pass
+        self._reconnect_exhausted = False
         self._state = OrchestratorState.RECONNECTING
         self._reconnect_task = asyncio.create_task(self._reconnect_loop())
 
@@ -125,6 +134,8 @@ class ReconnectingOrchestrator:
         self._ensure_reconnecting()
 
     def _ensure_reconnecting(self) -> None:
+        if self._reconnect_exhausted:
+            return
         if not self._reconnect_task or self._reconnect_task.done():
             self._state = OrchestratorState.RECONNECTING
             self._reconnect_task = asyncio.create_task(self._reconnect_loop())
@@ -154,6 +165,7 @@ class ReconnectingOrchestrator:
             elapsed = time.monotonic() - start
             if elapsed >= settings.ORCHESTRATOR_RECONNECT_MAX_DURATION:
                 self._state = OrchestratorState.DEGRADED
+                self._reconnect_exhausted = True
                 logger.warning(
                     f"Orchestrator '{self._name}' reconnect exhausted "
                     f"after {elapsed:.0f}s — entering DEGRADED state."

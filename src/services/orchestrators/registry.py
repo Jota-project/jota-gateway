@@ -1,5 +1,5 @@
 import logging
-from src.services.orchestrators.protocol import OrchestratorProtocol
+from src.services.protocol import OrchestratorProtocol
 from src.services.orchestrators.reconnecting import (
     OrchestratorStatus,
     ReconnectingOrchestrator,
@@ -58,7 +58,7 @@ def build_registry() -> OrchestratorRegistry:
 
     if settings.OPENCLAW_TOKEN:
         inner = OpenClawClient(
-            host="127.0.0.1",
+            host=settings.OPENCLAW_HOST,
             port=settings.OPENCLAW_PORT,
             token=settings.OPENCLAW_TOKEN,
             default_agent=settings.OPENCLAW_DEFAULT_AGENT,

@@ -7,7 +7,7 @@ import httpx
 from tests.integration.conftest import (
     VALID_KEY, CLIENT_ID, SESSION_RESPONSE, DB_BASE,
 )
-from src.services.orchestrators.protocol import OrchestratorEvent
+from src.services.protocol import OrchestratorEvent
 
 HANDSHAKE_TEXT = {
     "client_key": VALID_KEY,

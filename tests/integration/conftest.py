@@ -15,7 +15,7 @@ from starlette.testclient import TestClient
 from src.core.config import settings
 from src.main import app
 from src.services.db_client import db_client
-from src.services.orchestrators.protocol import OrchestratorProtocol, OrchestratorEvent
+from src.services.protocol import OrchestratorProtocol, OrchestratorEvent
 from src.services.orchestrators.reconnecting import OrchestratorState, OrchestratorStatus
 from src.services.orchestrators.registry import OrchestratorRegistry
 

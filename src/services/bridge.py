@@ -7,7 +7,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from src.core.config import settings
 from src.models.schemas import Client, ClientConfig, Handshake
-from src.services.orchestrators.protocol import OrchestratorProtocol
+from src.services.protocol import OrchestratorProtocol
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.transcriber_client import TranscriberClient
 from src.services.tts_client import TTSClient
@@ -198,7 +198,7 @@ class JotaBridge:
         finally:
             # Notificar al cliente si el transcriptor cayó inesperadamente
             # (no notificar si ya recibimos una transcripción final — el cierre es esperado)
-            if self.transcriber and self.transcriber._dropped_unexpectedly and not self._last_final_text:
+            if self.transcriber and self.transcriber._dropped_unexpectedly and self._last_final_text is None:
                 try:
                     await self.client_ws.send_json({
                         "type": "service_status",
@@ -240,16 +240,22 @@ class JotaBridge:
                         if self.handshake.input_mode == "audio" and self.transcriber:
                             await self.transcriber.send_end()
 
+                    elif json_msg and json_msg.get("type") == "cancel":
+                        # Cliente cancela el turn activo sin lanzar uno nuevo
+                        await self._cancel_active_turn()
+
                     elif json_msg and json_msg.get("type") == "send":
                         # Cliente confirma/edita la transcripción y la envía al orquestador
                         text = json_msg.get("text", "").strip()
                         if text and self.orchestrator:
                             logger.info(f"[{self.client_id}] send recibido: '{text[:60]}'")
+                            await self._cancel_active_turn()
                             self._active_turn = asyncio.create_task(self._call_orchestrator(text))
 
                     elif json_msg is None and self.handshake.input_mode == "text":
                         # Texto plano en modo texto — compatibilidad con clientes de texto puro
-                        await self._call_orchestrator(text_data)
+                        await self._cancel_active_turn()
+                        self._active_turn = asyncio.create_task(self._call_orchestrator(text_data))
 
         except WebSocketDisconnect:
             logger.info(f"[{self.client_id}] Cliente físico desconectado.")
@@ -368,8 +374,9 @@ class JotaBridge:
                     await self.client_ws.send_json({"type": "error", "content": str(e)})
                 except Exception:
                     pass
-            if tts:
-                await tts.end()
+            finally:
+                if tts:
+                    await tts.end()
 
         async def pipe_audio():
             _first_chunk = True

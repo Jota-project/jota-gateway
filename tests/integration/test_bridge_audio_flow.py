@@ -95,7 +95,7 @@ def start_fake_transcriber():
 def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(mock_services, monkeypatch):
     """PCM → transcriber fake emite is_final → cliente recibe transcripción
     → cliente envía {"type":"send"} → orchestrator llamado con el texto."""
-    from src.services.orchestrators.protocol import OrchestratorEvent
+    from src.services.protocol import OrchestratorEvent
 
     called_with_text = {}
     mock_orch = make_mock_orchestrator()

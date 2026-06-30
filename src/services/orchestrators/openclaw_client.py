@@ -8,7 +8,7 @@ from typing import AsyncIterator, Callable, Optional
 import websockets
 from websockets.asyncio.client import ClientConnection
 
-from src.services.orchestrators.protocol import OrchestratorEvent
+from src.services.protocol import OrchestratorEvent
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +203,11 @@ class OpenClawClient:
         if not session_key:
             raise ValueError("session_key is required — callers must provide it via make_session_key()")
         key = session_key
+
+        # Only one turn at a time — concurrent calls would corrupt _active_req_id/_turn_queue
+        if self._active_req_id:
+            yield OrchestratorEvent(type="error", content="concurrent turn rejected — a turn is already in progress")
+            return
 
         req_id = str(uuid.uuid4())
         self._active_req_id = req_id

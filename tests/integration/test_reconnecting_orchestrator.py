@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
-from src.services.orchestrators.protocol import OrchestratorEvent, OrchestratorProtocol
+from src.services.protocol import OrchestratorEvent, OrchestratorProtocol
 from src.services.orchestrators.reconnecting import (
     OrchestratorState,
     ReconnectingOrchestrator,
@@ -116,6 +116,106 @@ async def test_manual_trigger_reconnect():
         await wrapper._reconnect_task
     except asyncio.CancelledError:
         pass
+
+
+async def test_degraded_does_not_restart_reconnect_loop_on_ping(monkeypatch):
+    """En estado DEGRADED (loop agotado), ping() NO debe lanzar un nuevo _reconnect_loop.
+
+    Bug 10: _ensure_reconnecting() comprueba _reconnect_task.done(), que es True tras
+    agotar el loop. Sin flag de exhausted, cada ping en DEGRADED lanza un loop nuevo,
+    dando otra ventana completa de reintentos y oscilando indefinidamente.
+    """
+    monkeypatch.setattr(
+        "src.services.orchestrators.reconnecting.settings",
+        type("S", (), {
+            "ORCHESTRATOR_RECONNECT_INITIAL_BACKOFF": 0.0,
+            "ORCHESTRATOR_RECONNECT_MAX_BACKOFF": 0.0,
+            "ORCHESTRATOR_RECONNECT_MAX_DURATION": 0.0,
+        })(),
+    )
+    client = _make_client(connect_side_effect=OSError("refused"))
+    wrapper = ReconnectingOrchestrator(client, name="test")
+    wrapper._state = OrchestratorState.RECONNECTING
+    wrapper._reconnect_task = asyncio.create_task(wrapper._reconnect_loop())
+    await wrapper._reconnect_task  # agota el loop → DEGRADED
+
+    assert wrapper._state == OrchestratorState.DEGRADED
+    task_after_exhaustion = wrapper._reconnect_task
+
+    # Ahora ping() — en DEGRADED debería NO lanzar un nuevo loop
+    result = await wrapper.ping()
+    assert result is False  # sigue DEGRADED
+
+    # El reconnect_task NO debe haber cambiado
+    assert wrapper._reconnect_task is task_after_exhaustion, (
+        "ping() en DEGRADED (loop agotado) no debe lanzar un nuevo _reconnect_loop — "
+        "solo trigger_reconnect() puede reiniciar el circuit-breaker"
+    )
+    assert wrapper._state == OrchestratorState.DEGRADED
+
+
+async def test_trigger_reconnect_resets_exhausted_flag(monkeypatch):
+    """trigger_reconnect() debe permitir un nuevo ciclo de reconexión aunque el loop esté agotado."""
+    monkeypatch.setattr(
+        "src.services.orchestrators.reconnecting.settings",
+        type("S", (), {
+            "ORCHESTRATOR_RECONNECT_INITIAL_BACKOFF": 0.0,
+            "ORCHESTRATOR_RECONNECT_MAX_BACKOFF": 0.0,
+            "ORCHESTRATOR_RECONNECT_MAX_DURATION": 0.0,
+        })(),
+    )
+    client = _make_client(connect_side_effect=OSError("refused"))
+    wrapper = ReconnectingOrchestrator(client, name="test")
+    wrapper._state = OrchestratorState.RECONNECTING
+    wrapper._reconnect_task = asyncio.create_task(wrapper._reconnect_loop())
+    await wrapper._reconnect_task  # agota → DEGRADED
+
+    task_first = wrapper._reconnect_task
+
+    # trigger_reconnect() explícito debe iniciar un nuevo loop
+    await wrapper.trigger_reconnect()
+    await wrapper._reconnect_task  # dejar que el nuevo loop también agote
+
+    assert wrapper._reconnect_task is not task_first, (
+        "trigger_reconnect() debe crear un nuevo _reconnect_task"
+    )
+
+
+async def test_stream_response_wraps_inner_exception_as_error_event():
+    """Si _client.stream_response lanza mid-stream, debe yieldearse un error event en lugar de propagar."""
+    client = _make_client()
+    wrapper = ReconnectingOrchestrator(client, name="test")
+    wrapper._state = OrchestratorState.CONNECTED
+
+    async def _crashing_stream(*args, **kwargs):
+        yield OrchestratorEvent(type="token", content="parcial")
+        raise OSError("connection reset by peer")
+
+    client.stream_response = _crashing_stream
+
+    events = [e async for e in wrapper.stream_response("hello", "user-1", session_key="k")]
+
+    error_events = [e for e in events if e.type == "error"]
+    assert error_events, "Debe haber al menos un evento de error cuando el stream interno lanza"
+    assert "connection reset" in error_events[0].content.lower() or "reset" in error_events[0].content.lower()
+
+
+async def test_stream_response_propagates_cancelled_error():
+    """CancelledError debe propagarse sin convertirse en error event."""
+    client = _make_client()
+    wrapper = ReconnectingOrchestrator(client, name="test")
+    wrapper._state = OrchestratorState.CONNECTED
+
+    async def _cancelled_stream(*args, **kwargs):
+        yield OrchestratorEvent(type="token", content="tok")
+        raise asyncio.CancelledError()
+
+    client.stream_response = _cancelled_stream
+
+    import pytest
+    with pytest.raises(asyncio.CancelledError):
+        async for _ in wrapper.stream_response("hello", "user-1", session_key="k"):
+            pass
 
 
 async def test_status_fields():
