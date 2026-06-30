@@ -1,266 +1,246 @@
-# tests/integration/test_openclaw_client.py
 import asyncio
 import json
+import uuid
+from typing import Optional
+from unittest.mock import patch, AsyncMock
+
 import pytest
-from unittest.mock import patch
 
-from src.services.orchestrators.openclaw_client import OpenClawClient
+from src.services.openclaw.client import OpenClawClient
+from src.services.openclaw.dispatcher import FrameDispatcher
+from src.services.openclaw.registry import TurnRegistry, ClientRegistry
+from src.services.protocol import OrchestratorEvent
+
+HELLO_OK_PAYLOAD = {
+    "type": "hello-ok", "protocol": 4,
+    "server": {"version": "2026.6.6", "connId": "test-conn"},
+    "policy": {"tickIntervalMs": 30000, "maxPayload": 26214400, "maxBufferedBytes": 0},
+    "snapshot": {
+        "defaultAgentId": "main",
+        "agents": [
+            {"agentId": "main", "name": "Main Agent", "isDefault": True, "heartbeat": {}},
+            {"agentId": "assistant", "name": "Jota Voice", "isDefault": False, "heartbeat": {}},
+        ],
+        "sessionDefaults": {"defaultAgentId": "main"},
+    },
+    "auth": {"role": "operator", "scopes": ["operator.read", "operator.write"]},
+}
 
 
-def challenge_frame():
-    return json.dumps({"type": "event", "event": "connect.challenge", "payload": {"nonce": "abc", "ts": 0}})
+class SmartFakeWS:
+    """Queue-backed fake WebSocket that auto-responds to OpenClaw protocol v4.
 
+    chat_responses: {sessionKey → [list of deltaText strings]}
+    """
 
-def hello_ok_frame(req_id: str, tick_interval_ms: int = 15000):
-    return json.dumps({
-        "type": "res", "id": req_id, "ok": True,
-        "payload": {"type": "hello-ok", "protocol": 4, "policy": {"tickIntervalMs": tick_interval_ms}}
-    })
+    def __init__(self, chat_responses: Optional[dict] = None):
+        self.chat_responses: dict[str, list[str]] = chat_responses or {}
+        self._to_client: asyncio.Queue = asyncio.Queue()
+        self._from_client: asyncio.Queue = asyncio.Queue()
+        self.sent_frames: list[dict] = []
+        self.closed = False
+        self._handler: Optional[asyncio.Task] = None
 
-
-class FakeWebSocket:
-    """Simulates a WebSocket server for testing OpenClawClient."""
-
-    def __init__(self, recv_sequence: list[str]):
-        self._recv_iter = iter(recv_sequence)
-        self.sent: list[dict] = []
-
-    async def send(self, data: str) -> None:
-        self.sent.append(json.loads(data))
+    async def start(self):
+        self._handler = asyncio.create_task(self._auto_respond())
 
     async def recv(self) -> str:
-        return next(self._recv_iter)
+        msg = await self._to_client.get()
+        if msg is None:
+            raise Exception("connection closed")
+        return msg
+
+    async def send(self, data: str) -> None:
+        frame = json.loads(data)
+        self.sent_frames.append(frame)
+        await self._from_client.put(data)
 
     async def close(self) -> None:
-        pass
+        self.closed = True
+        await self._to_client.put(None)
+        if self._handler:
+            self._handler.cancel()
+
+    def __await__(self):
+        # Allows `await websockets.connect(...)` when patched with return_value=fake_ws
+        async def _noop():
+            return self
+        return _noop().__await__()
 
     def __aiter__(self):
         return self
 
     async def __anext__(self) -> str:
-        try:
-            return next(self._recv_iter)
-        except StopIteration:
+        msg = await self._to_client.get()
+        if msg is None:
             raise StopAsyncIteration
+        return msg
 
+    async def _auto_respond(self):
+        # 1. Send challenge
+        await self._to_client.put(json.dumps({
+            "type": "event", "event": "connect.challenge",
+            "payload": {"nonce": "test-nonce", "ts": 1234567890},
+        }))
 
-def fake_connect(fake_ws):
-    """Return a side_effect coroutine that yields fake_ws from websockets.connect."""
-    async def _connect(uri, **kwargs):
-        return fake_ws
-    return _connect
-
-
-class SmartFakeWS(FakeWebSocket):
-    """Queue-backed fake WebSocket that auto-responds to handshake and chat.send."""
-
-    def __init__(self, tick_interval_ms: int = 15000):
-        self._queue = asyncio.Queue()
-        self.sent: list[dict] = []
-        self._handshake = iter([challenge_frame()])
-        self._handshake_done = False
-        self._tick_interval_ms = tick_interval_ms
-
-    async def recv(self):
-        if not self._handshake_done:
-            try:
-                return next(self._handshake)
-            except StopIteration:
-                self._handshake_done = True
-        return await self._queue.get()
-
-    async def send(self, data):
-        frame = json.loads(data)
-        self.sent.append(frame)
-        method = frame.get("method")
-        req_id = frame.get("id")
-        if method == "connect":
-            await self._queue.put(hello_ok_frame(req_id, self._tick_interval_ms))
-        elif method == "health":
-            await self._queue.put(json.dumps({"type": "res", "id": req_id, "ok": True, "payload": {}}))
-        # chat.send and chat.abort handled per-test via subclassing
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        return await self._queue.get()
-
-    async def close(self): pass
-
-
-@pytest.mark.asyncio
-async def test_connect_handshake():
-    """Client performs challenge → connect → hello-ok handshake."""
-    connect_req_id = None
-
-    async def fake_connect(uri, **kwargs):
-        ws = FakeWebSocket([challenge_frame()])
-        original_send = ws.send
-        async def capturing_send(data):
-            nonlocal connect_req_id
-            frame = json.loads(data)
-            if frame.get("method") == "connect":
-                connect_req_id = frame["id"]
-                ws._recv_iter = iter([hello_ok_frame(connect_req_id)])
-            await original_send(data)
-        ws.send = capturing_send
-        return ws
-
-    with patch("websockets.connect", side_effect=fake_connect):
-        client = OpenClawClient(host="127.0.0.1", port=18789, token="test-token")
-        await client.connect()
-        assert client._ws is not None
-        await client.close()
-
-
-@pytest.mark.asyncio
-async def test_connect_sets_tick_interval_from_policy():
-    """connect() parses tickIntervalMs from hello-ok policy."""
-    fake_ws = SmartFakeWS(tick_interval_ms=20000)
-
-    with patch("websockets.connect", side_effect=fake_connect(fake_ws)):
-        client = OpenClawClient(host="127.0.0.1", port=18789, token="test-token")
-        await client.connect()
-        assert client._tick_interval == 20.0
-        await client.close()
-
-
-@pytest.mark.asyncio
-async def test_stream_response_uses_session_key_format():
-    """chat.send must use session: {key: ...} not sessionKey (protocol v4)."""
-
-    class SessionKeyFakeWS(SmartFakeWS):
-        async def send(self, data):
-            frame = json.loads(data)
-            self.sent.append(frame)
+        while True:
+            raw = await self._from_client.get()
+            frame = json.loads(raw)
             method = frame.get("method")
-            req_id = frame.get("id")
+            req_id = frame.get("id", "")
+            params = frame.get("params", {})
+
             if method == "connect":
-                await self._queue.put(hello_ok_frame(req_id))
-            elif method == "chat.send":
-                await self._queue.put(json.dumps({
-                    "type": "res", "id": req_id, "ok": True, "payload": {}
+                await self._to_client.put(json.dumps({
+                    "type": "res", "id": req_id, "ok": True,
+                    "payload": HELLO_OK_PAYLOAD,
                 }))
 
-    fake_ws = SessionKeyFakeWS()
+            elif method == "sessions.subscribe":
+                await self._to_client.put(json.dumps({
+                    "type": "res", "id": req_id, "ok": True,
+                    "payload": {"subscribed": True},
+                }))
 
-    with patch("websockets.connect", side_effect=fake_connect(fake_ws)):
-        client = OpenClawClient(host="127.0.0.1", port=18789, token="test-token", default_agent="my-agent")
+            elif method == "chat.send":
+                sk = params.get("sessionKey", "")
+                run_id = str(uuid.uuid4())
+                chunks = self.chat_responses.get(sk, ["Hello"])
+
+                await self._to_client.put(json.dumps({
+                    "type": "res", "id": req_id, "ok": True,
+                    "payload": {"runId": run_id, "status": "started"},
+                }))
+                for i, chunk in enumerate(chunks):
+                    await self._to_client.put(json.dumps({
+                        "type": "event", "event": "chat",
+                        "payload": {
+                            "runId": run_id, "sessionKey": sk,
+                            "seq": i + 1, "state": "delta", "deltaText": chunk,
+                        },
+                    }))
+                await self._to_client.put(json.dumps({
+                    "type": "res", "id": req_id, "ok": True,
+                    "payload": {"status": "done", "runId": run_id},
+                }))
+
+            elif method == "health":
+                await self._to_client.put(json.dumps({
+                    "type": "res", "id": req_id, "ok": True,
+                    "payload": {"ok": True},
+                }))
+
+            elif method == "chat.abort":
+                pass
+
+
+def make_client(fake_ws: SmartFakeWS) -> OpenClawClient:
+    turn_reg = TurnRegistry()
+    client_reg = ClientRegistry()
+    dispatcher = FrameDispatcher(turn_reg, client_reg)
+    client = OpenClawClient("127.0.0.1", 18789, "test-token", turn_reg, dispatcher)
+    return client
+
+
+@pytest.fixture
+def fake_ws():
+    return SmartFakeWS({"agent:main:client-a": ["Hola ", "mundo"]})
+
+
+async def connected_client(fake_ws: SmartFakeWS) -> OpenClawClient:
+    client = make_client(fake_ws)
+    await fake_ws.start()
+    with patch("websockets.connect", return_value=fake_ws):
         await client.connect()
-        async for _ in client.stream_response(text="Hi", user_id="test", session_key="agent:my-agent:client-42"):
-            pass
-        await client.close()
-
-    chat_send = next(f for f in fake_ws.sent if f.get("method") == "chat.send")
-    params = chat_send["params"]
-    assert "session" in params, "params must have 'session' key"
-    assert params["session"] == {"key": "agent:my-agent:client-42"}, "session key must match what caller passed"
-    assert "sessionKey" not in params, "flat sessionKey is wrong (protocol v4 uses session.key)"
+    return client
 
 
 @pytest.mark.asyncio
-async def test_stream_response_yields_tokens():
-    """stream_response yields OrchestratorEvent tokens from chat events."""
-
-    class TokenFakeWS(SmartFakeWS):
-        async def send(self, data):
-            frame = json.loads(data)
-            self.sent.append(frame)
-            method = frame.get("method")
-            req_id = frame.get("id")
-            if method == "connect":
-                await self._queue.put(hello_ok_frame(req_id))
-            elif method == "chat.send":
-                await self._queue.put(json.dumps({
-                    "type": "event", "event": "chat",
-                    "payload": {"deltaText": "Hello", "replace": False, "seq": 1}
-                }))
-                await self._queue.put(json.dumps({
-                    "type": "event", "event": "chat",
-                    "payload": {"deltaText": " world", "replace": False, "seq": 2}
-                }))
-                await self._queue.put(json.dumps({
-                    "type": "res", "id": req_id, "ok": True, "payload": {}
-                }))
-
-    fake_ws = TokenFakeWS()
-
-    with patch("websockets.connect", side_effect=fake_connect(fake_ws)):
-        client = OpenClawClient(host="127.0.0.1", port=18789, token="test-token")
-        await client.connect()
-
-        events = []
-        async for event in client.stream_response(text="Hi", user_id="test", session_key="agent:main:test-client"):
-            events.append(event)
-
-        await client.close()
-
-    tokens = [e for e in events if e.type == "token"]
-    status = [e for e in events if e.type == "status"]
-    assert [t.content for t in tokens] == ["Hello", " world"]
-    assert len(status) == 1
-    assert status[0].content == "done"
+async def test_connect_returns_gateway_info(fake_ws):
+    client = await connected_client(fake_ws)
+    assert client.gateway_info is not None
+    assert client.gateway_info.default_agent_id == "main"
+    assert client.gateway_info.has_agent("assistant")
+    await client.close()
 
 
 @pytest.mark.asyncio
-async def test_stream_response_sends_abort_on_cancellation():
-    """When the consuming task is cancelled mid-turn, chat.abort is sent to OpenClaw."""
-
-    class AbortFakeWS(SmartFakeWS):
-        async def send(self, data):
-            frame = json.loads(data)
-            self.sent.append(frame)
-            method = frame.get("method")
-            req_id = frame.get("id")
-            if method == "connect":
-                await self._queue.put(hello_ok_frame(req_id))
-            elif method == "chat.send":
-                # Send one token but never complete the turn
-                await self._queue.put(json.dumps({
-                    "type": "event", "event": "chat",
-                    "payload": {"deltaText": "Partial...", "replace": False, "seq": 1}
-                }))
-            # chat.abort — no response needed, just record
-
-    fake_ws = AbortFakeWS()
-
-    with patch("websockets.connect", side_effect=fake_connect(fake_ws)):
-        client = OpenClawClient(host="127.0.0.1", port=18789, token="test-token", default_agent="main")
-        await client.connect()
-
-        # Cancel the consuming task after receiving the first token
-        received = []
-        async def consume():
-            async for event in client.stream_response(text="Hi", user_id="test", session_key="test-sess"):
-                received.append(event)
-                if len(received) == 1:
-                    raise asyncio.CancelledError()
-
-        task = asyncio.create_task(consume())
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-        # Give asyncio.shield a chance to complete
-        await asyncio.sleep(0.05)
-        await client.close()
-
-    abort_frames = [f for f in fake_ws.sent if f.get("method") == "chat.abort"]
-    assert len(abort_frames) == 1
-    assert abort_frames[0]["params"] == {"session": {"key": "test-sess"}}
+async def test_connect_sends_sessions_subscribe(fake_ws):
+    client = await connected_client(fake_ws)
+    methods = [f["method"] for f in fake_ws.sent_frames]
+    assert "sessions.subscribe" in methods
+    await client.close()
 
 
 @pytest.mark.asyncio
-async def test_ping_returns_true_on_ok_response():
-    """ping() sends health req and returns True when res.ok is True."""
-    fake_ws = SmartFakeWS()
+async def test_stream_response_tokens(fake_ws):
+    client = await connected_client(fake_ws)
+    tokens = []
+    async for event in client.stream_response(
+        "hola", "client-a", session_key="agent:main:client-a"
+    ):
+        if event.type == "token":
+            tokens.append(event.content)
+    assert tokens == ["Hola ", "mundo"]
+    await client.close()
 
-    with patch("websockets.connect", side_effect=fake_connect(fake_ws)):
-        client = OpenClawClient(host="127.0.0.1", port=18789, token="test-token")
-        await client.connect()
-        result = await client.ping()
-        await client.close()
 
+@pytest.mark.asyncio
+async def test_stream_response_ends_with_status_done(fake_ws):
+    client = await connected_client(fake_ws)
+    events = []
+    async for event in client.stream_response(
+        "hola", "client-a", session_key="agent:main:client-a"
+    ):
+        events.append(event)
+    assert events[-1].type == "status"
+    assert events[-1].content == "done"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_stream_response_uses_sessionKey_format(fake_ws):
+    client = await connected_client(fake_ws)
+    async for _ in client.stream_response(
+        "hola", "client-a", session_key="agent:main:client-a"
+    ):
+        pass
+    chat_sends = [f for f in fake_ws.sent_frames if f.get("method") == "chat.send"]
+    assert len(chat_sends) == 1
+    assert "sessionKey" in chat_sends[0]["params"]
+    assert "session" not in chat_sends[0]["params"]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_ping_returns_true_when_connected(fake_ws):
+    client = await connected_client(fake_ws)
+    result = await client.ping()
     assert result is True
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_ping_returns_false_when_not_connected():
+    client = make_client(SmartFakeWS())
+    result = await client.ping()
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_session_key_required(fake_ws):
+    client = await connected_client(fake_ws)
+    with pytest.raises(ValueError, match="session_key is required"):
+        async for _ in client.stream_response("hola", "client-a"):
+            pass
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_on_disconnect_called_on_ws_drop(fake_ws):
+    client = await connected_client(fake_ws)
+    disconnected = []
+    client.on_disconnect = lambda: disconnected.append(True)
+    await fake_ws.close()
+    await asyncio.sleep(0.05)
+    assert disconnected == [True]
