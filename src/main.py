@@ -5,8 +5,7 @@ from fastapi import FastAPI
 from src.api.routes import router as stream_router
 from src.api.health_routes import router as health_router
 from src.api.openai_routes import router as openai_router
-from src.api.orchestrator_routes import router as orchestrator_router
-from src.api.sessions_routes import router as sessions_router
+from src.api.admin_routes import router as admin_router
 from src.core.config import settings
 from src.services.db_client import db_client
 from src.services.openclaw.client import OpenClawClient
@@ -66,18 +65,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# WebSocket
-app.include_router(stream_router)
-
-# OpenAI-compatible REST
-app.include_router(openai_router)
-
-# Health probes
-app.include_router(health_router)
-
-# Observability (moved to admin in Task 4)
-app.include_router(orchestrator_router, prefix="/api")
-app.include_router(sessions_router, prefix="/api")
+app.include_router(stream_router)           # WS /ws/stream
+app.include_router(openai_router)           # HTTP /v1/*
+app.include_router(health_router)           # HTTP /healthz, /ready
+app.include_router(admin_router)            # HTTP /admin/*
 
 if __name__ == "__main__":
     import uvicorn

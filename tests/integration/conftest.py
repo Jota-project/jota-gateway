@@ -105,6 +105,7 @@ def make_mock_orchestrator(tokens: list[str] = None) -> OrchestratorProtocol:
     mock.stream_response = _stream
     mock.gateway_info = _make_default_gateway_info()
     mock._name = "openclaw"
+    mock.get_name = MagicMock(return_value="openclaw")
     mock.status = MagicMock(return_value=OrchestratorStatus(
         name="openclaw",
         state=OrchestratorState.CONNECTED,
