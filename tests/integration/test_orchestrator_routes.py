@@ -1,5 +1,4 @@
 """Integration tests for /admin/orchestrators/{name}/status and /reconnect."""
-from unittest.mock import AsyncMock
 
 
 def test_get_orchestrator_status_connected(client, admin_headers):

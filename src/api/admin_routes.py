@@ -21,7 +21,7 @@ Observabilidad:
 """
 from collections import defaultdict
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from src.api.deps import get_admin_auth
 
