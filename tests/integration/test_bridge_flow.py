@@ -20,10 +20,11 @@ def test_text_message_produces_token(client):
     """Cliente manda texto → recibe token del orchestrator."""
     with client.websocket_connect("/ws/stream") as ws:
         ws.send_json(HANDSHAKE_TEXT)
+        ws.receive_json()  # ready
         ws.send_text("hola")
         msg = ws.receive_json()
         assert msg["type"] == "token"
-        assert msg["content"] == "Hola"
+        assert msg["content"] == "Hola"  # still "content" until Task 6
 
 
 def test_orchestrator_receives_correct_user_id(client, mock_registry, mock_orchestrator):
@@ -39,6 +40,7 @@ def test_orchestrator_receives_correct_user_id(client, mock_registry, mock_orche
 
     with client.websocket_connect("/ws/stream") as ws:
         ws.send_json(HANDSHAKE_TEXT)
+        ws.receive_json()  # ready
         ws.send_text("test")
         ws.receive_json()  # consumir token
 
@@ -77,6 +79,7 @@ def test_preferred_model_id_included_in_orchestrator_payload(
     with TestClient(app) as c:
         with c.websocket_connect("/ws/stream") as ws:
             ws.send_json(HANDSHAKE_TEXT)
+            ws.receive_json()  # ready
             ws.send_text("test")
             ws.receive_json()
 
@@ -115,6 +118,7 @@ def test_system_prompt_extra_included_in_orchestrator_payload(
     with TestClient(app) as c:
         with c.websocket_connect("/ws/stream") as ws:
             ws.send_json(HANDSHAKE_TEXT)
+            ws.receive_json()  # ready
             ws.send_text("test")
             ws.receive_json()
 
