@@ -3,6 +3,7 @@ all ok, orchestrator unavailable, transcriber not ready, TTS degraded.
 """
 from unittest.mock import AsyncMock, MagicMock, patch
 from src.services.bridge import JotaBridge
+from src.services.openclaw.registry import ClientRegistry
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.pipeline_tracker import PipelineTracker, _NullWS
 
@@ -24,7 +25,8 @@ def _make_bridge(input_mode="text", output_mode=None):
     orch = AsyncMock()
     orch.ping = AsyncMock(return_value=True)
     bridge = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws,
-                        orchestrator=orch, tracker=tracker, handshake=handshake)
+                        orchestrator=orch, tracker=tracker, handshake=handshake,
+                        client_registry=ClientRegistry(), default_agent="main")
     return bridge, ws, orch
 
 

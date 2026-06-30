@@ -95,7 +95,7 @@ def start_fake_transcriber():
 def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(mock_services, monkeypatch):
     """PCM → transcriber fake emite is_final → cliente recibe transcripción
     → cliente envía {"type":"send"} → orchestrator llamado con el texto."""
-    from src.services.orchestrators.protocol import OrchestratorEvent
+    from src.services.protocol import OrchestratorEvent
 
     called_with_text = {}
     mock_orch = make_mock_orchestrator()
@@ -108,7 +108,12 @@ def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(mock_services, mo
     mock_orch.stream_response = _stream
     mock_reg = make_mock_registry(mock_orch)
 
-    monkeypatch.setattr("src.main.build_registry", lambda: mock_reg)
+    from unittest.mock import MagicMock, AsyncMock as _AM
+    monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_reg)
+    monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: MagicMock())
+    mock_reg.connect = _AM()
+    mock_reg.close = _AM()
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws/stream") as ws:
@@ -144,7 +149,12 @@ def test_transcriber_connect_uses_stt_language_from_config(mock_services, monkey
     )
 
     mock_reg = make_mock_registry()
-    monkeypatch.setattr("src.main.build_registry", lambda: mock_reg)
+    from unittest.mock import MagicMock, AsyncMock as _AM
+    monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_reg)
+    monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: MagicMock())
+    mock_reg.connect = _AM()
+    mock_reg.close = _AM()
 
     connect_calls = []
     original_connect = __import__(
@@ -180,7 +190,12 @@ def test_tts_connect_uses_voice_and_speed_from_config(mock_services, monkeypatch
     )
 
     mock_reg = make_mock_registry()
-    monkeypatch.setattr("src.main.build_registry", lambda: mock_reg)
+    from unittest.mock import MagicMock, AsyncMock as _AM
+    monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_reg)
+    monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: MagicMock())
+    mock_reg.connect = _AM()
+    mock_reg.close = _AM()
 
     connect_calls = []
 

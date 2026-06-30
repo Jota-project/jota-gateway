@@ -12,16 +12,15 @@ async def get_orchestrator_status(
     request: Request,
     auth: tuple[Client, ClientConfig] = Depends(get_verified_client),
 ) -> dict:
-    registry = request.app.state.orchestrators
-    try:
-        s = registry.get_status(name)
-    except KeyError:
+    openclaw = request.app.state.openclaw
+    if name != openclaw._name:
         raise HTTPException(status_code=404, detail=f"Orchestrator '{name}' not registered")
+    s = openclaw.status()
     return {
         "name": s.name,
         "state": s.state.value,
         "connected_at": s.connected_at.isoformat() if s.connected_at else None,
-        "disconnected_at": s.disconnected_at.isoformat() if s.disconnected_at else None,
+        "disconnected_at": None,
         "reconnect_attempts": s.reconnect_attempts,
         "last_error": s.last_error,
     }
@@ -33,9 +32,8 @@ async def post_orchestrator_reconnect(
     request: Request,
     auth: tuple[Client, ClientConfig] = Depends(get_verified_client),
 ) -> dict:
-    registry = request.app.state.orchestrators
-    try:
-        await registry.reconnect(name)
-    except KeyError:
+    openclaw = request.app.state.openclaw
+    if name != openclaw._name:
         raise HTTPException(status_code=404, detail=f"Orchestrator '{name}' not registered")
+    await openclaw.connect()
     return {"accepted": True}

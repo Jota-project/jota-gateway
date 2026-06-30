@@ -2,8 +2,11 @@
 import pytest
 from unittest.mock import AsyncMock
 from src.services.bridge import JotaBridge
-from src.services.orchestrators.protocol import OrchestratorEvent
+from src.services.openclaw.registry import ClientRegistry
+from src.services.protocol import OrchestratorEvent
 from src.models.schemas import Client, ClientConfig, Handshake
+
+import src.services.bridge as bridge_module
 
 _CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
 _CONFIG = ClientConfig()
@@ -13,7 +16,8 @@ _CONFIG = ClientConfig()
 def bridge(mock_tracker):
     ws = AsyncMock()
     b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker,
-                   handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text", "status"]))
+                   handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text", "status"]),
+                   client_registry=ClientRegistry(), default_agent="main")
     b.transcriber = None
     return b
 
@@ -55,7 +59,8 @@ async def test_audio_send_failure_does_not_propagate(mock_tracker):
     ws = AsyncMock()
     ws.send_bytes = AsyncMock(side_effect=RuntimeError("disconnected"))
     b = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker,
-                   handshake=Handshake(client_key="test-key", input_mode="audio", output_mode=["audio", "text"]))
+                   handshake=Handshake(client_key="test-key", input_mode="audio", output_mode=["audio", "text"]),
+                   client_registry=ClientRegistry(), default_agent="main")
 
     async def stream_with_token(*args, **kwargs):
         yield OrchestratorEvent(type="token", content="hi")
@@ -79,3 +84,49 @@ async def test_audio_send_failure_does_not_propagate(mock_tracker):
         await b._call_orchestrator("test")  # must not raise
     finally:
         bridge_module.TTSClient = original
+
+
+async def test_tts_end_called_when_orchestrator_raises_non_runtime_error(mock_tracker):
+    """tts.end() debe llamarse aunque call_orchestrator lance algo distinto de RuntimeError (e.g. OSError)."""
+    ws = AsyncMock()
+    b = JotaBridge(
+        client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(),
+        tracker=mock_tracker,
+        handshake=Handshake(client_key="test-key", input_mode="audio", output_mode=["audio", "text"]),
+        client_registry=ClientRegistry(), default_agent="main",
+    )
+
+    tts_end_called = False
+
+    class FakeTTS:
+        def __init__(self, **kwargs): pass
+        async def connect(self, **kwargs): pass
+        async def send_text_chunk(self, t): pass
+        async def end(self):
+            nonlocal tts_end_called
+            tts_end_called = True
+        async def close(self): pass
+        async def get_audio_stream(self):
+            if False:
+                yield b""  # async generator vacío — pipe_audio termina inmediatamente
+
+    # El orquestador lanza OSError (no RuntimeError) — simula un fallo de red crudo
+    async def _crashing_stream(*args, **kwargs):
+        raise OSError("connection reset by peer")
+        yield  # noqa: F501 — hace que Python lo trate como async generator
+
+    b.orchestrator.stream_response = _crashing_stream
+
+    original = bridge_module.TTSClient
+    bridge_module.TTSClient = FakeTTS
+    try:
+        await b._call_orchestrator("test")
+    except Exception:
+        pass  # _call_orchestrator puede propagar el OSError — nos interesa el efecto secundario
+    finally:
+        bridge_module.TTSClient = original
+
+    assert tts_end_called, (
+        "tts.end() debe llamarse siempre para señalizar el fin al servidor TTS, "
+        "incluso cuando el orquestador lanza una excepción no-RuntimeError"
+    )

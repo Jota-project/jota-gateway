@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock
 from src.services.orchestration import call_orchestrator
-from src.services.orchestrators.protocol import OrchestratorEvent
+from src.services.protocol import OrchestratorEvent
 
 
 def _make_orchestrator(events):

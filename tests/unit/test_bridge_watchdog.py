@@ -6,6 +6,7 @@ import time
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from src.services.bridge import JotaBridge
+from src.services.openclaw.registry import ClientRegistry
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.pipeline_tracker import PipelineTracker, _NullWS
 from src.core.config import settings
@@ -28,7 +29,8 @@ def _make_bridge():
     transcriber._is_ready = True
     transcriber._last_transcription_at = None
     bridge = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws,
-                        orchestrator=orch, tracker=tracker, handshake=handshake)
+                        orchestrator=orch, tracker=tracker, handshake=handshake,
+                        client_registry=ClientRegistry(), default_agent="main")
     bridge.transcriber = transcriber
     return bridge, ws, transcriber
 

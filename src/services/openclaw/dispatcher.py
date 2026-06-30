@@ -1,0 +1,65 @@
+import logging
+from src.services.openclaw.registry import TurnRegistry, ClientRegistry, client_id_from_session_key
+
+logger = logging.getLogger(__name__)
+
+
+class FrameDispatcher:
+    """Routes incoming OpenClaw frames to the correct queue or bridge.
+
+    Knows about TurnRegistry and ClientRegistry. Does not touch WebSocket or TTS.
+    """
+
+    def __init__(self, turn_registry: TurnRegistry, client_registry: ClientRegistry) -> None:
+        self._turns = turn_registry
+        self._clients = client_registry
+
+    async def dispatch(self, frame: dict) -> None:
+        ftype = frame.get("type")
+        if ftype == "res":
+            await self._handle_res(frame)
+        elif ftype == "event":
+            await self._handle_event(frame)
+
+    async def _handle_res(self, frame: dict) -> None:
+        payload = frame.get("payload", {})
+        if payload.get("status") == "started":
+            return
+        q = self._turns.get_queue_by_req(frame.get("id", ""))
+        if q is not None:
+            await q.put(("done", frame))
+
+    async def _handle_event(self, frame: dict) -> None:
+        event = frame.get("event", "")
+        payload = frame.get("payload", {})
+        if event == "chat":
+            await self._handle_chat(payload)
+        elif event == "agent":
+            await self._handle_agent_lifecycle(payload)
+
+    async def _handle_chat(self, payload: dict) -> None:
+        sk = payload.get("sessionKey")
+        if sk is None:
+            return
+        q = self._turns.get_queue_by_session(sk)
+        if q is not None:
+            await q.put(("chat", payload))
+            return
+        client_id = client_id_from_session_key(sk)
+        bridge = self._clients.get(client_id)
+        if bridge is not None:
+            await bridge.deliver_push(payload)
+
+    async def _handle_agent_lifecycle(self, payload: dict) -> None:
+        sk = payload.get("sessionKey")
+        if sk is None:
+            return
+        phase = payload.get("data", {}).get("phase")
+        client_id = client_id_from_session_key(sk)
+        bridge = self._clients.get(client_id)
+        if bridge is None:
+            return
+        if phase == "start":
+            await bridge.on_push_turn_start(sk)
+        elif phase == "end":
+            await bridge.on_push_turn_end(sk)

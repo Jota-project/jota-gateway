@@ -1,7 +1,7 @@
 import logging
 from typing import Awaitable, Callable, Optional
 
-from src.services.orchestrators.protocol import OrchestratorProtocol
+from src.services.protocol import OrchestratorProtocol
 from src.services.pipeline_tracker import PipelineTracker
 
 logger = logging.getLogger(__name__)

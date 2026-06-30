@@ -50,3 +50,13 @@ def test_config_endpoint_without_auth_returns_422(client):
     """Sin X-API-Key → 422."""
     r = client.get("/api/config")
     assert r.status_code == 422
+
+
+def test_db_client_has_client_headers_helper():
+    """DbClient debe centralizar X-Client-Id en _client_headers() para evitar duplicación."""
+    from src.services.db_client import db_client
+    assert hasattr(db_client, "_client_headers"), \
+        "DbClient debe tener _client_headers(client_id) como helper"
+    result = db_client._client_headers("my-id")
+    assert result == {"X-Client-Id": "my-id"}, \
+        f"_client_headers debe retornar {{'X-Client-Id': 'my-id'}}, retornó: {result}"

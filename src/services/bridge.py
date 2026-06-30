@@ -7,10 +7,11 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from src.core.config import settings
 from src.models.schemas import Client, ClientConfig, Handshake
-from src.services.orchestrators.protocol import OrchestratorProtocol
+from src.services.protocol import OrchestratorProtocol
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.transcriber_client import TranscriberClient
 from src.services.tts_client import TTSClient
+from src.services.openclaw.registry import ClientRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,17 @@ class JotaBridge:
     Titiritero principal. Gestiona la conexión de un cliente físico
     y enruta asincrónicamente los mensajes utilizando los adaptadores de microservicio.
     """
-    def __init__(self, client: Client, config: ClientConfig, client_ws: WebSocket, orchestrator: OrchestratorProtocol, tracker: PipelineTracker, handshake: Handshake):
+    def __init__(
+        self,
+        client: Client,
+        config: ClientConfig,
+        client_ws: WebSocket,
+        orchestrator: OrchestratorProtocol,
+        tracker: PipelineTracker,
+        handshake: Handshake,
+        client_registry: ClientRegistry,
+        default_agent: str,
+    ):
         self.client = client
         self.config = config
         self.client_id = client.id  # nombre legible del cliente (hab_sito, jota_desktop…)
@@ -27,7 +38,11 @@ class JotaBridge:
         self.handshake: Handshake = handshake
         self.orchestrator: OrchestratorProtocol = orchestrator   # injected, not created here
         self.tracker: PipelineTracker = tracker
+        self._client_registry = client_registry
+        self._default_agent = default_agent
         self.transcriber: Optional[TranscriberClient] = None
+        self._push_tts = None
+        self._push_audio_task: Optional[asyncio.Task] = None
 
         self.tasks: list[asyncio.Task] = []
         self._active_turn: Optional[asyncio.Task] = None
@@ -54,7 +69,10 @@ class JotaBridge:
         if connect_tasks:
             await asyncio.gather(*connect_tasks)
 
+        self._client_registry.register(self.client_id, self)
+
     async def close_all(self):
+        self._client_registry.unregister(self.client_id)
         # Await (don't cancel) the active turn so the orchestrator response is
         # delivered before we tear down microservice clients.  Explicit cancellation
         # only happens via _cancel_active_turn() (barge-in) or task cancellation
@@ -66,6 +84,19 @@ class JotaBridge:
                 pass
             except Exception as e:
                 logger.error(f"[{self.client_id}] _active_turn falló: {e}")
+
+        if self._push_audio_task and not self._push_audio_task.done():
+            self._push_audio_task.cancel()
+            try:
+                await self._push_audio_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self._push_tts:
+            try:
+                await self._push_tts.close()
+            except Exception:
+                pass
+            self._push_tts = None
 
         for task in self.tasks:
             if not task.done():
@@ -198,7 +229,7 @@ class JotaBridge:
         finally:
             # Notificar al cliente si el transcriptor cayó inesperadamente
             # (no notificar si ya recibimos una transcripción final — el cierre es esperado)
-            if self.transcriber and self.transcriber._dropped_unexpectedly and not self._last_final_text:
+            if self.transcriber and self.transcriber._dropped_unexpectedly and self._last_final_text is None:
                 try:
                     await self.client_ws.send_json({
                         "type": "service_status",
@@ -240,16 +271,22 @@ class JotaBridge:
                         if self.handshake.input_mode == "audio" and self.transcriber:
                             await self.transcriber.send_end()
 
+                    elif json_msg and json_msg.get("type") == "cancel":
+                        # Cliente cancela el turn activo sin lanzar uno nuevo
+                        await self._cancel_active_turn()
+
                     elif json_msg and json_msg.get("type") == "send":
                         # Cliente confirma/edita la transcripción y la envía al orquestador
                         text = json_msg.get("text", "").strip()
                         if text and self.orchestrator:
                             logger.info(f"[{self.client_id}] send recibido: '{text[:60]}'")
+                            await self._cancel_active_turn()
                             self._active_turn = asyncio.create_task(self._call_orchestrator(text))
 
                     elif json_msg is None and self.handshake.input_mode == "text":
                         # Texto plano en modo texto — compatibilidad con clientes de texto puro
-                        await self._call_orchestrator(text_data)
+                        await self._cancel_active_turn()
+                        self._active_turn = asyncio.create_task(self._call_orchestrator(text_data))
 
         except WebSocketDisconnect:
             logger.info(f"[{self.client_id}] Cliente físico desconectado.")
@@ -342,7 +379,7 @@ class JotaBridge:
                 logger.warning(f"[{self.client_id}] TTS no disponible, continuando en modo texto: {e}")
                 tts = None
 
-        agent = self.handshake.agent or settings.OPENCLAW_DEFAULT_AGENT
+        agent = self.handshake.agent or self._default_agent
         session_key = make_session_key(agent, self.client_id)
 
         async def _on_token(token_text: str):
@@ -368,8 +405,9 @@ class JotaBridge:
                     await self.client_ws.send_json({"type": "error", "content": str(e)})
                 except Exception:
                     pass
-            if tts:
-                await tts.end()
+            finally:
+                if tts:
+                    await tts.end()
 
         async def pipe_audio():
             _first_chunk = True
@@ -395,3 +433,55 @@ class JotaBridge:
             await self.client_ws.send_json({"type": "done"})
         except Exception:
             pass
+
+    async def on_push_turn_start(self, session_key: str) -> None:
+        if "audio" not in self.handshake.output_mode:
+            return
+        tts = TTSClient(
+            url=settings.TTS_WS_URL, token=settings.TTS_TOKEN, client_id=self.client_id
+        )
+        try:
+            await tts.connect(voice=self.config.tts_voice, speed=self.config.tts_speed)
+            self._push_tts = tts
+        except Exception as e:
+            logger.warning(f"[{self.client_id}] Push TTS unavailable: {e}")
+            return
+
+        async def _pipe_push_audio():
+            async for chunk in tts.get_audio_stream():
+                try:
+                    await self.client_ws.send_bytes(chunk)
+                except Exception:
+                    return
+
+        self._push_audio_task = asyncio.create_task(_pipe_push_audio())
+
+    async def deliver_push(self, payload: dict) -> None:
+        delta = payload.get("deltaText", "")
+        if not delta:
+            return
+        if "text" in self.handshake.output_mode:
+            try:
+                await self.client_ws.send_json({"type": "push", "content": delta})
+            except Exception:
+                pass
+        if self._push_tts:
+            await self._push_tts.send_text_chunk(delta)
+
+    async def on_push_turn_end(self, session_key: str) -> None:
+        if self._push_tts:
+            try:
+                await self._push_tts.end()
+            except Exception:
+                pass
+            if self._push_audio_task and not self._push_audio_task.done():
+                try:
+                    await self._push_audio_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            self._push_audio_task = None
+            try:
+                await self._push_tts.close()
+            except Exception:
+                pass
+            self._push_tts = None

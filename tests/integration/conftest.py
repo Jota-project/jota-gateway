@@ -15,9 +15,10 @@ from starlette.testclient import TestClient
 from src.core.config import settings
 from src.main import app
 from src.services.db_client import db_client
-from src.services.orchestrators.protocol import OrchestratorProtocol, OrchestratorEvent
-from src.services.orchestrators.reconnecting import OrchestratorState, OrchestratorStatus
-from src.services.orchestrators.registry import OrchestratorRegistry
+from src.services.protocol import OrchestratorProtocol, OrchestratorEvent
+from src.services.openclaw.reconnecting import OrchestratorState, OrchestratorStatus
+from src.services.openclaw.registry import TurnRegistry, ClientRegistry
+from src.services.openclaw.models import GatewayInfo, AgentInfo
 
 _DB_BASE = f"http://{settings.JOTA_DB_BASE_URL}"
 DB_BASE = _DB_BASE  # public alias for use in individual test files
@@ -62,6 +63,18 @@ def clear_db_cache():
 # Mock Orchestrator
 # ---------------------------------------------------------------------------
 
+def _make_default_gateway_info() -> GatewayInfo:
+    return GatewayInfo(
+        protocol_version=4,
+        server_version="test",
+        conn_id="test-conn",
+        default_agent_id="main",
+        agents={"main": AgentInfo(agent_id="main", name="Main", is_default=True)},
+        tick_interval_ms=15000,
+        max_payload=26214400,
+    )
+
+
 def make_mock_orchestrator(tokens: list[str] = None) -> OrchestratorProtocol:
     """Creates a mock orchestrator that yields the given tokens then status:done."""
     if tokens is None:
@@ -77,41 +90,23 @@ def make_mock_orchestrator(tokens: list[str] = None) -> OrchestratorProtocol:
     mock.close = AsyncMock()
     mock.ping = AsyncMock(return_value=True)
     mock.stream_response = _stream
+    mock.gateway_info = _make_default_gateway_info()
+    mock._name = "openclaw"
+    mock.status = MagicMock(return_value=OrchestratorStatus(
+        name="openclaw",
+        state=OrchestratorState.CONNECTED,
+        connected_at=datetime(2026, 6, 4, 10, 0, tzinfo=timezone.utc),
+        reconnect_attempts=0,
+        last_error=None,
+    ))
     return mock
 
 
-def make_mock_registry(orchestrator=None) -> OrchestratorRegistry:
+def make_mock_registry(orchestrator=None):
+    """Backwards-compat helper: returns the orchestrator directly (no registry wrapper)."""
     if orchestrator is None:
         orchestrator = make_mock_orchestrator()
-    registry = MagicMock(spec=OrchestratorRegistry)
-    registry.connect_all = AsyncMock()
-    registry.close_all = AsyncMock()
-    registry.default = MagicMock(return_value=orchestrator)
-    registry.get = MagicMock(return_value=orchestrator)
-
-    _known = {
-        "openclaw": OrchestratorStatus(
-            name="openclaw",
-            state=OrchestratorState.CONNECTED,
-            connected_at=datetime(2026, 6, 4, 10, 0, tzinfo=timezone.utc),
-            disconnected_at=None,
-            reconnect_attempts=0,
-            last_error=None,
-        )
-    }
-
-    def _get_status(name: str) -> OrchestratorStatus:
-        if name not in _known:
-            raise KeyError(f"Orchestrator '{name}' not registered.")
-        return _known[name]
-
-    async def _reconnect(name: str) -> None:
-        if name not in _known:
-            raise KeyError(f"Orchestrator '{name}' not registered.")
-
-    registry.get_status = MagicMock(side_effect=_get_status)
-    registry.reconnect = AsyncMock(side_effect=_reconnect)
-    return registry
+    return orchestrator
 
 # ---------------------------------------------------------------------------
 # respx: intercepta tráfico HTTP hacia jota-db
@@ -176,7 +171,19 @@ def mock_registry(mock_orchestrator):
 @pytest.fixture
 def client(mock_services, mock_registry, monkeypatch):
     """TestClient con jota-db mockeado y orchestrator mock inyectado."""
-    monkeypatch.setattr("src.main.build_registry", lambda: mock_registry)
+    def _mock_lifespan_openclaw(app_instance):
+        app_instance.state.openclaw = mock_registry
+        app_instance.state.turn_registry = TurnRegistry()
+        app_instance.state.client_registry = ClientRegistry()
+
+    monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_registry)
+    monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("src.main.TurnRegistry", lambda: TurnRegistry())
+    monkeypatch.setattr("src.main.ClientRegistry", lambda: ClientRegistry())
+    # Prevent the actual connect() call
+    mock_registry.connect = AsyncMock()
+    mock_registry.close = AsyncMock()
     with TestClient(app) as c:
         yield c
 
