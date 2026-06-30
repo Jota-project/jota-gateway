@@ -45,8 +45,6 @@ SESSION_RESPONSE = {
     },
 }
 
-CONFIG_RESPONSE = SESSION_RESPONSE["config"]
-
 # ---------------------------------------------------------------------------
 # Cache cleanup
 # ---------------------------------------------------------------------------
@@ -122,30 +120,6 @@ def mock_services():
                 if req.headers.get("x-api-key") == VALID_KEY
                 else httpx.Response(401, json={"detail": "Invalid key"})
             )
-        )
-        # --- jota-db: config ---
-        router.get(f"{_DB_BASE}/config/me").mock(
-            return_value=httpx.Response(200, json=CONFIG_RESPONSE)
-        )
-        router.put(f"{_DB_BASE}/config/me").mock(
-            return_value=httpx.Response(200, json=CONFIG_RESPONSE)
-        )
-        router.post(f"{_DB_BASE}/config/me/reset").mock(
-            return_value=httpx.Response(200, json=CONFIG_RESPONSE)
-        )
-        # --- jota-db: conversations ---
-        router.get(f"{_DB_BASE}/conversations").mock(
-            return_value=httpx.Response(200, json=[{"id": "conv-1", "title": "Test"}])
-        )
-        router.get(url__regex=rf"{_DB_BASE}/conversations/.+/messages").mock(
-            return_value=httpx.Response(200, json=[{"id": "msg-1", "content": "hola"}])
-        )
-        router.patch(url__regex=rf"{_DB_BASE}/conversations/.+").mock(
-            return_value=httpx.Response(200, json={"id": "conv-1", "status": "archived"})
-        )
-        # --- jota-db: models ---
-        router.get(f"{_DB_BASE}/models").mock(
-            return_value=httpx.Response(200, json=[{"id": "llama3", "name": "LLaMA 3"}])
         )
         # --- transcriber: health ---
         router.get("http://localhost:9000/health").mock(
