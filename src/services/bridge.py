@@ -423,13 +423,14 @@ class JotaBridge:
                     await tts.end()
 
         async def pipe_audio():
+            header = bytes([0xA1]) + turn_seq.to_bytes(2, "big")
             _first_chunk = True
             async for chunk in tts.get_audio_stream():
                 if _first_chunk:
                     await self.tracker.record("tts_first_chunk")
                     _first_chunk = False
                 try:
-                    await self.client_ws.send_bytes(chunk)  # binary framing added in Task 7
+                    await self.client_ws.send_bytes(header + chunk)
                 except Exception:
                     return
             await self.tracker.record("tts_done")
@@ -452,6 +453,15 @@ class JotaBridge:
         self._push_turn_seq = self._turn_seq
         self._push_turn_id = f"t-{self._turn_seq}"
 
+        try:
+            await self.client_ws.send_json({
+                "type": "turn_start",
+                "turn_id": self._push_turn_id,
+                "turn_seq": self._turn_seq,
+            })
+        except Exception:
+            pass
+
         if "audio" not in self.handshake.output_mode:
             return
         tts = TTSClient(
@@ -465,9 +475,10 @@ class JotaBridge:
             return
 
         async def _pipe_push_audio():
+            header = bytes([0xA1]) + self._push_turn_seq.to_bytes(2, "big")
             async for chunk in tts.get_audio_stream():
                 try:
-                    await self.client_ws.send_bytes(chunk)  # binary framing added in Task 7
+                    await self.client_ws.send_bytes(header + chunk)
                 except Exception:
                     return
 
@@ -506,3 +517,8 @@ class JotaBridge:
             except Exception:
                 pass
             self._push_tts = None
+
+        try:
+            await self.client_ws.send_json({"type": "turn_end", "turn_id": self._push_turn_id})
+        except Exception:
+            pass
