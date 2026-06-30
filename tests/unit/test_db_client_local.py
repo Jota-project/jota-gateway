@@ -1,4 +1,5 @@
 import pytest
+from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from src.core.exceptions import ClientInactive, ClientNotFound
@@ -7,7 +8,11 @@ from src.services.db_client import DbClient
 
 
 def _engine_with(*records):
-    e = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    e = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     SQLModel.metadata.create_all(e)
     with Session(e) as s:
         for r in records:

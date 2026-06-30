@@ -1,15 +1,17 @@
 """
 Fixtures de integración.
 
-HTTP (jota-db) interceptado por respx.
-WebSocket (transcriber, TTS) con fake servers en hilos de background.
-Orchestrator inyectado via MockOrchestrator (OrchestratorProtocol).
+BD: SQLite en memoria inyectada por monkeypatch (reemplaza respx/jota-db).
+WebSocket: fake servers TTS/transcriber en hilos de background (sin cambios).
+Orchestrator: MockOrchestrator inyectado via monkeypatch (sin cambios).
 """
 import pytest
 import httpx
 import respx
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine
 from starlette.testclient import TestClient
 
 from src.core.config import settings
@@ -19,9 +21,7 @@ from src.services.protocol import OrchestratorProtocol, OrchestratorEvent
 from src.services.openclaw.reconnecting import OrchestratorState, OrchestratorStatus
 from src.services.openclaw.registry import TurnRegistry, ClientRegistry
 from src.services.openclaw.models import GatewayInfo, AgentInfo
-
-_DB_BASE = f"http://{settings.JOTA_DB_BASE_URL}"
-DB_BASE = _DB_BASE  # public alias for use in individual test files
+from src.db.models import ClientRecord
 
 # ---------------------------------------------------------------------------
 # Datos de test estándar
@@ -29,34 +29,46 @@ DB_BASE = _DB_BASE  # public alias for use in individual test files
 
 VALID_KEY = "valid-key-abc"
 CLIENT_ID = "hab_sito"
+CLIENT_NAME = "Test Client"
 ADMIN_TOKEN = "test-admin-token"
 
-SESSION_RESPONSE = {
-    "client": {"id": CLIENT_ID, "client_key": VALID_KEY, "is_active": True, "name": CLIENT_ID},
-    "config": {
-        "stt_language": "es",
-        "stt_vad_thold": 0.0,
-        "tts_voice": "af_heart",
-        "tts_speed": 1.0,
-        "preferred_model_id": None,
-        "system_prompt_extra": None,
-        "barge_in_enabled": True,
-        "barge_in_min_chars": 5,
-        "conversation_memory_limit": 20,
-    },
-}
-
 # ---------------------------------------------------------------------------
-# Cache cleanup
+# BD SQLite en memoria
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
+def db_engine(monkeypatch):
+    """SQLite in-memory inyectado en get_engine() para todos los integration tests."""
+    from src import db
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(db.database, "_engine", engine)
+    return engine
+
+
+@pytest.fixture()
+def seed_client(db_engine):
+    """Inserta el cliente de prueba estándar en la BD."""
+    with Session(db_engine) as s:
+        s.add(ClientRecord(
+            id=CLIENT_ID,
+            name=CLIENT_NAME,
+            client_key=VALID_KEY,
+            is_active=True,
+        ))
+        s.commit()
+
+
+@pytest.fixture(autouse=True)
 def clear_db_cache():
+    """Limpia el caché de db_client antes y después de cada test."""
     db_client._session_cache.clear()
-    db_client._models_cache.clear()
     yield
     db_client._session_cache.clear()
-    db_client._models_cache.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -117,31 +129,22 @@ def make_mock_orchestrator(tokens: list[str] = None) -> OrchestratorProtocol:
 
 
 def make_mock_registry(orchestrator=None):
-    """Backwards-compat helper: returns the orchestrator directly (no registry wrapper)."""
+    """Backwards-compat helper: returns the orchestrator directly."""
     if orchestrator is None:
         orchestrator = make_mock_orchestrator()
     return orchestrator
 
 # ---------------------------------------------------------------------------
-# respx: intercepta tráfico HTTP hacia jota-db
+# Health-check HTTP mocks (transcriber + TTS — sin jota-db)
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
 def mock_services():
+    """Mockea los health checks HTTP de transcriber y TTS."""
     with respx.mock(assert_all_mocked=False, assert_all_called=False) as router:
-        # --- jota-db: auth ---
-        router.get(f"{_DB_BASE}/auth/session").mock(
-            side_effect=lambda req: (
-                httpx.Response(200, json=SESSION_RESPONSE)
-                if req.headers.get("x-api-key") == VALID_KEY
-                else httpx.Response(401, json={"detail": "Invalid key"})
-            )
-        )
-        # --- transcriber: health ---
         router.get(f"http://{settings.TRANSCRIBER_WS_URL}/health").mock(
             return_value=httpx.Response(200)
         )
-        # --- TTS: health ---
         router.get("http://localhost:8005/health").mock(
             return_value=httpx.Response(200)
         )
@@ -159,19 +162,13 @@ def mock_registry(mock_orchestrator):
 
 
 @pytest.fixture
-def client(mock_services, mock_registry, monkeypatch):
-    """TestClient con jota-db mockeado y orchestrator mock inyectado."""
-    def _mock_lifespan_openclaw(app_instance):
-        app_instance.state.openclaw = mock_registry
-        app_instance.state.turn_registry = TurnRegistry()
-        app_instance.state.client_registry = ClientRegistry()
-
+def client(mock_services, mock_registry, seed_client, monkeypatch):
+    """TestClient con SQLite en memoria y orchestrator mock inyectado."""
     monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_registry)
     monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: MagicMock())
     monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: MagicMock())
     monkeypatch.setattr("src.main.TurnRegistry", lambda: TurnRegistry())
     monkeypatch.setattr("src.main.ClientRegistry", lambda: ClientRegistry())
-    # Prevent the actual connect() call
     mock_registry.connect = AsyncMock()
     mock_registry.close = AsyncMock()
     with TestClient(app) as c:

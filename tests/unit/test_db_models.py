@@ -1,12 +1,17 @@
 import json
 import pytest
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 from src.db.models import ClientRecord
 
 
 def _mem_engine():
-    e = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    e = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     SQLModel.metadata.create_all(e)
     return e
 
