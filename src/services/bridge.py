@@ -42,6 +42,7 @@ class JotaBridge:
         self._default_agent = default_agent
         self.transcriber: Optional[TranscriberClient] = None
         self._push_tts = None
+        self._push_audio_task: Optional[asyncio.Task] = None
 
         self.tasks: list[asyncio.Task] = []
         self._active_turn: Optional[asyncio.Task] = None
@@ -83,6 +84,19 @@ class JotaBridge:
                 pass
             except Exception as e:
                 logger.error(f"[{self.client_id}] _active_turn falló: {e}")
+
+        if self._push_audio_task and not self._push_audio_task.done():
+            self._push_audio_task.cancel()
+            try:
+                await self._push_audio_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self._push_tts:
+            try:
+                await self._push_tts.close()
+            except Exception:
+                pass
+            self._push_tts = None
 
         for task in self.tasks:
             if not task.done():
@@ -431,6 +445,16 @@ class JotaBridge:
             self._push_tts = tts
         except Exception as e:
             logger.warning(f"[{self.client_id}] Push TTS unavailable: {e}")
+            return
+
+        async def _pipe_push_audio():
+            async for chunk in tts.get_audio_stream():
+                try:
+                    await self.client_ws.send_bytes(chunk)
+                except Exception:
+                    return
+
+        self._push_audio_task = asyncio.create_task(_pipe_push_audio())
 
     async def deliver_push(self, payload: dict) -> None:
         delta = payload.get("deltaText", "")
@@ -448,6 +472,15 @@ class JotaBridge:
         if self._push_tts:
             try:
                 await self._push_tts.end()
+            except Exception:
+                pass
+            if self._push_audio_task and not self._push_audio_task.done():
+                try:
+                    await self._push_audio_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            self._push_audio_task = None
+            try:
                 await self._push_tts.close()
             except Exception:
                 pass

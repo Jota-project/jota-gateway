@@ -74,6 +74,7 @@ async def test_on_push_turn_end_closes_push_tts():
     bridge, _ = make_bridge(output_mode=("audio", "text"))
     mock_tts = AsyncMock()
     bridge._push_tts = mock_tts
+    bridge._push_audio_task = None  # no audio task in this scenario
     await bridge.on_push_turn_end("agent:main:hab_sito")
     mock_tts.end.assert_awaited_once()
     mock_tts.close.assert_awaited_once()
@@ -81,15 +82,40 @@ async def test_on_push_turn_end_closes_push_tts():
 
 
 @pytest.mark.asyncio
-async def test_on_push_turn_start_audio_creates_tts():
+async def test_on_push_turn_start_audio_creates_tts_and_pipe():
     bridge, _ = make_bridge(output_mode=("audio", "text"))
     with patch("src.services.bridge.TTSClient") as MockTTS:
         mock_tts = AsyncMock()
+        mock_tts.get_audio_stream = lambda: aiter([])
         MockTTS.return_value = mock_tts
         await bridge.on_push_turn_start("agent:main:hab_sito")
         MockTTS.assert_called_once()
         mock_tts.connect.assert_awaited_once()
         assert bridge._push_tts is mock_tts
+        assert bridge._push_audio_task is not None
+
+
+async def aiter(items):
+    for item in items:
+        yield item
+
+
+@pytest.mark.asyncio
+async def test_push_audio_pipe_forwards_chunks_to_ws():
+    """Audio chunks from TTS are forwarded to the client WebSocket."""
+    import asyncio
+    bridge, _ = make_bridge(output_mode=("audio", "text"))
+    with patch("src.services.bridge.TTSClient") as MockTTS:
+        mock_tts = AsyncMock()
+        chunks = [b"\x00\x01", b"\x02\x03"]
+        mock_tts.get_audio_stream = lambda: aiter(chunks)
+        MockTTS.return_value = mock_tts
+        await bridge.on_push_turn_start("agent:main:hab_sito")
+        # let the pipe task drain
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        calls = [c.args[0] for c in bridge.client_ws.send_bytes.await_args_list]
+        assert calls == chunks
 
 
 @pytest.mark.asyncio
