@@ -6,10 +6,11 @@ from typing import List, Literal, Optional
 # =====================================================================
 
 class Client(BaseModel):
-    """Registro de cliente tal como lo devuelve jota-db."""
+    """Registro de cliente resuelto desde la BD local."""
     id: str
     client_key: str
     is_active: bool
+    name: str = ""
 
     model_config = ConfigDict(extra="allow")
 
