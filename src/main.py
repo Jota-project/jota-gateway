@@ -73,7 +73,7 @@ app.include_router(stream_router)
 app.include_router(openai_router)
 
 # Health probes
-app.include_router(health_router, prefix="/api")
+app.include_router(health_router)
 
 # Observability (moved to admin in Task 4)
 app.include_router(orchestrator_router, prefix="/api")

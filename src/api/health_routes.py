@@ -1,18 +1,26 @@
 """
 health_routes.py
 ~~~~~~~~~~~~~~~~
-GET /api/health — estado de los servicios internos (sin auth, uso de operador)
+GET /healthz  — liveness: always 200 if the process is running
+GET /ready    — readiness: pings OpenClaw (critical), TTS and transcriber (non-critical)
 
-Siempre devuelve 200. Los valores por servicio son "ok" o "unavailable".
+OpenClaw down → 503 "unavailable"
+TTS or transcriber down → 200 "degraded"
+All ok → 200 "ok"
 """
 import asyncio
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 
 from src.core.config import settings
 from src.services.transcriber_client import TranscriberClient
 from src.services.tts_client import TTSClient
 
 router = APIRouter()
+
+
+@router.get("/healthz")
+async def healthz() -> dict:
+    return {"status": "ok"}
 
 
 async def _ping_orchestrator(request: Request) -> str:
@@ -33,8 +41,8 @@ async def _ping_tts() -> str:
     return "ok" if ok else "unavailable"
 
 
-@router.get("/health")
-async def health(request: Request) -> dict:
+@router.get("/ready")
+async def ready(request: Request, response: Response) -> dict:
     results = await asyncio.gather(
         _ping_orchestrator(request),
         _ping_transcriber(),
@@ -43,12 +51,20 @@ async def health(request: Request) -> dict:
     )
 
     def _resolve(r) -> str:
-        if isinstance(r, Exception):
-            return "unavailable"
-        return r
+        return "unavailable" if isinstance(r, Exception) else r
 
-    return {
+    services = {
         "orchestrator": _resolve(results[0]),
         "transcriber": _resolve(results[1]),
         "tts": _resolve(results[2]),
     }
+
+    if services["orchestrator"] == "unavailable":
+        status = "unavailable"
+        response.status_code = 503
+    elif any(v == "unavailable" for v in services.values()):
+        status = "degraded"
+    else:
+        status = "ok"
+
+    return {"status": status, "services": services}

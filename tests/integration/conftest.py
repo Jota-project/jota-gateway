@@ -122,7 +122,7 @@ def mock_services():
             )
         )
         # --- transcriber: health ---
-        router.get("http://localhost:9000/health").mock(
+        router.get(f"http://{settings.TRANSCRIBER_WS_URL}/health").mock(
             return_value=httpx.Response(200)
         )
         # --- TTS: health ---
