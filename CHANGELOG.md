@@ -1,3 +1,10 @@
+# [1.7.0](https://github.com/Jota-project/jota-gateway/compare/v1.6.4...v1.7.0) (2026-06-30)
+
+
+### Features
+
+* OpenClaw multiplexed concurrent sessions + agent-initiated push delivery ([#64](https://github.com/Jota-project/jota-gateway/issues/64)) ([112a388](https://github.com/Jota-project/jota-gateway/commit/112a38813e5827737c41516732c8a3e28d2336f4))
+
 ## [1.6.4](https://github.com/Jota-project/jota-gateway/compare/v1.6.3...v1.6.4) (2026-06-26)
 
 
