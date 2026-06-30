@@ -30,7 +30,7 @@ jota-gateway is a **BFF (Backend For Frontend)** — the single entry point for 
 
 - **WebSocket** `/ws/stream` — full voice+text session managed by `JotaBridge`
 - **REST API** `/api/*` — thin proxy to jota-db for config, conversations, models, health + internal observability endpoints
-- **OpenAI-compatible REST** `/v1/*` — `GET /v1/models` and `POST /v1/chat/completions` for Home Assistant integration; delegates to the orchestrator registry
+- **OpenAI-compatible REST** `/v1/*` — `GET /v1/models` and `POST /v1/chat/completions` for Home Assistant integration; delegates to the singleton `OpenClawClient`
 
 ### URL convention in settings
 
@@ -44,14 +44,15 @@ All `Settings` fields for external services are `host:port` **without protocol**
      "client_key": "...",
      "input_mode": "audio" | "text",
      "output_mode": ["audio", "text", "status"],
-     "agent": "assistant"   // optional — OpenClaw agent name; defaults to OPENCLAW_DEFAULT_AGENT
+     "agent": "assistant"   // optional — OpenClaw agent name; defaults to gateway_info.default_agent_id
    }
    ```
 2. Gateway resolves identity via `db_client.get_session(client_key)` → `(Client, ClientConfig)`
-3. `JotaBridge` is instantiated with client, config, WebSocket, and an injected `OrchestratorProtocol` instance (from `app.state.orchestrators.default()`)
-4. `bridge.connect_internal_services()` — starts `TranscriberClient` only if `input_mode == "audio"`; the orchestrator is already connected (it's a singleton managed in app lifespan)
-5. `bridge.health_check()` — pings each microservice; orchestrator failure is fatal, TTS failure is degraded
-6. `bridge.run()` — launches concurrent tasks: `_client_input_loop` + transcriber `listen_loop` + silence watchdog
+3. If `agent` is specified, `routes.py` validates it against `openclaw.gateway_info.has_agent(agent)` — unknown agents close with code 1008.
+4. `JotaBridge` is instantiated with client, config, WebSocket, the singleton `ReconnectingOpenClawClient` (from `app.state.openclaw`), `app.state.client_registry`, and `default_agent`.
+5. `bridge.connect_internal_services()` — starts `TranscriberClient` only if `input_mode == "audio"`; registers the bridge in `ClientRegistry`
+6. `bridge.health_check()` — pings each microservice; orchestrator failure is fatal, TTS failure is degraded
+7. `bridge.run()` — launches concurrent tasks: `_client_input_loop` + transcriber `listen_loop` + silence watchdog
 
 ### JotaBridge data flow
 
@@ -59,6 +60,7 @@ All `Settings` fields for external services are `host:port` **without protocol**
 - **`{"type":"end"}`** → `transcriber.send_end()` (signals end of utterance)
 - **`{"type":"send","text":"..."}`** → `_call_orchestrator(text)` — creates a fresh `TTSClient` per turn, runs `pipe_tokens` + `pipe_audio` concurrently via `asyncio.gather`
 - **Barge-in**: partial transcriptions with `len >= config.barge_in_min_chars` cancel the active orchestrator turn via `_cancel_active_turn()`, which cancels the Python task and causes `OpenClawClient` to send `chat.abort` to OpenClaw
+- **Agent-initiated push**: OpenClaw sends `agent` events with `phase: "start"/"end"` and interleaved `chat` events without a prior client request. `FrameDispatcher` routes these to the bridge via `ClientRegistry`. The bridge hooks (`on_push_turn_start`, `deliver_push`, `on_push_turn_end`) handle TTS creation, audio piping, and teardown.
 
 ### Session key derivation
 
@@ -68,31 +70,35 @@ Each orchestrator turn uses a session key derived from the Handshake `agent` fie
 session_key = f"agent:{agent}:{client.id}"
 ```
 
-If `agent` is not provided in the Handshake, `settings.OPENCLAW_DEFAULT_AGENT` is used.
-The HA REST endpoint (`/v1/chat/completions`) uses a fixed key: `agent:{OPENCLAW_DEFAULT_AGENT}:ha`.
+If `agent` is not provided in the Handshake, `gateway_info.default_agent_id` (received from OpenClaw at connect time) is used.
+The HA REST endpoint (`/v1/chat/completions`) uses a fixed key: `agent:{default_agent_id}:ha`.
+
+`client_id_from_session_key(sk)` extracts the client ID via `sk.rsplit(":", 1)[-1]` — safe for keys containing multiple colons (e.g. Telegram user IDs).
 
 ### Microservice clients (all in `src/services/`)
 
 | Client | Protocol | Notes |
 |---|---|---|
 | `DbClient` | HTTP (httpx) | Singleton; `connect()`/`close()` in app lifespan; caches sessions 60s, models 300s |
-| `OpenClawClient` | WebSocket v4 | Persistent connection per app instance; `chat.send` + streaming `chat` events; sends `chat.abort` on barge-in |
-| `ReconnectingOrchestrator` | — | Wraps `OpenClawClient`; auto-reconnects with exponential backoff on disconnect; exposes state (CONNECTED/RECONNECTING/DEGRADED) |
+| `OpenClawClient` | WebSocket v4 | Singleton per app; multiplexed — N concurrent sessions on one connection; sends `chat.abort` on barge-in |
+| `ReconnectingOpenClawClient` | — | Wraps `OpenClawClient`; auto-reconnects with exponential backoff; exposes state (CONNECTED/RECONNECTING/DEGRADED) |
 | `TranscriberClient` | WebSocket | One instance per session (audio mode only); receives PCM Float32 16kHz |
-| `TTSClient` | WebSocket | **Created fresh per orchestrator turn**, not per session; receives tokens, yields PCM16 24kHz |
+| `TTSClient` | WebSocket | **Created fresh per turn** (both normal and push turns), not per session; receives tokens, yields PCM16 24kHz |
 
-### Orchestrator registry (`src/services/orchestrators/`)
+### OpenClaw package (`src/services/openclaw/`)
 
-Built once in `main.py` lifespan, stored in `app.state.orchestrators`.
+Built once in `main.py` lifespan; stored in `app.state`.
 
-- `OrchestratorRegistry` — holds named `ReconnectingOrchestrator` instances; `registry.default()` returns the one named by `DEFAULT_ORCHESTRATOR`
-- `ReconnectingOrchestrator` — wraps any `OrchestratorProtocol` impl; on disconnect it tries reconnect with backoff up to `ORCHESTRATOR_RECONNECT_MAX_DURATION` seconds; after that enters DEGRADED state
-- `OpenClawClient` — the concrete implementation: WebSocket v4 handshake (challenge → connect → hello-ok), persistent `_listen` task, `_keepalive_loop` (pings at 80% of `tickIntervalMs` to prevent idle timeout), `stream_response()` per turn
+- `OpenClawClient` (`client.py`) — WebSocket v4 handshake (challenge → connect → hello-ok → sessions.subscribe), persistent `_listen` task, `_keepalive_loop` (pings at 80% of `tickIntervalMs`). All events carry `sessionKey`; `stream_response()` registers a `Queue` in `TurnRegistry` per turn, sends `{"sessionKey": key}` and reads the queue until `done`/`error`.
+- `ReconnectingOpenClawClient` (`reconnecting.py`) — wraps `OpenClawClient`; on unexpected disconnect calls `on_disconnect` hook, retries with exponential backoff up to `ORCHESTRATOR_RECONNECT_MAX_DURATION` seconds; after that enters DEGRADED state. `stream_response()` returns an `error` event immediately when not CONNECTED.
+- `TurnRegistry` (`registry.py`) — dual-index dict (`session_key → Queue`, `req_id → session_key`); `FrameDispatcher` uses it to route response frames to the correct waiting `stream_response()` call.
+- `ClientRegistry` (`registry.py`) — maps `client_id → JotaBridge`; used by `FrameDispatcher` to deliver agent-initiated push events to the right session.
+- `FrameDispatcher` (`dispatcher.py`) — called by `_listen` for every incoming frame; routes `res` frames to `TurnRegistry`, `chat` events to active turn queue or bridge push hooks, `agent` phase events to `on_push_turn_start`/`on_push_turn_end`.
+- `GatewayInfo` / `AgentInfo` (`models.py`) — parsed from the `hello-ok` payload; `gateway_info.default_agent_id` is used as the fallback agent when the client doesn't specify one.
 
 OpenClaw connection details (loopback backend mode, no device signature required):
 - Token: `OPENCLAW_TOKEN`
 - Port: `OPENCLAW_PORT` (default 18789)
-- Default agent: `OPENCLAW_DEFAULT_AGENT` (default `"main"`)
 
 ### REST API authentication
 
@@ -115,4 +121,6 @@ The `mock_services` fixture (in `tests/integration/conftest.py`) mocks all downs
 
 The `clear_db_cache` fixture runs `autouse=True` for all integration tests to prevent session cache leakage between tests.
 
-`OpenClawClient` tests (`test_openclaw_client.py`) use `SmartFakeWS` — a queue-backed fake WebSocket that auto-responds to handshake and per-test `chat.send` sequences.
+`OpenClawClient` tests (`test_openclaw_client.py`) use `SmartFakeWS` — a queue-backed fake WebSocket that auto-responds to the v4 handshake (challenge → connect → hello-ok → subscribe ack) and per-test `chat.send` sequences.
+
+`ReconnectingOpenClawClient` tests (`test_reconnecting_openclaw.py`) stub `OpenClawClient` to test backoff, DEGRADED state, and the `on_disconnect` hook contract.
