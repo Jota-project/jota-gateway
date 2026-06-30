@@ -1,5 +1,4 @@
 """Tests for _client_input_loop raw disconnect handling."""
-import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from src.services.bridge import JotaBridge

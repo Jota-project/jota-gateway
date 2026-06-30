@@ -85,13 +85,16 @@ class DbClient:
             self._session_cache[client_key] = result
         return result
 
+    def _client_headers(self, client_id: str) -> dict:
+        return {"X-Client-Id": client_id}
+
     # ------------------------------------------------------------------
     # Configuración (usado en la REST API — Fase 2)
     # ------------------------------------------------------------------
 
     async def get_config(self, client_id: str) -> ClientConfig:
         assert self._http
-        r = await self._http.get(f"{self.base_url}/config/me", headers={"X-Client-Id": client_id})
+        r = await self._http.get(f"{self.base_url}/config/me", headers=self._client_headers(client_id))
         r.raise_for_status()
         return ClientConfig.model_validate(r.json())
 
@@ -100,7 +103,7 @@ class DbClient:
         r = await self._http.put(
             f"{self.base_url}/config/me",
             json=patch,
-            headers={"X-Client-Id": client_id},
+            headers=self._client_headers(client_id),
         )
         r.raise_for_status()
         return ClientConfig.model_validate(r.json())
@@ -109,7 +112,7 @@ class DbClient:
         assert self._http
         r = await self._http.post(
             f"{self.base_url}/config/me/reset",
-            headers={"X-Client-Id": client_id},
+            headers=self._client_headers(client_id),
         )
         r.raise_for_status()
         return ClientConfig.model_validate(r.json())
@@ -122,7 +125,7 @@ class DbClient:
         assert self._http
         r = await self._http.get(
             f"{self.base_url}/conversations",
-            headers={"X-Client-Id": client_id},
+            headers=self._client_headers(client_id),
         )
         r.raise_for_status()
         return r.json()
@@ -131,7 +134,7 @@ class DbClient:
         assert self._http
         r = await self._http.get(
             f"{self.base_url}/conversations/{conversation_id}/messages",
-            headers={"X-Client-Id": client_id},
+            headers=self._client_headers(client_id),
         )
         r.raise_for_status()
         return r.json()
@@ -141,7 +144,7 @@ class DbClient:
         r = await self._http.patch(
             f"{self.base_url}/conversations/{conversation_id}",
             json={"status": "archived"},
-            headers={"X-Client-Id": client_id},
+            headers=self._client_headers(client_id),
         )
         r.raise_for_status()
         return r.json()

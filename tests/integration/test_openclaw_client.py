@@ -9,7 +9,6 @@ import pytest
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.registry import TurnRegistry, ClientRegistry
-from src.services.protocol import OrchestratorEvent
 
 HELLO_OK_PAYLOAD = {
     "type": "hello-ok", "protocol": 4,

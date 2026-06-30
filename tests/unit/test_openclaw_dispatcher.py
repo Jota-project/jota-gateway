@@ -1,6 +1,5 @@
-import asyncio
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.registry import TurnRegistry, ClientRegistry
 

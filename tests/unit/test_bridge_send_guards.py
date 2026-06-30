@@ -1,5 +1,4 @@
 """Tests for send guards in _call_orchestrator closures."""
-import asyncio
 import pytest
 from unittest.mock import AsyncMock
 from src.services.bridge import JotaBridge
@@ -114,7 +113,7 @@ async def test_tts_end_called_when_orchestrator_raises_non_runtime_error(mock_tr
     # El orquestador lanza OSError (no RuntimeError) — simula un fallo de red crudo
     async def _crashing_stream(*args, **kwargs):
         raise OSError("connection reset by peer")
-        yield  # noqa: unreachable — hace que Python lo trate como async generator
+        yield  # noqa: F501 — hace que Python lo trate como async generator
 
     b.orchestrator.stream_response = _crashing_stream
 

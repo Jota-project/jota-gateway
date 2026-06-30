@@ -1,5 +1,4 @@
 import asyncio
-import pytest
 from src.services.openclaw.registry import TurnRegistry, ClientRegistry, client_id_from_session_key
 
 

@@ -1,5 +1,4 @@
-import pytest
-from src.services.openclaw.models import GatewayInfo, AgentInfo
+from src.services.openclaw.models import GatewayInfo
 
 HELLO_OK_PAYLOAD = {
     "type": "hello-ok",
