@@ -29,6 +29,7 @@ DB_BASE = _DB_BASE  # public alias for use in individual test files
 
 VALID_KEY = "valid-key-abc"
 CLIENT_ID = "hab_sito"
+ADMIN_TOKEN = "test-admin-token"
 
 SESSION_RESPONSE = {
     "client": {"id": CLIENT_ID, "client_key": VALID_KEY, "is_active": True, "name": CLIENT_ID},
@@ -56,6 +57,20 @@ def clear_db_cache():
     yield
     db_client._session_cache.clear()
     db_client._models_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def configure_admin_token():
+    """Set ADMIN_TOKEN for all integration tests."""
+    original = settings.ADMIN_TOKEN
+    settings.ADMIN_TOKEN = ADMIN_TOKEN
+    yield
+    settings.ADMIN_TOKEN = original
+
+
+@pytest.fixture
+def admin_headers():
+    return {"x-admin-token": ADMIN_TOKEN}
 
 # ---------------------------------------------------------------------------
 # Mock Orchestrator

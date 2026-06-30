@@ -30,7 +30,7 @@ class _ChatCompletionRequest(BaseModel):
 async def list_models(request: Request):
     return JSONResponse({
         "object": "list",
-        "data": [{"id": "openclaw", "object": "model", "created": 0, "owned_by": "openclaw"}]
+        "data": [{"id": "jota-gateway", "object": "model", "created": 0, "owned_by": "jota-gateway"}],
     })
 
 
