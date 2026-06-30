@@ -1,10 +1,10 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
-import httpx
 import logging
 import json
 import time
 
+from src.core.exceptions import ClientInactive, ClientNotFound
 from src.models.schemas import Handshake
 from src.services.bridge import JotaBridge
 from src.services.db_client import db_client
@@ -34,13 +34,9 @@ async def gateway_websocket(websocket: WebSocket):
     # 2. RESOLVER IDENTIDAD EN JOTA-DB
     try:
         client, config = await db_client.get_session(handshake.client_key)
-    except httpx.HTTPStatusError as e:
-        logger.warning(f"[{handshake.client_key}] Handshake rechazado por jota-db ({e.response.status_code})")
+    except (ClientNotFound, ClientInactive):
+        logger.warning(f"[{handshake.client_key}] Handshake rechazado: key inválida o cliente inactivo.")
         await websocket.close(code=1008, reason="Clave de cliente invalida o inactiva.")
-        return
-    except httpx.RequestError as e:
-        logger.error(f"[{handshake.client_key}] jota-db no disponible durante handshake: {e}")
-        await websocket.close(code=1011, reason="Servicio de identidad no disponible.")
         return
 
     logger.info(f"[{client.id}] Handshake verificado: key={handshake.client_key!r}")
