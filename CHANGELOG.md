@@ -1,3 +1,21 @@
+# [1.8.0](https://github.com/Jota-project/jota-gateway/compare/v1.7.0...v1.8.0) (2026-06-30)
+
+
+### Bug Fixes
+
+* remove unused imports flagged by ruff (status, AsyncMock) ([0899654](https://github.com/Jota-project/jota-gateway/commit/0899654f763d32ab22cb0c0b19b101accfbb19be))
+
+
+### Features
+
+* /admin/* router — sessions, orchestrators observability + client CRUD stubs ([fd772c5](https://github.com/Jota-project/jota-gateway/commit/fd772c5fa29878f96f1a0f91fb7c920a63bd77d4))
+* add ADMIN_TOKEN, get_admin_auth dependency, get_name() on orchestrator, fix /v1/models id ([7268450](https://github.com/Jota-project/jota-gateway/commit/72684503cecf366f7aa6289dbdf6d4fc60590f56))
+* API redesign — typed WS protocol, admin routes, health endpoints ([#66](https://github.com/Jota-project/jota-gateway/issues/66)) ([c013ee9](https://github.com/Jota-project/jota-gateway/commit/c013ee9ddd559abf1ca3a67cedd20d3e09af3deb))
+* binary audio frames include [0xA1][turn_seq uint16 BE] header for turn identification ([54a55d3](https://github.com/Jota-project/jota-gateway/commit/54a55d37b41b4251d5bde84a0021da1637f16816))
+* replace /api/health with /healthz (liveness) and /ready (readiness, 503 on orchestrator down) ([2cf3a19](https://github.com/Jota-project/jota-gateway/commit/2cf3a1960bccec855cdacdc67e7dff41a9b87a5e))
+* send ready message after WS handshake health check ([44e5b2b](https://github.com/Jota-project/jota-gateway/commit/44e5b2b181aabb8f4a6451c59e46c5321acd5a9a))
+* typed WS protocol — turn_start/end, token/text, error/code/fatal, status/state ([f71deb8](https://github.com/Jota-project/jota-gateway/commit/f71deb8bc8f648a231f289ef7b3e4bb6c19c4337))
+
 # [1.7.0](https://github.com/Jota-project/jota-gateway/compare/v1.6.4...v1.7.0) (2026-06-30)
 
 
