@@ -1,9 +1,8 @@
 """Tests para /admin/clients/* CRUD."""
 import pytest
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import SQLModel, create_engine
 
-from src.db.models import ClientRecord
 
 ADMIN_TOKEN = "test-admin-token"
 HEADERS = {"x-admin-token": ADMIN_TOKEN}

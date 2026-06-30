@@ -3,11 +3,12 @@
 input_mode=text: sin transcriber. El cliente manda texto plano,
 recibe tokens del orchestrator.
 """
-import httpx
-from tests.integration.conftest import (
-    VALID_KEY, CLIENT_ID, SESSION_RESPONSE, DB_BASE,
-)
+from sqlmodel import Session
+from unittest.mock import AsyncMock, MagicMock
+
+from src.db.models import ClientRecord
 from src.services.protocol import OrchestratorEvent
+from tests.integration.conftest import VALID_KEY, CLIENT_ID, CLIENT_NAME
 
 HANDSHAKE_TEXT = {
     "client_key": VALID_KEY,
@@ -53,21 +54,36 @@ def test_orchestrator_receives_correct_user_id(client, mock_registry, mock_orche
     assert captured["user_id"] == CLIENT_ID
 
 
-def test_preferred_model_id_included_in_orchestrator_payload(
-    mock_services, mock_registry, mock_orchestrator, monkeypatch
-):
-    """preferred_model_id de ClientConfig se pasa como model_id a stream_response."""
+def _make_client_with(db_engine, mock_services, mock_registry, monkeypatch, **fields):
+    """Inserta un ClientRecord con los campos especificados y devuelve un TestClient."""
     from starlette.testclient import TestClient
     from src.main import app
+    from src.services.openclaw.registry import TurnRegistry, ClientRegistry
 
-    session = {
-        **SESSION_RESPONSE,
-        "config": {**SESSION_RESPONSE["config"], "preferred_model_id": "llama3-70b"},
-    }
-    mock_services.get(f"{DB_BASE}/auth/session").mock(
-        return_value=httpx.Response(200, json=session)
-    )
+    with Session(db_engine) as s:
+        s.add(ClientRecord(
+            id=CLIENT_ID,
+            name=CLIENT_NAME,
+            client_key=VALID_KEY,
+            is_active=True,
+            **fields,
+        ))
+        s.commit()
 
+    monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_registry)
+    monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("src.main.TurnRegistry", lambda: TurnRegistry())
+    monkeypatch.setattr("src.main.ClientRegistry", lambda: ClientRegistry())
+    mock_registry.connect = AsyncMock()
+    mock_registry.close = AsyncMock()
+    return TestClient(app)
+
+
+def test_preferred_model_id_included_in_orchestrator_payload(
+    db_engine, mock_services, mock_registry, mock_orchestrator, monkeypatch
+):
+    """preferred_model_id de ClientConfig se pasa como model_id a stream_response."""
     captured = {}
 
     async def _stream(text, user_id, model_id=None, system_prompt_extra=None, session_key=None):
@@ -77,12 +93,8 @@ def test_preferred_model_id_included_in_orchestrator_payload(
 
     mock_orchestrator.stream_response = _stream
 
-    monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_registry)
-    monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock())
-    monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock())
-    mock_registry.connect = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock()
-    mock_registry.close = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock()
-    with TestClient(app) as c:
+    with _make_client_with(db_engine, mock_services, mock_registry, monkeypatch,
+                           preferred_model_id="llama3-70b") as c:
         with c.websocket_connect("/ws/stream") as ws:
             ws.send_json(HANDSHAKE_TEXT)
             ws.receive_json()  # ready
@@ -94,20 +106,9 @@ def test_preferred_model_id_included_in_orchestrator_payload(
 
 
 def test_system_prompt_extra_included_in_orchestrator_payload(
-    mock_services, mock_registry, mock_orchestrator, monkeypatch
+    db_engine, mock_services, mock_registry, mock_orchestrator, monkeypatch
 ):
     """system_prompt_extra de ClientConfig se pasa a stream_response."""
-    from starlette.testclient import TestClient
-    from src.main import app
-
-    session = {
-        **SESSION_RESPONSE,
-        "config": {**SESSION_RESPONSE["config"], "system_prompt_extra": "Habla en inglés"},
-    }
-    mock_services.get(f"{DB_BASE}/auth/session").mock(
-        return_value=httpx.Response(200, json=session)
-    )
-
     captured = {}
 
     async def _stream(text, user_id, model_id=None, system_prompt_extra=None, session_key=None):
@@ -117,12 +118,8 @@ def test_system_prompt_extra_included_in_orchestrator_payload(
 
     mock_orchestrator.stream_response = _stream
 
-    monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_registry)
-    monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock())
-    monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock())
-    mock_registry.connect = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock()
-    mock_registry.close = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock()
-    with TestClient(app) as c:
+    with _make_client_with(db_engine, mock_services, mock_registry, monkeypatch,
+                           system_prompt_extra="Habla en inglés") as c:
         with c.websocket_connect("/ws/stream") as ws:
             ws.send_json(HANDSHAKE_TEXT)
             ws.receive_json()  # ready

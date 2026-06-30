@@ -63,7 +63,7 @@ def create_client(
 ) -> ClientResponse:
     record = ClientRecord(
         name=body.name,
-        client_key=secrets.token_urlsafe(32),
+        client_key=body.client_key or secrets.token_urlsafe(32),
         client_type=body.client_type,
         default_agent=body.default_agent,
         allowed_agents=json.dumps(body.allowed_agents) if body.allowed_agents else None,

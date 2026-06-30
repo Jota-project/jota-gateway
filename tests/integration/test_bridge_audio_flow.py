@@ -10,15 +10,17 @@ import threading
 import time
 from unittest.mock import AsyncMock, patch
 
-import httpx
 import pytest
 import websockets
 
+from sqlmodel import Session
+
+from src.db.models import ClientRecord
 from src.main import app
 from src.core.config import settings
 from starlette.testclient import TestClient
 from tests.integration.conftest import (
-    VALID_KEY, SESSION_RESPONSE, DB_BASE,
+    VALID_KEY, CLIENT_ID, CLIENT_NAME,
     make_mock_orchestrator, make_mock_registry,
 )
 
@@ -92,7 +94,7 @@ def start_fake_transcriber():
 # ---------------------------------------------------------------------------
 
 
-def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(mock_services, monkeypatch):
+def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(mock_services, seed_client, monkeypatch):
     """PCM → transcriber fake emite is_final → cliente recibe transcripción
     → cliente envía {"type":"send"} → orchestrator llamado con el texto."""
     from src.services.protocol import OrchestratorEvent
@@ -138,15 +140,12 @@ def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(mock_services, mo
     assert called_with_text.get("text") == "hola desde audio"
 
 
-def test_transcriber_connect_uses_stt_language_from_config(mock_services, monkeypatch):
+def test_transcriber_connect_uses_stt_language_from_config(mock_services, db_engine, monkeypatch):
     """stt_language de ClientConfig se pasa a TranscriberClient.connect()."""
-    session_fr = {
-        **SESSION_RESPONSE,
-        "config": {**SESSION_RESPONSE["config"], "stt_language": "fr"},
-    }
-    mock_services.get(f"{DB_BASE}/auth/session").mock(
-        return_value=httpx.Response(200, json=session_fr)
-    )
+    with Session(db_engine) as s:
+        s.add(ClientRecord(id=CLIENT_ID, name=CLIENT_NAME, client_key=VALID_KEY,
+                           is_active=True, stt_language="fr"))
+        s.commit()
 
     mock_reg = make_mock_registry()
     from unittest.mock import MagicMock, AsyncMock as _AM
@@ -179,15 +178,12 @@ def test_transcriber_connect_uses_stt_language_from_config(mock_services, monkey
     assert connect_calls[0]["language"] == "fr"
 
 
-def test_tts_connect_uses_voice_and_speed_from_config(mock_services, monkeypatch):
+def test_tts_connect_uses_voice_and_speed_from_config(mock_services, db_engine, monkeypatch):
     """tts_voice y tts_speed de ClientConfig se pasan a TTSClient.connect()."""
-    session = {
-        **SESSION_RESPONSE,
-        "config": {**SESSION_RESPONSE["config"], "tts_voice": "bf_emma", "tts_speed": 1.2},
-    }
-    mock_services.get(f"{DB_BASE}/auth/session").mock(
-        return_value=httpx.Response(200, json=session)
-    )
+    with Session(db_engine) as s:
+        s.add(ClientRecord(id=CLIENT_ID, name=CLIENT_NAME, client_key=VALID_KEY,
+                           is_active=True, tts_voice="bf_emma", tts_speed=1.2))
+        s.commit()
 
     mock_reg = make_mock_registry()
     from unittest.mock import MagicMock, AsyncMock as _AM

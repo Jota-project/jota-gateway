@@ -17,6 +17,7 @@ from src.db.models import ClientRecord
 
 class ClientCreate(BaseModel):
     name: str
+    client_key: Optional[str] = None  # si se omite, se genera uno aleatorio
     client_type: Optional[str] = None
     default_agent: Optional[str] = None
     allowed_agents: Optional[list[str]] = None
