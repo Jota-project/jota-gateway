@@ -79,3 +79,33 @@ async def test_on_push_turn_end_closes_push_tts():
     mock_tts.end.assert_awaited_once()
     mock_tts.close.assert_awaited_once()
     assert bridge._push_tts is None
+
+
+@pytest.mark.asyncio
+async def test_on_push_turn_start_audio_creates_tts():
+    bridge, _ = make_bridge(output_mode=("audio", "text"))
+    with patch("src.services.bridge.TTSClient") as MockTTS:
+        mock_tts = AsyncMock()
+        MockTTS.return_value = mock_tts
+        await bridge.on_push_turn_start("agent:main:hab_sito")
+        MockTTS.assert_called_once()
+        mock_tts.connect.assert_awaited_once()
+        assert bridge._push_tts is mock_tts
+
+
+@pytest.mark.asyncio
+async def test_deliver_push_with_tts_sends_to_tts():
+    bridge, _ = make_bridge(output_mode=("audio", "text"))
+    mock_tts = AsyncMock()
+    bridge._push_tts = mock_tts
+    payload = {"sessionKey": "agent:main:hab_sito", "deltaText": "Hola!"}
+    await bridge.deliver_push(payload)
+    mock_tts.send_text_chunk.assert_awaited_once_with("Hola!")
+
+
+@pytest.mark.asyncio
+async def test_on_push_turn_end_no_tts_is_noop():
+    bridge, _ = make_bridge()
+    assert bridge._push_tts is None
+    await bridge.on_push_turn_end("agent:main:hab_sito")  # must not raise
+    assert bridge._push_tts is None
