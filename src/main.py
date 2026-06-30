@@ -13,6 +13,7 @@ from src.api.sessions_routes import router as sessions_router
 from src.services.db_client import db_client
 from src.services.orchestrators.registry import build_registry
 from src.services.session_registry import SessionRegistry
+from src.services.openclaw.registry import ClientRegistry
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,6 +29,7 @@ async def lifespan(app: FastAPI):
     await registry.connect_all()
     app.state.orchestrators = registry
     app.state.session_registry = SessionRegistry()
+    app.state.client_registry = ClientRegistry()
     yield
     await registry.close_all()
     await db_client.close()

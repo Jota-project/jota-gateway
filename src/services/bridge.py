@@ -11,6 +11,7 @@ from src.services.protocol import OrchestratorProtocol
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.transcriber_client import TranscriberClient
 from src.services.tts_client import TTSClient
+from src.services.openclaw.registry import ClientRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,17 @@ class JotaBridge:
     Titiritero principal. Gestiona la conexión de un cliente físico
     y enruta asincrónicamente los mensajes utilizando los adaptadores de microservicio.
     """
-    def __init__(self, client: Client, config: ClientConfig, client_ws: WebSocket, orchestrator: OrchestratorProtocol, tracker: PipelineTracker, handshake: Handshake):
+    def __init__(
+        self,
+        client: Client,
+        config: ClientConfig,
+        client_ws: WebSocket,
+        orchestrator: OrchestratorProtocol,
+        tracker: PipelineTracker,
+        handshake: Handshake,
+        client_registry: ClientRegistry,
+        default_agent: str,
+    ):
         self.client = client
         self.config = config
         self.client_id = client.id  # nombre legible del cliente (hab_sito, jota_desktop…)
@@ -27,7 +38,10 @@ class JotaBridge:
         self.handshake: Handshake = handshake
         self.orchestrator: OrchestratorProtocol = orchestrator   # injected, not created here
         self.tracker: PipelineTracker = tracker
+        self._client_registry = client_registry
+        self._default_agent = default_agent
         self.transcriber: Optional[TranscriberClient] = None
+        self._push_tts = None
 
         self.tasks: list[asyncio.Task] = []
         self._active_turn: Optional[asyncio.Task] = None
@@ -54,7 +68,10 @@ class JotaBridge:
         if connect_tasks:
             await asyncio.gather(*connect_tasks)
 
+        self._client_registry.register(self.client_id, self)
+
     async def close_all(self):
+        self._client_registry.unregister(self.client_id)
         # Await (don't cancel) the active turn so the orchestrator response is
         # delivered before we tear down microservice clients.  Explicit cancellation
         # only happens via _cancel_active_turn() (barge-in) or task cancellation
@@ -348,7 +365,7 @@ class JotaBridge:
                 logger.warning(f"[{self.client_id}] TTS no disponible, continuando en modo texto: {e}")
                 tts = None
 
-        agent = self.handshake.agent or settings.OPENCLAW_DEFAULT_AGENT
+        agent = self.handshake.agent or self._default_agent
         session_key = make_session_key(agent, self.client_id)
 
         async def _on_token(token_text: str):
@@ -402,3 +419,36 @@ class JotaBridge:
             await self.client_ws.send_json({"type": "done"})
         except Exception:
             pass
+
+    async def on_push_turn_start(self, session_key: str) -> None:
+        if "audio" not in self.handshake.output_mode:
+            return
+        tts = TTSClient(
+            url=settings.TTS_WS_URL, token=settings.TTS_TOKEN, client_id=self.client_id
+        )
+        try:
+            await tts.connect(voice=self.config.tts_voice, speed=self.config.tts_speed)
+            self._push_tts = tts
+        except Exception as e:
+            logger.warning(f"[{self.client_id}] Push TTS unavailable: {e}")
+
+    async def deliver_push(self, payload: dict) -> None:
+        delta = payload.get("deltaText", "")
+        if not delta:
+            return
+        if "text" in self.handshake.output_mode:
+            try:
+                await self.client_ws.send_json({"type": "push", "content": delta})
+            except Exception:
+                pass
+        if self._push_tts:
+            await self._push_tts.send_text_chunk(delta)
+
+    async def on_push_turn_end(self, session_key: str) -> None:
+        if self._push_tts:
+            try:
+                await self._push_tts.end()
+                await self._push_tts.close()
+            except Exception:
+                pass
+            self._push_tts = None

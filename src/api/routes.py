@@ -5,6 +5,7 @@ import logging
 import json
 import time
 
+from src.core.config import settings
 from src.models.schemas import Handshake
 from src.services.bridge import JotaBridge
 from src.services.db_client import db_client
@@ -53,7 +54,8 @@ async def gateway_websocket(websocket: WebSocket):
         await websocket.close(code=1011, reason="No orchestrator available.")
         return
     session_id = f"{client.id}:{int(time.time() * 1000)}"
-    session_registry = websocket.scope["app"].state.session_registry
+    app_state = websocket.scope["app"].state
+    session_registry = app_state.session_registry
     tracker = PipelineTracker(
         session_id=session_id,
         client_id=client.id,
@@ -63,7 +65,12 @@ async def gateway_websocket(websocket: WebSocket):
         registry=session_registry,
     )
     session_registry.register(tracker)
-    bridge = JotaBridge(client=client, config=config, client_ws=websocket, orchestrator=orchestrator, tracker=tracker, handshake=handshake)
+    bridge = JotaBridge(
+        client=client, config=config, client_ws=websocket, orchestrator=orchestrator,
+        tracker=tracker, handshake=handshake,
+        client_registry=app_state.client_registry,
+        default_agent=settings.OPENCLAW_DEFAULT_AGENT,
+    )
 
     try:
         await bridge.connect_internal_services()

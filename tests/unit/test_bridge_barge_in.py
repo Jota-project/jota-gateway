@@ -3,6 +3,7 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from src.services.bridge import JotaBridge
+from src.services.openclaw.registry import ClientRegistry
 from src.models.schemas import Client, ClientConfig, Handshake
 
 _CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
@@ -16,7 +17,8 @@ def make_bridge(mock_tracker):
             output_mode = ["audio", "text", "status"]
         ws = AsyncMock()
         bridge = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker,
-                            handshake=Handshake(client_key="test-key", input_mode=input_mode, output_mode=output_mode))
+                            handshake=Handshake(client_key="test-key", input_mode=input_mode, output_mode=output_mode),
+                            client_registry=ClientRegistry(), default_agent="main")
         bridge.orchestrator = AsyncMock()
         bridge.orchestrator.close = AsyncMock()
         bridge.transcriber = MagicMock()
@@ -208,7 +210,8 @@ async def test_barge_in_uses_config_threshold_not_global(mock_tracker):
     ws = AsyncMock()
     config = ClientConfig(barge_in_min_chars=50)
     bridge = JotaBridge(client=_CLIENT, config=config, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker,
-                        handshake=Handshake(client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]))
+                        handshake=Handshake(client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]),
+                        client_registry=ClientRegistry(), default_agent="main")
     bridge._active_turn = asyncio.create_task(asyncio.sleep(60))
     await asyncio.sleep(0)
 
@@ -231,7 +234,8 @@ async def test_barge_in_triggers_when_above_custom_threshold(mock_tracker):
     ws = AsyncMock()
     config = ClientConfig(barge_in_min_chars=3)
     bridge = JotaBridge(client=_CLIENT, config=config, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker,
-                        handshake=Handshake(client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]))
+                        handshake=Handshake(client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]),
+                        client_registry=ClientRegistry(), default_agent="main")
     bridge._active_turn = asyncio.create_task(asyncio.sleep(60))
     await asyncio.sleep(0)
 
