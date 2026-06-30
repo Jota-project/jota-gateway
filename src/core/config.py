@@ -7,10 +7,9 @@ class Settings(BaseSettings):
     TRANSCRIBER_WS_URL: str = "localhost:9000"
     TTS_WS_URL: str = "localhost:8005"
     TTS_TOKEN: str = "gateway"
-    DEFAULT_ORCHESTRATOR: str = "openclaw"
+    OPENCLAW_HOST: str = "127.0.0.1"
     OPENCLAW_PORT: int = 18789
     OPENCLAW_TOKEN: str = ""
-    OPENCLAW_DEFAULT_AGENT: str = "main"
     ORCHESTRATOR_RECONNECT_INITIAL_BACKOFF: float = 1.0
     ORCHESTRATOR_RECONNECT_MAX_BACKOFF: float = 60.0
     ORCHESTRATOR_RECONNECT_MAX_DURATION: float = 300.0

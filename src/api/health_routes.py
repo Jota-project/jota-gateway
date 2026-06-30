@@ -17,7 +17,7 @@ router = APIRouter()
 
 async def _ping_orchestrator(request: Request) -> str:
     try:
-        ok = await request.app.state.orchestrators.default().ping()
+        ok = await request.app.state.openclaw.ping()
         return "ok" if ok else "unavailable"
     except Exception:
         return "unavailable"

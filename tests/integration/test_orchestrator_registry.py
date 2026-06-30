@@ -37,28 +37,6 @@ async def test_connect_all_calls_connect_on_each():
     b.connect.assert_awaited_once()
 
 
-def test_build_registry_uses_openclaw_host_from_settings(monkeypatch):
-    """build_registry() debe usar settings.OPENCLAW_HOST, no '127.0.0.1' hardcodeado."""
-    from src.core.config import settings
-
-    captured = {}
-
-    class _FakeOpenClawClient:
-        def __init__(self, host, port, token, default_agent):
-            captured["host"] = host
-
-    monkeypatch.setattr(settings, "OPENCLAW_TOKEN", "tok")
-    monkeypatch.setattr(settings, "OPENCLAW_HOST", "my-openclaw-server")
-
-    with patch("src.services.orchestrators.openclaw_client.OpenClawClient", _FakeOpenClawClient):
-        from src.services.orchestrators.registry import build_registry
-        build_registry()
-
-    assert captured.get("host") == "my-openclaw-server", (
-        f"OpenClawClient debe recibir el host de settings.OPENCLAW_HOST, "
-        f"recibió: {captured.get('host')!r}"
-    )
-
 
 @pytest.mark.asyncio
 async def test_close_all_calls_close_on_each():

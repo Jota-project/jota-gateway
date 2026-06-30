@@ -1,6 +1,5 @@
 # tests/integration/test_rest_openai.py
 from src.services.protocol import OrchestratorEvent
-from src.core.config import settings
 from src.main import app
 
 
@@ -44,7 +43,8 @@ def test_chat_completions_uses_correct_session_key(client, mock_registry, mock_o
         "stream": False,
     })
 
-    expected = make_session_key(settings.OPENCLAW_DEFAULT_AGENT, "ha")
+    # default_agent_id from GatewayInfo mock is "main"
+    expected = make_session_key("main", "ha")
     assert captured.get("session_key") == expected
 
 

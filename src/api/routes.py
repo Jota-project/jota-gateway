@@ -5,7 +5,6 @@ import logging
 import json
 import time
 
-from src.core.config import settings
 from src.models.schemas import Handshake
 from src.services.bridge import JotaBridge
 from src.services.db_client import db_client
@@ -47,14 +46,19 @@ async def gateway_websocket(websocket: WebSocket):
     logger.info(f"[{client.id}] Handshake verificado: key={handshake.client_key!r}")
 
     # 3. INSTANCIAR EL PUENTE DE MICROSERVICIOS
-    try:
-        orchestrator = websocket.scope["app"].state.orchestrators.default()
-    except KeyError as e:
-        logger.error(f"[{client.id}] No hay orquestador disponible: {e}")
-        await websocket.close(code=1011, reason="No orchestrator available.")
-        return
-    session_id = f"{client.id}:{int(time.time() * 1000)}"
     app_state = websocket.scope["app"].state
+    openclaw = app_state.openclaw
+
+    # Validate requested agent against hello-ok agent list
+    requested_agent = handshake.agent
+    if requested_agent and openclaw.gateway_info and not openclaw.gateway_info.has_agent(requested_agent):
+        logger.warning(f"[{client.id}] Requested agent '{requested_agent}' not in OpenClaw")
+        await websocket.close(code=1008, reason=f"Agent '{requested_agent}' not available.")
+        return
+
+    default_agent = openclaw.gateway_info.default_agent_id if openclaw.gateway_info else "main"
+
+    session_id = f"{client.id}:{int(time.time() * 1000)}"
     session_registry = app_state.session_registry
     tracker = PipelineTracker(
         session_id=session_id,
@@ -66,10 +70,10 @@ async def gateway_websocket(websocket: WebSocket):
     )
     session_registry.register(tracker)
     bridge = JotaBridge(
-        client=client, config=config, client_ws=websocket, orchestrator=orchestrator,
+        client=client, config=config, client_ws=websocket, orchestrator=openclaw,
         tracker=tracker, handshake=handshake,
         client_registry=app_state.client_registry,
-        default_agent=settings.OPENCLAW_DEFAULT_AGENT,
+        default_agent=default_agent,
     )
 
     try:

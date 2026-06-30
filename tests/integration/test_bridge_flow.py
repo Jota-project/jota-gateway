@@ -69,7 +69,11 @@ def test_preferred_model_id_included_in_orchestrator_payload(
 
     mock_orchestrator.stream_response = _stream
 
-    monkeypatch.setattr("src.main.build_registry", lambda: mock_registry)
+    monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_registry)
+    monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock())
+    monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock())
+    mock_registry.connect = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock()
+    mock_registry.close = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock()
     with TestClient(app) as c:
         with c.websocket_connect("/ws/stream") as ws:
             ws.send_json(HANDSHAKE_TEXT)
@@ -103,7 +107,11 @@ def test_system_prompt_extra_included_in_orchestrator_payload(
 
     mock_orchestrator.stream_response = _stream
 
-    monkeypatch.setattr("src.main.build_registry", lambda: mock_registry)
+    monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_registry)
+    monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock())
+    monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock())
+    mock_registry.connect = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock()
+    mock_registry.close = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock()
     with TestClient(app) as c:
         with c.websocket_connect("/ws/stream") as ws:
             ws.send_json(HANDSHAKE_TEXT)
