@@ -56,8 +56,11 @@ def test_pipeline_events_not_forwarded_without_status(client):
     """Existing text-only clients must not receive pipeline_event messages."""
     with client.websocket_connect("/ws/stream") as ws:
         ws.send_json(HANDSHAKE_TEXT_ONLY)
+        ws.receive_json()  # ready
         ws.send_text("hola")
-        msg = ws.receive_json()  # first and only message before close
+        turn_start = ws.receive_json()  # turn_start
+        assert turn_start["type"] == "turn_start"
+        msg = ws.receive_json()  # token
     assert msg["type"] == "token"
 
 

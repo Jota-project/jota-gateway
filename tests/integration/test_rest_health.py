@@ -1,34 +1,52 @@
-"""Tests para GET /api/health."""
+"""Tests for GET /healthz and GET /ready."""
 import httpx
+from unittest.mock import AsyncMock
+
+from src.core.config import settings
 
 
-def test_health_all_ok(client):
-    """Todos los servicios responden → todos los campos son 'ok'."""
-    r = client.get("/api/health")
+def test_healthz_always_200(client):
+    r = client.get("/healthz")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
+
+
+def test_ready_all_ok(client):
+    r = client.get("/ready")
     assert r.status_code == 200
     body = r.json()
-    assert body["orchestrator"] == "ok"
-    assert body["transcriber"] == "ok"
-    assert body["tts"] == "ok"
+    assert body["status"] == "ok"
+    assert body["services"]["orchestrator"] == "ok"
+    assert body["services"]["transcriber"] == "ok"
+    assert body["services"]["tts"] == "ok"
 
 
-def test_health_never_returns_5xx(client, mock_orchestrator):
-    """Aunque el orchestrator esté caído, health devuelve 200."""
-    from unittest.mock import AsyncMock
+def test_ready_orchestrator_down_returns_503(client, mock_orchestrator):
     mock_orchestrator.ping = AsyncMock(return_value=False)
-    r = client.get("/api/health")
-    assert r.status_code == 200
-    assert r.json()["orchestrator"] == "unavailable"
+    r = client.get("/ready")
+    assert r.status_code == 503
+    assert r.json()["status"] == "unavailable"
+    assert r.json()["services"]["orchestrator"] == "unavailable"
 
 
-def test_health_partial_outage_tts(client, mock_services):
-    """TTS caído → campo tts es 'unavailable', el resto 'ok'."""
+def test_ready_tts_down_returns_200_degraded(client, mock_services):
     mock_services.get("http://localhost:8005/health").mock(
         side_effect=httpx.ConnectError("down")
     )
-    r = client.get("/api/health")
+    r = client.get("/ready")
     assert r.status_code == 200
     body = r.json()
-    assert body["tts"] == "unavailable"
-    assert body["orchestrator"] == "ok"
-    assert body["transcriber"] == "ok"
+    assert body["status"] == "degraded"
+    assert body["services"]["tts"] == "unavailable"
+    assert body["services"]["orchestrator"] == "ok"
+
+
+def test_ready_transcriber_down_returns_200_degraded(client, mock_services):
+    mock_services.get(f"http://{settings.TRANSCRIBER_WS_URL}/health").mock(
+        side_effect=httpx.ConnectError("down")
+    )
+    r = client.get("/ready")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "degraded"
+    assert body["services"]["transcriber"] == "unavailable"

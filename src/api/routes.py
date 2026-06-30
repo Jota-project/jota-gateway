@@ -89,6 +89,25 @@ async def gateway_websocket(websocket: WebSocket):
         await websocket.close(code=1011, reason="Servicio crítico no disponible.")
         return
 
+    # 3.6 SEND READY — confirms session is established and announces capabilities
+    resolved_agent = handshake.agent or default_agent
+    try:
+        await websocket.send_json({
+            "type": "ready",
+            "session_id": session_id,
+            "agent": resolved_agent,
+            "input_mode": handshake.input_mode,
+            "output_mode": handshake.output_mode,
+            "capabilities": {
+                "barge_in": config.barge_in_enabled,
+                "tts": "audio" in handshake.output_mode,
+                "transcriber": handshake.input_mode == "audio",
+            },
+        })
+    except Exception as e:
+        logger.warning(f"[{client.id}] Failed to send ready: {e}")
+        return
+
     # 4. LANZAR LOOPS CONCURRENTES
     try:
         await bridge.run()

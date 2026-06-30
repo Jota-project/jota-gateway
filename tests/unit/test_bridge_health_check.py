@@ -1,6 +1,4 @@
-"""Tests for JotaBridge.health_check() — four paths:
-all ok, orchestrator unavailable, transcriber not ready, TTS degraded.
-"""
+"""Tests for JotaBridge.health_check() — four paths."""
 from unittest.mock import AsyncMock, MagicMock, patch
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
@@ -43,8 +41,9 @@ async def test_health_check_returns_false_when_orchestrator_unavailable():
     assert result is False
     ws.send_json.assert_called_once()
     payload = ws.send_json.call_args[0][0]
+    assert payload["type"] == "status"
     assert payload["service"] == "orchestrator"
-    assert payload["status"] == "unavailable"
+    assert payload["state"] == "unavailable"
 
 
 async def test_health_check_returns_false_when_transcriber_not_ready():
@@ -54,16 +53,17 @@ async def test_health_check_returns_false_when_transcriber_not_ready():
     result = await bridge.health_check()
     assert result is False
     payload = ws.send_json.call_args[0][0]
+    assert payload["type"] == "status"
     assert payload["service"] == "transcriber"
-    assert payload["status"] == "unavailable"
+    assert payload["state"] == "unavailable"
 
 
 async def test_health_check_tts_unavailable_still_returns_true():
-    """TTS unavailable is degraded — session continues."""
     bridge, ws, orch = _make_bridge(output_mode=["audio", "text"])
     with patch("src.services.tts_client.TTSClient.ping", new=AsyncMock(return_value=False)):
         result = await bridge.health_check()
     assert result is True
     payload = ws.send_json.call_args[0][0]
+    assert payload["type"] == "status"
     assert payload["service"] == "tts"
-    assert payload["status"] == "unavailable"
+    assert payload["state"] == "unavailable"

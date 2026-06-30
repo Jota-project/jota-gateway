@@ -57,6 +57,9 @@ class ReconnectingOpenClawClient:
         # Register disconnect callback so the inner client notifies us on unexpected drops.
         self._client.on_disconnect = self._handle_disconnect
 
+    def get_name(self) -> str:
+        return self._name
+
     async def connect(self) -> None:
         try:
             self.gateway_info = await self._client.connect()

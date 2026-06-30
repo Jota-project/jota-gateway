@@ -37,13 +37,18 @@ def test_missing_required_handshake_field_closes_ws(client):
 
 
 def test_valid_text_mode_handshake_connection_stays_open(client):
-    """Handshake válido con input_mode=text — conexión permanece abierta."""
+    """Handshake válido — gateway responde con ready y la conexión permanece abierta."""
     with client.websocket_connect("/ws/stream") as ws:
         ws.send_json({
             "client_key": VALID_KEY,
             "input_mode": "text",
             "output_mode": ["text"],
         })
-        # send {"type":"end"} — no-op en modo texto, pero cierra el loop limpiamente
+        ready = ws.receive_json()
+        assert ready["type"] == "ready"
+        assert ready["input_mode"] == "text"
+        assert ready["output_mode"] == ["text"]
+        assert "session_id" in ready
+        assert "agent" in ready
+        assert "capabilities" in ready
         ws.send_text('{"type":"end"}')
-        # Si no lanza excepción, el handshake fue válido y la conexión estuvo abierta

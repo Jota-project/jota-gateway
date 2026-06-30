@@ -47,10 +47,13 @@ async def test_close_unregisters_from_client_registry():
 @pytest.mark.asyncio
 async def test_deliver_push_text_sends_push_message():
     bridge, _ = make_bridge(output_mode=("text",))
+    bridge._push_turn_id = "t-1"
     payload = {"sessionKey": "agent:main:hab_sito", "deltaText": "Buenos días!"}
     await bridge.deliver_push(payload)
     bridge.client_ws.send_json.assert_awaited_once_with({
-        "type": "push", "content": "Buenos días!"
+        "type": "token",
+        "turn_id": "t-1",
+        "text": "Buenos días!",
     })
 
 
@@ -101,8 +104,8 @@ async def aiter(items):
 
 
 @pytest.mark.asyncio
-async def test_push_audio_pipe_forwards_chunks_to_ws():
-    """Audio chunks from TTS are forwarded to the client WebSocket."""
+async def test_push_audio_pipe_forwards_chunks_with_header():
+    """Audio chunks from TTS include [0xA1][turn_seq uint16 BE] header."""
     import asyncio
     bridge, _ = make_bridge(output_mode=("audio", "text"))
     with patch("src.services.bridge.TTSClient") as MockTTS:
@@ -115,12 +118,38 @@ async def test_push_audio_pipe_forwards_chunks_to_ws():
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         calls = [c.args[0] for c in bridge.client_ws.send_bytes.await_args_list]
-        assert calls == chunks
+        expected_header = bytes([0xA1]) + (1).to_bytes(2, "big")  # turn_seq=1
+        assert calls == [expected_header + b"\x00\x01", expected_header + b"\x02\x03"]
+
+
+@pytest.mark.asyncio
+async def test_on_push_turn_start_sends_turn_start_message():
+    """on_push_turn_start sends turn_start JSON message to client."""
+    bridge, _ = make_bridge(output_mode=("text",))
+    await bridge.on_push_turn_start("agent:main:hab_sito")
+    bridge.client_ws.send_json.assert_awaited_once_with({
+        "type": "turn_start",
+        "turn_id": "t-1",
+        "turn_seq": 1,
+    })
+
+
+@pytest.mark.asyncio
+async def test_on_push_turn_end_sends_turn_end_message():
+    """on_push_turn_end sends turn_end JSON message to client."""
+    bridge, _ = make_bridge(output_mode=("text",))
+    bridge._push_turn_id = "t-1"
+    await bridge.on_push_turn_end("agent:main:hab_sito")
+    bridge.client_ws.send_json.assert_awaited_once_with({
+        "type": "turn_end",
+        "turn_id": "t-1",
+    })
 
 
 @pytest.mark.asyncio
 async def test_deliver_push_with_tts_sends_to_tts():
     bridge, _ = make_bridge(output_mode=("audio", "text"))
+    bridge._push_turn_id = "t-1"
     mock_tts = AsyncMock()
     bridge._push_tts = mock_tts
     payload = {"sessionKey": "agent:main:hab_sito", "deltaText": "Hola!"}

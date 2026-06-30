@@ -1,27 +1,31 @@
-# Guía de protocolo para clientes — jota-gateway
+# Protocolo de cliente — jota-gateway
 
-Esta guía describe cómo conectarse al gateway, qué mensajes enviar y recibir, y cómo manejar audio bidireccional.
+Guía completa para implementar clientes que se conecten a jota-gateway. Cubre el ciclo de vida de la sesión WebSocket, todos los mensajes posibles en ambas direcciones y el formato de audio binario.
 
 ---
 
 ## Índice
 
 1. [Conexión y handshake](#1-conexión-y-handshake)
-2. [Enviar texto](#2-enviar-texto)
+2. [Mensaje ready](#2-mensaje-ready)
 3. [Enviar audio de micrófono](#3-enviar-audio-de-micrófono)
-4. [Recibir texto de la IA](#4-recibir-texto-de-la-ia)
-5. [Recibir audio TTS](#5-recibir-audio-tts)
-6. [Mensajes de estado y error](#6-mensajes-de-estado-y-error)
-7. [Modos de operación combinados](#7-modos-de-operación-combinados)
-8. [Referencia de mensajes](#8-referencia-de-mensajes)
+4. [Enviar texto](#4-enviar-texto)
+5. [Recibir tokens de texto](#5-recibir-tokens-de-texto)
+6. [Recibir audio TTS](#6-recibir-audio-tts)
+7. [Barge-in e interrupciones](#7-barge-in-e-interrupciones)
+8. [Estado de servicios](#8-estado-de-servicios)
+9. [Mensajes de error](#9-mensajes-de-error)
+10. [Turns iniciados por el agente (push)](#10-turns-iniciados-por-el-agente-push)
+11. [Modos de operación](#11-modos-de-operación)
+12. [Referencia completa de mensajes](#12-referencia-completa-de-mensajes)
 
 ---
 
 ## 1. Conexión y handshake
 
-**Endpoint:** `ws://<host>:8004/ws/stream`
+**Endpoint WebSocket:** `ws://<host>:8004/ws/stream`
 
-**El primer mensaje que envíes DEBE ser el handshake** — un JSON que declara tu identidad y los modos que usará este cliente:
+El **primer mensaje** que envíes DEBE ser el handshake. Es el único mensaje sin campo `type`.
 
 ```json
 {
@@ -32,62 +36,55 @@ Esta guía describe cómo conectarse al gateway, qué mensajes enviar y recibir,
 }
 ```
 
-| Campo | Tipo | Obligatorio | Descripción |
-|---|---|---|---|
-| `client_key` | string | ✓ | API key del cliente — validada contra jota-db |
-| `input_mode` | string | ✓ | `"text"` o `"audio"` |
+| Campo | Tipo | Requerido | Descripción |
+|-------|------|-----------|-------------|
+| `client_key` | string | ✓ | Clave de autenticación del cliente |
+| `input_mode` | `"audio"` \| `"text"` | ✓ | Cómo enviará datos este cliente |
 | `output_mode` | array | ✓ | Qué quiere recibir: `"text"`, `"audio"`, `"status"` |
-| `agent` | string | — | Agente OpenClaw a usar; por defecto el configurado en el gateway |
+| `agent` | string | — | Agente OpenClaw a usar; omitir para usar el agente por defecto |
 
-Si `client_key` no es válida o el cliente está inactivo, el servidor cierra con código **1008**.
+### Errores de handshake (el servidor cierra la conexión)
 
-### Ejemplos de handshake por caso de uso
-
-```json
-// Cliente de chat solo texto
-{"input_mode": "text", "output_mode": ["text"]}
-
-// Asistente de voz completo (micrófono + audio TTS + transcripción)
-{"input_mode": "audio", "output_mode": ["audio", "text", "status"]}
-
-// Voz de entrada, respuesta solo en texto
-{"input_mode": "audio", "output_mode": ["text"]}
-
-// Texto de entrada, respuesta en audio y texto
-{"input_mode": "text", "output_mode": ["text", "audio"]}
-```
+| Situación | Código WS | Motivo |
+|-----------|-----------|--------|
+| JSON inválido o campos incorrectos | 1008 | `"Handshake invalido"` |
+| `client_key` inválida o cliente inactivo | 1008 | `"Clave de cliente invalida o inactiva"` |
+| Servicio de identidad no disponible | 1011 | `"Servicio de identidad no disponible"` |
+| Agente solicitado no existe en OpenClaw | 1008 | `"Agent '{name}' not available"` |
+| Servicio crítico no disponible tras health check | 1011 | `"Servicio crítico no disponible"` |
 
 ---
 
-## 2. Enviar texto
+## 2. Mensaje ready
 
-Hay dos formas de enviar texto al orquestador:
-
-### Flujo review & send (canónico)
-
-Este es el flujo principal, tanto en modo audio como en modo texto con revisión. El cliente envía un mensaje con `type: "send"`:
+Si el handshake es válido y todos los servicios críticos responden, el gateway envía `ready` como **primer mensaje** antes de cualquier otro:
 
 ```json
-{"type": "send", "text": "¿Cuál es la capital de Francia?"}
+{
+  "type": "ready",
+  "session_id": "hab_sito:1751289600000",
+  "agent": "main",
+  "input_mode": "audio",
+  "output_mode": ["audio", "text"],
+  "capabilities": {
+    "barge_in": true,
+    "tts": true,
+    "transcriber": true
+  }
+}
 ```
 
-Este es el mismo mensaje que se usa tras recibir una transcripción de audio (ver sección 3). El campo `text` puede ser diferente al transcrito original si el usuario lo editó.
+| Campo | Descripción |
+|-------|-------------|
+| `session_id` | Identificador único de esta sesión (`client_id:timestamp_ms`) |
+| `agent` | Agente OpenClaw activo (el solicitado o el por defecto) |
+| `input_mode` | Modo de entrada confirmado |
+| `output_mode` | Modos de salida activos |
+| `capabilities.barge_in` | Si el barge-in está habilitado para este cliente |
+| `capabilities.tts` | Si el audio TTS está disponible (`"audio"` en `output_mode` y TTS responde) |
+| `capabilities.transcriber` | Si el transcriptor está activo (`input_mode == "audio"`) |
 
-### Texto directo (atajo)
-
-En modo texto puro, también puedes enviar el prompt directamente como un JSON con campo `text` (sin `type`):
-
-```json
-{"text": "¿Cuál es la capital de Francia?"}
-```
-
-Opcionalmente puedes especificar un modelo concreto:
-
-```json
-{"text": "Explícame la relatividad", "model_id": "gpt-4o"}
-```
-
-Si `text` está vacío o el JSON es inválido, recibirás un `error` y la conexión continúa.
+Espera este mensaje antes de enviar audio o texto. Si no llega, la conexión fue cerrada por un error de handshake.
 
 ---
 
@@ -95,272 +92,396 @@ Si `text` está vacío o el JSON es inválido, recibirás un `error` y la conexi
 
 Requiere `input_mode: "audio"` en el handshake.
 
-Envía **frames binarios** de audio crudo en formato:
+Envía frames binarios de audio crudo con este formato exacto:
 
 | Parámetro | Valor |
-|---|---|
+|-----------|-------|
 | Formato | PCM Float32 little-endian |
-| Sample rate | 16000 Hz |
+| Sample rate | 16 000 Hz |
 | Canales | 1 (mono) |
+| Header | ninguno — solo los bytes de audio |
 
-### Flujo de voz — review & send
-
-> **Cambio importante desde v1.6.0:** la transcripción final ya **no se envía automáticamente al orquestador**. El cliente debe confirmarla explícitamente con `{"type": "send"}`. Esto permite que el usuario revise y corrija errores antes de procesar.
+### Flujo de voz completo
 
 ```
-1. El cliente envía frames de audio PCM:
-   → <PCM Float32 bytes>
-   → <PCM Float32 bytes>
-
-2. Llegan parciales opcionales mientras el transcriptor procesa:
-   ← {"type": "transcription_partial", "text": "hola mun..."}
-
-3. El cliente señaliza fin de audio:
-   → {"type": "end"}
-
-4. El transcriptor entrega la transcripción final — el cliente la muestra al usuario:
-   ← {"type": "transcription", "text": "hola mundo"}
-
-5. El usuario revisa/edita el texto. El cliente confirma enviando:
-   → {"type": "send", "text": "hola mundo"}
-      (puede ser diferente al original si el usuario lo corrigió)
-
-6. El gateway lo envía al orquestador y llegan los tokens:
-   ← {"type": "token", "content": "Hola, ¿en qué puedo ayudarte?"}
+Cliente                          Gateway
+  │─── [PCM Float32] ──────────►│
+  │─── [PCM Float32] ──────────►│
+  │◄── {"type":"transcription_partial","text":"enciende la..."} ─│
+  │─── [PCM Float32] ──────────►│
+  │─── {"type":"end"} ─────────►│   ← usuario suelta el micrófono
+  │◄── {"type":"transcription","text":"enciende la luz"} ────────│
+  │                              │   ← cliente muestra texto para revisión
+  │─── {"type":"send","text":"enciende la luz"} ───────────────►│
+  │◄── {"type":"turn_start","turn_id":"t-1","turn_seq":1} ───────│
+  │◄── {"type":"token","turn_id":"t-1","text":"Vale,"} ──────────│
+  │◄── [0xA1][0x00][0x01][PCM16...] ────────────────────────────│
+  │◄── {"type":"token","turn_id":"t-1","text":" encendida."} ────│
+  │◄── [0xA1][0x00][0x01][PCM16...] ────────────────────────────│
+  │◄── {"type":"turn_end","turn_id":"t-1"} ──────────────────────│
 ```
 
 ### Señal de fin de audio
 
-Enviar `{"type": "end"}` es la forma de indicar al transcriptor que el usuario terminó de hablar y debe emitir la transcripción final. Úsalo cuando:
-
-- El usuario suelta el botón de micrófono
-- Detectas silencio prolongado en el cliente
-- El VAD del cliente decide que la frase ha terminado
-
-### Barge-in (interrumpir respuesta en curso)
-
-Si el usuario empieza a hablar mientras llegan tokens del orquestador, el gateway detecta el nuevo audio y cancela el turno activo. Recibirás:
+Envía `{"type": "end"}` cuando el usuario termine de hablar:
 
 ```json
-{"type": "interrupted"}
+{ "type": "end" }
 ```
 
-Tras esto el flujo reinicia desde el paso 1 — sigue enviando audio normalmente.
+Úsalo cuando el usuario suelta el botón de micrófono, detectas silencio prolongado en cliente, o el VAD local decide que la frase terminó. Tras `end`, el transcriptor entrega la transcripción final y el cliente espera para enviarla con `send`.
 
 ---
 
-## 4. Recibir texto de la IA
+## 4. Enviar texto
+
+### Mensaje send (modo canónico)
+
+Envía texto al orquestador — ya sea una transcripción confirmada o texto escrito directamente:
+
+```json
+{ "type": "send", "text": "¿Cuál es la capital de Francia?" }
+```
+
+El campo `text` puede diferir de la transcripción original si el usuario la editó.
+
+### Cancelar turno activo
+
+Si el usuario cancela la respuesta en curso sin lanzar una nueva:
+
+```json
+{ "type": "cancel" }
+```
+
+---
+
+## 5. Recibir tokens de texto
 
 Requiere `"text"` en `output_mode`.
 
-Los tokens llegan en streaming conforme el orquestador los genera:
+Cada turno consiste en tres mensajes en este orden:
+
+### `turn_start` — inicio de turno
 
 ```json
-{"type": "token", "content": "La"}
-{"type": "token", "content": " capital"}
-{"type": "token", "content": " de Francia"}
-{"type": "token", "content": " es París."}
+{ "type": "turn_start", "turn_id": "t-1", "turn_seq": 1 }
 ```
 
-Cuando la respuesta completa ha terminado:
+| Campo | Descripción |
+|-------|-------------|
+| `turn_id` | Identificador del turno (`t-{N}`, secuencial por sesión desde 1) |
+| `turn_seq` | El mismo N como entero — aparece también en el header de los frames de audio |
+
+### `token` — texto en streaming
 
 ```json
-{"type": "end"}
+{ "type": "token", "turn_id": "t-1", "text": "La capital" }
+{ "type": "token", "turn_id": "t-1", "text": " de Francia" }
+{ "type": "token", "turn_id": "t-1", "text": " es París." }
 ```
 
-**Pseudocódigo de recepción de texto:**
+Los tokens llegan en orden; concaténalos para reconstruir la respuesta completa. El campo `turn_id` permite asociar tokens con su `turn_start` aunque lleguen entrelazados con frames de audio.
+
+### `turn_end` — fin de turno
+
+```json
+{ "type": "turn_end", "turn_id": "t-1" }
+```
+
+Señala que el orquestador terminó de generar la respuesta. El audio TTS puede seguir llegando brevemente después (ya está en tránsito).
+
+### Pseudocódigo de recepción
 
 ```python
-buffer = ""
+current_buffer = {}
+
 async for msg in ws:
     if isinstance(msg, str):
         data = json.loads(msg)
-        if data["type"] == "token":
-            buffer += data["content"]
-            render(data["content"])          # actualiza UI en tiempo real
-        elif data["type"] == "end":
-            on_response_complete(buffer)
-            buffer = ""
-        elif data["type"] == "transcription":
-            show_editable_transcription(data["text"])  # usuario puede editar
-        elif data["type"] == "error":
-            show_error(data["content"])
+        match data["type"]:
+            case "ready":
+                session_id = data["session_id"]
+                agent = data["agent"]
+                capabilities = data["capabilities"]
+
+            case "turn_start":
+                turn_id = data["turn_id"]
+                current_buffer[turn_id] = ""
+
+            case "token":
+                turn_id = data["turn_id"]
+                current_buffer[turn_id] += data["text"]
+                render_streaming(data["text"])
+
+            case "turn_end":
+                turn_id = data["turn_id"]
+                on_turn_complete(current_buffer.pop(turn_id, ""))
+
+            case "transcription_partial":
+                show_live_transcription(data["text"])
+
+            case "transcription":
+                show_final_transcription_for_review(data["text"])
+
+            case "interrupted":
+                clear_current_response_ui()
+
+            case "status":
+                handle_service_status(data["service"], data["state"])
+
+            case "error":
+                handle_error(data["code"], data["message"], data["fatal"])
+
+    elif isinstance(msg, bytes):
+        play_audio_frame(msg)
 ```
 
 ---
 
-## 5. Recibir audio TTS
+## 6. Recibir audio TTS
 
 Requiere `"audio"` en `output_mode`.
 
-Cuando el orquestador genera tokens, el gateway los envía en paralelo al TTS. El audio llega como **frames binarios** intercalados con mensajes JSON de control.
+Los frames de audio llegan como **mensajes binarios** intercalados con los JSON de control.
 
-> Si el servicio TTS no está disponible, el gateway continúa en modo texto — los tokens llegan igualmente, solo sin audio.
-
-### Flujo de mensajes por segmento sintetizado
+### Formato de los frames binarios
 
 ```
-← {"type": "audio_start", "chunk_id": 0}   JSON — nuevo chunk comenzando
-← <bytes PCM16>                              binario — frames de audio
-← <bytes PCM16>                              binario
-← {"type": "audio_end", "chunk_id": 0}      JSON — chunk completo
-← {"type": "audio_start", "chunk_id": 1}   JSON — siguiente frase
-← <bytes PCM16>
-← {"type": "audio_end", "chunk_id": 1}
-← {"type": "end"}                            JSON — respuesta de texto completa
+┌──────────┬──────────────────────┬─────────────────────┐
+│  0xA1    │  turn_seq (uint16 BE) │  PCM16 24 kHz       │
+│  1 byte  │  2 bytes              │  N bytes            │
+└──────────┴──────────────────────┴─────────────────────┘
 ```
-
-> `audio_start` / `audio_end` son informativos — puedes ignorarlos si solo necesitas el PCM. El `chunk_id` es un entero creciente desde 0 por sesión.
-
-### Formato del audio recibido
 
 | Parámetro | Valor |
-|---|---|
-| Formato | PCM16 (signed 16-bit, little-endian) |
-| Sample rate | 24000 Hz |
-| Canales | 1 (mono) |
+|-----------|-------|
+| Magic byte | `0xA1` — identifica frames de audio |
+| `turn_seq` | Uint16 big-endian — mismo valor que `turn_start.turn_seq` |
+| Audio | PCM16 signed 16-bit little-endian, 24 000 Hz, 1 canal (mono) |
 
-### Pseudocódigo de recepción de audio
+El `turn_seq` permite descartar audio de turnos anteriores si ya llegó un `turn_start` con seq mayor (barge-in sin mensaje adicional).
+
+### Cómo parsear un frame
 
 ```python
+def parse_audio_frame(data: bytes):
+    if len(data) < 3 or data[0] != 0xA1:
+        return None, None  # no es un frame de audio
+    turn_seq = (data[1] << 8) | data[2]
+    pcm16 = data[3:]
+    return turn_seq, pcm16
+```
+
+### Pseudocódigo con barge-in por turn_seq
+
+```python
+current_turn_seq = 0
+audio_buffer = bytearray()
+
 async for msg in ws:
     if isinstance(msg, bytes):
-        # Frame de audio PCM16 — reproducir o bufferizar
-        audio_player.write(msg)
+        if len(msg) >= 3 and msg[0] == 0xA1:
+            frame_seq = (msg[1] << 8) | msg[2]
+            pcm16 = msg[3:]
+            if frame_seq >= current_turn_seq:
+                # Audio del turno actual o más nuevo — reproducir
+                if frame_seq > current_turn_seq:
+                    audio_player.stop()  # barge-in, descarta audio anterior
+                    current_turn_seq = frame_seq
+                audio_player.write(pcm16)
+
     elif isinstance(msg, str):
         data = json.loads(msg)
-        match data["type"]:
-            case "audio_start":
-                pass  # opcional: preparar buffer para nuevo chunk
-            case "audio_end":
-                pass  # opcional: marcar fin de frase para sincronización
-            case "end":
-                audio_player.flush()
-            case "transcription":
-                show_editable_transcription(data["text"])
-            case "error":
-                handle_error(data["content"])
+        if data["type"] == "turn_start":
+            current_turn_seq = data["turn_seq"]
+            audio_player.prepare_for_new_turn()
+        elif data["type"] == "interrupted":
+            audio_player.stop()
+```
+
+> Si el TTS no está disponible, el gateway continúa sin audio — los `token` siguen llegando igualmente. `capabilities.tts` en el `ready` te avisa de antemano.
+
+---
+
+## 7. Barge-in e interrupciones
+
+El barge-in ocurre cuando el usuario empieza a hablar mientras el orquestador aún está respondiendo.
+
+El gateway detecta la parcial de transcripción y cancela el turno activo si supera el umbral mínimo de caracteres (`capabilities.barge_in`). El cliente recibe:
+
+```json
+{ "type": "interrupted" }
+```
+
+Tras `interrupted`:
+- Limpia la UI de la respuesta en curso
+- Descarta audio con `turn_seq` del turno cancelado (ya no llegará más)
+- El flujo reinicia normalmente — sigue enviando audio
+
+El nuevo turno llegará con un `turn_start` con `turn_seq` mayor, lo que también activa el descarte de audio del turn anterior a nivel de frame sin necesitar el mensaje `interrupted`.
+
+---
+
+## 8. Estado de servicios
+
+El gateway notifica cambios en el estado de sus microservicios durante la sesión:
+
+```json
+{ "type": "status", "service": "tts", "state": "degraded" }
+```
+
+| `service` | `state` | Impacto |
+|-----------|---------|---------|
+| `orchestrator` | `unavailable` | **Fatal** — el gateway cerrará la sesión |
+| `transcriber` | `unavailable` | Degradado — sin transcripción automática; puedes seguir en modo texto |
+| `transcriber` | `degraded` | Parcial — el transcriptor responde pero detectó un problema (buffer lleno, etc.) |
+| `tts` | `unavailable` | Degradado — sin audio; los tokens de texto siguen llegando |
+
+Los mensajes de estado también pueden incluir `code` y `message` con detalles adicionales:
+
+```json
+{
+  "type": "status",
+  "service": "transcriber",
+  "state": "degraded",
+  "code": "buffer_full",
+  "message": "buffer_full"
+}
 ```
 
 ---
 
-## 6. Mensajes de estado y error
-
-### Estado (`"status"` en `output_mode`)
-
-El orquestador emite eventos de estado internos durante el procesamiento (p.ej. llamadas a herramientas, cambios de modelo). Si incluyes `"status"` en `output_mode` los recibirás tal cual:
-
-```json
-{"type": "status", "content": "Buscando en base de datos..."}
-```
-
-### Estado de microservicios (`service_status`)
-
-El gateway notifica degradaciones en los servicios internos:
-
-```json
-{"type": "service_status", "service": "tts", "status": "unavailable", "message": "..."}
-```
-
-| `service` | `status` | Impacto |
-|---|---|---|
-| `orchestrator` | `unavailable` | **Fatal** — la sesión se cierra, no hay respuesta posible |
-| `transcriber` | `unavailable` | Degradado — sin transcripción, el cliente puede seguir en modo texto |
-| `tts` | `unavailable` | Degradado — sin audio, los tokens de texto siguen llegando |
-
-> Ante un `service_status` con `status: "unavailable"`, solo cierra la sesión si el servicio es `orchestrator`. Para `transcriber` y `tts` la sesión continúa en modo degradado.
-
-### Errores (siempre enviados)
+## 9. Mensajes de error
 
 Los errores llegan independientemente de `output_mode`:
 
 ```json
-{"type": "error", "content": "Descripción del problema"}
+{
+  "type": "error",
+  "code": "TURN_ERROR",
+  "message": "Error al conectar con el orquestador",
+  "fatal": false,
+  "turn_id": "t-2"
+}
 ```
 
-| Origen | Cuándo ocurre |
-|---|---|
-| Gateway | JSON inválido, fallo al conectar a microservicios |
-| Orquestador | Error HTTP, timeout, fallo interno del modelo |
-| TTS | `session_timeout`, `queue_full` (el audio de esa respuesta se pierde) |
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| `code` | string | Código de error (ver tabla abajo) |
+| `message` | string | Descripción legible |
+| `fatal` | bool | Si `true`, el gateway cierra la sesión inmediatamente después |
+| `turn_id` | string | Presente solo si el error está ligado a un turno concreto |
 
-Tras un error el gateway **no cierra la conexión** — puedes seguir enviando mensajes.
+### Códigos de error
+
+| Código | Fatal | Cuándo ocurre |
+|--------|-------|---------------|
+| `AUTH_FAILED` | true | `client_key` inválida o inactiva |
+| `AGENT_NOT_FOUND` | true | El agente solicitado no existe en OpenClaw |
+| `ORCHESTRATOR_UNAVAILABLE` | true | OpenClaw no disponible al iniciar la sesión |
+| `TTS_UNAVAILABLE` | false | TTS caído; la sesión continúa sin audio |
+| `TRANSCRIBER_UNAVAILABLE` | false | Transcriber caído; puedes cambiar a modo texto |
+| `TURN_ERROR` | false | Fallo en un turno concreto; la sesión continúa |
+| `INTERNAL_ERROR` | true/false | Error inesperado; `fatal` según criticidad |
+
+Si `fatal: true`, no envíes más mensajes — el servidor cerrará la conexión WS inmediatamente.
 
 ---
 
-## 7. Modos de operación combinados
+## 10. Turns iniciados por el agente (push)
+
+OpenClaw puede iniciar turnos proactivamente sin que el usuario haya enviado nada (notificaciones, recordatorios, alertas). El gateway los entrega al cliente con el mismo protocolo que un turno normal:
+
+```json
+{ "type": "turn_start", "turn_id": "t-3", "turn_seq": 3 }
+{ "type": "token", "turn_id": "t-3", "text": "Recuerda que tienes una reunión en 5 minutos." }
+// Si audio en output_mode: [0xA1][0x00][0x03][PCM16...]
+{ "type": "turn_end", "turn_id": "t-3" }
+```
+
+El cliente no necesita distinguirlos de los turnos normales — el `turn_id` y `turn_seq` siguen la misma secuencia.
+
+---
+
+## 11. Modos de operación
 
 ### Chat de texto puro
 
-```
-Cliente                         Gateway
-   │── handshake ──────────────►│
-   │   {"input_mode":"text",    │
-   │    "output_mode":["text"]} │
-   │                            │
-   │── {"text":"Hola"} ────────►│──► Orchestrator
-   │◄── {"type":"token","content":"Hola"} ──────────────────│
-   │◄── {"type":"token","content":", ¿en qué puedo ayudar?"} │
-   │◄── {"type":"end"} ─────────│
+```json
+// Handshake
+{ "client_key": "...", "input_mode": "text", "output_mode": ["text"] }
+
+// Enviar pregunta
+{ "type": "send", "text": "¿Qué tiempo hace en Madrid?" }
+
+// Recibir respuesta
+{ "type": "turn_start", "turn_id": "t-1", "turn_seq": 1 }
+{ "type": "token", "turn_id": "t-1", "text": "En Madrid " }
+{ "type": "token", "turn_id": "t-1", "text": "hace sol." }
+{ "type": "turn_end", "turn_id": "t-1" }
 ```
 
-### Asistente de voz con review & send
+### Asistente de voz completo (ESP32, app móvil)
 
+```json
+// Handshake
+{ "client_key": "...", "input_mode": "audio", "output_mode": ["audio", "text", "status"] }
 ```
-Cliente                         Gateway
-   │── handshake ──────────────►│
-   │   {"input_mode":"audio",   │
-   │    "output_mode":          │
-   │     ["audio","text",       │
-   │      "status"]}            │
-   │                            │
-   │── <PCM Float32 mic> ──────►│──► Transcriber
-   │── <PCM Float32 mic> ──────►│
-   │◄── {"type":"transcription_partial","text":"¿qué tiem..."} │
-   │── {"type":"end"} ──────────►│   (usuario suelta el mic)
-   │◄── {"type":"transcription","text":"¿qué tiempo hace?"} │
-   │                            │   (usuario revisa, opcionalmente edita)
-   │── {"type":"send",          │
-   │    "text":"¿qué tiempo     │
-   │           hace?"} ────────►│──► Orchestrator (streaming tokens)
-   │                            │──► jota-speaker TTS (tokens en paralelo)
-   │◄── {"type":"token","content":"Hoy"} ────────│
-   │◄── {"type":"audio_start","chunk_id":0} ─────│
-   │◄── <PCM16 audio> ──────────│
-   │◄── {"type":"audio_end","chunk_id":0} ───────│
-   │◄── {"type":"token","content":" hace sol."} ─│
-   │◄── {"type":"audio_start","chunk_id":1} ─────│
-   │◄── <PCM16 audio> ──────────│
-   │◄── {"type":"audio_end","chunk_id":1} ───────│
-   │◄── {"type":"end"} ─────────│
+
+Flujo: envía PCM Float32 → recibe parciales → envía `end` → recibe `transcription` → envías `send` → recibes `turn_start` + `token` + frames binarios + `turn_end`.
+
+### Voz de entrada, texto de salida
+
+```json
+// Handshake
+{ "client_key": "...", "input_mode": "audio", "output_mode": ["text"] }
 ```
+
+El transcriptor funciona normalmente pero no se activa TTS. Útil para clientes que quieren transcripción + tokens de texto sin reproducción de audio.
+
+### Texto de entrada, audio de salida
+
+```json
+// Handshake
+{ "client_key": "...", "input_mode": "text", "output_mode": ["text", "audio"] }
+```
+
+El cliente escribe; el gateway sintetiza audio con el texto de la respuesta.
 
 ---
 
-## 8. Referencia de mensajes
+## 12. Referencia completa de mensajes
 
 ### Cliente → Gateway
 
 | Mensaje | Formato | Cuándo |
-|---|---|---|
-| Handshake | `{"client_key":"...", "input_mode":"...", "output_mode":[...], "agent":"..."}` | Primer mensaje, obligatorio — `agent` es opcional |
+|---------|---------|--------|
+| Handshake | `{"client_key":"...","input_mode":"...","output_mode":[...],"agent":"..."}` | Primer mensaje, obligatorio |
 | Fin de audio | `{"type":"end"}` | `input_mode="audio"` — usuario termina de hablar |
-| Confirmar y enviar | `{"type":"send","text":"..."}` | Tras recibir `transcription` — lanza la respuesta del orquestador |
-| Texto directo | `{"text":"...", "model_id":"..."}` | Atajo de texto plano — alternativa a `{"type":"send","text":"..."}` |
-| Audio mic | frame binario PCM Float32 16kHz | `input_mode="audio"` |
+| Enviar texto | `{"type":"send","text":"..."}` | Envía texto al orquestador |
+| Cancelar turno | `{"type":"cancel"}` | Cancela turno activo sin iniciar uno nuevo |
+| Frame de audio | bytes PCM Float32 16 kHz sin header | `input_mode="audio"` |
 
 ### Gateway → Cliente
 
-| Tipo | Formato | Condición |
-|---|---|---|
-| `transcription_partial` | `{"type":"transcription_partial","text":"..."}` | `input_mode="audio"`, parciales en tiempo real |
-| `transcription` | `{"type":"transcription","text":"..."}` | `input_mode="audio"`, transcripción final — esperar `send` |
-| `token` | `{"type":"token","content":"..."}` | `"text"` en `output_mode` — tras recibir `send` |
-| `end` | `{"type":"end"}` | `"text"` en `output_mode`, fin de respuesta |
-| `interrupted` | `{"type":"interrupted"}` | Barge-in confirmado — turno anterior cancelado |
-| `audio_start` | `{"type":"audio_start","chunk_id":N}` | `"audio"` en `output_mode` |
-| audio frame | frame binario PCM16 24kHz | `"audio"` en `output_mode` |
-| `audio_end` | `{"type":"audio_end","chunk_id":N}` | `"audio"` en `output_mode` |
-| `status` | `{"type":"status","content":"..."}` | `"status"` en `output_mode` |
-| `service_status` | `{"type":"service_status","service":"...","status":"...","message":"..."}` | Siempre — degradación de microservicio |
-| `error` | `{"type":"error","content":"..."}` | Siempre |
+#### Mensajes JSON
+
+| Tipo | Formato | Cuándo |
+|------|---------|--------|
+| `ready` | `{"type":"ready","session_id":"...","agent":"...","input_mode":"...","output_mode":[...],"capabilities":{...}}` | Tras handshake exitoso, antes de cualquier otro mensaje |
+| `turn_start` | `{"type":"turn_start","turn_id":"t-N","turn_seq":N}` | Inicio de cada turno |
+| `token` | `{"type":"token","turn_id":"t-N","text":"..."}` | `"text"` en `output_mode` — tokens en streaming |
+| `turn_end` | `{"type":"turn_end","turn_id":"t-N"}` | Fin de cada turno |
+| `transcription_partial` | `{"type":"transcription_partial","text":"..."}` | `input_mode="audio"` — parciales en tiempo real |
+| `transcription` | `{"type":"transcription","text":"..."}` | `input_mode="audio"` — transcripción final, espera `send` |
+| `interrupted` | `{"type":"interrupted"}` | Barge-in confirmado, turno anterior cancelado |
+| `status` | `{"type":"status","service":"...","state":"..."}` | Cambio de estado de un microservicio |
+| `error` | `{"type":"error","code":"...","message":"...","fatal":bool,"turn_id":"..."}` | Error (turno o sesión) |
+
+#### Frames binarios de audio
+
+```
+[0xA1][turn_seq uint16 BE][PCM16 24kHz LE mono]
+```
+
+Llegan entrelazados con los mensajes JSON. Identifica audio por el magic byte `0xA1` en el primer byte.

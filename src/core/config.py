@@ -14,5 +14,6 @@ class Settings(BaseSettings):
     ORCHESTRATOR_RECONNECT_MAX_BACKOFF: float = 60.0
     ORCHESTRATOR_RECONNECT_MAX_DURATION: float = 300.0
     TRANSCRIBER_SILENCE_TIMEOUT_S: int = 25
+    ADMIN_TOKEN: str = ""
 
 settings = Settings()

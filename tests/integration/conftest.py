@@ -29,6 +29,7 @@ DB_BASE = _DB_BASE  # public alias for use in individual test files
 
 VALID_KEY = "valid-key-abc"
 CLIENT_ID = "hab_sito"
+ADMIN_TOKEN = "test-admin-token"
 
 SESSION_RESPONSE = {
     "client": {"id": CLIENT_ID, "client_key": VALID_KEY, "is_active": True, "name": CLIENT_ID},
@@ -45,8 +46,6 @@ SESSION_RESPONSE = {
     },
 }
 
-CONFIG_RESPONSE = SESSION_RESPONSE["config"]
-
 # ---------------------------------------------------------------------------
 # Cache cleanup
 # ---------------------------------------------------------------------------
@@ -58,6 +57,20 @@ def clear_db_cache():
     yield
     db_client._session_cache.clear()
     db_client._models_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def configure_admin_token():
+    """Set ADMIN_TOKEN for all integration tests."""
+    original = settings.ADMIN_TOKEN
+    settings.ADMIN_TOKEN = ADMIN_TOKEN
+    yield
+    settings.ADMIN_TOKEN = original
+
+
+@pytest.fixture
+def admin_headers():
+    return {"x-admin-token": ADMIN_TOKEN}
 
 # ---------------------------------------------------------------------------
 # Mock Orchestrator
@@ -92,6 +105,7 @@ def make_mock_orchestrator(tokens: list[str] = None) -> OrchestratorProtocol:
     mock.stream_response = _stream
     mock.gateway_info = _make_default_gateway_info()
     mock._name = "openclaw"
+    mock.get_name = MagicMock(return_value="openclaw")
     mock.status = MagicMock(return_value=OrchestratorStatus(
         name="openclaw",
         state=OrchestratorState.CONNECTED,
@@ -123,32 +137,8 @@ def mock_services():
                 else httpx.Response(401, json={"detail": "Invalid key"})
             )
         )
-        # --- jota-db: config ---
-        router.get(f"{_DB_BASE}/config/me").mock(
-            return_value=httpx.Response(200, json=CONFIG_RESPONSE)
-        )
-        router.put(f"{_DB_BASE}/config/me").mock(
-            return_value=httpx.Response(200, json=CONFIG_RESPONSE)
-        )
-        router.post(f"{_DB_BASE}/config/me/reset").mock(
-            return_value=httpx.Response(200, json=CONFIG_RESPONSE)
-        )
-        # --- jota-db: conversations ---
-        router.get(f"{_DB_BASE}/conversations").mock(
-            return_value=httpx.Response(200, json=[{"id": "conv-1", "title": "Test"}])
-        )
-        router.get(url__regex=rf"{_DB_BASE}/conversations/.+/messages").mock(
-            return_value=httpx.Response(200, json=[{"id": "msg-1", "content": "hola"}])
-        )
-        router.patch(url__regex=rf"{_DB_BASE}/conversations/.+").mock(
-            return_value=httpx.Response(200, json={"id": "conv-1", "status": "archived"})
-        )
-        # --- jota-db: models ---
-        router.get(f"{_DB_BASE}/models").mock(
-            return_value=httpx.Response(200, json=[{"id": "llama3", "name": "LLaMA 3"}])
-        )
         # --- transcriber: health ---
-        router.get("http://localhost:9000/health").mock(
+        router.get(f"http://{settings.TRANSCRIBER_WS_URL}/health").mock(
             return_value=httpx.Response(200)
         )
         # --- TTS: health ---

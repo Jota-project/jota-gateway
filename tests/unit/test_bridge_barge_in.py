@@ -251,9 +251,9 @@ async def test_transcriber_warning_forwarded_to_client(make_bridge):
     bridge = make_bridge()
     await bridge._on_transcriber_warning("buffer_full", "Buffer full")
     bridge.client_ws.send_json.assert_called_once_with({
-        "type": "service_status",
+        "type": "status",
         "service": "transcriber",
-        "status": "warning",
+        "state": "degraded",
         "code": "buffer_full",
         "message": "Buffer full",
     })
@@ -263,6 +263,8 @@ async def test_transcriber_warning_uses_code_when_no_message(make_bridge):
     bridge = make_bridge()
     await bridge._on_transcriber_warning("timeout", None)
     payload = bridge.client_ws.send_json.call_args[0][0]
+    assert payload["type"] == "status"
+    assert payload["state"] == "degraded"
     assert payload["message"] == "timeout"
 
 

@@ -83,9 +83,9 @@ async def test_empty_string_last_final_text_suppresses_transcriber_unavailable(m
     for call in ws.send_json.call_args_list:
         payload = call.args[0] if call.args else call.kwargs.get("json", {})
         assert not (
-            payload.get("type") == "service_status"
+            payload.get("type") == "status"
             and payload.get("service") == "transcriber"
-            and payload.get("status") == "unavailable"
+            and payload.get("state") == "unavailable"
         ), f"No debería haberse enviado 'transcriber unavailable' con _last_final_text='': {payload}"
 
 
@@ -116,9 +116,9 @@ async def test_none_last_final_text_sends_transcriber_unavailable(mock_tracker):
 
     unavailable_calls = [
         call for call in ws.send_json.call_args_list
-        if (call.args[0] if call.args else {}).get("type") == "service_status"
+        if (call.args[0] if call.args else {}).get("type") == "status"
         and (call.args[0] if call.args else {}).get("service") == "transcriber"
-        and (call.args[0] if call.args else {}).get("status") == "unavailable"
+        and (call.args[0] if call.args else {}).get("state") == "unavailable"
     ]
     assert unavailable_calls, "Debe enviarse 'transcriber unavailable' cuando _last_final_text is None"
 
