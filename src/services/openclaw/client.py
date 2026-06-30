@@ -39,6 +39,8 @@ class OpenClawClient:
         self._keepalive_task: Optional[asyncio.Task] = None
         self._health_futures: dict[str, asyncio.Future] = {}
         self.gateway_info: Optional[GatewayInfo] = None
+        # Called only on unexpected disconnect (not on clean close()).
+        # Set by ReconnectingOrchestrator after wrapping this client.
         self.on_disconnect: Optional[Callable[[], None]] = None
 
     async def connect(self) -> GatewayInfo:
@@ -74,6 +76,11 @@ class OpenClawClient:
         await self._ws.send(json.dumps({
             "type": "req", "id": sub_id, "method": "sessions.subscribe", "params": {},
         }))
+
+        # Consume the subscribe ack synchronously before starting _listen.
+        # If we skipped this, the ack would flow into _listen → dispatcher, which
+        # silently ignores unknown res frames — fragile. Awaiting it here is cleaner.
+        sub_ack = await asyncio.wait_for(self._ws.recv(), timeout=10.0)  # noqa: F841
 
         self._listener_task = asyncio.create_task(self._listen())
         self._keepalive_task = asyncio.create_task(self._keepalive_loop())
@@ -192,6 +199,8 @@ class OpenClawClient:
                     continue
                 await self._dispatcher.dispatch(frame)
         except asyncio.CancelledError:
+            # Clean shutdown via close() — do NOT call on_disconnect.
+            # Cancellation means we intentionally stopped listening; it is not a drop.
             return
         except Exception as e:
             logger.error(f"_listen error: {e}")

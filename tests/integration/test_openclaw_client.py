@@ -2,7 +2,7 @@ import asyncio
 import json
 import uuid
 from typing import Optional
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
 
 import pytest
 
