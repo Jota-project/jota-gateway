@@ -58,7 +58,9 @@ def test_pipeline_events_not_forwarded_without_status(client):
         ws.send_json(HANDSHAKE_TEXT_ONLY)
         ws.receive_json()  # ready
         ws.send_text("hola")
-        msg = ws.receive_json()  # first and only message after ready before close
+        turn_start = ws.receive_json()  # turn_start
+        assert turn_start["type"] == "turn_start"
+        msg = ws.receive_json()  # token
     assert msg["type"] == "token"
 
 

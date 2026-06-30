@@ -50,9 +50,9 @@ async def test_watchdog_notifies_client_after_silence_timeout(monkeypatch):
 
     ws.send_json.assert_called_once()
     payload = ws.send_json.call_args[0][0]
-    assert payload["type"] == "service_status"
+    assert payload["type"] == "status"
     assert payload["service"] == "transcriber"
-    assert payload["status"] == "degraded"
+    assert payload["state"] == "degraded"
 
 
 @pytest.mark.asyncio

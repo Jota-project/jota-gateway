@@ -17,14 +17,19 @@ HANDSHAKE_TEXT = {
 
 
 def test_text_message_produces_token(client):
-    """Cliente manda texto → recibe token del orchestrator."""
+    """Cliente manda texto → recibe turn_start then token del orchestrator."""
     with client.websocket_connect("/ws/stream") as ws:
         ws.send_json(HANDSHAKE_TEXT)
         ws.receive_json()  # ready
         ws.send_text("hola")
+        turn_start = ws.receive_json()
+        assert turn_start["type"] == "turn_start"
+        assert turn_start["turn_id"] == "t-1"
+        assert turn_start["turn_seq"] == 1
         msg = ws.receive_json()
         assert msg["type"] == "token"
-        assert msg["content"] == "Hola"  # still "content" until Task 6
+        assert msg["turn_id"] == "t-1"
+        assert msg["text"] == "Hola"
 
 
 def test_orchestrator_receives_correct_user_id(client, mock_registry, mock_orchestrator):
@@ -42,7 +47,8 @@ def test_orchestrator_receives_correct_user_id(client, mock_registry, mock_orche
         ws.send_json(HANDSHAKE_TEXT)
         ws.receive_json()  # ready
         ws.send_text("test")
-        ws.receive_json()  # consumir token
+        ws.receive_json()  # turn_start
+        ws.receive_json()  # token
 
     assert captured["user_id"] == CLIENT_ID
 
@@ -81,7 +87,8 @@ def test_preferred_model_id_included_in_orchestrator_payload(
             ws.send_json(HANDSHAKE_TEXT)
             ws.receive_json()  # ready
             ws.send_text("test")
-            ws.receive_json()
+            ws.receive_json()  # turn_start
+            ws.receive_json()  # token
 
     assert captured.get("model_id") == "llama3-70b"
 
@@ -120,6 +127,7 @@ def test_system_prompt_extra_included_in_orchestrator_payload(
             ws.send_json(HANDSHAKE_TEXT)
             ws.receive_json()  # ready
             ws.send_text("test")
-            ws.receive_json()
+            ws.receive_json()  # turn_start
+            ws.receive_json()  # token
 
     assert captured.get("system_prompt_extra") == "Habla en inglés"

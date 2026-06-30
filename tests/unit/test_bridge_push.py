@@ -47,10 +47,13 @@ async def test_close_unregisters_from_client_registry():
 @pytest.mark.asyncio
 async def test_deliver_push_text_sends_push_message():
     bridge, _ = make_bridge(output_mode=("text",))
+    bridge._push_turn_id = "t-1"
     payload = {"sessionKey": "agent:main:hab_sito", "deltaText": "Buenos días!"}
     await bridge.deliver_push(payload)
     bridge.client_ws.send_json.assert_awaited_once_with({
-        "type": "push", "content": "Buenos días!"
+        "type": "token",
+        "turn_id": "t-1",
+        "text": "Buenos días!",
     })
 
 
@@ -121,6 +124,7 @@ async def test_push_audio_pipe_forwards_chunks_to_ws():
 @pytest.mark.asyncio
 async def test_deliver_push_with_tts_sends_to_tts():
     bridge, _ = make_bridge(output_mode=("audio", "text"))
+    bridge._push_turn_id = "t-1"
     mock_tts = AsyncMock()
     bridge._push_tts = mock_tts
     payload = {"sessionKey": "agent:main:hab_sito", "deltaText": "Hola!"}
