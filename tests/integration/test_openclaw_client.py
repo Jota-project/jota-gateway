@@ -32,8 +32,9 @@ class SmartFakeWS:
     chat_responses: {sessionKey → [list of deltaText strings]}
     """
 
-    def __init__(self, chat_responses: Optional[dict] = None):
+    def __init__(self, chat_responses: Optional[dict] = None, chat_response_delay: float = 0.0):
         self.chat_responses: dict[str, list[str]] = chat_responses or {}
+        self.chat_response_delay: float = chat_response_delay  # delay between chunks (in seconds)
         self._to_client: asyncio.Queue = asyncio.Queue()
         self._from_client: asyncio.Queue = asyncio.Queue()
         self.sent_frames: list[dict] = []
@@ -110,6 +111,8 @@ class SmartFakeWS:
                     "type": "res", "id": req_id, "ok": True,
                     "payload": {"runId": run_id, "status": "started"},
                 }))
+                if self.chat_response_delay > 0:
+                    await asyncio.sleep(self.chat_response_delay)
                 for i, chunk in enumerate(chunks):
                     await self._to_client.put(json.dumps({
                         "type": "event", "event": "chat",
@@ -118,6 +121,8 @@ class SmartFakeWS:
                             "seq": i + 1, "state": "delta", "deltaText": chunk,
                         },
                     }))
+                    if self.chat_response_delay > 0:
+                        await asyncio.sleep(self.chat_response_delay)
                 await self._to_client.put(json.dumps({
                     "type": "res", "id": req_id, "ok": True,
                     "payload": {"status": "done", "runId": run_id},
@@ -243,3 +248,50 @@ async def test_on_disconnect_called_on_ws_drop(fake_ws):
     await fake_ws.close()
     await asyncio.sleep(0.05)
     assert disconnected == [True]
+
+
+@pytest.mark.asyncio
+async def test_connect_frame_schema(fake_ws):
+    """connect frame must carry protocol range, auth token, and operator role."""
+    client = await connected_client(fake_ws)
+    connect_frames = [f for f in fake_ws.sent_frames if f.get("method") == "connect"]
+    assert len(connect_frames) == 1
+    p = connect_frames[0]["params"]
+    assert p["minProtocol"] == 3
+    assert p["maxProtocol"] == 4
+    assert p["role"] == "operator"
+    assert "token" in p["auth"]
+    assert p["client"]["mode"] == "backend"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_abort_frame_schema(fake_ws):
+    """chat.abort sent on task cancellation must use flat sessionKey, not nested session.key."""
+    # Create a fake WS with delays so cancellation races an in-flight response (not a completed one).
+    slow_fake_ws = SmartFakeWS(
+        {"agent:main:client-a": ["Hola ", "mundo"]},
+        chat_response_delay=0.15  # 150ms delay between responses
+    )
+    client = await connected_client(slow_fake_ws)
+
+    async def consume():
+        async for _ in client.stream_response(
+            "hola", "client-a", session_key="agent:main:client-a"
+        ):
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0.01)  # let first chunk queue before cancel
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    await asyncio.sleep(0.05)  # let shield-wrapped abort send complete
+
+    aborts = [f for f in slow_fake_ws.sent_frames if f.get("method") == "chat.abort"]
+    assert len(aborts) >= 1
+    assert "sessionKey" in aborts[0]["params"]
+    assert "session" not in aborts[0]["params"]
+    await client.close()

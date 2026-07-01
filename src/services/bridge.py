@@ -417,6 +417,7 @@ class JotaBridge:
                     on_token=_on_token,
                 )
             except RuntimeError as e:
+                logger.error(f"[{self.client_id}] Orchestrator error: {e}")
                 try:
                     await self.client_ws.send_json({
                         "type": "error",
