@@ -1,174 +1,90 @@
 """
 db_client.py
 ~~~~~~~~~~~~
-Cliente HTTP hacia jota-db. Singleton compartido por todas las sesiones.
+Cliente local SQLite. Reemplaza el cliente HTTP a jota-db.
 
-Responsabilidades:
-  · Handshake WS: get_session(client_key) → (Client, ClientConfig)
-  · REST API (Fase 2): config, conversaciones, mensajes
+Interfaz pública invariante:
+  db_client.get_session(client_key) → (Client, ClientConfig)
+  db_client.invalidate(client_key)  → None
 """
 import logging
 from typing import Optional
-import httpx
+
+from sqlmodel import Session, select
 
 from src.core.cache import make_cache
-from src.core.config import settings
-from src.models.schemas import Client, ClientConfig, SessionResponse
+from src.core.exceptions import ClientInactive, ClientNotFound
+from src.db.database import get_engine
+from src.db.models import ClientRecord
+from src.models.schemas import Client, ClientConfig
 
 logger = logging.getLogger(__name__)
-
-_MODELS_KEY = "models"
 
 
 class DbClient:
     """
-    Wraps llamadas HTTP a jota-db.
+    Wrapper sobre la BD SQLite local.
 
-    Se instancia como singleton en este módulo y se reutiliza entre sesiones.
-    Llamar a connect() en el startup de la app y close() en el shutdown.
+    `engine` opcional para facilitar tests en memoria;
+    en producción usa el engine global de src.db.database.
     """
 
-    def __init__(self, base_url: str, api_key: str):
-        self.base_url = f"http://{base_url.rstrip('/')}"
-        self._api_key = api_key
-        self._http: Optional[httpx.AsyncClient] = None
+    def __init__(self, engine=None):
+        self._engine = engine
         self._session_cache, self._session_lock = make_cache(maxsize=500, ttl=60)
-        self._models_cache, self._models_lock = make_cache(maxsize=1, ttl=300)
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    async def connect(self):
-        self._http = httpx.AsyncClient(
-            headers={"Authorization": f"Bearer {self._api_key}"},
-            timeout=httpx.Timeout(10.0),
-        )
-        logger.info(f"DbClient listo → {self.base_url}")
-
-    async def close(self):
-        if self._http:
-            await self._http.aclose()
-            self._http = None
-
-    # ------------------------------------------------------------------
-    # Identidad (usado en el handshake WS)
-    # ------------------------------------------------------------------
+    def _get_engine(self):
+        return self._engine if self._engine is not None else get_engine()
 
     async def get_session(self, client_key: str) -> tuple[Client, ClientConfig]:
         """
-        Llama a GET /auth/session en jota-db para resolver client_key → Client + ClientConfig.
-        Resultado cacheado 60s. Invalidación explícita en 401/403.
+        Resuelve client_key → (Client, ClientConfig). Resultado cacheado 60 s.
 
         Raises:
-            httpx.HTTPStatusError: 401/403 si la key no es válida o el cliente está inactivo.
-            httpx.RequestError:    Si jota-db no está disponible.
+            ClientNotFound: la key no existe.
+            ClientInactive: el cliente está desactivado.
         """
-        assert self._http, "DbClient no está conectado. Llama a connect() primero."
         async with self._session_lock:
             if client_key in self._session_cache:
                 return self._session_cache[client_key]
-        try:
-            response = await self._http.get(
-                f"{self.base_url}/auth/session",
-                headers={"X-API-Key": client_key},
-            )
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code in (401, 403):
-                async with self._session_lock:
-                    self._session_cache.pop(client_key, None)
-            raise
-        data = SessionResponse.model_validate(response.json())
-        result = (data.client, data.config)
+
+        with Session(self._get_engine()) as session:
+            record: Optional[ClientRecord] = session.exec(
+                select(ClientRecord).where(ClientRecord.client_key == client_key)
+            ).first()
+
+        if record is None:
+            raise ClientNotFound(client_key)
+        if not record.is_active:
+            raise ClientInactive(client_key)
+
+        client = Client(
+            id=record.id,
+            client_key=record.client_key,
+            is_active=record.is_active,
+            name=record.name,
+        )
+        config = ClientConfig(
+            stt_language=record.stt_language,
+            stt_vad_thold=record.stt_vad_thold,
+            tts_voice=record.tts_voice,
+            tts_speed=record.tts_speed,
+            barge_in_enabled=record.barge_in_enabled,
+            barge_in_min_chars=record.barge_in_min_chars,
+            system_prompt_extra=record.system_prompt_extra,
+            silence_timeout_s=record.silence_timeout_s,
+            max_silence_turns=record.max_silence_turns,
+            push_enabled=record.push_enabled,
+        )
+        result = (client, config)
         async with self._session_lock:
             self._session_cache[client_key] = result
         return result
 
-    def _client_headers(self, client_id: str) -> dict:
-        return {"X-Client-Id": client_id}
-
-    # ------------------------------------------------------------------
-    # Configuración (usado en la REST API — Fase 2)
-    # ------------------------------------------------------------------
-
-    async def get_config(self, client_id: str) -> ClientConfig:
-        assert self._http
-        r = await self._http.get(f"{self.base_url}/config/me", headers=self._client_headers(client_id))
-        r.raise_for_status()
-        return ClientConfig.model_validate(r.json())
-
-    async def update_config(self, client_id: str, patch: dict) -> ClientConfig:
-        assert self._http
-        r = await self._http.put(
-            f"{self.base_url}/config/me",
-            json=patch,
-            headers=self._client_headers(client_id),
-        )
-        r.raise_for_status()
-        return ClientConfig.model_validate(r.json())
-
-    async def reset_config(self, client_id: str) -> ClientConfig:
-        assert self._http
-        r = await self._http.post(
-            f"{self.base_url}/config/me/reset",
-            headers=self._client_headers(client_id),
-        )
-        r.raise_for_status()
-        return ClientConfig.model_validate(r.json())
-
-    # ------------------------------------------------------------------
-    # Historial (usado en la REST API — Fase 2)
-    # ------------------------------------------------------------------
-
-    async def get_conversations(self, client_id: str) -> list:
-        assert self._http
-        r = await self._http.get(
-            f"{self.base_url}/conversations",
-            headers=self._client_headers(client_id),
-        )
-        r.raise_for_status()
-        return r.json()
-
-    async def get_messages(self, client_id: str, conversation_id: str) -> list:
-        assert self._http
-        r = await self._http.get(
-            f"{self.base_url}/conversations/{conversation_id}/messages",
-            headers=self._client_headers(client_id),
-        )
-        r.raise_for_status()
-        return r.json()
-
-    async def archive_conversation(self, client_id: str, conversation_id: str) -> dict:
-        assert self._http
-        r = await self._http.patch(
-            f"{self.base_url}/conversations/{conversation_id}",
-            json={"status": "archived"},
-            headers=self._client_headers(client_id),
-        )
-        r.raise_for_status()
-        return r.json()
-
-    # ------------------------------------------------------------------
-    # Modelos (usado en la REST API — Fase 2)
-    # ------------------------------------------------------------------
-
-    async def get_models(self) -> list:
-        """Lista de modelos disponibles. Resultado cacheado 300s."""
-        assert self._http
-        async with self._models_lock:
-            if _MODELS_KEY in self._models_cache:
-                return self._models_cache[_MODELS_KEY]
-        r = await self._http.get(f"{self.base_url}/models")
-        r.raise_for_status()
-        result = r.json()
-        async with self._models_lock:
-            self._models_cache[_MODELS_KEY] = result
-        return result
+    def invalidate(self, client_key: str) -> None:
+        """Elimina la entrada del caché. Llamar tras cualquier mutación en admin."""
+        self._session_cache.pop(client_key, None)
 
 
 # Singleton — importar este objeto directamente
-db_client = DbClient(
-    base_url=settings.JOTA_DB_BASE_URL,
-    api_key=settings.JOTA_DB_API_KEY,
-)
+db_client = DbClient()

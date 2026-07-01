@@ -164,27 +164,35 @@ class JotaBridge:
         return False
 
     async def _transcription_watchdog(self):
-        """Cierra la sesión si el transcriptor no emite nada en TRANSCRIBER_SILENCE_TIMEOUT_S segundos
-        contados desde que el cliente empezó a enviar audio."""
-        from src.core.config import settings
-        timeout = settings.TRANSCRIBER_SILENCE_TIMEOUT_S
-
+        """Notifica al cliente si hay silencio prolongado; cierra tras max_silence_turns consecutivos."""
         # Esperar a que el cliente empiece a enviar audio antes de vigilar
         while self._first_audio_at is None:
             await asyncio.sleep(0.5)
             if not self.transcriber or not self.transcriber._is_ready:
                 return
 
+        silence_count = 0
+        last_seen_transcription_at = self.transcriber._last_transcription_at
+
         while True:
             await asyncio.sleep(2)
             if not self.transcriber or not self.transcriber._is_ready:
                 return
 
+            current_transcription_at = self.transcriber._last_transcription_at
+            if current_transcription_at != last_seen_transcription_at:
+                silence_count = 0
+                last_seen_transcription_at = current_transcription_at
+
             last = self.transcriber._last_transcription_at
             elapsed = time.monotonic() - last if last else time.monotonic() - self._first_audio_at
 
-            if elapsed > timeout:
-                logger.warning(f"[{self.client_id}] Watchdog: {elapsed:.1f}s sin transcripción del transcriptor")
+            if elapsed > self.config.silence_timeout_s:
+                silence_count += 1
+                logger.warning(
+                    f"[{self.client_id}] Watchdog: {elapsed:.1f}s sin transcripción "
+                    f"({silence_count}/{self.config.max_silence_turns})"
+                )
                 try:
                     await self.client_ws.send_json({
                         "type": "status",
@@ -193,7 +201,9 @@ class JotaBridge:
                     })
                 except Exception:
                     pass
-                return
+                if silence_count >= self.config.max_silence_turns:
+                    await self._close_all()
+                    return
 
     async def run(self):
         self._session_start = time.monotonic()
@@ -402,7 +412,6 @@ class JotaBridge:
             try:
                 await call_orchestrator(
                     self.orchestrator, text, session_key, self.client_id,
-                    model_id=self.config.preferred_model_id,
                     system_prompt_extra=self.config.system_prompt_extra,
                     tracker=self.tracker,
                     on_token=_on_token,
@@ -449,6 +458,8 @@ class JotaBridge:
             pass
 
     async def on_push_turn_start(self, session_key: str) -> None:
+        if not self.config.push_enabled:
+            return
         self._turn_seq += 1
         self._push_turn_seq = self._turn_seq
         self._push_turn_id = f"t-{self._turn_seq}"

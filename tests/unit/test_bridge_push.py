@@ -163,3 +163,20 @@ async def test_on_push_turn_end_no_tts_is_noop():
     assert bridge._push_tts is None
     await bridge.on_push_turn_end("agent:main:hab_sito")  # must not raise
     assert bridge._push_tts is None
+
+
+@pytest.mark.asyncio
+async def test_push_disabled_ignores_push_turn_start():
+    """push_enabled=False hace que on_push_turn_start no haga nada."""
+    client = Client(id="ha", client_key="ha-key", is_active=True)
+    config = ClientConfig(push_enabled=False)
+    ws = AsyncMock()
+    handshake = Handshake(client_key="ha-key", input_mode="text", output_mode=["text"])
+    bridge = JotaBridge(
+        client=client, config=config, client_ws=ws,
+        orchestrator=AsyncMock(), tracker=AsyncMock(), handshake=handshake,
+        client_registry=ClientRegistry(), default_agent="main",
+    )
+    await bridge.on_push_turn_start("agent:main:ha")
+    ws.send_json.assert_not_awaited()
+    assert bridge._push_turn_id is None
