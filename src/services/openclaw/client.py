@@ -7,6 +7,7 @@ from typing import AsyncIterator, Callable, Optional
 import websockets
 from websockets.asyncio.client import ClientConnection
 
+from src.services.openclaw import frames
 from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.models import GatewayInfo
 from src.services.openclaw.registry import TurnRegistry
@@ -52,19 +53,7 @@ class OpenClawClient:
             raise RuntimeError(f"Expected connect.challenge, got: {frame}")
 
         req_id = str(uuid.uuid4())
-        await self._ws.send(json.dumps({
-            "type": "req", "id": req_id, "method": "connect",
-            "params": {
-                "minProtocol": 3, "maxProtocol": 4,
-                "client": {
-                    "id": "gateway-client", "version": "1.0.0",
-                    "platform": "linux", "mode": "backend",
-                },
-                "role": "operator",
-                "scopes": ["operator.read", "operator.write"],
-                "auth": {"token": self._token},
-            },
-        }))
+        await self._ws.send(json.dumps(frames.connect_backend(req_id, self._token)))
 
         raw = await asyncio.wait_for(self._ws.recv(), timeout=30.0)
         hello = json.loads(raw)
@@ -73,9 +62,7 @@ class OpenClawClient:
         self.gateway_info = GatewayInfo.from_hello_ok(hello.get("payload", {}))
 
         sub_id = str(uuid.uuid4())
-        await self._ws.send(json.dumps({
-            "type": "req", "id": sub_id, "method": "sessions.subscribe", "params": {},
-        }))
+        await self._ws.send(json.dumps(frames.sessions_subscribe(sub_id)))
 
         # Consume the subscribe ack synchronously before starting _listen.
         # If we skipped this, the ack would flow into _listen → dispatcher, which
@@ -113,9 +100,7 @@ class OpenClawClient:
             loop = asyncio.get_running_loop()
             fut: asyncio.Future = loop.create_future()
             self._health_futures[req_id] = fut
-            await self._ws.send(json.dumps({
-                "type": "req", "id": req_id, "method": "health", "params": {},
-            }))
+            await self._ws.send(json.dumps(frames.health(req_id)))
             res = await asyncio.wait_for(fut, timeout=5.0)
             return res.get("ok", False)
         except Exception as e:
@@ -144,14 +129,9 @@ class OpenClawClient:
 
         try:
             try:
-                await self._ws.send(json.dumps({
-                    "type": "req", "id": req_id, "method": "chat.send",
-                    "params": {
-                        "sessionKey": session_key,
-                        "message": text,
-                        "idempotencyKey": str(uuid.uuid4()),
-                    },
-                }))
+                await self._ws.send(json.dumps(
+                    frames.chat_send(req_id, session_key, text, str(uuid.uuid4()))
+                ))
                 _sent = True
             except Exception as e:
                 yield OrchestratorEvent(type="error", content=f"send failed: {e}")
@@ -179,11 +159,9 @@ class OpenClawClient:
             self._turn_registry.unregister(session_key, req_id)
             if _sent and not _finished and self._ws:
                 try:
-                    await asyncio.shield(self._ws.send(json.dumps({
-                        "type": "req", "id": str(uuid.uuid4()),
-                        "method": "chat.abort",
-                        "params": {"sessionKey": session_key},
-                    })))
+                    await asyncio.shield(self._ws.send(json.dumps(
+                        frames.chat_abort(str(uuid.uuid4()), session_key)
+                    )))
                 except Exception:
                     pass
 
