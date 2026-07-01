@@ -271,7 +271,7 @@ async def test_chat_abort_frame_schema(fake_ws):
     # Create a fake WS with delays so cancellation races an in-flight response (not a completed one).
     slow_fake_ws = SmartFakeWS(
         {"agent:main:client-a": ["Hola ", "mundo"]},
-        chat_response_delay=0.03  # 30ms delay between responses
+        chat_response_delay=0.15  # 150ms delay between responses
     )
     client = await connected_client(slow_fake_ws)
 
@@ -282,7 +282,7 @@ async def test_chat_abort_frame_schema(fake_ws):
             pass
 
     task = asyncio.create_task(consume())
-    await asyncio.sleep(0.02)  # let first chunk queue before cancel
+    await asyncio.sleep(0.01)  # let first chunk queue before cancel
     task.cancel()
     try:
         await task
