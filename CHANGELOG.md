@@ -1,3 +1,22 @@
+# [1.9.0](https://github.com/Jota-project/jota-gateway/compare/v1.8.0...v1.9.0) (2026-07-01)
+
+
+### Bug Fixes
+
+* replace httpx exceptions with ClientNotFound/ClientInactive in WS handshake ([defd90a](https://github.com/Jota-project/jota-gateway/commit/defd90a82ee86178f87c425615988f05979bb279))
+
+
+### Features
+
+* add client_key param to CLI/API, seed hab_sito + openclaw clients, infra persistence ([fe8a106](https://github.com/Jota-project/jota-gateway/commit/fe8a10662af36e1d5a495ba51f224f0e360431f3))
+* add local exceptions, Client.name field, and admin Pydantic schemas ([a374066](https://github.com/Jota-project/jota-gateway/commit/a3740668b8dc2d25866cf441a3cba829a33c55d8))
+* add SQLModel ClientRecord + database engine ([dbcf7ec](https://github.com/Jota-project/jota-gateway/commit/dbcf7ec08c3254e6a4475d98eb190a0b25827b06))
+* implement admin client CRUD, init DB in lifespan, fix test fixtures with StaticPool ([099010c](https://github.com/Jota-project/jota-gateway/commit/099010c0b4bac023000ef20217b97c66f92e60ca))
+* push_enabled, max_silence_turns, schema cleanup + full CLAUDE.md update ([d02dd57](https://github.com/Jota-project/jota-gateway/commit/d02dd57b1f236e03064067423ca1ec3dcf908292))
+* remove JOTA_DB settings, add DATABASE_URL, clean deps.py ([4709b68](https://github.com/Jota-project/jota-gateway/commit/4709b6881b68c6eb997b94107e03ac48acf4a11a))
+* replace HTTP db_client with local SQLite client, keep same interface ([80674f0](https://github.com/Jota-project/jota-gateway/commit/80674f0b37ad2a18e19616009162220c3d769766))
+* replace jota-db with local SQLite — client identity, config & admin API ([#67](https://github.com/Jota-project/jota-gateway/issues/67)) ([26e48a8](https://github.com/Jota-project/jota-gateway/commit/26e48a875b1c5103ce65c1b3666828e77f5c438e))
+
 # [1.8.0](https://github.com/Jota-project/jota-gateway/compare/v1.7.0...v1.8.0) (2026-06-30)
 
 
