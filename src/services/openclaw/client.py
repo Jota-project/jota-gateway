@@ -157,7 +157,7 @@ class OpenClawClient:
                     break
         finally:
             self._turn_registry.unregister(session_key, req_id)
-            if _sent and not _finished and self._ws:
+            if _sent and self._ws:
                 try:
                     await asyncio.shield(self._ws.send(json.dumps(
                         frames.chat_abort(str(uuid.uuid4()), session_key)

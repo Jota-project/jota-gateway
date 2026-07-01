@@ -243,3 +243,45 @@ async def test_on_disconnect_called_on_ws_drop(fake_ws):
     await fake_ws.close()
     await asyncio.sleep(0.05)
     assert disconnected == [True]
+
+
+@pytest.mark.asyncio
+async def test_connect_frame_schema(fake_ws):
+    """connect frame must carry protocol range, auth token, and operator role."""
+    client = await connected_client(fake_ws)
+    connect_frames = [f for f in fake_ws.sent_frames if f.get("method") == "connect"]
+    assert len(connect_frames) == 1
+    p = connect_frames[0]["params"]
+    assert p["minProtocol"] == 3
+    assert p["maxProtocol"] == 4
+    assert p["role"] == "operator"
+    assert "token" in p["auth"]
+    assert p["client"]["mode"] == "backend"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_abort_frame_schema(fake_ws):
+    """chat.abort sent on task cancellation must use flat sessionKey, not nested session.key."""
+    client = await connected_client(fake_ws)
+
+    async def consume():
+        async for _ in client.stream_response(
+            "hola", "client-a", session_key="agent:main:client-a"
+        ):
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0.01)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    await asyncio.sleep(0.05)  # let shield-wrapped abort send complete
+
+    aborts = [f for f in fake_ws.sent_frames if f.get("method") == "chat.abort"]
+    assert len(aborts) >= 1
+    assert "sessionKey" in aborts[0]["params"]
+    assert "session" not in aborts[0]["params"]
+    await client.close()
