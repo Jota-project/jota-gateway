@@ -1,3 +1,16 @@
+# [1.10.0](https://github.com/Jota-project/jota-gateway/compare/v1.9.0...v1.10.0) (2026-07-01)
+
+
+### Bug Fixes
+
+* log orchestrator errors in pipe_tokens() — was silently swallowed before ([02d6403](https://github.com/Jota-project/jota-gateway/commit/02d6403ea107c905f6a4053d611261bae7621968))
+* revert chat.abort behavior change, fix test to race genuine in-flight cancellation ([970d19c](https://github.com/Jota-project/jota-gateway/commit/970d19c84f97e1534b4c1bfac27410fa4a5ada8a))
+
+
+### Features
+
+* add frames.py — isolated OpenClaw wire-format constructors with regression tests ([711701b](https://github.com/Jota-project/jota-gateway/commit/711701b8bc73dbd3b3cac0e682c5c7effb32bfd7))
+
 # [1.9.0](https://github.com/Jota-project/jota-gateway/compare/v1.8.0...v1.9.0) (2026-07-01)
 
 
