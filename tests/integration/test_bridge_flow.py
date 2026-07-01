@@ -80,31 +80,6 @@ def _make_client_with(db_engine, mock_services, mock_registry, monkeypatch, **fi
     return TestClient(app)
 
 
-def test_preferred_model_id_included_in_orchestrator_payload(
-    db_engine, mock_services, mock_registry, mock_orchestrator, monkeypatch
-):
-    """preferred_model_id de ClientConfig se pasa como model_id a stream_response."""
-    captured = {}
-
-    async def _stream(text, user_id, model_id=None, system_prompt_extra=None, session_key=None):
-        captured["model_id"] = model_id
-        yield OrchestratorEvent(type="token", content="ok")
-        yield OrchestratorEvent(type="status", content="done")
-
-    mock_orchestrator.stream_response = _stream
-
-    with _make_client_with(db_engine, mock_services, mock_registry, monkeypatch,
-                           preferred_model_id="llama3-70b") as c:
-        with c.websocket_connect("/ws/stream") as ws:
-            ws.send_json(HANDSHAKE_TEXT)
-            ws.receive_json()  # ready
-            ws.send_text("test")
-            ws.receive_json()  # turn_start
-            ws.receive_json()  # token
-
-    assert captured.get("model_id") == "llama3-70b"
-
-
 def test_system_prompt_extra_included_in_orchestrator_payload(
     db_engine, mock_services, mock_registry, mock_orchestrator, monkeypatch
 ):

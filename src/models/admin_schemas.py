@@ -30,12 +30,10 @@ class ClientCreate(BaseModel):
     barge_in_min_chars: int = 5
     output_mode: Optional[list[str]] = None
     silence_timeout_s: float = 2.0
+    max_silence_turns: int = 3
+    push_enabled: bool = True
     # Personalización
     system_prompt_extra: Optional[str] = None
-    preferred_model_id: Optional[str] = None
-    # Metadata
-    room: Optional[str] = None
-    tags: Optional[list[str]] = None
 
 
 class ClientUpdate(BaseModel):
@@ -53,10 +51,9 @@ class ClientUpdate(BaseModel):
     barge_in_min_chars: Optional[int] = None
     output_mode: Optional[list[str]] = None
     silence_timeout_s: Optional[float] = None
+    max_silence_turns: Optional[int] = None
+    push_enabled: Optional[bool] = None
     system_prompt_extra: Optional[str] = None
-    preferred_model_id: Optional[str] = None
-    room: Optional[str] = None
-    tags: Optional[list[str]] = None
 
 
 class ClientResponse(BaseModel):
@@ -77,12 +74,10 @@ class ClientResponse(BaseModel):
     barge_in_min_chars: int
     output_mode: Optional[list[str]]
     silence_timeout_s: float
+    max_silence_turns: int
+    push_enabled: bool
     # Personalización
     system_prompt_extra: Optional[str]
-    preferred_model_id: Optional[str]
-    # Metadata
-    room: Optional[str]
-    tags: Optional[list[str]]
 
     @classmethod
     def from_record(cls, r: ClientRecord) -> "ClientResponse":
@@ -103,8 +98,7 @@ class ClientResponse(BaseModel):
             barge_in_min_chars=r.barge_in_min_chars,
             output_mode=json.loads(r.output_mode) if r.output_mode else None,
             silence_timeout_s=r.silence_timeout_s,
+            max_silence_turns=r.max_silence_turns,
+            push_enabled=r.push_enabled,
             system_prompt_extra=r.system_prompt_extra,
-            preferred_model_id=r.preferred_model_id,
-            room=r.room,
-            tags=json.loads(r.tags) if r.tags else None,
         )

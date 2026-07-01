@@ -75,10 +75,9 @@ def create_client(
         barge_in_min_chars=body.barge_in_min_chars,
         output_mode=json.dumps(body.output_mode) if body.output_mode else None,
         silence_timeout_s=body.silence_timeout_s,
+        max_silence_turns=body.max_silence_turns,
+        push_enabled=body.push_enabled,
         system_prompt_extra=body.system_prompt_extra,
-        preferred_model_id=body.preferred_model_id,
-        room=body.room,
-        tags=json.dumps(body.tags) if body.tags else None,
     )
     session.add(record)
     session.commit()
