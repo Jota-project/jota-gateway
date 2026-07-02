@@ -1,0 +1,27 @@
+name: E2E Real Smoke Test
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-real-smoke
+  cancel-in-progress: false
+
+jobs:
+  e2e-real:
+    runs-on: [self-hosted, jota-e2e]
+    environment: e2e-real-production
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run E2E real smoke tests
+        run: PYTHONPATH=. pytest tests/e2e -m e2e_real -v
+        env:
+          E2E_TEST_AGENT: ${{ vars.E2E_TEST_AGENT }}
+
+      - name: Write summary
+        if: always()
+        run: echo "Ver resultados detallados en el log del job anterior." >> "$GITHUB_STEP_SUMMARY"
