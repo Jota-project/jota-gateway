@@ -24,6 +24,13 @@ async def test_three_concurrent_sessions_stay_isolated(test_client_records_x3, e
     responses = await asyncio.gather(*tasks)
 
     for word, response in zip(probe_words, responses):
-        assert word in response.upper(), (
+        response_upper = response.upper()
+        assert word in response_upper, (
             f"la sesión que pidió '{word}' no la recibió de vuelta: {response!r}"
+        )
+        other_words = [w for w in probe_words if w != word]
+        leaked = [w for w in other_words if w in response_upper]
+        assert not leaked, (
+            f"la sesión que pidió '{word}' recibió palabras de otra sesión "
+            f"({leaked}), posible cross-talk: {response!r}"
         )
