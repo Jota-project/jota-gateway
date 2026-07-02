@@ -5,7 +5,9 @@ excluded by default (see pytest.ini addopts). Run explicitly with:
     PYTHONPATH=. pytest tests/e2e -m e2e_real -v
 """
 import os
+import secrets
 
+import httpx
 import pytest
 
 from src.core.config import settings
@@ -41,3 +43,47 @@ def admin_headers() -> dict:
     if not settings.ADMIN_TOKEN:
         pytest.skip("ADMIN_TOKEN no configurado en el entorno — obligatorio para tests/e2e.")
     return {"X-Admin-Token": settings.ADMIN_TOKEN}
+
+
+def _create_test_client(admin_headers: dict, suffix: str) -> dict:
+    resp = httpx.post(
+        f"{GATEWAY_HTTP_URL}/admin/clients",
+        json={
+            "name": f"e2e-smoke-{suffix}",
+            "client_type": "e2e-test",
+            "output_mode": ["text"],
+        },
+        headers=admin_headers,
+        timeout=10.0,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _delete_test_client(admin_headers: dict, client_id: str) -> None:
+    httpx.delete(
+        f"{GATEWAY_HTTP_URL}/admin/clients/{client_id}",
+        headers=admin_headers,
+        timeout=10.0,
+    )
+
+
+@pytest.fixture
+def test_client_record(admin_headers):
+    """A single ephemeral test client — created before the test, deleted after."""
+    record = _create_test_client(admin_headers, secrets.token_hex(4))
+    try:
+        yield record
+    finally:
+        _delete_test_client(admin_headers, record["id"])
+
+
+@pytest.fixture
+def test_client_records_x3(admin_headers):
+    """Three ephemeral test clients, for the concurrent-sessions scenario."""
+    records = [_create_test_client(admin_headers, secrets.token_hex(4)) for _ in range(3)]
+    try:
+        yield records
+    finally:
+        for r in records:
+            _delete_test_client(admin_headers, r["id"])
