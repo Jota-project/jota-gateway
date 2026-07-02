@@ -87,3 +87,21 @@ def test_client_records_x3(admin_headers):
     finally:
         for r in records:
             _delete_test_client(admin_headers, r["id"])
+
+
+DEFAULT_TOOL_PROBE_TEMPLATE = (
+    "Usa tu herramienta de eco y repite exactamente el siguiente texto, "
+    "sin traducirlo ni modificarlo: {token}"
+)
+
+
+@pytest.fixture(scope="session")
+def tool_probe_prompt():
+    """Builds a prompt + expected verbatim token for the tool-use smoke test.
+
+    Override the phrasing with E2E_TOOL_PROBE_PROMPT_TEMPLATE if the test
+    agent's tool needs a different trigger phrase (must contain '{token}').
+    """
+    template = os.environ.get("E2E_TOOL_PROBE_PROMPT_TEMPLATE", DEFAULT_TOOL_PROBE_TEMPLATE)
+    token = f"E2E-PROBE-{secrets.token_hex(4).upper()}"
+    return template.format(token=token), token
