@@ -17,6 +17,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Verify required tokens are present in runner environment
+        run: |
+          if [ -z "$ADMIN_TOKEN" ] || [ -z "$OPENCLAW_TOKEN" ]; then
+            echo "::error::ADMIN_TOKEN y/o OPENCLAW_TOKEN no están definidos en el entorno del runner. Estos tests NUNCA deben pasar en silencio por falta de tokens — configúralos en el servicio del runner self-hosted (no en este workflow, no en GitHub Secrets)."
+            exit 1
+          fi
+
       - name: Run E2E real smoke tests
         run: PYTHONPATH=. pytest tests/e2e -m e2e_real -v
         env:

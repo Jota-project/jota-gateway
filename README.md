@@ -178,6 +178,16 @@ PYTHONPATH=. E2E_TEST_AGENT=<agente-de-test> pytest tests/e2e -m e2e_real -v
 `OPENCLAW_TOKEN` y `ADMIN_TOKEN` nunca se guardan en GitHub — el proceso de test
 los lee del `.env` local del servidor, igual que la propia app.
 
+**Nota para el workflow de GitHub Actions:** el checkout que hace `actions/checkout`
+en el runner es limpio y **no incluye `.env`** (está en `.gitignore`). Por eso, para
+la ruta de CI, `ADMIN_TOKEN` y `OPENCLAW_TOKEN` deben estar exportados como
+variables de entorno reales en el propio proceso del runner self-hosted (p. ej.
+vía `Environment=` en su unidad systemd) — no en un `.env` dentro del checkout ni
+en GitHub Secrets. El job incluye un paso de verificación previo al de tests que
+falla explícitamente (`exit 1`) si alguna de las dos falta, para que un runner mal
+configurado rompa de forma visible en lugar de pasar en silencio sin cobertura
+real.
+
 ---
 
 ## Arquitectura interna
