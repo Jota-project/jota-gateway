@@ -42,3 +42,7 @@ async def send_turn(ws, text: str, timeout: float = 60.0) -> dict:
         elif frame["type"] in ("turn_end", "error"):
             break
     return {"turn_id": turn_id, "text": "".join(tokens), "frames": frames}
+
+
+async def cancel_active_turn(ws) -> None:
+    await ws.send(json.dumps({"type": "cancel"}))
