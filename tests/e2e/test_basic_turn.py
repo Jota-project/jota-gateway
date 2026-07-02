@@ -1,5 +1,4 @@
 """Validates a full text turn against the real OpenClaw test agent."""
-import pytest
 
 from tests.e2e.ws_helpers import send_turn, ws_handshake
 
