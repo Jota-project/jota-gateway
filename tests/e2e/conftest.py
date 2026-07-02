@@ -95,7 +95,7 @@ DEFAULT_TOOL_PROBE_TEMPLATE = (
 )
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def tool_probe_prompt():
     """Builds a prompt + expected verbatim token for the tool-use smoke test.
 
