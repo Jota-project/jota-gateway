@@ -1,5 +1,12 @@
 """Validates that the real test agent actually invokes its configured tool
 and the tool's result reaches the client — not just plain LLM text."""
+# LIMITACIÓN CONOCIDA: el prompt incluye el token literal, así que un LLM
+# normal puede pasar este test simplemente repitiéndolo, sin invocar
+# ninguna tool real. Este test valida el pipeline de texto end-to-end,
+# pero NO aísla específicamente el uso de una tool. Pendiente de rediseño
+# cuando se defina la tool determinista real del agente ci-tester (ver
+# memoria del proyecto: oportunidades OpenClaw, idea de surfacing de
+# tool-call events, 2026-07-02).
 from tests.e2e.ws_helpers import send_turn, ws_handshake
 
 
