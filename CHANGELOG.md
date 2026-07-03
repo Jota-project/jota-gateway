@@ -1,3 +1,11 @@
+## [1.11.1](https://github.com/Jota-project/jota-gateway/compare/v1.11.0...v1.11.1) (2026-07-03)
+
+
+### Bug Fixes
+
+* fetch agent roster via agents.list, not hello-ok snapshot ([e675493](https://github.com/Jota-project/jota-gateway/commit/e675493ef01b1b1bfc8ddd1d8016b9819e64ded2))
+* fetch agent roster via agents.list, not hello-ok snapshot ([#71](https://github.com/Jota-project/jota-gateway/issues/71)) ([54c91a8](https://github.com/Jota-project/jota-gateway/commit/54c91a8c24af3d3fa69673c52f0f701efc1d9ed8))
+
 # [1.11.0](https://github.com/Jota-project/jota-gateway/compare/v1.10.0...v1.11.0) (2026-07-03)
 
 
