@@ -242,12 +242,15 @@ The HA REST endpoint (`/v1/chat/completions`) uses a fixed key: `agent:{default_
 
 Built once in `main.py` lifespan; stored in `app.state`.
 
-- `OpenClawClient` (`client.py`) — WebSocket v4 handshake (challenge → connect → hello-ok → sessions.subscribe), persistent `_listen` task, `_keepalive_loop` (pings at 80% of `tickIntervalMs`). All events carry `sessionKey`; `stream_response()` registers a `Queue` in `TurnRegistry` per turn, sends `{"sessionKey": key}` and reads the queue until `done`/`error`.
+- `OpenClawClient` (`client.py`) — WebSocket v4 handshake (challenge → connect → hello-ok → **agents.list → sessions.subscribe**), persistent `_listen` task, `_keepalive_loop` (pings at 80% of `tickIntervalMs`). All events carry `sessionKey`; `stream_response()` registers a `Queue` in `TurnRegistry` per turn, sends `{"sessionKey": key}` and reads the queue until turn completion or `error` (see turn-completion note below).
 - `ReconnectingOpenClawClient` (`reconnecting.py`) — wraps `OpenClawClient`; on unexpected disconnect calls `on_disconnect` hook, retries with exponential backoff up to `ORCHESTRATOR_RECONNECT_MAX_DURATION` seconds; after that enters DEGRADED state. `stream_response()` returns an `error` event immediately when not CONNECTED.
 - `TurnRegistry` (`registry.py`) — dual-index dict (`session_key → Queue`, `req_id → session_key`); `FrameDispatcher` uses it to route response frames to the correct waiting `stream_response()` call.
 - `ClientRegistry` (`registry.py`) — maps `client_id → JotaBridge`; used by `FrameDispatcher` to deliver agent-initiated push events to the right session.
-- `FrameDispatcher` (`dispatcher.py`) — called by `_listen` for every incoming frame; routes `res` frames to `TurnRegistry`, `chat` events to active turn queue or bridge push hooks, `agent` phase events to `on_push_turn_start`/`on_push_turn_end`.
-- `GatewayInfo` / `AgentInfo` (`models.py`) — parsed from the `hello-ok` payload; `gateway_info.default_agent_id` is used as the fallback agent when the client doesn't specify one.
+- `FrameDispatcher` (`dispatcher.py`) — called by `_listen` for every incoming frame; routes `res` frames to `TurnRegistry`, `chat` events to active turn queue or bridge push hooks, `agent` phase events to `on_push_turn_start`/`on_push_turn_end`, `session.tool` events (`phase: "start"`/`"result"`, `"update"` dropped) to the active turn queue or `bridge.deliver_push_tool_call`.
+- `GatewayInfo` / `AgentInfo` (`models.py`) — `default_agent_id`/`tick_interval_ms`/etc. come from the `hello-ok` payload; the **agent roster itself no longer does** (OpenClaw server 2026.6.11+ stopped embedding it in `hello-ok`'s `snapshot`). `OpenClawClient.connect()` fetches it explicitly via `agents.list` right after `hello-ok` and merges it in via `GatewayInfo.update_agents_from_list()`. Without this, `has_agent()` silently rejects every named agent — clients that omit `agent` in the Handshake are unaffected, since the fallback `default_agent_id` still comes from `sessionDefaults`.
+- `ToolCallEvent` (`models.py`) — parsed from a `session.tool` event's `data` sub-object; only `start`/`result` phases are surfaced (`update` streaming-partials are dropped). Forwarded to clients as a `{"type": "tool_call", ...}` WS message only when `ClientConfig.tool_calls_enabled` is `True` (default `False`).
+
+**Turn-completion signal:** OpenClaw server 2026.6.11+ never sends a second `res` for `chat.send` — the real completion signal is a `chat` event with `payload.state == "final"`. `stream_response()` treats that as `status: "done"` and ends the turn; the old `res`-based `done`/`status` handling is kept only as a fallback for older server versions, but production no longer relies on it. Assume this if a turn ever appears to hang after a token is received but before `turn_end` reaches the client — check `state` on the `chat` events, not for a stray `res`.
 
 OpenClaw connection details (loopback backend mode, no device signature required):
 - Token: `OPENCLAW_TOKEN`
@@ -301,6 +304,6 @@ The `StaticPool` is required for SQLite `:memory:` so all connections share one 
 
 ### OpenClaw tests
 
-`OpenClawClient` tests (`test_openclaw_client.py`) use `SmartFakeWS` — a queue-backed fake WebSocket that auto-responds to the v4 handshake (challenge → connect → hello-ok → subscribe ack) and per-test `chat.send` sequences.
+`OpenClawClient` tests (`test_openclaw_client.py`) use `SmartFakeWS` — a queue-backed fake WebSocket that auto-responds to the v4 handshake (challenge → connect → hello-ok → agents.list → subscribe ack) and per-test `chat.send` sequences. Constructor accepts `hello_ok_payload`/`agents_list_payload` overrides (for exercising the agents-roster-fetch path) and `chat_responses`/`tool_calls` (for turn content and `session.tool` events).
 
 `ReconnectingOpenClawClient` tests (`test_reconnecting_openclaw.py`) stub `OpenClawClient` to test backoff, DEGRADED state, and the `on_disconnect` hook contract.
