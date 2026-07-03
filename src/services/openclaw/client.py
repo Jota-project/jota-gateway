@@ -9,7 +9,7 @@ from websockets.asyncio.client import ClientConnection
 
 from src.services.openclaw import frames
 from src.services.openclaw.dispatcher import FrameDispatcher
-from src.services.openclaw.models import GatewayInfo
+from src.services.openclaw.models import GatewayInfo, ToolCallEvent
 from src.services.openclaw.registry import TurnRegistry
 from src.services.protocol import OrchestratorEvent
 
@@ -61,6 +61,18 @@ class OpenClawClient:
             raise RuntimeError(f"OpenClaw handshake failed: {hello.get('error')}")
         self.gateway_info = GatewayInfo.from_hello_ok(hello.get("payload", {}))
 
+        # hello-ok's snapshot no longer embeds the full agent roster (OpenClaw
+        # server 2026.6.11+) — fetch it explicitly so has_agent() doesn't
+        # reject every agent. Skip any unrelated event frames (e.g. a periodic
+        # "health" broadcast) that may interleave before the matching res.
+        agents_req_id = str(uuid.uuid4())
+        await self._ws.send(json.dumps(frames.agents_list(agents_req_id)))
+        agents_res = await self._recv_matching(agents_req_id, timeout=10.0)
+        if agents_res.get("ok"):
+            self.gateway_info.update_agents_from_list(agents_res.get("payload", {}))
+        else:
+            logger.warning(f"agents.list failed at connect: {agents_res.get('error')}")
+
         sub_id = str(uuid.uuid4())
         await self._ws.send(json.dumps(frames.sessions_subscribe(sub_id)))
 
@@ -77,6 +89,21 @@ class OpenClawClient:
             f"default_agent={self.gateway_info.default_agent_id})"
         )
         return self.gateway_info
+
+    async def _recv_matching(self, req_id: str, timeout: float) -> dict:
+        """Read frames until the res matching req_id arrives, ignoring any
+        unrelated event frames that may interleave before it (only used
+        during connect(), before _listen() starts routing frames)."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError(f"No response for req_id={req_id} within {timeout}s")
+            raw = await asyncio.wait_for(self._ws.recv(), timeout=remaining)
+            frame = json.loads(raw)
+            if frame.get("id") == req_id:
+                return frame
 
     async def close(self) -> None:
         for task in (self._keepalive_task, self._listener_task):
@@ -144,6 +171,14 @@ class OpenClawClient:
                     delta = data.get("deltaText", "")
                     if delta:
                         yield OrchestratorEvent(type="token", content=delta)
+                    if data.get("state") == "final":
+                        yield OrchestratorEvent(type="status", content="done")
+                        _finished = True
+                        break
+                elif kind == "tool":
+                    tool_call = ToolCallEvent.from_session_tool_payload(data)
+                    if tool_call is not None:
+                        yield OrchestratorEvent(type="tool_call", tool_call=tool_call)
                 elif kind == "done":
                     if not data.get("ok"):
                         yield OrchestratorEvent(type="error", content=str(data.get("error", {})))

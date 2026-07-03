@@ -8,12 +8,26 @@ from fastapi import WebSocket, WebSocketDisconnect
 from src.core.config import settings
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.protocol import OrchestratorProtocol
+from src.services.openclaw.models import ToolCallEvent
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.transcriber_client import TranscriberClient
 from src.services.tts_client import TTSClient
 from src.services.openclaw.registry import ClientRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def _tool_call_message(turn_id: Optional[str], tool_call: ToolCallEvent) -> dict:
+    return {
+        "type": "tool_call",
+        "turn_id": turn_id,
+        "phase": tool_call.phase,
+        "name": tool_call.name,
+        "tool_call_id": tool_call.tool_call_id,
+        "args": tool_call.args,
+        "result": tool_call.result,
+        "is_error": tool_call.is_error,
+    }
 
 class JotaBridge:
     """
@@ -408,6 +422,14 @@ class JotaBridge:
             if tts:
                 await tts.send_text_chunk(token_text)
 
+        async def _on_tool_call(tool_call: ToolCallEvent):
+            if not self.config.tool_calls_enabled:
+                return
+            try:
+                await self.client_ws.send_json(_tool_call_message(turn_id, tool_call))
+            except Exception:
+                pass
+
         async def pipe_tokens():
             try:
                 await call_orchestrator(
@@ -415,6 +437,7 @@ class JotaBridge:
                     system_prompt_extra=self.config.system_prompt_extra,
                     tracker=self.tracker,
                     on_token=_on_token,
+                    on_tool_call=_on_tool_call,
                 )
             except RuntimeError as e:
                 logger.error(f"[{self.client_id}] Orchestrator error: {e}")
@@ -511,6 +534,17 @@ class JotaBridge:
                 pass
         if self._push_tts:
             await self._push_tts.send_text_chunk(delta)
+
+    async def deliver_push_tool_call(self, data: dict) -> None:
+        if not self.config.tool_calls_enabled:
+            return
+        tool_call = ToolCallEvent.from_session_tool_payload(data)
+        if tool_call is None:
+            return
+        try:
+            await self.client_ws.send_json(_tool_call_message(self._push_turn_id, tool_call))
+        except Exception:
+            pass
 
     async def on_push_turn_end(self, session_key: str) -> None:
         if self._push_tts:

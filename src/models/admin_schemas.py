@@ -32,6 +32,7 @@ class ClientCreate(BaseModel):
     silence_timeout_s: float = 2.0
     max_silence_turns: int = 3
     push_enabled: bool = True
+    tool_calls_enabled: bool = False
     # Personalización
     system_prompt_extra: Optional[str] = None
 
@@ -53,6 +54,7 @@ class ClientUpdate(BaseModel):
     silence_timeout_s: Optional[float] = None
     max_silence_turns: Optional[int] = None
     push_enabled: Optional[bool] = None
+    tool_calls_enabled: Optional[bool] = None
     system_prompt_extra: Optional[str] = None
 
 
@@ -76,6 +78,7 @@ class ClientResponse(BaseModel):
     silence_timeout_s: float
     max_silence_turns: int
     push_enabled: bool
+    tool_calls_enabled: bool
     # Personalización
     system_prompt_extra: Optional[str]
 
@@ -100,5 +103,6 @@ class ClientResponse(BaseModel):
             silence_timeout_s=r.silence_timeout_s,
             max_silence_turns=r.max_silence_turns,
             push_enabled=r.push_enabled,
+            tool_calls_enabled=r.tool_calls_enabled,
             system_prompt_extra=r.system_prompt_extra,
         )

@@ -32,6 +32,7 @@ class ClientRecord(SQLModel, table=True):
     silence_timeout_s: float = Field(default=2.0)
     max_silence_turns: int = Field(default=3)
     push_enabled: bool = Field(default=True)
+    tool_calls_enabled: bool = Field(default=False)
 
     # Personalización
     system_prompt_extra: Optional[str] = Field(default=None)

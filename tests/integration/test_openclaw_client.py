@@ -25,6 +25,33 @@ HELLO_OK_PAYLOAD = {
     "auth": {"role": "operator", "scopes": ["operator.read", "operator.write"]},
 }
 
+# Matches OpenClaw server 2026.6.11+: hello-ok's snapshot no longer embeds the
+# agent roster at all — it must be fetched separately via agents.list.
+HELLO_OK_PAYLOAD_NO_SNAPSHOT_AGENTS = {
+    "type": "hello-ok", "protocol": 4,
+    "server": {"version": "2026.6.11", "connId": "test-conn-2"},
+    "policy": {"tickIntervalMs": 30000, "maxPayload": 26214400, "maxBufferedBytes": 0},
+    "snapshot": {
+        "presence": {},
+        "health": {},
+        "stateVersion": 1,
+        "uptimeMs": 1000,
+        "sessionDefaults": {"defaultAgentId": "main"},
+    },
+    "auth": {"role": "operator", "scopes": ["operator.read", "operator.write"]},
+}
+
+AGENTS_LIST_PAYLOAD = {
+    "defaultId": "main",
+    "mainKey": "main",
+    "scope": "per-sender",
+    "agents": [
+        {"id": "main", "name": "Main Agent"},
+        {"id": "assistant", "name": "Jota Voice"},
+        {"id": "ci-tester", "name": "CI Tester"},
+    ],
+}
+
 
 class SmartFakeWS:
     """Queue-backed fake WebSocket that auto-responds to OpenClaw protocol v4.
@@ -32,9 +59,19 @@ class SmartFakeWS:
     chat_responses: {sessionKey → [list of deltaText strings]}
     """
 
-    def __init__(self, chat_responses: Optional[dict] = None, chat_response_delay: float = 0.0):
+    def __init__(
+        self,
+        chat_responses: Optional[dict] = None,
+        chat_response_delay: float = 0.0,
+        hello_ok_payload: Optional[dict] = None,
+        agents_list_payload: Optional[dict] = None,
+        tool_calls: Optional[dict] = None,
+    ):
         self.chat_responses: dict[str, list[str]] = chat_responses or {}
         self.chat_response_delay: float = chat_response_delay  # delay between chunks (in seconds)
+        self.hello_ok_payload = hello_ok_payload or HELLO_OK_PAYLOAD
+        self.agents_list_payload = agents_list_payload or AGENTS_LIST_PAYLOAD
+        self.tool_calls: dict[str, list[dict]] = tool_calls or {}
         self._to_client: asyncio.Queue = asyncio.Queue()
         self._from_client: asyncio.Queue = asyncio.Queue()
         self.sent_frames: list[dict] = []
@@ -93,7 +130,13 @@ class SmartFakeWS:
             if method == "connect":
                 await self._to_client.put(json.dumps({
                     "type": "res", "id": req_id, "ok": True,
-                    "payload": HELLO_OK_PAYLOAD,
+                    "payload": self.hello_ok_payload,
+                }))
+
+            elif method == "agents.list":
+                await self._to_client.put(json.dumps({
+                    "type": "res", "id": req_id, "ok": True,
+                    "payload": self.agents_list_payload,
                 }))
 
             elif method == "sessions.subscribe":
@@ -113,20 +156,24 @@ class SmartFakeWS:
                 }))
                 if self.chat_response_delay > 0:
                     await asyncio.sleep(self.chat_response_delay)
+                for tool_data in self.tool_calls.get(sk, []):
+                    await self._to_client.put(json.dumps({
+                        "type": "event", "event": "session.tool",
+                        "payload": {"sessionKey": sk, "runId": run_id, "data": tool_data},
+                    }))
                 for i, chunk in enumerate(chunks):
+                    is_last = i == len(chunks) - 1
                     await self._to_client.put(json.dumps({
                         "type": "event", "event": "chat",
                         "payload": {
                             "runId": run_id, "sessionKey": sk,
-                            "seq": i + 1, "state": "delta", "deltaText": chunk,
+                            "seq": i + 1,
+                            "state": "final" if is_last else "delta",
+                            "deltaText": chunk,
                         },
                     }))
                     if self.chat_response_delay > 0:
                         await asyncio.sleep(self.chat_response_delay)
-                await self._to_client.put(json.dumps({
-                    "type": "res", "id": req_id, "ok": True,
-                    "payload": {"status": "done", "runId": run_id},
-                }))
 
             elif method == "health":
                 await self._to_client.put(json.dumps({
@@ -165,6 +212,23 @@ async def test_connect_returns_gateway_info(fake_ws):
     assert client.gateway_info is not None
     assert client.gateway_info.default_agent_id == "main"
     assert client.gateway_info.has_agent("assistant")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_connect_populates_agents_via_agents_list_when_snapshot_lacks_agents():
+    """OpenClaw server 2026.6.11+ no longer embeds the agent roster in
+    hello-ok's snapshot — it must be fetched via a separate agents.list call
+    right after connecting, or has_agent() silently rejects every agent."""
+    fake_ws = SmartFakeWS(
+        {"agent:main:client-a": ["Hola"]},
+        hello_ok_payload=HELLO_OK_PAYLOAD_NO_SNAPSHOT_AGENTS,
+    )
+    client = await connected_client(fake_ws)
+    assert client.gateway_info.has_agent("main")
+    assert client.gateway_info.has_agent("assistant")
+    assert client.gateway_info.has_agent("ci-tester")
+    assert client.gateway_info.default_agent_id == "main"
     await client.close()
 
 
@@ -294,4 +358,51 @@ async def test_chat_abort_frame_schema(fake_ws):
     assert len(aborts) >= 1
     assert "sessionKey" in aborts[0]["params"]
     assert "session" not in aborts[0]["params"]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_stream_response_completes_without_second_res(fake_ws):
+    """Turn completion must come from chat.state=='final', not a second res frame —
+    the real OpenClaw server (2026.6.11+) never sends one."""
+    client = await connected_client(fake_ws)
+    events = []
+    async for event in client.stream_response(
+        "hola", "client-a", session_key="agent:main:client-a"
+    ):
+        events.append(event)
+    res_frames_after_started = [
+        f for f in fake_ws.sent_frames
+        if f.get("method") == "chat.send"
+    ]
+    assert len(res_frames_after_started) == 1  # only the request itself was sent by us
+    assert events[-1].type == "status"
+    assert events[-1].content == "done"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_stream_response_yields_tool_call_events():
+    fake_ws = SmartFakeWS(
+        chat_responses={"agent:main:client-a": ["Listo."]},
+        tool_calls={"agent:main:client-a": [
+            {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {"command": "ls"}},
+            {"phase": "result", "name": "exec", "toolCallId": "call-1", "isError": False,
+             "result": {"content": [{"type": "text", "text": "file.txt"}]}},
+        ]},
+    )
+    client = await connected_client(fake_ws)
+    tool_events = []
+    async for event in client.stream_response(
+        "hola", "client-a", session_key="agent:main:client-a"
+    ):
+        if event.type == "tool_call":
+            tool_events.append(event.tool_call)
+    assert len(tool_events) == 2
+    assert tool_events[0].phase == "start"
+    assert tool_events[0].name == "exec"
+    assert tool_events[0].args == {"command": "ls"}
+    assert tool_events[1].phase == "result"
+    assert tool_events[1].result == "file.txt"
+    assert tool_events[1].is_error is False
     await client.close()

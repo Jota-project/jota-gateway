@@ -111,3 +111,75 @@ async def test_health_and_tick_ignored():
     for event_name in ("health", "tick", "presence", "sessions.changed"):
         frame = {"type": "event", "event": event_name, "payload": {}}
         await dispatcher.dispatch(frame)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_session_tool_start_routes_to_turn_queue():
+    dispatcher, turn_reg, _ = make_dispatcher()
+    q = turn_reg.register("req-1", "agent:main:client-a")
+    payload = {
+        "sessionKey": "agent:main:client-a",
+        "runId": "r1",
+        "data": {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {"command": "ls"}},
+    }
+    frame = {"type": "event", "event": "session.tool", "payload": payload}
+    await dispatcher.dispatch(frame)
+    kind, data = q.get_nowait()
+    assert kind == "tool"
+    assert data["phase"] == "start"
+    assert data["name"] == "exec"
+
+
+@pytest.mark.asyncio
+async def test_session_tool_result_routes_to_turn_queue():
+    dispatcher, turn_reg, _ = make_dispatcher()
+    q = turn_reg.register("req-1", "agent:main:client-a")
+    payload = {
+        "sessionKey": "agent:main:client-a",
+        "data": {
+            "phase": "result", "name": "exec", "toolCallId": "call-1",
+            "isError": False, "result": {"content": [{"type": "text", "text": "ok"}]},
+        },
+    }
+    frame = {"type": "event", "event": "session.tool", "payload": payload}
+    await dispatcher.dispatch(frame)
+    kind, data = q.get_nowait()
+    assert kind == "tool"
+    assert data["phase"] == "result"
+
+
+@pytest.mark.asyncio
+async def test_session_tool_update_phase_is_dropped():
+    dispatcher, turn_reg, _ = make_dispatcher()
+    q = turn_reg.register("req-1", "agent:main:client-a")
+    payload = {
+        "sessionKey": "agent:main:client-a",
+        "data": {"phase": "update", "name": "exec", "toolCallId": "call-1", "partialResult": {}},
+    }
+    frame = {"type": "event", "event": "session.tool", "payload": payload}
+    await dispatcher.dispatch(frame)
+    assert q.empty()
+
+
+@pytest.mark.asyncio
+async def test_session_tool_no_active_turn_routes_to_client_registry():
+    dispatcher, turn_reg, client_reg = make_dispatcher()
+    bridge = AsyncMock()
+    client_reg.register("client-a", bridge)
+    payload = {
+        "sessionKey": "agent:main:client-a",
+        "data": {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {}},
+    }
+    frame = {"type": "event", "event": "session.tool", "payload": payload}
+    await dispatcher.dispatch(frame)
+    bridge.deliver_push_tool_call.assert_awaited_once_with(payload["data"])
+
+
+@pytest.mark.asyncio
+async def test_session_tool_no_session_key_ignored():
+    dispatcher, _, _ = make_dispatcher()
+    frame = {
+        "type": "event", "event": "session.tool",
+        "payload": {"data": {"phase": "start", "name": "exec", "toolCallId": "call-1"}},
+    }
+    await dispatcher.dispatch(frame)  # must not raise
