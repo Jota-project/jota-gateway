@@ -26,20 +26,38 @@ async def ws_handshake(client_key: str, agent: str, ws_url: str = GATEWAY_WS_URL
 
 
 async def send_turn(ws, text: str, timeout: float = 60.0) -> dict:
-    """Sends a text turn and collects frames until turn_end or error."""
+    """Sends a text turn and collects frames belonging to that turn until its
+    own turn_end (or a matching/fatal error) arrives.
+
+    Agents that invoke tools (or otherwise produce multi-part replies)
+    routinely emit additional turn_start/turn_end pairs unrelated to this
+    specific message — confirmed live against ci-tester, see
+    docs/client-protocol.md §5. Only the first turn_id observed (the turn
+    triggered by this send) is tracked for `text`/stop purposes; frames
+    belonging to other turn_ids are still recorded in `frames` but ignored
+    otherwise, so a stray turn_end from an unrelated turn can't truncate
+    collection early.
+    """
     await ws.send(json.dumps({"type": "send", "text": text}))
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
     tokens = []
     frames = []
     turn_id = None
     while True:
-        raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise AssertionError(f"turn_end no llegó en {timeout}s para turn_id={turn_id}: {frames}")
+        raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
         frame = json.loads(raw)
         frames.append(frame)
-        if frame["type"] == "turn_start":
+        if frame["type"] == "turn_start" and turn_id is None:
             turn_id = frame["turn_id"]
-        elif frame["type"] == "token":
+        elif frame["type"] == "token" and frame.get("turn_id") == turn_id:
             tokens.append(frame["text"])
-        elif frame["type"] in ("turn_end", "error"):
+        elif frame["type"] == "turn_end" and frame.get("turn_id") == turn_id:
+            break
+        elif frame["type"] == "error" and (frame.get("turn_id") == turn_id or frame.get("fatal")):
             break
     return {"turn_id": turn_id, "text": "".join(tokens), "frames": frames}
 
