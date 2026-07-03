@@ -155,3 +155,28 @@ def test_missing_token_returns_422(http):
 def test_wrong_token_returns_401(http):
     r = http.get("/admin/clients", headers={"x-admin-token": "bad"})
     assert r.status_code == 401
+
+
+# --- tool_calls_enabled ---
+
+def test_create_client_tool_calls_enabled_defaults_false(http):
+    r = http.post("/admin/clients", json={"name": "T"}, headers=HEADERS)
+    assert r.status_code == 201
+    assert r.json()["tool_calls_enabled"] is False
+
+
+def test_create_client_tool_calls_enabled_explicit_true(http):
+    r = http.post("/admin/clients", json={"name": "T", "tool_calls_enabled": True}, headers=HEADERS)
+    assert r.status_code == 201
+    assert r.json()["tool_calls_enabled"] is True
+
+
+def test_patch_client_tool_calls_enabled(http):
+    created = http.post("/admin/clients", json={"name": "C"}, headers=HEADERS).json()
+    r = http.patch(
+        f"/admin/clients/{created['id']}",
+        json={"tool_calls_enabled": True},
+        headers=HEADERS,
+    )
+    assert r.status_code == 200
+    assert r.json()["tool_calls_enabled"] is True

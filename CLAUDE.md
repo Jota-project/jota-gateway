@@ -95,6 +95,7 @@ SQLModel table (`__tablename__ = "clients"`) with the following columns:
 | `silence_timeout_s` | `float` | `2.0` | Seconds of no transcription before a silence event |
 | `max_silence_turns` | `int` | `3` | Consecutive silence events before session is closed |
 | `push_enabled` | `bool` | `True` | Whether agent-initiated push turns are accepted |
+| `tool_calls_enabled` | `bool` | `False` | Whether `tool_call` WS messages are sent for this client (opt-in) |
 | `system_prompt_extra` | `str?` | `None` | Appended to the system prompt for all turns |
 
 ### `src/db/database.py`
