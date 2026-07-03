@@ -36,6 +36,8 @@ class FrameDispatcher:
             await self._handle_chat(payload)
         elif event == "agent":
             await self._handle_agent_lifecycle(payload)
+        elif event == "session.tool":
+            await self._handle_session_tool(payload)
 
     async def _handle_chat(self, payload: dict) -> None:
         sk = payload.get("sessionKey")
@@ -63,3 +65,19 @@ class FrameDispatcher:
             await bridge.on_push_turn_start(sk)
         elif phase == "end":
             await bridge.on_push_turn_end(sk)
+
+    async def _handle_session_tool(self, payload: dict) -> None:
+        sk = payload.get("sessionKey")
+        if sk is None:
+            return
+        data = payload.get("data", {})
+        if data.get("phase") not in ("start", "result"):
+            return
+        q = self._turns.get_queue_by_session(sk)
+        if q is not None:
+            await q.put(("tool", data))
+            return
+        client_id = client_id_from_session_key(sk)
+        bridge = self._clients.get(client_id)
+        if bridge is not None:
+            await bridge.deliver_push_tool_call(data)

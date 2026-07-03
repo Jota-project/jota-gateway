@@ -180,3 +180,57 @@ async def test_push_disabled_ignores_push_turn_start():
     await bridge.on_push_turn_start("agent:main:ha")
     ws.send_json.assert_not_awaited()
     assert bridge._push_turn_id is None
+
+
+@pytest.mark.asyncio
+async def test_deliver_push_tool_call_forwarded_when_enabled():
+    client = Client(id="hab_sito", client_key="key-123", is_active=True)
+    config = ClientConfig(tool_calls_enabled=True)
+    ws = AsyncMock()
+    handshake = Handshake(client_key="key-123", input_mode="text", output_mode=["text"], agent="main")
+    bridge = JotaBridge(
+        client=client, config=config, client_ws=ws,
+        orchestrator=AsyncMock(), tracker=AsyncMock(), handshake=handshake,
+        client_registry=ClientRegistry(), default_agent="main",
+    )
+    bridge._push_turn_id = "t-1"
+    data = {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {"command": "ls"}}
+    await bridge.deliver_push_tool_call(data)
+    ws.send_json.assert_awaited_once_with({
+        "type": "tool_call", "turn_id": "t-1", "phase": "start",
+        "name": "exec", "tool_call_id": "call-1",
+        "args": {"command": "ls"}, "result": None, "is_error": None,
+    })
+
+
+@pytest.mark.asyncio
+async def test_deliver_push_tool_call_not_forwarded_when_disabled():
+    client = Client(id="hab_sito", client_key="key-123", is_active=True)
+    config = ClientConfig(tool_calls_enabled=False)
+    ws = AsyncMock()
+    handshake = Handshake(client_key="key-123", input_mode="text", output_mode=["text"], agent="main")
+    bridge = JotaBridge(
+        client=client, config=config, client_ws=ws,
+        orchestrator=AsyncMock(), tracker=AsyncMock(), handshake=handshake,
+        client_registry=ClientRegistry(), default_agent="main",
+    )
+    bridge._push_turn_id = "t-1"
+    data = {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {}}
+    await bridge.deliver_push_tool_call(data)
+    ws.send_json.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deliver_push_tool_call_malformed_payload_ignored():
+    client = Client(id="hab_sito", client_key="key-123", is_active=True)
+    config = ClientConfig(tool_calls_enabled=True)
+    ws = AsyncMock()
+    handshake = Handshake(client_key="key-123", input_mode="text", output_mode=["text"], agent="main")
+    bridge = JotaBridge(
+        client=client, config=config, client_ws=ws,
+        orchestrator=AsyncMock(), tracker=AsyncMock(), handshake=handshake,
+        client_registry=ClientRegistry(), default_agent="main",
+    )
+    bridge._push_turn_id = "t-1"
+    await bridge.deliver_push_tool_call({"phase": "update"})  # must not raise
+    ws.send_json.assert_not_awaited()

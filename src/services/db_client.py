@@ -75,6 +75,7 @@ class DbClient:
             silence_timeout_s=record.silence_timeout_s,
             max_silence_turns=record.max_silence_turns,
             push_enabled=record.push_enabled,
+            tool_calls_enabled=record.tool_calls_enabled,
         )
         result = (client, config)
         async with self._session_lock:

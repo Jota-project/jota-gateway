@@ -1,11 +1,14 @@
 from dataclasses import dataclass
 from typing import Literal, AsyncIterator, Optional, Protocol, runtime_checkable
 
+from src.services.openclaw.models import ToolCallEvent
+
 
 @dataclass
 class OrchestratorEvent:
-    type: Literal["token", "status", "error"]
+    type: Literal["token", "status", "error", "tool_call"]
     content: str = ""
+    tool_call: Optional[ToolCallEvent] = None
 
 
 @runtime_checkable

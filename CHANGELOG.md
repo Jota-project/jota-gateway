@@ -1,3 +1,21 @@
+# [1.11.0](https://github.com/Jota-project/jota-gateway/compare/v1.10.0...v1.11.0) (2026-07-03)
+
+
+### Bug Fixes
+
+* detect turn completion via chat.state=='final' instead of a second res frame ([4458996](https://github.com/Jota-project/jota-gateway/commit/4458996a33915f0ff2ba7bbc0d2ab462cc7394d8))
+* turn-completion detection + surface OpenClaw tool calls (opt-in) ([#70](https://github.com/Jota-project/jota-gateway/issues/70)) ([87f4571](https://github.com/Jota-project/jota-gateway/commit/87f4571647f37bcbc9f5b367a7dd5a4d19b964eb))
+
+
+### Features
+
+* add tool_calls_enabled per-client config flag (default off) ([de940d5](https://github.com/Jota-project/jota-gateway/commit/de940d570c7652e275ce833364921bc3cf84a069))
+* add ToolCallEvent data model and extend OrchestratorEvent ([89e0be7](https://github.com/Jota-project/jota-gateway/commit/89e0be7c0bdd885f8c8269a6dd1e99a0d874b765))
+* forward tool_call events to an on_tool_call callback ([fc5db94](https://github.com/Jota-project/jota-gateway/commit/fc5db94fef626a5e37a8cb39a11e5ff8a2860633))
+* route session.tool events to turn queue / push bridge ([24cc874](https://github.com/Jota-project/jota-gateway/commit/24cc8746053ebe89c3ca1e8d98f4bf8004cfefd1))
+* send tool_call WS messages for enabled clients (normal + push turns) ([56f1db3](https://github.com/Jota-project/jota-gateway/commit/56f1db3899d5d55ad56d6c1c35012afdb0cb5b1b))
+* yield tool_call OrchestratorEvents from stream_response ([af7cf84](https://github.com/Jota-project/jota-gateway/commit/af7cf8491a8ece33de1b69e6b556f22545ad6539))
+
 # [1.10.0](https://github.com/Jota-project/jota-gateway/compare/v1.9.0...v1.10.0) (2026-07-01)
 
 

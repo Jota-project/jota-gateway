@@ -2,6 +2,7 @@ import logging
 from typing import Awaitable, Callable, Optional
 
 from src.services.protocol import OrchestratorProtocol
+from src.services.openclaw.models import ToolCallEvent
 from src.services.pipeline_tracker import PipelineTracker
 
 logger = logging.getLogger(__name__)
@@ -16,8 +17,10 @@ async def call_orchestrator(
     system_prompt_extra: Optional[str] = None,
     tracker: Optional[PipelineTracker] = None,
     on_token: Optional[Callable[[str], Awaitable[None]]] = None,
+    on_tool_call: Optional[Callable[[ToolCallEvent], Awaitable[None]]] = None,
 ) -> None:
-    """Iterate orchestrator.stream_response(), record pipeline events, call on_token per token.
+    """Iterate orchestrator.stream_response(), record pipeline events, call on_token per token
+    and on_tool_call per tool-call event.
 
     Raises RuntimeError if the orchestrator emits an error event.
     """
@@ -42,6 +45,10 @@ async def call_orchestrator(
             _token_count += 1
             if on_token:
                 await on_token(event.content)
+
+        elif event.type == "tool_call":
+            if on_tool_call and event.tool_call is not None:
+                await on_tool_call(event.tool_call)
 
         elif event.type == "error":
             raise RuntimeError(event.content)

@@ -95,6 +95,7 @@ SQLModel table (`__tablename__ = "clients"`) with the following columns:
 | `silence_timeout_s` | `float` | `2.0` | Seconds of no transcription before a silence event |
 | `max_silence_turns` | `int` | `3` | Consecutive silence events before session is closed |
 | `push_enabled` | `bool` | `True` | Whether agent-initiated push turns are accepted |
+| `tool_calls_enabled` | `bool` | `False` | Whether `tool_call` WS messages are sent for this client (opt-in) |
 | `system_prompt_extra` | `str?` | `None` | Appended to the system prompt for all turns |
 
 ### `src/db/database.py`
@@ -197,6 +198,12 @@ The singleton `db_client = DbClient()` is imported from this module everywhere. 
 - **`{"type":"send","text":"..."}`** → `_call_orchestrator(text)` — creates a fresh `TTSClient` per turn, runs `pipe_tokens` + `pipe_audio` concurrently via `asyncio.gather`
 - **Barge-in**: partial transcriptions with `len >= config.barge_in_min_chars` cancel the active orchestrator turn via `_cancel_active_turn()`, which cancels the Python task and causes `OpenClawClient` to send `chat.abort` to OpenClaw. Controlled per-client by `barge_in_enabled` and `barge_in_min_chars`.
 - **Agent-initiated push**: OpenClaw sends `agent` events with `phase: "start"/"end"` and interleaved `chat` events. `FrameDispatcher` routes these to the bridge via `ClientRegistry`. `on_push_turn_start` checks `config.push_enabled` — if `False`, the push is silently dropped. Otherwise creates a TTS client, pipes audio, and sends `turn_start`/`turn_end` to the client.
+- **Tool calls**: when the agent invokes a tool during a turn, OpenClaw emits a `session.tool`
+  event (`phase: "start"` with `args`, then `phase: "result"` with `result`/`isError` — the
+  intermediate `phase: "update"` streaming partials are dropped). If the client's
+  `tool_calls_enabled` config flag is `True` (default `False`), the gateway forwards each as
+  `{"type": "tool_call", "turn_id", "phase", "name", "tool_call_id", "args", "result",
+  "is_error"}` over the WS — for both regular turns and agent-initiated push turns.
 
 ### Silence watchdog
 

@@ -27,6 +27,7 @@ class ClientConfig(BaseModel):
     silence_timeout_s: float = 2.0
     max_silence_turns: int = 3
     push_enabled: bool = True
+    tool_calls_enabled: bool = False
 
     model_config = ConfigDict(extra="allow")
 
