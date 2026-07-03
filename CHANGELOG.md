@@ -1,3 +1,10 @@
+# [1.12.0](https://github.com/Jota-project/jota-gateway/compare/v1.11.1...v1.12.0) (2026-07-03)
+
+
+### Features
+
+* Alembic-backed schema migrations for SQLite ([#75](https://github.com/Jota-project/jota-gateway/issues/75)) ([d6b3bdc](https://github.com/Jota-project/jota-gateway/commit/d6b3bdc49e5202fdabcf1a191f277acf8e47390d)), closes [#73](https://github.com/Jota-project/jota-gateway/issues/73)
+
 ## [1.11.1](https://github.com/Jota-project/jota-gateway/compare/v1.11.0...v1.11.1) (2026-07-03)
 
 
