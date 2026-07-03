@@ -1,11 +1,11 @@
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
 from sqlmodel import SQLModel
 
 import src.db.models  # noqa: F401 - registra ClientRecord en SQLModel.metadata
 from src.core.config import settings
+from src.db.database import get_engine
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
@@ -29,11 +29,10 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    # Reutiliza get_engine() en vez de construir un engine propio desde la URL:
+    # así respeta cualquier engine inyectado en tests (p.ej. el SQLite en
+    # memoria monkeypatcheado por la fixture `db_engine` de integración).
+    connectable = get_engine()
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():
