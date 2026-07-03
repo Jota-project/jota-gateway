@@ -144,6 +144,52 @@ ruff check src/ tests/
 
 ---
 
+## Smoke-test E2E real (contra OpenClaw de producción)
+
+`tests/e2e/` valida el pipeline completo contra el OpenClaw **real** de este mismo
+servidor: turno de texto, cancelación, sesiones concurrentes y uso de tools. Nunca
+corre automáticamente — ni en la CI normal, ni con un `pytest` a secas (marker
+`e2e_real`, deseleccionado por defecto en `pytest.ini`).
+
+Solo se dispara manualmente vía el workflow `E2E Real Smoke Test`
+(`workflow_dispatch`), gated por un GitHub Environment con aprobación requerida.
+Antes de poder usarlo hace falta configurar, una sola vez, lo siguiente
+(fuera de este repo):
+
+1. **Agente de test dedicado en OpenClaw** — con personalidad/memoria aislada de
+   los agentes de producción, y alguna tool/skill simple y determinista habilitada
+   (para `test_tool_use.py`). Nunca se testea contra un agente real.
+2. **Runner self-hosted dedicado**, separado del runner `green-house` existente
+   (que sirve a otro repo). Registrar una segunda instancia de
+   [`actions-runner`](https://github.com/actions/runner) en este servidor, con
+   label `jota-e2e`, contra este repo.
+3. **GitHub Environment `e2e-real-production`** (Settings → Environments):
+   - *Required reviewers*: el usuario propietario del repo, explícitamente.
+   - *Deployment branches*: restringido a `main`.
+   - *Environment variable* `E2E_TEST_AGENT`: nombre del agente de test del punto 1.
+
+Ejecución manual local (sin pasar por GitHub Actions), útil para validar cambios
+en la suite antes de fiarse del workflow:
+
+```bash
+PYTHONPATH=. E2E_TEST_AGENT=<agente-de-test> pytest tests/e2e -m e2e_real -v
+```
+
+`OPENCLAW_TOKEN` y `ADMIN_TOKEN` nunca se guardan en GitHub — el proceso de test
+los lee del `.env` local del servidor, igual que la propia app.
+
+**Nota para el workflow de GitHub Actions:** el checkout que hace `actions/checkout`
+en el runner es limpio y **no incluye `.env`** (está en `.gitignore`). Por eso, para
+la ruta de CI, `ADMIN_TOKEN` y `OPENCLAW_TOKEN` deben estar exportados como
+variables de entorno reales en el propio proceso del runner self-hosted (p. ej.
+vía `Environment=` en su unidad systemd) — no en un `.env` dentro del checkout ni
+en GitHub Secrets. El job incluye un paso de verificación previo al de tests que
+falla explícitamente (`exit 1`) si alguna de las dos falta, para que un runner mal
+configurado rompa de forma visible en lugar de pasar en silencio sin cobertura
+real.
+
+---
+
 ## Arquitectura interna
 
 El gateway instancia un `JotaBridge` por cada sesión WebSocket. `OpenClawClient` es un singleton persistente envuelto en `ReconnectingOpenClawClient` (reconexión automática con backoff exponencial; estados CONNECTED / RECONNECTING / DEGRADED).
