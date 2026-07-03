@@ -190,6 +190,27 @@ Los tokens llegan en orden; concaténalos para reconstruir la respuesta completa
 
 Señala que el orquestador terminó de generar la respuesta. El audio TTS puede seguir llegando brevemente después (ya está en tránsito).
 
+### `tool_call` — uso de herramientas del agente (opt-in)
+
+Solo se envía si el cliente tiene el flag `tool_calls_enabled` activado (por defecto `False`, gestionable vía Admin API — ver `CLAUDE.md`). Cuando el agente invoca una herramienta durante el turno, llegan dos mensajes intercalados con los `token`:
+
+```json
+{ "type": "tool_call", "turn_id": "t-1", "phase": "start", "name": "exec", "tool_call_id": "call-1", "args": {"command": "ls"}, "result": null, "is_error": null }
+{ "type": "tool_call", "turn_id": "t-1", "phase": "result", "name": "exec", "tool_call_id": "call-1", "args": null, "result": "file.txt", "is_error": false }
+```
+
+| Campo | Descripción |
+|-------|-------------|
+| `turn_id` | Turno al que pertenece (mismo `turn_id` que su `turn_start`) |
+| `phase` | `"start"` (la herramienta empieza a ejecutarse) o `"result"` (resultado disponible) |
+| `name` | Nombre de la herramienta |
+| `tool_call_id` | Identificador único de esta invocación — correlaciona `start` con su `result` |
+| `args` | Argumentos pasados a la herramienta (solo en `phase="start"`) |
+| `result` | Resultado en texto plano (solo en `phase="result"`) |
+| `is_error` | Si la herramienta falló (solo en `phase="result"`) |
+
+No hay un `phase="update"` — OpenClaw emite resultados parciales de streaming que el gateway descarta deliberadamente; solo se reenvían inicio y resultado final. También llegan durante turnos iniciados por el agente (push, ver §10).
+
 ### Pseudocódigo de recepción
 
 ```python
@@ -216,6 +237,10 @@ async for msg in ws:
             case "turn_end":
                 turn_id = data["turn_id"]
                 on_turn_complete(current_buffer.pop(turn_id, ""))
+
+            case "tool_call":
+                # Solo llega si tool_calls_enabled=True para este cliente
+                handle_tool_call(data["turn_id"], data["phase"], data["name"], data.get("args"), data.get("result"))
 
             case "transcription_partial":
                 show_live_transcription(data["text"])
@@ -399,7 +424,7 @@ OpenClaw puede iniciar turnos proactivamente sin que el usuario haya enviado nad
 { "type": "turn_end", "turn_id": "t-3" }
 ```
 
-El cliente no necesita distinguirlos de los turnos normales — el `turn_id` y `turn_seq` siguen la misma secuencia.
+El cliente no necesita distinguirlos de los turnos normales — el `turn_id` y `turn_seq` siguen la misma secuencia. Si `tool_calls_enabled` está activo, también pueden llegar mensajes `tool_call` (§5) intercalados.
 
 ---
 
@@ -472,6 +497,7 @@ El cliente escribe; el gateway sintetiza audio con el texto de la respuesta.
 | `turn_start` | `{"type":"turn_start","turn_id":"t-N","turn_seq":N}` | Inicio de cada turno |
 | `token` | `{"type":"token","turn_id":"t-N","text":"..."}` | `"text"` en `output_mode` — tokens en streaming |
 | `turn_end` | `{"type":"turn_end","turn_id":"t-N"}` | Fin de cada turno |
+| `tool_call` | `{"type":"tool_call","turn_id":"t-N","phase":"start"\|"result","name":"...","tool_call_id":"...","args":{...}\|null,"result":"..."\|null,"is_error":bool\|null}` | Solo si `tool_calls_enabled=True` para el cliente — uso de herramientas del agente |
 | `transcription_partial` | `{"type":"transcription_partial","text":"..."}` | `input_mode="audio"` — parciales en tiempo real |
 | `transcription` | `{"type":"transcription","text":"..."}` | `input_mode="audio"` — transcripción final, espera `send` |
 | `interrupted` | `{"type":"interrupted"}` | Barge-in confirmado, turno anterior cancelado |
