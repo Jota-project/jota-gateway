@@ -10,7 +10,7 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from src.db.database import create_db_and_tables, get_engine
+from src.db.database import run_migrations, get_engine
 from src.db.models import ClientRecord
 
 
@@ -114,5 +114,5 @@ def run(argv: list[str]) -> None:
 
 
 if __name__ == "__main__":
-    create_db_and_tables()
+    run_migrations()
     run(sys.argv[1:])

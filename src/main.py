@@ -7,7 +7,7 @@ from src.api.health_routes import router as health_router
 from src.api.openai_routes import router as openai_router
 from src.api.admin_routes import router as admin_router
 from src.core.config import settings
-from src.db.database import create_db_and_tables
+from src.db.database import run_migrations
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    create_db_and_tables()
+    run_migrations()
     logger.info("BD inicializada")
 
     turn_registry = TurnRegistry()
