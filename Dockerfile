@@ -13,6 +13,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copiamos el resto del código
 COPY src/ /app/src/
 
+# Copiamos la config y las migraciones de Alembic (run_migrations() las necesita en runtime)
+COPY alembic.ini .
+COPY migrations/ /app/migrations/
+
 # Exponemos el puerto por el que correrá Uvicorn dentro del contenedor
 EXPOSE 8004
 
