@@ -1,4 +1,4 @@
-from src.services.openclaw.models import GatewayInfo
+from src.services.openclaw.models import GatewayInfo, ToolCallEvent
 
 HELLO_OK_PAYLOAD = {
     "type": "hello-ok",
@@ -49,3 +49,47 @@ def test_from_hello_ok_minimal():
     assert info.default_agent_id == "main"
     assert info.agents == {}
     assert info.tick_interval_ms == 15000
+
+
+def test_tool_call_start_parses_name_and_args():
+    data = {
+        "phase": "start", "name": "exec", "toolCallId": "call-1",
+        "args": {"command": "pwd && ls", "workdir": "/tmp"},
+    }
+    tc = ToolCallEvent.from_session_tool_payload(data)
+    assert tc.phase == "start"
+    assert tc.name == "exec"
+    assert tc.tool_call_id == "call-1"
+    assert tc.args == {"command": "pwd && ls", "workdir": "/tmp"}
+    assert tc.result is None
+    assert tc.is_error is None
+
+
+def test_tool_call_result_flattens_text_content():
+    data = {
+        "phase": "result", "name": "exec", "toolCallId": "call-1",
+        "isError": False,
+        "result": {"content": [{"type": "text", "text": "line1\nline2"}]},
+    }
+    tc = ToolCallEvent.from_session_tool_payload(data)
+    assert tc.phase == "result"
+    assert tc.result == "line1\nline2"
+    assert tc.is_error is False
+    assert tc.args is None
+
+
+def test_tool_call_result_with_no_content_has_none_result():
+    data = {"phase": "result", "name": "exec", "toolCallId": "call-1", "isError": True, "result": {}}
+    tc = ToolCallEvent.from_session_tool_payload(data)
+    assert tc.result is None
+    assert tc.is_error is True
+
+
+def test_tool_call_update_phase_returns_none():
+    data = {"phase": "update", "name": "exec", "toolCallId": "call-1", "partialResult": {}}
+    assert ToolCallEvent.from_session_tool_payload(data) is None
+
+
+def test_tool_call_missing_required_fields_returns_none():
+    assert ToolCallEvent.from_session_tool_payload({"phase": "start"}) is None
+    assert ToolCallEvent.from_session_tool_payload({"phase": "start", "name": "exec"}) is None
