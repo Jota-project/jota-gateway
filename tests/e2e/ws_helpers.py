@@ -46,3 +46,34 @@ async def send_turn(ws, text: str, timeout: float = 60.0) -> dict:
 
 async def cancel_active_turn(ws) -> None:
     await ws.send(json.dumps({"type": "cancel"}))
+
+
+async def send_turn_until_tool_call(ws, text: str, timeout: float = 100.0) -> dict:
+    """Sends a text turn and collects frames until a tool_call event with
+    phase == "result" arrives, or error, or the timeout elapses.
+
+    Unlike send_turn(), this does NOT assume one turn per message: agents that
+    invoke tools routinely chain several turn_start/turn_end pairs for a
+    single user message (tool invocation, intermediate replies, final text),
+    per docs/client-protocol.md §5. Requires the client to have
+    tool_calls_enabled=True (see test_client_record_with_tools fixture).
+    """
+    await ws.send(json.dumps({"type": "send", "text": text}))
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    frames = []
+    tool_calls = []
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise AssertionError(f"No llegó ningún tool_call 'result' en {timeout}s: {frames}")
+        raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+        frame = json.loads(raw)
+        frames.append(frame)
+        if frame["type"] == "tool_call":
+            tool_calls.append(frame)
+            if frame["phase"] == "result":
+                break
+        elif frame["type"] == "error":
+            break
+    return {"tool_calls": tool_calls, "frames": frames}

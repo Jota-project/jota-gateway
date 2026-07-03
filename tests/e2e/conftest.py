@@ -45,13 +45,14 @@ def admin_headers() -> dict:
     return {"X-Admin-Token": settings.ADMIN_TOKEN}
 
 
-def _create_test_client(admin_headers: dict, suffix: str) -> dict:
+def _create_test_client(admin_headers: dict, suffix: str, tool_calls_enabled: bool = False) -> dict:
     resp = httpx.post(
         f"{GATEWAY_HTTP_URL}/admin/clients",
         json={
             "name": f"e2e-smoke-{suffix}",
             "client_type": "e2e-test",
             "output_mode": ["text"],
+            "tool_calls_enabled": tool_calls_enabled,
         },
         headers=admin_headers,
         timeout=10.0,
@@ -89,19 +90,11 @@ def test_client_records_x3(admin_headers):
             _delete_test_client(admin_headers, r["id"])
 
 
-DEFAULT_TOOL_PROBE_TEMPLATE = (
-    "Usa tu herramienta de eco y repite exactamente el siguiente texto, "
-    "sin traducirlo ni modificarlo: {token}"
-)
-
-
 @pytest.fixture
-def tool_probe_prompt():
-    """Builds a prompt + expected verbatim token for the tool-use smoke test.
-
-    Override the phrasing with E2E_TOOL_PROBE_PROMPT_TEMPLATE if the test
-    agent's tool needs a different trigger phrase (must contain '{token}').
-    """
-    template = os.environ.get("E2E_TOOL_PROBE_PROMPT_TEMPLATE", DEFAULT_TOOL_PROBE_TEMPLATE)
-    token = f"E2E-PROBE-{secrets.token_hex(4).upper()}"
-    return template.format(token=token), token
+def test_client_record_with_tools(admin_headers):
+    """An ephemeral test client with tool_calls_enabled=True, for the tool-use scenario."""
+    record = _create_test_client(admin_headers, secrets.token_hex(4), tool_calls_enabled=True)
+    try:
+        yield record
+    finally:
+        _delete_test_client(admin_headers, record["id"])
