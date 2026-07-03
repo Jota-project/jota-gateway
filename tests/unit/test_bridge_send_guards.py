@@ -5,6 +5,7 @@ from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
 from src.services.protocol import OrchestratorEvent
 from src.models.schemas import Client, ClientConfig, Handshake
+from src.services.openclaw.models import ToolCallEvent
 
 import src.services.bridge as bridge_module
 
@@ -34,6 +35,53 @@ def make_stream_with_event(event_type: str, content: str):
     async def _stream(*args, **kwargs):
         yield OrchestratorEvent(type=event_type, content=content)
     return _stream
+
+
+def make_stream_with_tool_call(tool_call: ToolCallEvent):
+    async def _stream(*args, **kwargs):
+        yield OrchestratorEvent(type="tool_call", tool_call=tool_call)
+    return _stream
+
+
+async def test_tool_call_forwarded_when_enabled(mock_tracker):
+    ws = AsyncMock()
+    config = ClientConfig(tool_calls_enabled=True)
+    b = JotaBridge(client=_CLIENT, config=config, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker,
+                   handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text"]),
+                   client_registry=ClientRegistry(), default_agent="main")
+    tc = ToolCallEvent(phase="start", name="exec", tool_call_id="call-1", args={"command": "ls"})
+    b.orchestrator.stream_response = make_stream_with_tool_call(tc)
+
+    await b._call_orchestrator("test")
+
+    tool_call_msgs = [
+        c.args[0] for c in ws.send_json.await_args_list
+        if c.args[0].get("type") == "tool_call"
+    ]
+    assert len(tool_call_msgs) == 1
+    assert tool_call_msgs[0]["phase"] == "start"
+    assert tool_call_msgs[0]["name"] == "exec"
+    assert tool_call_msgs[0]["tool_call_id"] == "call-1"
+    assert tool_call_msgs[0]["args"] == {"command": "ls"}
+    assert tool_call_msgs[0]["turn_id"] == "t-1"
+
+
+async def test_tool_call_not_forwarded_when_disabled(mock_tracker):
+    ws = AsyncMock()
+    config = ClientConfig(tool_calls_enabled=False)
+    b = JotaBridge(client=_CLIENT, config=config, client_ws=ws, orchestrator=AsyncMock(), tracker=mock_tracker,
+                   handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text"]),
+                   client_registry=ClientRegistry(), default_agent="main")
+    tc = ToolCallEvent(phase="start", name="exec", tool_call_id="call-1", args={"command": "ls"})
+    b.orchestrator.stream_response = make_stream_with_tool_call(tc)
+
+    await b._call_orchestrator("test")
+
+    tool_call_msgs = [
+        c.args[0] for c in ws.send_json.await_args_list
+        if c.args[0].get("type") == "tool_call"
+    ]
+    assert tool_call_msgs == []
 
 
 async def test_token_send_failure_does_not_propagate(bridge):

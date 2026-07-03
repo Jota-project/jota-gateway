@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import MagicMock
 from src.services.orchestration import call_orchestrator
 from src.services.protocol import OrchestratorEvent
+from src.services.openclaw.models import ToolCallEvent
 
 
 def _make_orchestrator(events):
@@ -66,6 +67,32 @@ async def test_error_event_raises():
     orch = _make_orchestrator([OrchestratorEvent(type="error", content="orchestrator_unavailable")])
     with pytest.raises(RuntimeError, match="orchestrator_unavailable"):
         await call_orchestrator(orch, "hi", "agent:main:ha", "ha")
+
+
+async def test_tool_call_reaches_callback():
+    tc_start = ToolCallEvent(phase="start", name="exec", tool_call_id="call-1", args={"command": "ls"})
+    tc_result = ToolCallEvent(phase="result", name="exec", tool_call_id="call-1", result="ok", is_error=False)
+    orch = _make_orchestrator([
+        OrchestratorEvent(type="tool_call", tool_call=tc_start),
+        OrchestratorEvent(type="tool_call", tool_call=tc_result),
+        OrchestratorEvent(type="status", content="done"),
+    ])
+    received = []
+
+    async def on_tool_call(tc):
+        received.append(tc)
+
+    await call_orchestrator(orch, "hi", "agent:main:ha", "ha", on_tool_call=on_tool_call)
+    assert received == [tc_start, tc_result]
+
+
+async def test_no_on_tool_call_does_not_raise():
+    tc = ToolCallEvent(phase="start", name="exec", tool_call_id="call-1")
+    orch = _make_orchestrator([
+        OrchestratorEvent(type="tool_call", tool_call=tc),
+        OrchestratorEvent(type="status", content="done"),
+    ])
+    await call_orchestrator(orch, "hi", "agent:main:ha", "ha", on_tool_call=None)
 
 
 async def test_llm_done_meta_has_token_count():
