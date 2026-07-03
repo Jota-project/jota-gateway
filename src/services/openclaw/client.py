@@ -144,6 +144,10 @@ class OpenClawClient:
                     delta = data.get("deltaText", "")
                     if delta:
                         yield OrchestratorEvent(type="token", content=delta)
+                    if data.get("state") == "final":
+                        yield OrchestratorEvent(type="status", content="done")
+                        _finished = True
+                        break
                 elif kind == "done":
                     if not data.get("ok"):
                         yield OrchestratorEvent(type="error", content=str(data.get("error", {})))

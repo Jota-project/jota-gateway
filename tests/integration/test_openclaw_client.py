@@ -114,19 +114,18 @@ class SmartFakeWS:
                 if self.chat_response_delay > 0:
                     await asyncio.sleep(self.chat_response_delay)
                 for i, chunk in enumerate(chunks):
+                    is_last = i == len(chunks) - 1
                     await self._to_client.put(json.dumps({
                         "type": "event", "event": "chat",
                         "payload": {
                             "runId": run_id, "sessionKey": sk,
-                            "seq": i + 1, "state": "delta", "deltaText": chunk,
+                            "seq": i + 1,
+                            "state": "final" if is_last else "delta",
+                            "deltaText": chunk,
                         },
                     }))
                     if self.chat_response_delay > 0:
                         await asyncio.sleep(self.chat_response_delay)
-                await self._to_client.put(json.dumps({
-                    "type": "res", "id": req_id, "ok": True,
-                    "payload": {"status": "done", "runId": run_id},
-                }))
 
             elif method == "health":
                 await self._to_client.put(json.dumps({
@@ -294,4 +293,24 @@ async def test_chat_abort_frame_schema(fake_ws):
     assert len(aborts) >= 1
     assert "sessionKey" in aborts[0]["params"]
     assert "session" not in aborts[0]["params"]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_stream_response_completes_without_second_res(fake_ws):
+    """Turn completion must come from chat.state=='final', not a second res frame —
+    the real OpenClaw server (2026.6.11+) never sends one."""
+    client = await connected_client(fake_ws)
+    events = []
+    async for event in client.stream_response(
+        "hola", "client-a", session_key="agent:main:client-a"
+    ):
+        events.append(event)
+    res_frames_after_started = [
+        f for f in fake_ws.sent_frames
+        if f.get("method") == "chat.send"
+    ]
+    assert len(res_frames_after_started) == 1  # only the request itself was sent by us
+    assert events[-1].type == "status"
+    assert events[-1].content == "done"
     await client.close()
