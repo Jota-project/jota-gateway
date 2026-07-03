@@ -1,0 +1,221 @@
+# OpenClaw wire protocol — living reference for jota-gateway
+
+OpenClaw is beta software; its WebSocket API drifts between minor server versions with **no
+changelog surfaced anywhere jota-gateway can see**. This file is the project's own,
+continuously-updated technical record of what the protocol actually does, as observed against
+the real running instance — not what any general OpenClaw documentation says it should do.
+
+**Update this file whenever you discover a protocol change, inconsistency, or undocumented
+event shape while working on jota-gateway** — dated, with the server version if known. This is
+separate from the general-purpose `openclaw` skill (`~/.claude/skills/openclaw/`), which
+explains what OpenClaw is and how to use it across any project; this file tracks *our specific,
+current, hyper-detailed understanding* of its API as it affects this codebase. See also
+`CLAUDE.md`'s "OpenClaw package" section for how jota-gateway's code responds to what's
+documented here.
+
+---
+
+## Breaking change — v2026.6.11
+
+Confirmed live against the real `green-house` OpenClaw instance on 2026-07-03 (PRs #70, #71).
+Two changes, both **silent** — no error is raised, the old client code just quietly stops
+working:
+
+1. **`hello-ok`'s `snapshot` no longer embeds the agent roster.** A captured real `hello-ok`
+   payload's `snapshot` only contains `presence`, `health`, `stateVersion`, `uptimeMs`,
+   `sessionDefaults` — no `agents` key at all. See "Discovering Available Agents" below.
+   `GatewayInfo.has_agent()` (`src/services/openclaw/models.py`) silently rejected every
+   agent name until fixed.
+2. **`chat.send` never gets a second `res`.** The completion signal is a `chat` event with
+   `payload.state == "final"` — not a matching `res` frame. `stream_response()`
+   (`src/services/openclaw/client.py`) hung indefinitely after the first token until fixed.
+
+**If turns silently hang after the first token, or agent-name validation always rejects
+everything that used to work** — check `hello-ok.server.version` against what's assumed here
+before assuming your own code is at fault.
+
+---
+
+## hello-ok response (real shape, server 2026.6.11)
+
+```json
+{
+  "type": "res", "id": "...", "ok": true,
+  "payload": {
+    "type": "hello-ok",
+    "protocol": 4,
+    "server": {"version": "2026.6.11", "connId": "..."},
+    "features": {"methods": ["chat.send", "..."], "events": ["chat", "..."]},
+    "snapshot": {
+      "presence": {},
+      "health": {},
+      "stateVersion": 1,
+      "uptimeMs": 12345,
+      "sessionDefaults": {
+        "defaultAgentId": "main",
+        "mainKey": "main",
+        "mainSessionKey": "agent:main:main",
+        "scope": "per-sender"
+      }
+    },
+    "pluginSurfaceUrls": {},
+    "auth": {"deviceToken": "...", "role": "operator", "scopes": ["operator.read", "operator.write"]},
+    "policy": {"maxPayload": 26214400, "maxBufferedBytes": 52428800, "tickIntervalMs": 30000}
+  }
+}
+```
+
+`snapshot.sessionDefaults.defaultAgentId` is the only agent info here — enough for the
+*default* agent, not the full roster.
+
+## Discovering Available Agents
+
+Call `agents.list` right after `hello-ok` (`OpenClawClient.connect()` does this):
+
+```json
+// req
+{"type": "req", "id": "...", "method": "agents.list", "params": {}}
+
+// res
+{
+  "type": "res", "id": "...", "ok": true,
+  "payload": {
+    "defaultId": "main",
+    "mainKey": "main",
+    "scope": "per-sender",
+    "agents": [
+      {
+        "id": "main",
+        "name": "Main Agent",
+        "identity": {"name": "Jota", "theme": "...", "emoji": "🦞"},
+        "workspace": "/home/user/.openclaw/workspace",
+        "agentRuntime": {"id": "auto", "source": "implicit"},
+        "thinkingLevels": [{"id": "off", "label": "off"}, "..."],
+        "thinkingOptions": ["off", "minimal", "low", "medium", "high"],
+        "thinkingDefault": "high",
+        "model": {"primary": "...", "fallbacks": ["..."]}
+      }
+    ]
+  }
+}
+```
+
+Note the field is `id`, not `agentId` (the older `hello-ok.snapshot.agents[]` shape — now gone
+— used `agentId` + per-item `isDefault`; `agents.list`'s shape uses `id` + a top-level
+`defaultId` to compare against instead). `GatewayInfo.update_agents_from_list()`
+(`src/services/openclaw/models.py`) parses this.
+
+**No per-agent `tools` field is included.** There is currently no known API method that
+returns an agent's *resolved* tool list. `config.get` with no params returns the entire raw
+`openclaw.json` (requires `operator.admin` scope, which jota-gateway's token does not
+currently request), including `agents.list[].tools.allow`/`.deny` — but that's the config-level
+allow/deny, not the resolved set after profile expansion. The only reliable way found so far:
+ask the agent to do something and watch for `session.tool` events (below).
+
+---
+
+## Turn completion (`chat` events with `state`)
+
+While the agent is responding, `chat` events stream:
+
+```json
+{
+  "type": "event", "event": "chat",
+  "payload": {
+    "sessionKey": "my-session-key",
+    "deltaText": "The answer is",
+    "message": "The answer is",
+    "replace": false,
+    "state": "delta",
+    "seq": 10
+  }
+}
+```
+
+`state: "final"` on the last chunk is the real completion signal (server 2026.6.11+ — see
+breaking change above). `stream_response()` yields `status: "done"` on `state == "final"`; the
+old `res`-based completion path is kept only as a fallback for older server versions.
+
+---
+
+## Tool Use (`session.tool` events)
+
+Reverse-engineered from real traffic while building tool-call surfacing (PR #70) — not
+documented anywhere upstream as of 2026-07-03.
+
+```json
+{
+  "type": "event", "event": "session.tool",
+  "payload": {
+    "sessionKey": "my-session-key", "runId": "...",
+    "data": {
+      "phase": "start", "name": "read", "toolCallId": "call_function_8roff6zqcgdv_1",
+      "args": {"path": "/home/user/.openclaw/workspace-foo/IDENTITY.md"}
+    }
+  }
+}
+// ... time passes while the tool executes ...
+{
+  "type": "event", "event": "session.tool",
+  "payload": {
+    "sessionKey": "my-session-key", "runId": "...",
+    "data": {
+      "phase": "result", "name": "read", "toolCallId": "call_function_8roff6zqcgdv_1",
+      "isError": false,
+      "result": {"content": [{"type": "text", "text": "<file contents>"}]}
+    }
+  }
+}
+```
+
+| `data` field | Present in | Meaning |
+|---|---|---|
+| `phase` | both | `"start"`, `"update"` (streaming partial — observed, not reverse-engineered in detail, currently dropped), or `"result"` |
+| `name` | both | Tool name (e.g. `read`, `exec`) |
+| `toolCallId` | both | Correlates a `"start"` with its `"result"` — format `call_function_<random>_<n>`, treat as opaque |
+| `args` | `"start"` | Arguments passed to the tool |
+| `result` | `"result"` | `{"content": [{"type": "text", "text": "..."}, ...]}` — a list of typed content blocks, not a bare string. `ToolCallEvent.from_session_tool_payload()` (`src/services/openclaw/models.py`) flattens the `text`-type blocks and joins with `\n` |
+| `isError` | `"result"` | Whether the tool call failed |
+
+Routed by `FrameDispatcher._handle_session_tool()` to the active turn's queue, or to
+`bridge.deliver_push_tool_call()` if there's no active client-initiated turn for that session.
+Forwarded to the client as `{"type": "tool_call", ...}` only when `ClientConfig.tool_calls_enabled`
+is `True` (default `False`).
+
+**Verified live 2026-07-03** against the `ci-tester` test agent (see `tests/e2e/test_tool_use.py`):
+asking it to read `IDENTITY.md` (a real file it has access to via the `read` tool) produced the
+exact `start` → `result` sequence above, with the file's real content in `result`.
+
+---
+
+## Multiple turns per message (agent-initiated push during an active turn)
+
+**Confirmed live 2026-07-03**, discovered while stabilizing `tests/e2e/` (`send_turn()` was
+truncating responses intermittently before this was understood): a single `chat.send` can
+produce **more than one** `turn_start`/`turn_end` pair on jota-gateway's client-facing WS, not
+exactly one.
+
+Observed directly: sending one message to an agent that uses a tool produced *three* distinct
+turn-start events client-side — the tool-invoking turn, then at least one more — all tied to
+the same incoming user message. This appears to be the agent treating each step of its own
+multi-step reasoning/tool-use as a fresh "turn" from the gateway's perspective (an `agent`
+event with `phase: "start"`/`"end"`, the same mechanism used for genuinely unsolicited
+agent-initiated pushes — see `CLAUDE.md`'s "Agent-initiated push" bullet), firing **while the
+original `chat.send`-triggered turn is still active**, not only as a fully separate later
+event.
+
+**Consequence for any code that consumes jota-gateway's client WS protocol** (and for anything
+reading OpenClaw's own frames directly): do not assume "one message in → one turn out." Track
+frames by `turn_id`/`sessionKey`, not by "the next `turn_end` I see." `tests/e2e/ws_helpers.py`'s
+`send_turn()` was fixed to track only the first `turn_id` observed and ignore frames from other
+turns — a stray unrelated turn ending early was silently truncating collection of the real
+turn's tokens mid-word (reproduced twice: an empty tool-use response, `"CHARLIE"` truncated to
+`"CHARL"` in the concurrent-sessions test).
+
+---
+
+## Change log of this file
+
+- **2026-07-03**: created. Documents the v2026.6.11 breaking changes (agents.list, chat
+  completion signal), the `session.tool` event shape, and the multi-turn-per-message nuance —
+  all discovered live while implementing PRs #70, #71, and the `tests/e2e/` suite (#74).
