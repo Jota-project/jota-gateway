@@ -256,6 +256,23 @@ OpenClaw connection details (loopback backend mode, no device signature required
 - Token: `OPENCLAW_TOKEN`
 - Port: `OPENCLAW_PORT` (default 18789)
 
+**Keep the OpenClaw protocol knowledge base in sync.** OpenClaw's wire protocol drifts between
+minor server versions with no changelog (the `agents.list`/`chat.state=="final"` breaks above
+were both discovered live, by accident, not from release notes). The canonical write-up of the
+wire protocol — including every drift found so far — lives in the `openclaw` skill at
+`~/.claude/skills/openclaw/references/protocol.md` (see also `tools.md`, `config-schema.md`,
+`green-house.md` in that same directory), **not** in this file. Whenever you discover a new
+protocol change, inconsistency, or undocumented event shape while working on this codebase
+(via raw-frame capture, a failing assumption, a hanging turn, etc.):
+1. Update `protocol.md` (or the relevant sibling doc) with what you found, dated, including the
+   server version if known — follow the existing "Breaking change — vX.Y.Z" style for anything
+   that silently breaks old client code.
+2. Only mirror the parts of that finding that are specific to *this repo's* implementation here
+   in `CLAUDE.md` (as done above for `agents.list` and turn-completion) — the skill doc is the
+   source of truth for the protocol itself, this file is for how jota-gateway's code responds to it.
+Skipping this is how the same drift gets silently re-discovered (and re-debugged from scratch)
+in a future session.
+
 ---
 
 ## Admin API authentication
