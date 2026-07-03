@@ -25,6 +25,33 @@ HELLO_OK_PAYLOAD = {
     "auth": {"role": "operator", "scopes": ["operator.read", "operator.write"]},
 }
 
+# Matches OpenClaw server 2026.6.11+: hello-ok's snapshot no longer embeds the
+# agent roster at all — it must be fetched separately via agents.list.
+HELLO_OK_PAYLOAD_NO_SNAPSHOT_AGENTS = {
+    "type": "hello-ok", "protocol": 4,
+    "server": {"version": "2026.6.11", "connId": "test-conn-2"},
+    "policy": {"tickIntervalMs": 30000, "maxPayload": 26214400, "maxBufferedBytes": 0},
+    "snapshot": {
+        "presence": {},
+        "health": {},
+        "stateVersion": 1,
+        "uptimeMs": 1000,
+        "sessionDefaults": {"defaultAgentId": "main"},
+    },
+    "auth": {"role": "operator", "scopes": ["operator.read", "operator.write"]},
+}
+
+AGENTS_LIST_PAYLOAD = {
+    "defaultId": "main",
+    "mainKey": "main",
+    "scope": "per-sender",
+    "agents": [
+        {"id": "main", "name": "Main Agent"},
+        {"id": "assistant", "name": "Jota Voice"},
+        {"id": "ci-tester", "name": "CI Tester"},
+    ],
+}
+
 
 class SmartFakeWS:
     """Queue-backed fake WebSocket that auto-responds to OpenClaw protocol v4.
@@ -32,9 +59,17 @@ class SmartFakeWS:
     chat_responses: {sessionKey → [list of deltaText strings]}
     """
 
-    def __init__(self, chat_responses: Optional[dict] = None, chat_response_delay: float = 0.0):
+    def __init__(
+        self,
+        chat_responses: Optional[dict] = None,
+        chat_response_delay: float = 0.0,
+        hello_ok_payload: Optional[dict] = None,
+        agents_list_payload: Optional[dict] = None,
+    ):
         self.chat_responses: dict[str, list[str]] = chat_responses or {}
         self.chat_response_delay: float = chat_response_delay  # delay between chunks (in seconds)
+        self.hello_ok_payload = hello_ok_payload or HELLO_OK_PAYLOAD
+        self.agents_list_payload = agents_list_payload or AGENTS_LIST_PAYLOAD
         self._to_client: asyncio.Queue = asyncio.Queue()
         self._from_client: asyncio.Queue = asyncio.Queue()
         self.sent_frames: list[dict] = []
@@ -93,7 +128,13 @@ class SmartFakeWS:
             if method == "connect":
                 await self._to_client.put(json.dumps({
                     "type": "res", "id": req_id, "ok": True,
-                    "payload": HELLO_OK_PAYLOAD,
+                    "payload": self.hello_ok_payload,
+                }))
+
+            elif method == "agents.list":
+                await self._to_client.put(json.dumps({
+                    "type": "res", "id": req_id, "ok": True,
+                    "payload": self.agents_list_payload,
                 }))
 
             elif method == "sessions.subscribe":
@@ -165,6 +206,23 @@ async def test_connect_returns_gateway_info(fake_ws):
     assert client.gateway_info is not None
     assert client.gateway_info.default_agent_id == "main"
     assert client.gateway_info.has_agent("assistant")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_connect_populates_agents_via_agents_list_when_snapshot_lacks_agents():
+    """OpenClaw server 2026.6.11+ no longer embeds the agent roster in
+    hello-ok's snapshot — it must be fetched via a separate agents.list call
+    right after connecting, or has_agent() silently rejects every agent."""
+    fake_ws = SmartFakeWS(
+        {"agent:main:client-a": ["Hola"]},
+        hello_ok_payload=HELLO_OK_PAYLOAD_NO_SNAPSHOT_AGENTS,
+    )
+    client = await connected_client(fake_ws)
+    assert client.gateway_info.has_agent("main")
+    assert client.gateway_info.has_agent("assistant")
+    assert client.gateway_info.has_agent("ci-tester")
+    assert client.gateway_info.default_agent_id == "main"
     await client.close()
 
 

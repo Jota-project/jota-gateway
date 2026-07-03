@@ -49,3 +49,28 @@ def test_from_hello_ok_minimal():
     assert info.default_agent_id == "main"
     assert info.agents == {}
     assert info.tick_interval_ms == 15000
+
+
+def test_update_agents_from_list():
+    """agents.list payload shape differs from snapshot.agents: 'id' not
+    'agentId', no per-agent 'isDefault' — derived from top-level 'defaultId'."""
+    info = GatewayInfo.from_hello_ok({})  # starts with empty agents, default "main"
+    info.update_agents_from_list({
+        "defaultId": "assistant",
+        "agents": [
+            {"id": "main", "name": "Main Agent"},
+            {"id": "assistant", "name": "Jota Voice"},
+        ],
+    })
+    assert info.has_agent("main")
+    assert info.has_agent("assistant")
+    assert info.agents["assistant"].is_default is True
+    assert info.agents["main"].is_default is False
+    assert info.default_agent_id == "assistant"
+
+
+def test_update_agents_from_list_keeps_prior_default_if_missing():
+    info = GatewayInfo.from_hello_ok({})
+    info.update_agents_from_list({"agents": [{"id": "main", "name": "Main Agent"}]})
+    assert info.default_agent_id == "main"
+    assert info.agents["main"].is_default is True

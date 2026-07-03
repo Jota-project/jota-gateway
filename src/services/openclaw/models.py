@@ -21,6 +21,21 @@ class GatewayInfo:
     def has_agent(self, agent_id: str) -> bool:
         return agent_id in self.agents
 
+    def update_agents_from_list(self, payload: dict) -> None:
+        """Populate agents from an agents.list response — OpenClaw server
+        2026.6.11+ no longer embeds the roster in hello-ok's snapshot."""
+        default_id = payload.get("defaultId", self.default_agent_id)
+        agents: dict[str, AgentInfo] = {}
+        for a in payload.get("agents", []):
+            aid = a["id"]
+            agents[aid] = AgentInfo(
+                agent_id=aid,
+                name=a.get("name", aid),
+                is_default=(aid == default_id),
+            )
+        self.agents = agents
+        self.default_agent_id = default_id
+
     @classmethod
     def from_hello_ok(cls, payload: dict) -> "GatewayInfo":
         server = payload.get("server", {})
