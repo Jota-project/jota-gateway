@@ -32,9 +32,11 @@ class SmartFakeWS:
     chat_responses: {sessionKey → [list of deltaText strings]}
     """
 
-    def __init__(self, chat_responses: Optional[dict] = None, chat_response_delay: float = 0.0):
+    def __init__(self, chat_responses: Optional[dict] = None, chat_response_delay: float = 0.0,
+                 tool_calls: Optional[dict] = None):
         self.chat_responses: dict[str, list[str]] = chat_responses or {}
         self.chat_response_delay: float = chat_response_delay  # delay between chunks (in seconds)
+        self.tool_calls: dict[str, list[dict]] = tool_calls or {}
         self._to_client: asyncio.Queue = asyncio.Queue()
         self._from_client: asyncio.Queue = asyncio.Queue()
         self.sent_frames: list[dict] = []
@@ -113,6 +115,11 @@ class SmartFakeWS:
                 }))
                 if self.chat_response_delay > 0:
                     await asyncio.sleep(self.chat_response_delay)
+                for tool_data in self.tool_calls.get(sk, []):
+                    await self._to_client.put(json.dumps({
+                        "type": "event", "event": "session.tool",
+                        "payload": {"sessionKey": sk, "runId": run_id, "data": tool_data},
+                    }))
                 for i, chunk in enumerate(chunks):
                     is_last = i == len(chunks) - 1
                     await self._to_client.put(json.dumps({
@@ -313,4 +320,31 @@ async def test_stream_response_completes_without_second_res(fake_ws):
     assert len(res_frames_after_started) == 1  # only the request itself was sent by us
     assert events[-1].type == "status"
     assert events[-1].content == "done"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_stream_response_yields_tool_call_events():
+    fake_ws = SmartFakeWS(
+        chat_responses={"agent:main:client-a": ["Listo."]},
+        tool_calls={"agent:main:client-a": [
+            {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {"command": "ls"}},
+            {"phase": "result", "name": "exec", "toolCallId": "call-1", "isError": False,
+             "result": {"content": [{"type": "text", "text": "file.txt"}]}},
+        ]},
+    )
+    client = await connected_client(fake_ws)
+    tool_events = []
+    async for event in client.stream_response(
+        "hola", "client-a", session_key="agent:main:client-a"
+    ):
+        if event.type == "tool_call":
+            tool_events.append(event.tool_call)
+    assert len(tool_events) == 2
+    assert tool_events[0].phase == "start"
+    assert tool_events[0].name == "exec"
+    assert tool_events[0].args == {"command": "ls"}
+    assert tool_events[1].phase == "result"
+    assert tool_events[1].result == "file.txt"
+    assert tool_events[1].is_error is False
     await client.close()

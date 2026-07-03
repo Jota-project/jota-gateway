@@ -9,7 +9,7 @@ from websockets.asyncio.client import ClientConnection
 
 from src.services.openclaw import frames
 from src.services.openclaw.dispatcher import FrameDispatcher
-from src.services.openclaw.models import GatewayInfo
+from src.services.openclaw.models import GatewayInfo, ToolCallEvent
 from src.services.openclaw.registry import TurnRegistry
 from src.services.protocol import OrchestratorEvent
 
@@ -148,6 +148,10 @@ class OpenClawClient:
                         yield OrchestratorEvent(type="status", content="done")
                         _finished = True
                         break
+                elif kind == "tool":
+                    tool_call = ToolCallEvent.from_session_tool_payload(data)
+                    if tool_call is not None:
+                        yield OrchestratorEvent(type="tool_call", tool_call=tool_call)
                 elif kind == "done":
                     if not data.get("ok"):
                         yield OrchestratorEvent(type="error", content=str(data.get("error", {})))
