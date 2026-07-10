@@ -78,6 +78,7 @@ async def test_on_push_turn_end_closes_push_tts():
     mock_tts = AsyncMock()
     bridge._push_tts = mock_tts
     bridge._push_audio_task = None  # no audio task in this scenario
+    bridge._push_turn_open = True  # turn_end only closes TTS if a turn is open (issue #84)
     await bridge.on_push_turn_end("agent:main:hab_sito")
     mock_tts.end.assert_awaited_once()
     mock_tts.close.assert_awaited_once()
@@ -139,6 +140,7 @@ async def test_on_push_turn_end_sends_turn_end_message():
     """on_push_turn_end sends turn_end JSON message to client."""
     bridge, _ = make_bridge(output_mode=("text",))
     bridge._push_turn_id = "t-1"
+    bridge._push_turn_open = True  # a turn_end is only valid if a turn_start came before (issue #84)
     await bridge.on_push_turn_end("agent:main:hab_sito")
     bridge.client_ws.send_json.assert_awaited_once_with({
         "type": "turn_end",
@@ -234,3 +236,111 @@ async def test_deliver_push_tool_call_malformed_payload_ignored():
     bridge._push_turn_id = "t-1"
     await bridge.deliver_push_tool_call({"phase": "update"})  # must not raise
     ws.send_json.assert_not_awaited()
+
+
+def _send_json_turn_frames(ws_mock):
+    """Return only the frames with type turn_start/turn_end the bridge sent."""
+    return [
+        c.args[0]
+        for c in ws_mock.send_json.await_args_list
+        if c.args[0].get("type") in ("turn_start", "turn_end")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_multiple_push_starts_and_ends_collapse_to_single_pair():
+    """Reproduces issue #84 verbatim from the jota-voice client log:
+
+    ```
+    turn_start t-1 (seq=1)
+    turn_start t-2 (seq=2)
+    turn_start t-3 (seq=3)
+    turn_start t-4 (seq=4)
+    turn_end   t-4 (×3)
+    ```
+
+    OpenClaw emits N agent starts back-to-back without intermediate agent
+    ends (each step of the agent's reasoning opens its own agent start
+    immediately, while the previous one is still mid-flight), then a
+    cluster of agent ends arrives at the end. Without the collapse fix the
+    bridge increments _turn_seq on every start and emits one turn_start
+    per start, and on every agent end emits a turn_end with whatever
+    _push_turn_id was last set (which by then is t-4) — producing the
+    exact pattern the client reported.
+
+    With the fix: only the first start opens the logical turn, the rest
+    are dropped, and only the first end emits turn_end. End events that
+    arrive after the turn is already closed are also dropped.
+    """
+    bridge, _ = make_bridge(output_mode=("text",))
+    ws = bridge.client_ws
+
+    # The exact sequence from the issue log: 4 starts in a row, then 3 ends.
+    await bridge.on_push_turn_start("agent:main:hab_sito")
+    await bridge.on_push_turn_start("agent:main:hab_sito")
+    await bridge.on_push_turn_start("agent:main:hab_sito")
+    await bridge.on_push_turn_start("agent:main:hab_sito")
+    await bridge.on_push_turn_end("agent:main:hab_sito")
+    await bridge.on_push_turn_end("agent:main:hab_sito")
+    await bridge.on_push_turn_end("agent:main:hab_sito")
+
+    frames = _send_json_turn_frames(ws)
+    starts = [f for f in frames if f["type"] == "turn_start"]
+    ends = [f for f in frames if f["type"] == "turn_end"]
+
+    assert len(starts) == 1, f"expected 1 turn_start, got {len(starts)}: {starts}"
+    assert len(ends) == 1, f"expected 1 turn_end, got {len(ends)}: {ends}"
+    assert starts[0]["turn_id"] == ends[0]["turn_id"] == "t-1", (
+        f"all frames must share turn_id t-1, got: {frames}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_first_push_start_assigns_turn_seq_subsequent_does_not():
+    """Issue #84 — only the FIRST agent start opens a logical turn and
+    consumes a turn_seq. Subsequent agent starts (intermediate tool steps)
+    must not increment _turn_seq further, so the client sees one stable
+    turn_id for the whole multi-step reply.
+    """
+    bridge, _ = make_bridge(output_mode=("text",))
+    assert bridge._turn_seq == 0
+
+    await bridge.on_push_turn_start("agent:main:hab_sito")
+    assert bridge._turn_seq == 1
+    assert bridge._push_turn_id == "t-1"
+
+    await bridge.on_push_turn_start("agent:main:hab_sito")
+    await bridge.on_push_turn_start("agent:main:hab_sito")
+
+    # Wire-level check: after 3 starts, the client must see exactly one turn_start.
+    # Strengthens the test — without the fix, three start frames would be sent.
+    starts = [
+        c.args[0] for c in bridge.client_ws.send_json.await_args_list
+        if c.args[0].get("type") == "turn_start"
+    ]
+    assert len(starts) == 1, f"expected 1 turn_start after 3 starts, got {len(starts)}: {starts}"
+
+    assert bridge._turn_seq == 1, (
+        f"only the first agent start should increment _turn_seq; "
+        f"after 3 starts it is {bridge._turn_seq}"
+    )
+    assert bridge._push_turn_id == "t-1"
+
+
+@pytest.mark.asyncio
+async def test_on_push_turn_end_with_no_open_turn_does_not_emit():
+    """Issue #84 — an agent end arriving without a matching agent start
+    (orphan, or after close_all reset) must not emit a turn_end frame to
+    the client. Guards the early-return branch added to on_push_turn_end.
+    """
+    bridge, _ = make_bridge(output_mode=("text",))
+    assert bridge._push_turn_open is False
+    bridge._push_turn_id = "t-1"  # simulate stale state from before reset
+
+    await bridge.on_push_turn_end("agent:main:hab_sito")
+
+    assert bridge.client_ws.send_json.await_count == 0, (
+        "on_push_turn_end with no open turn must not emit any frame"
+    )
+    # Flag must stay False (we never set it True).
+    assert bridge._push_turn_open is False
