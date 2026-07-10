@@ -36,6 +36,7 @@ class ReconnectingTranscriberClient:
         self._reconnect_attempts = 0
         self._last_error: Optional[str] = None
         self._closed = False
+        self._run_task: Optional[asyncio.Task] = None
         self.on_state_change: Optional[Callable[[ConnectionState], None]] = None
         self._language = "es"
         self._token = ""
@@ -73,6 +74,17 @@ class ReconnectingTranscriberClient:
 
     async def close(self) -> None:
         self._closed = True
+        current_task = asyncio.current_task()
+        if (
+            self._run_task is not None
+            and not self._run_task.done()
+            and self._run_task is not current_task
+        ):
+            self._run_task.cancel()
+            try:
+                await self._run_task
+            except asyncio.CancelledError:
+                pass
         await self._client.close()
 
     async def run(
@@ -85,6 +97,7 @@ class ReconnectingTranscriberClient:
         listening — until close() is called or reconnection is exhausted
         (DEGRADED, in which case this returns and the session continues
         without a working transcriber for the rest of its lifetime)."""
+        self._run_task = asyncio.current_task()
         while not self._closed:
             if self.state != ConnectionState.CONNECTED:
                 recovered = await self._reconnect_loop()

@@ -109,6 +109,31 @@ async def test_send_audio_send_end_close_delegate_to_inner_client():
     assert w._closed is True
 
 
+@pytest.mark.asyncio
+async def test_close_cancels_in_flight_reconnect_loop():
+    """Regression test: close() must interrupt run() even while it is stuck
+    mid-backoff inside _reconnect_loop(), so the supervising task and its
+    socket don't leak after the caller believes the session is torn down."""
+    w = _wrap(initial_backoff=0.01, max_backoff=0.01, max_duration=1000.0)
+    w.state = ConnectionState.RECONNECTING
+    w._client.connect = AsyncMock(side_effect=OSError("still down"))
+    w._client.listen_loop = AsyncMock()  # must never be reached
+    w._client.close = AsyncMock()
+
+    task = asyncio.create_task(w.run(on_transcription_callback=AsyncMock()))
+    await asyncio.sleep(0.05)  # let it enter _reconnect_loop's backoff a few times
+    assert not task.done()
+
+    await asyncio.wait_for(w.close(), timeout=2.0)  # must alone stop the task, no external cancel
+
+    # close() already cancelled-and-awaited the run task internally; just confirm
+    # it actually finished promptly rather than being left running/leaked.
+    assert task.done()
+    assert task.cancelled()
+    w._client.listen_loop.assert_not_awaited()
+    w._client.close.assert_awaited_once()
+
+
 def test_last_transcription_at_proxies_inner_client():
     w = _wrap()
     w._client._last_transcription_at = 123.45
