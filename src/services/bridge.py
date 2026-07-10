@@ -66,6 +66,11 @@ class JotaBridge:
         self._turn_seq: int = 0
         self._push_turn_seq: int = 0
         self._push_turn_id: Optional[str] = None
+        # Issue #84: OpenClaw emits multiple agent start/end pairs during a single
+        # LLM response (tool use, multi-step reasoning). Track whether a push turn
+        # is already open so we emit exactly one turn_start/turn_end to the client
+        # for the whole multi-step reply, not one per agent event.
+        self._push_turn_open: bool = False
 
     async def connect_internal_services(self):
         """Inicializa clientes de microservicios dependiendo del handshake."""
@@ -114,6 +119,12 @@ class JotaBridge:
             except Exception:
                 pass
             self._push_tts = None
+
+        # Defensive reset — if the session ends between an agent start and its
+        # matching agent end (disconnect, orchestrator crash, reconnect mid-push),
+        # the flag would otherwise stay set forever, causing the next agent start
+        # received on this bridge instance to be silently dropped.
+        self._push_turn_open = False
 
         for task in self.tasks:
             if not task.done():
@@ -483,10 +494,24 @@ class JotaBridge:
 
     async def on_push_turn_start(self, session_key: str) -> None:
         if not self.config.push_enabled:
+            # Intentionally do NOT set _push_turn_open here — push_enabled=False
+            # means the whole push reply is dropped. The matching agent end will
+            # then hit the orphan-end branch in on_push_turn_end and be ignored too.
             return
+        # Issue #84: if a push turn is already open, intermediate agent starts
+        # (tool-use, multi-step reasoning) must not open a new logical turn.
+        # The turn is already open; tokens/audio continue arriving via deliver_push.
+        if self._push_turn_open:
+            logger.debug(
+                f"[{self.client_id}] push_turn_start ignored: a push turn is already open "
+                f"({self._push_turn_id})"
+            )
+            return
+
         self._turn_seq += 1
         self._push_turn_seq = self._turn_seq
         self._push_turn_id = f"t-{self._turn_seq}"
+        self._push_turn_open = True
 
         try:
             await self.client_ws.send_json({
@@ -547,6 +572,14 @@ class JotaBridge:
             pass
 
     async def on_push_turn_end(self, session_key: str) -> None:
+        # Issue #84: if no push turn is open, this agent end has no matching
+        # turn_start on the client side. Ignoring it avoids orphan turn_end frames.
+        if not self._push_turn_open:
+            logger.debug(
+                f"[{self.client_id}] push_turn_end ignored: no push turn open"
+            )
+            return
+
         if self._push_tts:
             try:
                 await self._push_tts.end()
@@ -568,3 +601,4 @@ class JotaBridge:
             await self.client_ws.send_json({"type": "turn_end", "turn_id": self._push_turn_id})
         except Exception:
             pass
+        self._push_turn_open = False

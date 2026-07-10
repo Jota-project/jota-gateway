@@ -204,6 +204,16 @@ agent-initiated pushes — see `CLAUDE.md`'s "Agent-initiated push" bullet), fir
 original `chat.send`-triggered turn is still active**, not only as a fully separate later
 event.
 
+**jota-gateway mitigation (since fix for issue #84, 2026-07-10)**: `JotaBridge` collapses
+multiple agent start/end pairs into a single client-facing turn. The first `agent` start opens
+the logical turn (increments `_turn_seq` once, emits `turn_start`); subsequent `agent` starts
+received while a push turn is already open are dropped silently. The first `agent` end closes
+the logical turn (emits `turn_end`); subsequent `agent` ends received with no open turn are
+also dropped. Result: any client that previously had to track "which `turn_id` is mine" across
+multiple pairs now sees exactly **one** `turn_start`/`turn_end` pair per user message even when
+the agent does tool-use or multi-step reasoning. The trade-off: the client cannot distinguish
+intermediate reasoning steps from a single response (which it never needed to anyway).
+
 **Consequence for any code that consumes jota-gateway's client WS protocol** (and for anything
 reading OpenClaw's own frames directly): do not assume "one message in → one turn out." Track
 frames by `turn_id`/`sessionKey`, not by "the next `turn_end` I see." `tests/e2e/ws_helpers.py`'s
@@ -216,6 +226,10 @@ turn's tokens mid-word (reproduced twice: an empty tool-use response, `"CHARLIE"
 
 ## Change log of this file
 
+- **2026-07-10**: added the issue #84 mitigation note — `JotaBridge` now collapses multiple
+  OpenClaw agent start/end pairs into a single client-facing turn_start/turn_end. Previously
+  the bridge was emitting one pair per agent event, causing jota-voice (and any other client)
+  to log 2–4 duplicate `turn_start`/`turn_end` frames per user message during tool use.
 - **2026-07-03**: created. Documents the v2026.6.11 breaking changes (agents.list, chat
   completion signal), the `session.tool` event shape, and the multi-turn-per-message nuance —
   all discovered live while implementing PRs #70, #71, and the `tests/e2e/` suite (#74).
