@@ -55,10 +55,17 @@ async def lifespan(app: FastAPI):
     # CONNECTED on a normal first-time success would send a spurious
     # "restored" notice to every connected-but-idle client, even though
     # nothing was ever broken.
+    # `_notification_tasks` holds a strong reference to each fire-and-forget
+    # broadcast task so the event loop's weak reference doesn't let it get
+    # GC'd mid-flight; discarded once the task completes.
+    _notification_tasks: set[asyncio.Task] = set()
+
     def _on_orchestrator_state_change(state: ConnectionState) -> None:
-        asyncio.create_task(
+        task = asyncio.create_task(
             client_registry.broadcast_status("orchestrator", to_wire_state(state))
         )
+        _notification_tasks.add(task)
+        task.add_done_callback(_notification_tasks.discard)
 
     openclaw.on_state_change = _on_orchestrator_state_change
 

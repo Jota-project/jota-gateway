@@ -63,6 +63,11 @@ class JotaBridge:
         self._push_audio_task: Optional[asyncio.Task] = None
 
         self.tasks: list[asyncio.Task] = []
+        # Fire-and-forget notification tasks (e.g. _on_transcriber_state_change)
+        # are not part of the session lifecycle managed by `tasks`/close_all() —
+        # they're short-lived and self-cleaning. Kept here only so the event
+        # loop's weak reference doesn't let them get GC'd mid-flight.
+        self._notification_tasks: set[asyncio.Task] = set()
         self._active_turn: Optional[asyncio.Task] = None
         self._session_start: float = 0.0
         self._first_audio_at: Optional[float] = None
@@ -355,7 +360,9 @@ class JotaBridge:
                 await self.notify_service_status("tts", to_wire_state(current))
 
     def _on_transcriber_state_change(self, state: ConnectionState) -> None:
-        asyncio.create_task(self.notify_service_status("transcriber", to_wire_state(state)))
+        task = asyncio.create_task(self.notify_service_status("transcriber", to_wire_state(state)))
+        self._notification_tasks.add(task)
+        task.add_done_callback(self._notification_tasks.discard)
 
     async def _on_transcription(self, text: str, is_final: bool):
         """Callback dispatched by TranscriberClient on every transcription event.
