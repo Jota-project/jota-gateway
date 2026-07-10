@@ -1,3 +1,10 @@
+## [1.12.1](https://github.com/Jota-project/jota-gateway/compare/v1.12.0...v1.12.1) (2026-07-10)
+
+
+### Bug Fixes
+
+* collapse multi-step push replies into a single turn_start/turn_end pair (issue [#84](https://github.com/Jota-project/jota-gateway/issues/84)) ([#87](https://github.com/Jota-project/jota-gateway/issues/87)) ([3ada105](https://github.com/Jota-project/jota-gateway/commit/3ada1050aa5ebd7b0b7bf91f3e8c0663432e50b8))
+
 # [1.12.0](https://github.com/Jota-project/jota-gateway/compare/v1.11.1...v1.12.0) (2026-07-03)
 
 
