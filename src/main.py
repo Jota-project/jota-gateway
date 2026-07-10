@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -12,6 +13,7 @@ from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
 from src.services.openclaw.registry import TurnRegistry, ClientRegistry
+from src.services.reconnection import ConnectionState, to_wire_state
 from src.services.session_registry import SessionRegistry
 from src.services.tts_reconnecting import ReconnectingTTSClient
 
@@ -48,6 +50,17 @@ async def lifespan(app: FastAPI):
         await openclaw.connect()
     except Exception as e:
         logger.error(f"Initial OpenClaw connect failed: {e}")
+
+    # Wired *after* the initial connect on purpose: on_state_change firing
+    # CONNECTED on a normal first-time success would send a spurious
+    # "restored" notice to every connected-but-idle client, even though
+    # nothing was ever broken.
+    def _on_orchestrator_state_change(state: ConnectionState) -> None:
+        asyncio.create_task(
+            client_registry.broadcast_status("orchestrator", to_wire_state(state))
+        )
+
+    openclaw.on_state_change = _on_orchestrator_state_change
 
     tts = ReconnectingTTSClient(
         url=settings.TTS_WS_URL,
