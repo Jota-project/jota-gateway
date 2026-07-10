@@ -40,7 +40,7 @@ async def test_watchdog_notifies_client_after_silence_timeout():
     bridge, ws, transcriber = _make_bridge(config=config)
     bridge._first_audio_at = time.monotonic() - 2
     transcriber._last_transcription_at = None
-    bridge._close_all = AsyncMock()
+    bridge.close_all = AsyncMock()
 
     with patch("src.services.bridge.asyncio.sleep", new=AsyncMock(return_value=None)):
         await asyncio.wait_for(bridge._transcription_watchdog(), timeout=3.0)
@@ -66,7 +66,7 @@ async def test_watchdog_exits_if_transcriber_disconnects():
 
 @pytest.mark.asyncio
 async def test_watchdog_closes_session_after_max_silence_turns():
-    """After max_silence_turns consecutive timeouts, _close_all is called."""
+    """After max_silence_turns consecutive timeouts, close_all is called."""
     config = ClientConfig(silence_timeout_s=1, max_silence_turns=2)
     bridge, ws, transcriber = _make_bridge(config=config)
     bridge._first_audio_at = time.monotonic() - 2
@@ -76,12 +76,12 @@ async def test_watchdog_closes_session_after_max_silence_turns():
     async def _fake_close():
         close_called.append(True)
 
-    bridge._close_all = _fake_close
+    bridge.close_all = _fake_close
 
     with patch("src.services.bridge.asyncio.sleep", new=AsyncMock(return_value=None)):
         await asyncio.wait_for(bridge._transcription_watchdog(), timeout=3.0)
 
-    assert close_called, "_close_all debería haberse llamado tras max_silence_turns"
+    assert close_called, "close_all debería haberse llamado tras max_silence_turns"
     assert ws.send_json.call_count == 2  # una notificación por cada silencio
 
 
@@ -97,7 +97,7 @@ async def test_watchdog_resets_count_when_transcription_arrives():
     async def _fake_close():
         close_called.append(True)
 
-    bridge._close_all = _fake_close
+    bridge.close_all = _fake_close
 
     call_count = 0
 
@@ -144,7 +144,7 @@ async def test_watchdog_pauses_but_does_not_exit_when_reconnecting():
             transcriber._last_transcription_at = time.monotonic()
 
     close_called = []
-    bridge._close_all = lambda: close_called.append(True)
+    bridge.close_all = lambda: close_called.append(True)
 
     with patch("src.services.bridge.asyncio.sleep", new=_controlled_sleep):
         task = asyncio.create_task(bridge._transcription_watchdog())

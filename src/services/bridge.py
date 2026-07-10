@@ -232,7 +232,7 @@ class JotaBridge:
                 except Exception:
                     pass
                 if silence_count >= self.config.max_silence_turns:
-                    await self._close_all()
+                    await self.close_all()
                     return
 
     async def run(self):
