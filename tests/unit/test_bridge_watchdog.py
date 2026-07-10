@@ -23,7 +23,8 @@ def _make_bridge(config=None):
     handshake = Handshake(client_key="test-key", input_mode="audio", output_mode=["text"])
     orch = AsyncMock()
     transcriber = MagicMock()
-    transcriber._is_ready = True
+    from src.services.reconnection import ConnectionState
+    transcriber.state = ConnectionState.CONNECTED
     transcriber._last_transcription_at = None
     bridge = JotaBridge(client=_CLIENT, config=config or _CONFIG, client_ws=ws,
                         orchestrator=orch, tracker=tracker, handshake=handshake,
@@ -56,7 +57,8 @@ async def test_watchdog_exits_if_transcriber_disconnects():
     """Watchdog exits cleanly when transcriber goes offline."""
     bridge, ws, transcriber = _make_bridge()
     bridge._first_audio_at = time.monotonic()
-    transcriber._is_ready = False
+    from src.services.reconnection import ConnectionState
+    transcriber.state = ConnectionState.DEGRADED
 
     with patch("src.services.bridge.asyncio.sleep", new=AsyncMock(return_value=None)):
         await asyncio.wait_for(bridge._transcription_watchdog(), timeout=2.0)
@@ -119,3 +121,40 @@ async def test_watchdog_resets_count_when_transcription_arrives():
             pass
 
     assert not close_called, "No debería haber cerrado — el contador se reinició"
+
+
+@pytest.mark.asyncio
+async def test_watchdog_pauses_but_does_not_exit_when_reconnecting():
+    """A transient RECONNECTING must not permanently kill the watchdog (the bug
+    this task fixes: the old `if not _is_ready: return` treated any drop as final)."""
+    from src.services.reconnection import ConnectionState
+    config = ClientConfig(silence_timeout_s=1, max_silence_turns=2)
+    bridge, ws, transcriber = _make_bridge(config=config)
+    bridge._first_audio_at = time.monotonic() - 2
+    transcriber._last_transcription_at = None
+
+    ticks = {"n": 0}
+
+    async def _controlled_sleep(n):
+        ticks["n"] += 1
+        if ticks["n"] == 1:
+            transcriber.state = ConnectionState.RECONNECTING  # transient drop
+        elif ticks["n"] == 2:
+            transcriber.state = ConnectionState.CONNECTED  # recovered
+            transcriber._last_transcription_at = time.monotonic()
+
+    close_called = []
+    bridge._close_all = lambda: close_called.append(True)
+
+    with patch("src.services.bridge.asyncio.sleep", new=_controlled_sleep):
+        task = asyncio.create_task(bridge._transcription_watchdog())
+        for _ in range(6):
+            await asyncio.sleep(0)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    assert ticks["n"] >= 3, "watchdog must still be ticking after the RECONNECTING blip"
+    assert not close_called

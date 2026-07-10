@@ -22,7 +22,6 @@ def make_bridge(mock_tracker):
         bridge.orchestrator = AsyncMock()
         bridge.orchestrator.close = AsyncMock()
         bridge.transcriber = MagicMock()
-        bridge.transcriber._is_ready = True
         bridge.transcriber.close = AsyncMock()
         return bridge
     return _make

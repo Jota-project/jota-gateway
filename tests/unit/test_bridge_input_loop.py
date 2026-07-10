@@ -21,7 +21,6 @@ def _make_bridge(input_mode="audio"):
     handshake = Handshake(client_key="test-key", input_mode=input_mode, output_mode=["text"])
     orch = AsyncMock()
     transcriber = AsyncMock()
-    transcriber._is_ready = True
     bridge = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws,
                         orchestrator=orch, tracker=tracker, handshake=handshake,
                         client_registry=ClientRegistry(), default_agent="main")
