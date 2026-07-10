@@ -1,7 +1,8 @@
 import asyncio
 import pytest
 from unittest.mock import AsyncMock
-from src.services.openclaw.reconnecting import ReconnectingOpenClawClient, OrchestratorState
+from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
+from src.services.reconnection import ConnectionState
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.models import GatewayInfo
 from src.services.protocol import OrchestratorEvent
@@ -38,7 +39,7 @@ async def test_connect_sets_connected_state():
     inner = make_mock_client(GATEWAY_INFO)
     roc = ReconnectingOpenClawClient(inner, "test")
     await roc.connect()
-    assert roc.state == OrchestratorState.CONNECTED
+    assert roc.state == ConnectionState.CONNECTED
     assert roc.gateway_info is GATEWAY_INFO
 
 
@@ -84,4 +85,4 @@ async def test_reconnect_exhausted_enters_degraded():
     roc = ReconnectingOpenClawClient(inner, "test", max_duration=0.1, initial_backoff=0.05)
     await roc.connect()  # this will fail → starts reconnect loop
     await asyncio.sleep(0.3)
-    assert roc.state == OrchestratorState.DEGRADED
+    assert roc.state == ConnectionState.DEGRADED
