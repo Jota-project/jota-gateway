@@ -18,6 +18,8 @@ Observabilidad:
   GET    /admin/sessions/{id}        — detalle de sesión
   GET    /admin/orchestrators/{name}/status
   POST   /admin/orchestrators/{name}/reconnect  (202)
+  GET    /admin/transcriber/status
+  GET    /admin/tts/status
 """
 import json
 import secrets
@@ -27,10 +29,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlmodel import Session, select
 
 from src.api.deps import get_admin_auth
+from src.core.config import settings
 from src.db.database import get_db_session
 from src.db.models import ClientRecord
 from src.models.admin_schemas import ClientCreate, ClientResponse, ClientUpdate
 from src.services.db_client import db_client
+from src.services.reconnection import ConnectionState
+from src.services.transcriber_client import TranscriberClient
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(get_admin_auth)])
 
@@ -248,7 +253,6 @@ async def get_orchestrator_status(name: str, request: Request) -> dict:
         "name": s.name,
         "state": s.state.value,
         "connected_at": s.connected_at.isoformat() if s.connected_at else None,
-        "disconnected_at": None,
         "reconnect_attempts": s.reconnect_attempts,
         "last_error": s.last_error,
     }
@@ -261,3 +265,35 @@ async def post_orchestrator_reconnect(name: str, request: Request) -> dict:
         raise HTTPException(status_code=404, detail=f"Orchestrator '{name}' not registered")
     await openclaw.connect()
     return {"accepted": True}
+
+
+# ---------------------------------------------------------------------------
+# Transcriber / TTS — estado (solo lectura; ver docstring del módulo)
+# ---------------------------------------------------------------------------
+
+@router.get("/transcriber/status")
+async def get_transcriber_status() -> dict:
+    """Transcriber has no process-level connection (one instance per audio
+    session) — this reports live reachability via /health, wrapped in the
+    same shape as the other two status endpoints for consistency."""
+    reachable = await TranscriberClient.ping(settings.TRANSCRIBER_WS_URL)
+    state = ConnectionState.CONNECTED if reachable else ConnectionState.DEGRADED
+    return {
+        "name": "transcriber",
+        "state": state.value,
+        "connected_at": None,
+        "reconnect_attempts": 0,
+        "last_error": None,
+    }
+
+
+@router.get("/tts/status")
+async def get_tts_status(request: Request) -> dict:
+    s = request.app.state.tts.status()
+    return {
+        "name": s.name,
+        "state": s.state.value,
+        "connected_at": s.connected_at.isoformat() if s.connected_at else None,
+        "reconnect_attempts": s.reconnect_attempts,
+        "last_error": s.last_error,
+    }
