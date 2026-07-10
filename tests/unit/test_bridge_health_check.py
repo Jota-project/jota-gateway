@@ -23,7 +23,7 @@ def _make_bridge(input_mode="text", output_mode=None):
     orch = AsyncMock()
     orch.ping = AsyncMock(return_value=True)
     bridge = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws,
-                        orchestrator=orch, tracker=tracker, handshake=handshake,
+                        orchestrator=orch, tts=AsyncMock(), tracker=tracker, handshake=handshake,
                         client_registry=ClientRegistry(), default_agent="main")
     return bridge, ws, orch
 

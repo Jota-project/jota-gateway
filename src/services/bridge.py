@@ -13,6 +13,7 @@ from src.services.pipeline_tracker import PipelineTracker
 from src.services.reconnection import ConnectionState, to_wire_state
 from src.services.transcriber_reconnecting import ReconnectingTranscriberClient
 from src.services.tts_client import TTSClient
+from src.services.tts_reconnecting import ReconnectingTTSClient
 from src.services.openclaw.registry import ClientRegistry
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ class JotaBridge:
         config: ClientConfig,
         client_ws: WebSocket,
         orchestrator: OrchestratorProtocol,
+        tts: ReconnectingTTSClient,
         tracker: PipelineTracker,
         handshake: Handshake,
         client_registry: ClientRegistry,
@@ -52,6 +54,7 @@ class JotaBridge:
         self.client_ws = client_ws
         self.handshake: Handshake = handshake
         self.orchestrator: OrchestratorProtocol = orchestrator   # injected, not created here
+        self.tts = tts
         self.tracker: PipelineTracker = tracker
         self._client_registry = client_registry
         self._default_agent = default_agent
@@ -72,6 +75,7 @@ class JotaBridge:
         # is already open so we emit exactly one turn_start/turn_end to the client
         # for the whole multi-step reply, not one per agent event.
         self._push_turn_open: bool = False
+        self._tts_degraded_notified: bool = False
 
     async def connect_internal_services(self):
         """Inicializa clientes de microservicios dependiendo del handshake."""
@@ -339,6 +343,17 @@ class JotaBridge:
         except Exception:
             pass  # cliente desconectado
 
+    async def _maybe_notify_tts_state(self) -> None:
+        current = self.tts.status().state
+        if current == ConnectionState.CONNECTED:
+            if self._tts_degraded_notified:
+                self._tts_degraded_notified = False
+                await self.notify_service_status("tts", to_wire_state(ConnectionState.CONNECTED))
+        else:
+            if not self._tts_degraded_notified:
+                self._tts_degraded_notified = True
+                await self.notify_service_status("tts", to_wire_state(current))
+
     def _on_transcriber_state_change(self, state: ConnectionState) -> None:
         asyncio.create_task(self.notify_service_status("transcriber", to_wire_state(state)))
 
@@ -409,20 +424,14 @@ class JotaBridge:
 
         tts: Optional[TTSClient] = None
         if needs_audio:
-            tts = TTSClient(
-                url=settings.TTS_WS_URL,
-                token=settings.TTS_TOKEN,
+            tts = await self.tts.connect(
+                voice=self.config.tts_voice,
+                speed=self.config.tts_speed,
                 client_id=self.client_id,
             )
-            try:
-                await tts.connect(
-                    voice=self.config.tts_voice,
-                    speed=self.config.tts_speed,
-                )
+            if tts:
                 await self.tracker.record("tts_start", voice=self.config.tts_voice or "")
-            except Exception as e:
-                logger.warning(f"[{self.client_id}] TTS no disponible, continuando en modo texto: {e}")
-                tts = None
+            await self._maybe_notify_tts_state()
 
         agent = self.handshake.agent or self._default_agent
         session_key = make_session_key(agent, self.client_id)
@@ -527,15 +536,13 @@ class JotaBridge:
 
         if "audio" not in self.handshake.output_mode:
             return
-        tts = TTSClient(
-            url=settings.TTS_WS_URL, token=settings.TTS_TOKEN, client_id=self.client_id
+        tts = await self.tts.connect(
+            voice=self.config.tts_voice, speed=self.config.tts_speed, client_id=self.client_id
         )
-        try:
-            await tts.connect(voice=self.config.tts_voice, speed=self.config.tts_speed)
-            self._push_tts = tts
-        except Exception as e:
-            logger.warning(f"[{self.client_id}] Push TTS unavailable: {e}")
+        await self._maybe_notify_tts_state()
+        if tts is None:
             return
+        self._push_tts = tts
 
         async def _pipe_push_audio():
             header = bytes([0xA1]) + self._push_turn_seq.to_bytes(2, "big")

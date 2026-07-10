@@ -27,7 +27,7 @@ def _make_bridge(config=None):
     transcriber.state = ConnectionState.CONNECTED
     transcriber._last_transcription_at = None
     bridge = JotaBridge(client=_CLIENT, config=config or _CONFIG, client_ws=ws,
-                        orchestrator=orch, tracker=tracker, handshake=handshake,
+                        orchestrator=orch, tts=AsyncMock(), tracker=tracker, handshake=handshake,
                         client_registry=ClientRegistry(), default_agent="main")
     bridge.transcriber = transcriber
     return bridge, ws, transcriber

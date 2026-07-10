@@ -13,6 +13,7 @@ from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
 from src.services.openclaw.registry import TurnRegistry, ClientRegistry
 from src.services.session_registry import SessionRegistry
+from src.services.tts_reconnecting import ReconnectingTTSClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,7 +49,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Initial OpenClaw connect failed: {e}")
 
+    tts = ReconnectingTTSClient(
+        url=settings.TTS_WS_URL,
+        token=settings.TTS_TOKEN,
+        initial_backoff=settings.TTS_RECONNECT_INITIAL_BACKOFF,
+        max_backoff=settings.TTS_RECONNECT_MAX_BACKOFF,
+    )
+
     app.state.openclaw = openclaw
+    app.state.tts = tts
     app.state.turn_registry = turn_registry
     app.state.client_registry = client_registry
     app.state.session_registry = SessionRegistry()
