@@ -67,6 +67,7 @@ async def gateway_websocket(websocket: WebSocket):
     session_registry.register(tracker)
     bridge = JotaBridge(
         client=client, config=config, client_ws=websocket, orchestrator=openclaw,
+        tts=app_state.tts,
         tracker=tracker, handshake=handshake,
         client_registry=app_state.client_registry,
         default_agent=default_agent,

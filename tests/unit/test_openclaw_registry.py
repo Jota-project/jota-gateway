@@ -1,4 +1,5 @@
 import asyncio
+from unittest.mock import AsyncMock
 from src.services.openclaw.registry import TurnRegistry, ClientRegistry, client_id_from_session_key
 
 
@@ -79,3 +80,29 @@ def test_client_registry_unregister():
 def test_client_registry_missing_returns_none():
     reg = ClientRegistry()
     assert reg.get("nonexistent") is None
+
+
+async def test_broadcast_status_delivers_to_all_registered_bridges():
+    reg = ClientRegistry()
+    bridge_a = AsyncMock()
+    bridge_b = AsyncMock()
+    reg.register("a", bridge_a)
+    reg.register("b", bridge_b)
+
+    await reg.broadcast_status("orchestrator", "restored")
+
+    bridge_a.notify_service_status.assert_awaited_once_with("orchestrator", "restored")
+    bridge_b.notify_service_status.assert_awaited_once_with("orchestrator", "restored")
+
+
+async def test_broadcast_status_one_failure_does_not_block_others():
+    reg = ClientRegistry()
+    bridge_a = AsyncMock()
+    bridge_a.notify_service_status.side_effect = RuntimeError("disconnected")
+    bridge_b = AsyncMock()
+    reg.register("a", bridge_a)
+    reg.register("b", bridge_b)
+
+    await reg.broadcast_status("orchestrator", "unavailable")  # must not raise
+
+    bridge_b.notify_service_status.assert_awaited_once_with("orchestrator", "unavailable")

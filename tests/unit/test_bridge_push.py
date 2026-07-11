@@ -1,12 +1,24 @@
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
+from src.services.reconnection import ConnectionState, ServiceStatus
 from src.models.schemas import Client, ClientConfig, Handshake
 
 
-def make_bridge(output_mode=("text",), client_id="hab_sito"):
+def _connected_status() -> ServiceStatus:
+    """A ReconnectingTTSClient.status() is synchronous, unlike AsyncMock's
+    auto-mocked attributes — tests that stub tts.connect() to succeed must
+    also stub tts.status() as a plain callable, or _maybe_notify_tts_state()
+    receives an unawaited coroutine instead of a ServiceStatus."""
+    return ServiceStatus(
+        name="tts", state=ConnectionState.CONNECTED,
+        connected_at=None, reconnect_attempts=0, last_error=None,
+    )
+
+
+def make_bridge(output_mode=("text",), client_id="hab_sito", tts=None):
     client = Client(id=client_id, client_key="key-123", is_active=True)
     config = ClientConfig()
     ws = AsyncMock()
@@ -20,9 +32,12 @@ def make_bridge(output_mode=("text",), client_id="hab_sito"):
         agent="main",
     )
     client_registry = ClientRegistry()
+    if tts is None:
+        tts = AsyncMock()
+        tts.connect = AsyncMock(return_value=None)
     bridge = JotaBridge(
         client=client, config=config, client_ws=ws,
-        orchestrator=orchestrator, tracker=tracker, handshake=handshake,
+        orchestrator=orchestrator, tts=tts, tracker=tracker, handshake=handshake,
         client_registry=client_registry, default_agent="main",
     )
     return bridge, client_registry
@@ -85,42 +100,45 @@ async def test_on_push_turn_end_closes_push_tts():
     assert bridge._push_tts is None
 
 
-@pytest.mark.asyncio
-async def test_on_push_turn_start_audio_creates_tts_and_pipe():
-    bridge, _ = make_bridge(output_mode=("audio", "text"))
-    with patch("src.services.bridge.TTSClient") as MockTTS:
-        mock_tts = AsyncMock()
-        mock_tts.get_audio_stream = lambda: aiter([])
-        MockTTS.return_value = mock_tts
-        await bridge.on_push_turn_start("agent:main:hab_sito")
-        MockTTS.assert_called_once()
-        mock_tts.connect.assert_awaited_once()
-        assert bridge._push_tts is mock_tts
-        assert bridge._push_audio_task is not None
-
-
 async def aiter(items):
     for item in items:
         yield item
 
 
 @pytest.mark.asyncio
+async def test_on_push_turn_start_audio_creates_tts_and_pipe():
+    mock_tts_client = AsyncMock()
+    mock_tts_client.get_audio_stream = lambda: aiter([])
+    tts_wrapper = AsyncMock()
+    tts_wrapper.connect = AsyncMock(return_value=mock_tts_client)
+    tts_wrapper.status = lambda: _connected_status()
+
+    bridge, _ = make_bridge(output_mode=("audio", "text"), tts=tts_wrapper)
+    await bridge.on_push_turn_start("agent:main:hab_sito")
+
+    tts_wrapper.connect.assert_awaited_once()
+    assert bridge._push_tts is mock_tts_client
+    assert bridge._push_audio_task is not None
+
+
+@pytest.mark.asyncio
 async def test_push_audio_pipe_forwards_chunks_with_header():
     """Audio chunks from TTS include [0xA1][turn_seq uint16 BE] header."""
     import asyncio
-    bridge, _ = make_bridge(output_mode=("audio", "text"))
-    with patch("src.services.bridge.TTSClient") as MockTTS:
-        mock_tts = AsyncMock()
-        chunks = [b"\x00\x01", b"\x02\x03"]
-        mock_tts.get_audio_stream = lambda: aiter(chunks)
-        MockTTS.return_value = mock_tts
-        await bridge.on_push_turn_start("agent:main:hab_sito")
-        # let the pipe task drain
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        calls = [c.args[0] for c in bridge.client_ws.send_bytes.await_args_list]
-        expected_header = bytes([0xA1]) + (1).to_bytes(2, "big")  # turn_seq=1
-        assert calls == [expected_header + b"\x00\x01", expected_header + b"\x02\x03"]
+    chunks = [b"\x00\x01", b"\x02\x03"]
+    mock_tts_client = AsyncMock()
+    mock_tts_client.get_audio_stream = lambda: aiter(chunks)
+    tts_wrapper = AsyncMock()
+    tts_wrapper.connect = AsyncMock(return_value=mock_tts_client)
+    tts_wrapper.status = lambda: _connected_status()
+
+    bridge, _ = make_bridge(output_mode=("audio", "text"), tts=tts_wrapper)
+    await bridge.on_push_turn_start("agent:main:hab_sito")
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    calls = [c.args[0] for c in bridge.client_ws.send_bytes.await_args_list]
+    expected_header = bytes([0xA1]) + (1).to_bytes(2, "big")
+    assert calls == [expected_header + b"\x00\x01", expected_header + b"\x02\x03"]
 
 
 @pytest.mark.asyncio
@@ -176,7 +194,7 @@ async def test_push_disabled_ignores_push_turn_start():
     handshake = Handshake(client_key="ha-key", input_mode="text", output_mode=["text"])
     bridge = JotaBridge(
         client=client, config=config, client_ws=ws,
-        orchestrator=AsyncMock(), tracker=AsyncMock(), handshake=handshake,
+        orchestrator=AsyncMock(), tts=AsyncMock(), tracker=AsyncMock(), handshake=handshake,
         client_registry=ClientRegistry(), default_agent="main",
     )
     await bridge.on_push_turn_start("agent:main:ha")
@@ -192,7 +210,7 @@ async def test_deliver_push_tool_call_forwarded_when_enabled():
     handshake = Handshake(client_key="key-123", input_mode="text", output_mode=["text"], agent="main")
     bridge = JotaBridge(
         client=client, config=config, client_ws=ws,
-        orchestrator=AsyncMock(), tracker=AsyncMock(), handshake=handshake,
+        orchestrator=AsyncMock(), tts=AsyncMock(), tracker=AsyncMock(), handshake=handshake,
         client_registry=ClientRegistry(), default_agent="main",
     )
     bridge._push_turn_id = "t-1"
@@ -213,7 +231,7 @@ async def test_deliver_push_tool_call_not_forwarded_when_disabled():
     handshake = Handshake(client_key="key-123", input_mode="text", output_mode=["text"], agent="main")
     bridge = JotaBridge(
         client=client, config=config, client_ws=ws,
-        orchestrator=AsyncMock(), tracker=AsyncMock(), handshake=handshake,
+        orchestrator=AsyncMock(), tts=AsyncMock(), tracker=AsyncMock(), handshake=handshake,
         client_registry=ClientRegistry(), default_agent="main",
     )
     bridge._push_turn_id = "t-1"
@@ -230,7 +248,7 @@ async def test_deliver_push_tool_call_malformed_payload_ignored():
     handshake = Handshake(client_key="key-123", input_mode="text", output_mode=["text"], agent="main")
     bridge = JotaBridge(
         client=client, config=config, client_ws=ws,
-        orchestrator=AsyncMock(), tracker=AsyncMock(), handshake=handshake,
+        orchestrator=AsyncMock(), tts=AsyncMock(), tracker=AsyncMock(), handshake=handshake,
         client_registry=ClientRegistry(), default_agent="main",
     )
     bridge._push_turn_id = "t-1"

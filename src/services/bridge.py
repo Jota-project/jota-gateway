@@ -10,8 +10,10 @@ from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.protocol import OrchestratorProtocol
 from src.services.openclaw.models import ToolCallEvent
 from src.services.pipeline_tracker import PipelineTracker
-from src.services.transcriber_client import TranscriberClient
+from src.services.reconnection import ConnectionState, to_wire_state
+from src.services.transcriber_reconnecting import ReconnectingTranscriberClient
 from src.services.tts_client import TTSClient
+from src.services.tts_reconnecting import ReconnectingTTSClient
 from src.services.openclaw.registry import ClientRegistry
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,7 @@ class JotaBridge:
         config: ClientConfig,
         client_ws: WebSocket,
         orchestrator: OrchestratorProtocol,
+        tts: ReconnectingTTSClient,
         tracker: PipelineTracker,
         handshake: Handshake,
         client_registry: ClientRegistry,
@@ -51,14 +54,20 @@ class JotaBridge:
         self.client_ws = client_ws
         self.handshake: Handshake = handshake
         self.orchestrator: OrchestratorProtocol = orchestrator   # injected, not created here
+        self.tts = tts
         self.tracker: PipelineTracker = tracker
         self._client_registry = client_registry
         self._default_agent = default_agent
-        self.transcriber: Optional[TranscriberClient] = None
+        self.transcriber: Optional[ReconnectingTranscriberClient] = None
         self._push_tts = None
         self._push_audio_task: Optional[asyncio.Task] = None
 
         self.tasks: list[asyncio.Task] = []
+        # Fire-and-forget notification tasks (e.g. _on_transcriber_state_change)
+        # are not part of the session lifecycle managed by `tasks`/close_all() —
+        # they're short-lived and self-cleaning. Kept here only so the event
+        # loop's weak reference doesn't let them get GC'd mid-flight.
+        self._notification_tasks: set[asyncio.Task] = set()
         self._active_turn: Optional[asyncio.Task] = None
         self._session_start: float = 0.0
         self._first_audio_at: Optional[float] = None
@@ -71,25 +80,28 @@ class JotaBridge:
         # is already open so we emit exactly one turn_start/turn_end to the client
         # for the whole multi-step reply, not one per agent event.
         self._push_turn_open: bool = False
+        self._tts_degraded_notified: bool = False
 
     async def connect_internal_services(self):
         """Inicializa clientes de microservicios dependiendo del handshake."""
-        connect_tasks = []
-
-        # Transcriber (solo si el dispositivo mandará audio)
         if self.handshake.input_mode == "audio":
-            self.transcriber = TranscriberClient(
+            self.transcriber = ReconnectingTranscriberClient(
                 url=settings.TRANSCRIBER_WS_URL,
-                client_id=self.client_id
+                client_id=self.client_id,
+                initial_backoff=settings.TRANSCRIBER_RECONNECT_INITIAL_BACKOFF,
+                max_backoff=settings.TRANSCRIBER_RECONNECT_MAX_BACKOFF,
+                max_duration=settings.TRANSCRIBER_RECONNECT_MAX_DURATION,
             )
-            connect_tasks.append(self.transcriber.connect(
+            await self.transcriber.connect(
                 language=self.config.stt_language,
                 token=self.client.client_key,
                 vad_thold=self.config.stt_vad_thold,
-            ))
-
-        if connect_tasks:
-            await asyncio.gather(*connect_tasks)
+            )
+            # Wired *after* the initial connect on purpose: on_state_change firing
+            # CONNECTED on a normal first-time success would send a spurious
+            # "restored" notice for a session where nothing ever broke.
+            # health_check() already reports the initial-failure case, if any.
+            self.transcriber.on_state_change = self._on_transcriber_state_change
 
         self._client_registry.register(self.client_id, self)
 
@@ -143,7 +155,8 @@ class JotaBridge:
         """Ping each microservice and notify the client of any issues.
 
         Returns True if the session can proceed, False if a critical service
-        is unavailable (caller should close the WebSocket).
+        is unavailable (caller should close the WebSocket) — the orchestrator
+        is the only service that can make this return False.
         """
         # Orchestrator — always critical
         if not await self.orchestrator.ping():
@@ -154,16 +167,15 @@ class JotaBridge:
             })
             return False
 
-        # Transcriber — critical only for audio input (defense-in-depth;
-        # primary failure path is caught by connect_internal_services → routes.py)
+        # Transcriber — non-critical (session continues degraded if unavailable;
+        # the client decides whether to keep going text-only)
         if self.handshake.input_mode == "audio":
-            if not self.transcriber or not self.transcriber._is_ready:
+            if not self.transcriber or self.transcriber.state != ConnectionState.CONNECTED:
                 await self.client_ws.send_json({
                     "type": "status",
                     "service": "transcriber",
                     "state": "unavailable",
                 })
-                return False
 
         # TTS — non-critical; session continues in degraded mode
         if "audio" in self.handshake.output_mode:
@@ -193,7 +205,7 @@ class JotaBridge:
         # Esperar a que el cliente empiece a enviar audio antes de vigilar
         while self._first_audio_at is None:
             await asyncio.sleep(0.5)
-            if not self.transcriber or not self.transcriber._is_ready:
+            if not self.transcriber or self.transcriber.state == ConnectionState.DEGRADED:
                 return
 
         silence_count = 0
@@ -201,8 +213,10 @@ class JotaBridge:
 
         while True:
             await asyncio.sleep(2)
-            if not self.transcriber or not self.transcriber._is_ready:
+            if not self.transcriber or self.transcriber.state == ConnectionState.DEGRADED:
                 return
+            if self.transcriber.state != ConnectionState.CONNECTED:
+                continue  # RECONNECTING: skip silence-counting this tick, don't exit
 
             current_transcription_at = self.transcriber._last_transcription_at
             if current_transcription_at != last_seen_transcription_at:
@@ -227,7 +241,7 @@ class JotaBridge:
                 except Exception:
                     pass
                 if silence_count >= self.config.max_silence_turns:
-                    await self._close_all()
+                    await self.close_all()
                     return
 
     async def run(self):
@@ -244,7 +258,7 @@ class JotaBridge:
         # Loop del Transcriptor (solo si hay audio de entrada)
         if self.transcriber:
             self.tasks.append(asyncio.create_task(
-                self.transcriber.listen_loop(
+                self.transcriber.run(
                     on_transcription_callback=self._on_transcription,
                     on_warning_callback=self._on_transcriber_warning,
                 )
@@ -261,17 +275,6 @@ class JotaBridge:
         except Exception as e:
             logger.error(f"[{self.client_id}] client_input_loop crasheó: {e}")
         finally:
-            # Notificar al cliente si el transcriptor cayó inesperadamente
-            # (no notificar si ya recibimos una transcripción final — el cierre es esperado)
-            if self.transcriber and self.transcriber._dropped_unexpectedly and self._last_final_text is None:
-                try:
-                    await self.client_ws.send_json({
-                        "type": "status",
-                        "service": "transcriber",
-                        "state": "unavailable",
-                    })
-                except Exception:
-                    pass
             await self.close_all()
 
     async def _client_input_loop(self):
@@ -338,6 +341,28 @@ class JotaBridge:
             })
         except Exception:
             pass  # cliente desconectado
+
+    async def notify_service_status(self, service: str, state: str) -> None:
+        try:
+            await self.client_ws.send_json({"type": "status", "service": service, "state": state})
+        except Exception:
+            pass  # cliente desconectado
+
+    async def _maybe_notify_tts_state(self) -> None:
+        current = self.tts.status().state
+        if current == ConnectionState.CONNECTED:
+            if self._tts_degraded_notified:
+                self._tts_degraded_notified = False
+                await self.notify_service_status("tts", to_wire_state(ConnectionState.CONNECTED))
+        else:
+            if not self._tts_degraded_notified:
+                self._tts_degraded_notified = True
+                await self.notify_service_status("tts", to_wire_state(current))
+
+    def _on_transcriber_state_change(self, state: ConnectionState) -> None:
+        task = asyncio.create_task(self.notify_service_status("transcriber", to_wire_state(state)))
+        self._notification_tasks.add(task)
+        task.add_done_callback(self._notification_tasks.discard)
 
     async def _on_transcription(self, text: str, is_final: bool):
         """Callback dispatched by TranscriberClient on every transcription event.
@@ -406,20 +431,14 @@ class JotaBridge:
 
         tts: Optional[TTSClient] = None
         if needs_audio:
-            tts = TTSClient(
-                url=settings.TTS_WS_URL,
-                token=settings.TTS_TOKEN,
+            tts = await self.tts.connect(
+                voice=self.config.tts_voice,
+                speed=self.config.tts_speed,
                 client_id=self.client_id,
             )
-            try:
-                await tts.connect(
-                    voice=self.config.tts_voice,
-                    speed=self.config.tts_speed,
-                )
+            if tts:
                 await self.tracker.record("tts_start", voice=self.config.tts_voice or "")
-            except Exception as e:
-                logger.warning(f"[{self.client_id}] TTS no disponible, continuando en modo texto: {e}")
-                tts = None
+            await self._maybe_notify_tts_state()
 
         agent = self.handshake.agent or self._default_agent
         session_key = make_session_key(agent, self.client_id)
@@ -524,15 +543,13 @@ class JotaBridge:
 
         if "audio" not in self.handshake.output_mode:
             return
-        tts = TTSClient(
-            url=settings.TTS_WS_URL, token=settings.TTS_TOKEN, client_id=self.client_id
+        tts = await self.tts.connect(
+            voice=self.config.tts_voice, speed=self.config.tts_speed, client_id=self.client_id
         )
-        try:
-            await tts.connect(voice=self.config.tts_voice, speed=self.config.tts_speed)
-            self._push_tts = tts
-        except Exception as e:
-            logger.warning(f"[{self.client_id}] Push TTS unavailable: {e}")
+        await self._maybe_notify_tts_state()
+        if tts is None:
             return
+        self._push_tts = tts
 
         async def _pipe_push_audio():
             header = bytes([0xA1]) + self._push_turn_seq.to_bytes(2, "big")

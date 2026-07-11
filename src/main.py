@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -12,7 +13,9 @@ from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
 from src.services.openclaw.registry import TurnRegistry, ClientRegistry
+from src.services.reconnection import ConnectionState, to_wire_state
 from src.services.session_registry import SessionRegistry
+from src.services.tts_reconnecting import ReconnectingTTSClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,7 +51,33 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Initial OpenClaw connect failed: {e}")
 
+    # Wired *after* the initial connect on purpose: on_state_change firing
+    # CONNECTED on a normal first-time success would send a spurious
+    # "restored" notice to every connected-but-idle client, even though
+    # nothing was ever broken.
+    # `_notification_tasks` holds a strong reference to each fire-and-forget
+    # broadcast task so the event loop's weak reference doesn't let it get
+    # GC'd mid-flight; discarded once the task completes.
+    _notification_tasks: set[asyncio.Task] = set()
+
+    def _on_orchestrator_state_change(state: ConnectionState) -> None:
+        task = asyncio.create_task(
+            client_registry.broadcast_status("orchestrator", to_wire_state(state))
+        )
+        _notification_tasks.add(task)
+        task.add_done_callback(_notification_tasks.discard)
+
+    openclaw.on_state_change = _on_orchestrator_state_change
+
+    tts = ReconnectingTTSClient(
+        url=settings.TTS_WS_URL,
+        token=settings.TTS_TOKEN,
+        initial_backoff=settings.TTS_RECONNECT_INITIAL_BACKOFF,
+        max_backoff=settings.TTS_RECONNECT_MAX_BACKOFF,
+    )
+
     app.state.openclaw = openclaw
+    app.state.tts = tts
     app.state.turn_registry = turn_registry
     app.state.client_registry = client_registry
     app.state.session_registry = SessionRegistry()

@@ -23,7 +23,7 @@ def _make_bridge(input_mode="text", output_mode=None):
     orch = AsyncMock()
     orch.ping = AsyncMock(return_value=True)
     bridge = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws,
-                        orchestrator=orch, tracker=tracker, handshake=handshake,
+                        orchestrator=orch, tts=AsyncMock(), tracker=tracker, handshake=handshake,
                         client_registry=ClientRegistry(), default_agent="main")
     return bridge, ws, orch
 
@@ -46,12 +46,14 @@ async def test_health_check_returns_false_when_orchestrator_unavailable():
     assert payload["state"] == "unavailable"
 
 
-async def test_health_check_returns_false_when_transcriber_not_ready():
+async def test_health_check_transcriber_unavailable_still_returns_true():
+    """Transcriber down no longer closes the session — client decides (issue #46)."""
+    from src.services.reconnection import ConnectionState
     bridge, ws, orch = _make_bridge(input_mode="audio")
     bridge.transcriber = MagicMock()
-    bridge.transcriber._is_ready = False
+    bridge.transcriber.state = ConnectionState.DEGRADED
     result = await bridge.health_check()
-    assert result is False
+    assert result is True
     payload = ws.send_json.call_args[0][0]
     assert payload["type"] == "status"
     assert payload["service"] == "transcriber"

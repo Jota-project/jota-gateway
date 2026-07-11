@@ -18,7 +18,7 @@ from src.core.config import settings
 from src.main import app
 from src.services.db_client import db_client
 from src.services.protocol import OrchestratorProtocol, OrchestratorEvent
-from src.services.openclaw.reconnecting import OrchestratorState, OrchestratorStatus
+from src.services.reconnection import ConnectionState, ServiceStatus
 from src.services.openclaw.registry import TurnRegistry, ClientRegistry
 from src.services.openclaw.models import GatewayInfo, AgentInfo
 from src.db.models import ClientRecord
@@ -118,9 +118,9 @@ def make_mock_orchestrator(tokens: list[str] = None) -> OrchestratorProtocol:
     mock.gateway_info = _make_default_gateway_info()
     mock._name = "openclaw"
     mock.get_name = MagicMock(return_value="openclaw")
-    mock.status = MagicMock(return_value=OrchestratorStatus(
+    mock.status = MagicMock(return_value=ServiceStatus(
         name="openclaw",
-        state=OrchestratorState.CONNECTED,
+        state=ConnectionState.CONNECTED,
         connected_at=datetime(2026, 6, 4, 10, 0, tzinfo=timezone.utc),
         reconnect_attempts=0,
         last_error=None,

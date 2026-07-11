@@ -1,31 +1,15 @@
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from enum import Enum
 from typing import AsyncIterator, Optional
 
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.models import GatewayInfo
 from src.services.protocol import OrchestratorEvent
+from src.services.reconnection import ConnectionState, ServiceStatus
 
 logger = logging.getLogger(__name__)
-
-
-class OrchestratorState(Enum):
-    CONNECTED = "CONNECTED"
-    RECONNECTING = "RECONNECTING"
-    DEGRADED = "DEGRADED"
-
-
-@dataclass
-class OrchestratorStatus:
-    name: str
-    state: OrchestratorState
-    connected_at: Optional[datetime]
-    reconnect_attempts: int
-    last_error: Optional[str]
 
 
 class ReconnectingOpenClawClient:
@@ -48,12 +32,13 @@ class ReconnectingOpenClawClient:
         self._initial_backoff = initial_backoff
         self._max_backoff = max_backoff
         self._max_duration = max_duration
-        self.state = OrchestratorState.DEGRADED
+        self.state = ConnectionState.DEGRADED
         self.gateway_info: Optional[GatewayInfo] = None
         self._connected_at: Optional[datetime] = None
         self._reconnect_attempts: int = 0
         self._last_error: Optional[str] = None
         self._reconnect_task: Optional[asyncio.Task] = None
+        self.on_state_change = None
         # Register disconnect callback so the inner client notifies us on unexpected drops.
         self._client.on_disconnect = self._handle_disconnect
 
@@ -63,7 +48,7 @@ class ReconnectingOpenClawClient:
     async def connect(self) -> None:
         try:
             self.gateway_info = await self._client.connect()
-            self.state = OrchestratorState.CONNECTED
+            self._set_state(ConnectionState.CONNECTED)
             self._connected_at = datetime.now(timezone.utc)
             self._reconnect_attempts = 0
             self._last_error = None
@@ -82,8 +67,8 @@ class ReconnectingOpenClawClient:
         await self._client.close()
 
     async def ping(self) -> bool:
-        if self.state != OrchestratorState.CONNECTED:
-            if self.state == OrchestratorState.DEGRADED:
+        if self.state != ConnectionState.CONNECTED:
+            if self.state == ConnectionState.DEGRADED:
                 self._ensure_reconnecting()
             return False
         return await self._client.ping()
@@ -96,8 +81,8 @@ class ReconnectingOpenClawClient:
         system_prompt_extra: Optional[str] = None,
         session_key: Optional[str] = None,
     ) -> AsyncIterator[OrchestratorEvent]:
-        if self.state != OrchestratorState.CONNECTED:
-            if self.state == OrchestratorState.DEGRADED:
+        if self.state != ConnectionState.CONNECTED:
+            if self.state == ConnectionState.DEGRADED:
                 self._ensure_reconnecting()
             yield OrchestratorEvent(type="error", content="orchestrator_unavailable")
             return
@@ -116,8 +101,8 @@ class ReconnectingOpenClawClient:
             logger.warning("[%s] stream_response error: %s", self._name, e)
             yield OrchestratorEvent(type="error", content=str(e))
 
-    def status(self) -> OrchestratorStatus:
-        return OrchestratorStatus(
+    def status(self) -> ServiceStatus:
+        return ServiceStatus(
             name=self._name,
             state=self.state,
             connected_at=self._connected_at,
@@ -125,12 +110,17 @@ class ReconnectingOpenClawClient:
             last_error=self._last_error,
         )
 
+    def _set_state(self, state: ConnectionState) -> None:
+        self.state = state
+        if self.on_state_change:
+            self.on_state_change(state)
+
     def _handle_disconnect(self) -> None:
         self._ensure_reconnecting()
 
     def _ensure_reconnecting(self) -> None:
         if not self._reconnect_task or self._reconnect_task.done():
-            self.state = OrchestratorState.RECONNECTING
+            self._set_state(ConnectionState.RECONNECTING)
             self._reconnect_task = asyncio.create_task(self._reconnect_loop())
 
     async def _reconnect_loop(self) -> None:
@@ -139,7 +129,7 @@ class ReconnectingOpenClawClient:
         while True:
             try:
                 self.gateway_info = await self._client.connect()
-                self.state = OrchestratorState.CONNECTED
+                self._set_state(ConnectionState.CONNECTED)
                 self._connected_at = datetime.now(timezone.utc)
                 self._reconnect_attempts = 0
                 logger.info("[%s] reconnected.", self._name)
@@ -155,7 +145,7 @@ class ReconnectingOpenClawClient:
                 )
 
             if time.monotonic() - start >= self._max_duration:
-                self.state = OrchestratorState.DEGRADED
+                self._set_state(ConnectionState.DEGRADED)
                 logger.warning("[%s] reconnect exhausted — DEGRADED.", self._name)
                 return
 

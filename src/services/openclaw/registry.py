@@ -62,3 +62,10 @@ class ClientRegistry:
 
     def get(self, client_id: str) -> Optional[Any]:
         return self._clients.get(client_id)
+
+    async def broadcast_status(self, service: str, state: str) -> None:
+        for bridge in list(self._clients.values()):
+            try:
+                await bridge.notify_service_status(service, state)
+            except Exception:
+                pass  # one dead/misbehaving session must not block the rest
