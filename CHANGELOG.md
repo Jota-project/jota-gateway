@@ -1,3 +1,10 @@
+# [1.13.0](https://github.com/Jota-project/jota-gateway/compare/v1.12.1...v1.13.0) (2026-07-11)
+
+
+### Features
+
+* automatic reconnection for Transcriber and TTS, proactive orchestrator broadcast ([#88](https://github.com/Jota-project/jota-gateway/issues/88)) ([80a7cd1](https://github.com/Jota-project/jota-gateway/commit/80a7cd1229f91d540e210056c449ebb9341707d5))
+
 ## [1.12.1](https://github.com/Jota-project/jota-gateway/compare/v1.12.0...v1.12.1) (2026-07-10)
 
 
