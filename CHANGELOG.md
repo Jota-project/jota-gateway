@@ -1,3 +1,10 @@
+# [1.14.0](https://github.com/Jota-project/jota-gateway/compare/v1.13.0...v1.14.0) (2026-07-12)
+
+
+### Features
+
+* require auth for /v1/* from untrusted origins (issue [#52](https://github.com/Jota-project/jota-gateway/issues/52)) ([#89](https://github.com/Jota-project/jota-gateway/issues/89)) ([fca1932](https://github.com/Jota-project/jota-gateway/commit/fca1932e947b85025961e1ae424ae112d82948b9))
+
 # [1.13.0](https://github.com/Jota-project/jota-gateway/compare/v1.12.1...v1.13.0) (2026-07-11)
 
 
