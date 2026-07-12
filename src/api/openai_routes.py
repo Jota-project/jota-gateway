@@ -2,11 +2,17 @@ import asyncio
 import json
 import uuid
 import logging
-from fastapi import APIRouter, Request
+from dataclasses import dataclass
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
+from src.core.exceptions import ClientInactive, ClientNotFound
+from src.core.network import is_trusted_origin, resolve_client_ip
 from src.core.session_key import make_session_key
+from src.models.schemas import Client, ClientConfig
+from src.services.db_client import db_client
 from src.services.orchestration import call_orchestrator
 from src.services.pipeline_tracker import PipelineTracker, _NullWS
 
@@ -26,8 +32,45 @@ class _ChatCompletionRequest(BaseModel):
     model: str = ""
 
 
+@dataclass
+class HACaller:
+    """Identidad resuelta para un caller de /v1/*.
+
+    client/config son None en el path legacy (origen de red confiable,
+    sin Authorization) — preserva el comportamiento histórico fijo "ha".
+    """
+    client: Client | None
+    config: ClientConfig | None
+
+
+async def resolve_ha_caller(request: Request) -> HACaller:
+    """Dependency de auth para /v1/*.
+
+    - Authorization: Bearer <client_key> presente -> valida contra la BD
+      (igual que el handshake WS). Aplica siempre, sin importar el origen.
+    - Sin Authorization -> exige que el origen (ver resolve_client_ip) sea
+      confiable (loopback y/o TRUSTED_NETWORKS); si no, 401.
+    """
+    auth = request.headers.get("authorization")
+    if auth:
+        if not auth.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="authentication required")
+        client_key = auth[len("Bearer "):]
+        try:
+            client, config = await db_client.get_session(client_key)
+        except (ClientNotFound, ClientInactive):
+            raise HTTPException(status_code=401, detail="authentication required")
+        return HACaller(client=client, config=config)
+
+    ip = resolve_client_ip(request)
+    if is_trusted_origin(ip):
+        return HACaller(client=None, config=None)
+
+    raise HTTPException(status_code=401, detail="authentication required")
+
+
 @router.get("/models")
-async def list_models(request: Request):
+async def list_models(request: Request, caller: HACaller = Depends(resolve_ha_caller)):
     return JSONResponse({
         "object": "list",
         "data": [{"id": "jota-gateway", "object": "model", "created": 0, "owned_by": "jota-gateway"}],
@@ -41,10 +84,10 @@ def _extract_last_user_message(messages: list[_ChatMessage]) -> str:
     return ""
 
 
-def _make_http_tracker(session_id: str, registry) -> PipelineTracker:
+def _make_http_tracker(session_id: str, registry, client_id: str) -> PipelineTracker:
     return PipelineTracker(
         session_id=session_id,
-        client_id="ha",
+        client_id=client_id,
         input_mode="text",
         output_mode=[],
         client_ws=_NullWS(),
@@ -53,16 +96,28 @@ def _make_http_tracker(session_id: str, registry) -> PipelineTracker:
 
 
 @router.post("/chat/completions")
-async def chat_completions(request: Request, body: _ChatCompletionRequest):
+async def chat_completions(
+    request: Request,
+    body: _ChatCompletionRequest,
+    caller: HACaller = Depends(resolve_ha_caller),
+):
     text = _extract_last_user_message(body.messages)
     stream = body.stream
     orchestrator = request.app.state.openclaw
     session_registry = request.app.state.session_registry
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     default_agent = orchestrator.gateway_info.default_agent_id if orchestrator.gateway_info else "main"
-    session_key = make_session_key(default_agent, "ha")
 
-    tracker = _make_http_tracker(f"http:{completion_id}", session_registry)
+    if caller.client is not None:
+        client_id = caller.client.id
+        system_prompt_extra = caller.config.system_prompt_extra
+    else:
+        client_id = "ha"
+        system_prompt_extra = None
+
+    session_key = make_session_key(default_agent, client_id)
+
+    tracker = _make_http_tracker(f"http:{completion_id}", session_registry, client_id)
     session_registry.register(tracker)
 
     if stream:
@@ -80,7 +135,8 @@ async def chat_completions(request: Request, body: _ChatCompletionRequest):
             async def _run():
                 try:
                     await call_orchestrator(
-                        orchestrator, text, session_key, "ha",
+                        orchestrator, text, session_key, client_id,
+                        system_prompt_extra=system_prompt_extra,
                         tracker=tracker, on_token=_on_token,
                     )
                 except RuntimeError as e:
@@ -124,7 +180,8 @@ async def chat_completions(request: Request, body: _ChatCompletionRequest):
     orchestrator_error: Exception | None = None
     try:
         await call_orchestrator(
-            orchestrator, text, session_key, "ha",
+            orchestrator, text, session_key, client_id,
+            system_prompt_extra=system_prompt_extra,
             tracker=tracker, on_token=_on_token,
         )
     except RuntimeError as e:

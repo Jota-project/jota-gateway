@@ -1,6 +1,8 @@
 # tests/integration/test_rest_openai.py
 from src.services.protocol import OrchestratorEvent
 from src.main import app
+from src.core.config import settings
+from tests.integration.conftest import CLIENT_ID
 
 
 def test_get_models_returns_list(client):
@@ -237,3 +239,118 @@ def test_http_session_appears_in_registry(client):
     http_sessions = [s for s in sessions if s.session_id.startswith("http:")]
     assert len(http_sessions) >= 1
     assert http_sessions[0].client_id == "ha"
+
+
+def test_get_models_from_trusted_loopback_passes(client):
+    r = client.get("/v1/models")
+    assert r.status_code == 200
+
+
+def test_get_models_from_untrusted_origin_without_auth_returns_401(client_untrusted):
+    r = client_untrusted.get("/v1/models")
+    assert r.status_code == 401
+
+
+def test_chat_completions_from_untrusted_origin_without_auth_returns_401(client_untrusted):
+    r = client_untrusted.post("/v1/chat/completions", json={
+        "model": "openclaw",
+        "messages": [{"role": "user", "content": "Hola"}],
+        "stream": False,
+    })
+    assert r.status_code == 401
+
+
+def test_chat_completions_from_untrusted_origin_with_valid_key_passes(client_untrusted, ha_bearer_headers):
+    r = client_untrusted.post(
+        "/v1/chat/completions",
+        json={"model": "openclaw", "messages": [{"role": "user", "content": "Hola"}], "stream": False},
+        headers=ha_bearer_headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["choices"][0]["message"]["content"] == "Hola"
+
+
+def test_chat_completions_with_valid_key_uses_real_client_session_key(client_untrusted, ha_bearer_headers, mock_registry):
+    from src.core.session_key import make_session_key
+    captured = {}
+
+    async def _stream(text, user_id, model_id=None, system_prompt_extra=None, session_key=None):
+        captured["session_key"] = session_key
+        captured["user_id"] = user_id
+        yield OrchestratorEvent(type="token", content="ok")
+        yield OrchestratorEvent(type="status", content="done")
+
+    mock_registry.stream_response = _stream
+
+    client_untrusted.post(
+        "/v1/chat/completions",
+        json={"model": "openclaw", "messages": [{"role": "user", "content": "test"}], "stream": False},
+        headers=ha_bearer_headers,
+    )
+
+    expected = make_session_key("main", CLIENT_ID)
+    assert captured.get("session_key") == expected
+    assert captured.get("user_id") == CLIENT_ID
+
+
+def test_chat_completions_with_invalid_key_returns_401_even_from_loopback(client):
+    r = client.post(
+        "/v1/chat/completions",
+        json={"model": "openclaw", "messages": [{"role": "user", "content": "Hola"}], "stream": False},
+        headers={"authorization": "Bearer not-a-real-key"},
+    )
+    assert r.status_code == 401
+
+
+def test_chat_completions_with_inactive_client_key_returns_401(client, db_engine):
+    from sqlmodel import Session
+    from src.db.models import ClientRecord
+
+    with Session(db_engine) as s:
+        s.add(ClientRecord(
+            id="inactive-client",
+            name="Inactive",
+            client_key="inactive-key",
+            is_active=False,
+        ))
+        s.commit()
+
+    r = client.post(
+        "/v1/chat/completions",
+        json={"model": "openclaw", "messages": [{"role": "user", "content": "Hola"}], "stream": False},
+        headers={"authorization": "Bearer inactive-key"},
+    )
+    assert r.status_code == 401
+
+
+def test_chat_completions_x_real_ip_alone_does_not_grant_trust(client, monkeypatch):
+    """Peer is 127.0.0.1 (a trusted proxy), so X-Real-IP is read — but the IP it
+    names (203.0.113.9) still isn't in TRUSTED_NETWORKS, so it must still fail."""
+    monkeypatch.setattr(settings, "TRUSTED_NETWORKS", "")
+    r = client.post(
+        "/v1/chat/completions",
+        json={"model": "openclaw", "messages": [{"role": "user", "content": "Hola"}], "stream": False},
+        headers={"x-real-ip": "203.0.113.9"},
+    )
+    assert r.status_code == 401
+
+
+def test_chat_completions_trusts_x_real_ip_within_trusted_networks(client, monkeypatch):
+    monkeypatch.setattr(settings, "TRUSTED_NETWORKS", "192.168.50.0/24")
+    r = client.post(
+        "/v1/chat/completions",
+        json={"model": "openclaw", "messages": [{"role": "user", "content": "Hola"}], "stream": False},
+        headers={"x-real-ip": "192.168.50.7"},
+    )
+    assert r.status_code == 200
+
+
+def test_chat_completions_ignores_x_real_ip_from_untrusted_peer(client_untrusted):
+    """client_untrusted's peer (203.0.113.5) is not in TRUSTED_PROXIES, so a
+    spoofed X-Real-IP claiming to be loopback must be ignored."""
+    r = client_untrusted.post(
+        "/v1/chat/completions",
+        json={"model": "openclaw", "messages": [{"role": "user", "content": "Hola"}], "stream": False},
+        headers={"x-real-ip": "127.0.0.1"},
+    )
+    assert r.status_code == 401

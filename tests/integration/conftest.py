@@ -161,9 +161,7 @@ def mock_registry(mock_orchestrator):
     return make_mock_registry(mock_orchestrator)
 
 
-@pytest.fixture
-def client(mock_services, mock_registry, seed_client, monkeypatch):
-    """TestClient con SQLite en memoria y orchestrator mock inyectado."""
+def _configure_app_mocks(mock_registry, monkeypatch):
     monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_registry)
     monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: MagicMock())
     monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: MagicMock())
@@ -171,10 +169,35 @@ def client(mock_services, mock_registry, seed_client, monkeypatch):
     monkeypatch.setattr("src.main.ClientRegistry", lambda: ClientRegistry())
     mock_registry.connect = AsyncMock()
     mock_registry.close = AsyncMock()
-    with TestClient(app) as c:
+
+
+@pytest.fixture
+def client(mock_services, mock_registry, seed_client, monkeypatch):
+    """TestClient con SQLite en memoria y orchestrator mock inyectado.
+
+    client=("127.0.0.1", 50000): peer loopback, para que /v1/* (ver
+    src/core/network.py) se comporte igual que en el despliegue doméstico
+    real sin exigir Authorization en cada test existente.
+    """
+    _configure_app_mocks(mock_registry, monkeypatch)
+    with TestClient(app, client=("127.0.0.1", 50000)) as c:
+        yield c
+
+
+@pytest.fixture
+def client_untrusted(mock_services, mock_registry, seed_client, monkeypatch):
+    """TestClient cuyo peer TCP no es loopback ni está en TRUSTED_NETWORKS
+    (203.0.113.5 es TEST-NET-3, RFC 5737 — rango reservado para documentación)."""
+    _configure_app_mocks(mock_registry, monkeypatch)
+    with TestClient(app, client=("203.0.113.5", 54321)) as c:
         yield c
 
 
 @pytest.fixture
 def auth_headers():
     return {"x-api-key": VALID_KEY}
+
+
+@pytest.fixture
+def ha_bearer_headers():
+    return {"authorization": f"Bearer {VALID_KEY}"}

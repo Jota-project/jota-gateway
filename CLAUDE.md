@@ -37,7 +37,7 @@ jota-gateway is a **BFF (Backend For Frontend)** — the single entry point for 
 
 - **WebSocket** `/ws/stream` — full voice+text session managed by `JotaBridge`
 - **Admin REST** `/admin/*` — client CRUD + observability (sessions, orchestrators); requires `X-Admin-Token`
-- **OpenAI-compatible REST** `/v1/*` — `GET /v1/models` and `POST /v1/chat/completions` for Home Assistant integration; delegates to the singleton `OpenClawClient`
+- **OpenAI-compatible REST** `/v1/*` — `GET /v1/models` and `POST /v1/chat/completions` for Home Assistant integration; delegates to the singleton `OpenClawClient`. Requests from a trusted origin (loopback and/or `TRUSTED_NETWORKS`) need no auth; anyone else must send `Authorization: Bearer <client_key>`, validated against the same `ClientRecord` table the WS handshake uses (`src/core/network.py`, `resolve_ha_caller` in `src/api/openai_routes.py`) — see issue #52.
 - **Health** `/healthz`, `/ready` — liveness and readiness probes
 
 There is no longer any dependency on `jota-db`. Client identity and configuration live in the local SQLite database (`data/gateway.db`).
@@ -47,6 +47,10 @@ There is no longer any dependency on `jota-db`. Client identity and configuratio
 ```
 DATABASE_URL=sqlite:///data/gateway.db   # path to SQLite file
 ADMIN_TOKEN=<secret>                     # required for /admin/* routes
+
+TRUST_LOOPBACK=true                      # 127.0.0.1/::1 exempt from /v1/* auth
+TRUSTED_NETWORKS=                        # CSV of CIDRs exempt from /v1/* auth, e.g. 192.168.1.0/24. Empty = fail-closed.
+TRUSTED_PROXIES=127.0.0.1,::1            # CSV of IPs/CIDRs allowed to set X-Real-IP for /v1/*
 
 TRANSCRIBER_WS_URL=localhost:9000
 TTS_WS_URL=localhost:8005
@@ -281,7 +285,7 @@ in a future session.
 
 All `/admin/*` routes use `Depends(get_admin_auth)` (`src/api/deps.py`), which reads the `X-Admin-Token` header and compares it against `settings.ADMIN_TOKEN`. Returns 422 if the header is missing, 401 if wrong, 503 if `ADMIN_TOKEN` is not configured.
 
-The `/v1/*` routes have **no auth** — they are exposed only on LAN via nginx.
+The `/v1/*` routes use `Depends(resolve_ha_caller)` (`src/api/openai_routes.py`) instead — see `src/core/network.py` and the trusted-origin bullet under Architecture above (issue #52).
 
 ---
 
