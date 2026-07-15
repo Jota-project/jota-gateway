@@ -1,3 +1,10 @@
+## [1.14.1](https://github.com/Jota-project/jota-gateway/compare/v1.14.0...v1.14.1) (2026-07-15)
+
+
+### Bug Fixes
+
+* close socket on handshake failure in all service clients (issue [#96](https://github.com/Jota-project/jota-gateway/issues/96)) ([#97](https://github.com/Jota-project/jota-gateway/issues/97)) ([212966e](https://github.com/Jota-project/jota-gateway/commit/212966e51aef3385de248d93dd8b0309cf64f3c9))
+
 # [1.14.0](https://github.com/Jota-project/jota-gateway/compare/v1.13.0...v1.14.0) (2026-07-12)
 
 
