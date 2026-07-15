@@ -31,30 +31,42 @@ class TTSClient:
         """Open WS and authenticate. Raises RuntimeError on auth failure."""
         ws_url = f"ws://{self.url}/ws"
         self.ws = await websockets.connect(ws_url)
-        auth_msg: dict = {"type": "auth", "token": self.token}
-        if voice is not None:
-            auth_msg["voice"] = voice
-        if speed is not None:
-            auth_msg["speed"] = speed
-        await self.ws.send(json.dumps(auth_msg))
+        auth_err: Optional[Exception] = None
         try:
-            raw = await self.ws.recv()
-        except ConnectionClosed as exc:
-            raise RuntimeError(
-                f"[{self.client_id}] TTS connection closed during auth: {exc}"
-            ) from exc
+            auth_msg: dict = {"type": "auth", "token": self.token}
+            if voice is not None:
+                auth_msg["voice"] = voice
+            if speed is not None:
+                auth_msg["speed"] = speed
+            await self.ws.send(json.dumps(auth_msg))
+            try:
+                raw = await self.ws.recv()
+            except ConnectionClosed as exc:
+                raise RuntimeError(
+                    f"[{self.client_id}] TTS connection closed during auth: {exc}"
+                ) from exc
 
-        try:
-            msg = json.loads(raw)
-        except (json.JSONDecodeError, TypeError) as exc:
-            raise RuntimeError(
-                f"[{self.client_id}] TTS sent non-JSON during auth: {raw!r}"
-            ) from exc
+            try:
+                msg = json.loads(raw)
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise RuntimeError(
+                    f"[{self.client_id}] TTS sent non-JSON during auth: {raw!r}"
+                ) from exc
 
-        if msg.get("type") != "auth_ok":
-            raise RuntimeError(f"[{self.client_id}] TTS auth failed: {msg}")
+            if msg.get("type") != "auth_ok":
+                raise RuntimeError(f"[{self.client_id}] TTS auth failed: {msg}")
 
-        logger.info("[%s] Connected to TTS at ws://%s/ws", self.client_id, self.url)
+            logger.info("[%s] Connected to TTS at ws://%s/ws", self.client_id, self.url)
+        except Exception as exc:
+            auth_err = exc
+            raise
+        finally:
+            if auth_err is not None and self.ws is not None:
+                try:
+                    await self.ws.close(1000)
+                except Exception:
+                    pass
+                self.ws = None
 
     async def send_text_chunk(self, text: str) -> None:
         """Send one LLM token. No-op if WS is unavailable."""

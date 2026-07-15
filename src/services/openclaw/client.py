@@ -46,49 +46,52 @@ class OpenClawClient:
 
     async def connect(self) -> GatewayInfo:
         self._ws = await websockets.connect(self._uri)
+        conn_err: Optional[Exception] = None
+        try:
+            raw = await asyncio.wait_for(self._ws.recv(), timeout=15.0)
+            frame = json.loads(raw)
+            if frame.get("event") != "connect.challenge":
+                raise RuntimeError(f"Expected connect.challenge, got: {frame}")
 
-        raw = await asyncio.wait_for(self._ws.recv(), timeout=15.0)
-        frame = json.loads(raw)
-        if frame.get("event") != "connect.challenge":
-            raise RuntimeError(f"Expected connect.challenge, got: {frame}")
+            req_id = str(uuid.uuid4())
+            await self._ws.send(json.dumps(frames.connect_backend(req_id, self._token)))
 
-        req_id = str(uuid.uuid4())
-        await self._ws.send(json.dumps(frames.connect_backend(req_id, self._token)))
+            raw = await asyncio.wait_for(self._ws.recv(), timeout=30.0)
+            hello = json.loads(raw)
+            if not hello.get("ok"):
+                raise RuntimeError(f"OpenClaw handshake failed: {hello.get('error')}")
+            self.gateway_info = GatewayInfo.from_hello_ok(hello.get("payload", {}))
 
-        raw = await asyncio.wait_for(self._ws.recv(), timeout=30.0)
-        hello = json.loads(raw)
-        if not hello.get("ok"):
-            raise RuntimeError(f"OpenClaw handshake failed: {hello.get('error')}")
-        self.gateway_info = GatewayInfo.from_hello_ok(hello.get("payload", {}))
+            agents_req_id = str(uuid.uuid4())
+            await self._ws.send(json.dumps(frames.agents_list(agents_req_id)))
+            agents_res = await self._recv_matching(agents_req_id, timeout=10.0)
+            if agents_res.get("ok"):
+                self.gateway_info.update_agents_from_list(agents_res.get("payload", {}))
+            else:
+                logger.warning(f"agents.list failed at connect: {agents_res.get('error')}")
 
-        # hello-ok's snapshot no longer embeds the full agent roster (OpenClaw
-        # server 2026.6.11+) — fetch it explicitly so has_agent() doesn't
-        # reject every agent. Skip any unrelated event frames (e.g. a periodic
-        # "health" broadcast) that may interleave before the matching res.
-        agents_req_id = str(uuid.uuid4())
-        await self._ws.send(json.dumps(frames.agents_list(agents_req_id)))
-        agents_res = await self._recv_matching(agents_req_id, timeout=10.0)
-        if agents_res.get("ok"):
-            self.gateway_info.update_agents_from_list(agents_res.get("payload", {}))
-        else:
-            logger.warning(f"agents.list failed at connect: {agents_res.get('error')}")
+            sub_id = str(uuid.uuid4())
+            await self._ws.send(json.dumps(frames.sessions_subscribe(sub_id)))
+            sub_ack = await asyncio.wait_for(self._ws.recv(), timeout=10.0)  # noqa: F841
 
-        sub_id = str(uuid.uuid4())
-        await self._ws.send(json.dumps(frames.sessions_subscribe(sub_id)))
-
-        # Consume the subscribe ack synchronously before starting _listen.
-        # If we skipped this, the ack would flow into _listen → dispatcher, which
-        # silently ignores unknown res frames — fragile. Awaiting it here is cleaner.
-        sub_ack = await asyncio.wait_for(self._ws.recv(), timeout=10.0)  # noqa: F841
-
-        self._listener_task = asyncio.create_task(self._listen())
-        self._keepalive_task = asyncio.create_task(self._keepalive_loop())
-        logger.info(
-            f"OpenClawClient connected → {self._uri} "
-            f"(tick {self.gateway_info.tick_interval_ms}ms, "
-            f"default_agent={self.gateway_info.default_agent_id})"
-        )
-        return self.gateway_info
+            self._listener_task = asyncio.create_task(self._listen())
+            self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+            logger.info(
+                f"OpenClawClient connected → {self._uri} "
+                f"(tick {self.gateway_info.tick_interval_ms}ms, "
+                f"default_agent={self.gateway_info.default_agent_id})"
+            )
+            return self.gateway_info
+        except Exception as exc:
+            conn_err = exc
+            raise
+        finally:
+            if conn_err is not None and self._ws is not None:
+                try:
+                    await self._ws.close()
+                except Exception:
+                    pass
+                self._ws = None
 
     async def _recv_matching(self, req_id: str, timeout: float) -> dict:
         """Read frames until the res matching req_id arrives, ignoring any

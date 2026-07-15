@@ -49,6 +49,12 @@ class TranscriberClient:
 
         except Exception as e:
             logger.error(f"[{self.client_id}] Error conectando a Transcriber: {e}")
+            if self.ws is not None:
+                try:
+                    await self.ws.close()
+                except Exception:
+                    pass
+                self.ws = None
             raise
 
     async def send_audio(self, audio_bytes: bytes):
