@@ -63,6 +63,12 @@ OPENCLAW_TOKEN=<secret>
 ORCHESTRATOR_RECONNECT_INITIAL_BACKOFF=1.0
 ORCHESTRATOR_RECONNECT_MAX_BACKOFF=60.0
 ORCHESTRATOR_RECONNECT_MAX_DURATION=300.0
+
+TRANSCRIBER_RECONNECT_INITIAL_BACKOFF=1.0
+TRANSCRIBER_RECONNECT_MAX_BACKOFF=60.0
+TRANSCRIBER_RECONNECT_MAX_DURATION=300.0
+TTS_RECONNECT_INITIAL_BACKOFF=1.0
+TTS_RECONNECT_MAX_BACKOFF=60.0
 ```
 
 All service addresses are `host:port` **without protocol**. Each client injects the protocol itself (`http://`, `ws://`).
@@ -190,10 +196,10 @@ The singleton `db_client = DbClient()` is imported from this module everywhere. 
 2. Gateway resolves identity via `db_client.get_session(client_key)` → `(Client, ClientConfig)`.
    - `ClientNotFound` or `ClientInactive` → close 1008.
 3. If `agent` is specified, `routes.py` validates it against `openclaw.gateway_info.has_agent(agent)` — unknown agents close with code 1008.
-4. `JotaBridge` is instantiated with client, config, WebSocket, the singleton `ReconnectingOpenClawClient` (from `app.state.openclaw`), `app.state.client_registry`, and `default_agent`.
-5. `bridge.connect_internal_services()` — starts `TranscriberClient` only if `input_mode == "audio"`; registers the bridge in `ClientRegistry`.
-6. `bridge.health_check()` — pings each microservice; orchestrator failure is fatal, TTS failure is degraded.
-7. `bridge.run()` — launches concurrent tasks: `_client_input_loop` + transcriber `listen_loop` + silence watchdog.
+4. `JotaBridge` is instantiated with client, config, WebSocket, the singleton `ReconnectingOpenClawClient` (from `app.state.openclaw`), the singleton `ReconnectingTTSClient` (from `app.state.tts`), `app.state.client_registry`, and `default_agent`.
+5. `bridge.connect_internal_services()` — starts a `ReconnectingTranscriberClient` only if `input_mode == "audio"`; registers the bridge in `ClientRegistry`. `ReconnectingTranscriberClient.connect()` never raises — a failed initial connect just leaves it in `RECONNECTING` state for `health_check()`/the background `run()` loop to handle, it no longer aborts session setup.
+6. `bridge.health_check()` — pings each microservice; **only the orchestrator is fatal** (its failure returns `False`, closing the WebSocket with code 1011 before `ready` is ever sent). Transcriber and TTS failures are both non-fatal — the session opens normally and the client is notified via `status` messages (see "Service reconnection" below).
+7. `bridge.run()` — launches concurrent tasks: `_client_input_loop` + `transcriber.run()` (listen + background reconnect) + silence watchdog.
 
 ### JotaBridge data flow
 
@@ -215,7 +221,8 @@ The singleton `db_client = DbClient()` is imported from this module everywhere. 
 
 - Polls every 2s for transcription activity.
 - If `elapsed > config.silence_timeout_s` and no new transcription has arrived, increments an internal counter and sends `{"type":"status","service":"transcriber","state":"degraded"}` to the client.
-- If the counter reaches `config.max_silence_turns` **consecutively** (reset to 0 whenever a transcription arrives), calls `_close_all()` to terminate the session.
+- If the counter reaches `config.max_silence_turns` **consecutively** (reset to 0 whenever a transcription arrives), calls `close_all()` to terminate the session.
+- Only exits permanently when `self.transcriber.state == ConnectionState.DEGRADED` (or the transcriber was never constructed). A transient `RECONNECTING` blip — the transcriber's background reconnect loop retrying after an unexpected drop — no longer kills the watchdog; it skips silence-counting for that tick and resumes normally once the transcriber is back to `CONNECTED`. Before this fix, any drop (even a successfully-recovered one) permanently stopped silence monitoring for the rest of the session.
 
 ### Session key derivation
 
@@ -239,8 +246,23 @@ The HA REST endpoint (`/v1/chat/completions`) uses a fixed key: `agent:{default_
 | `DbClient` | SQLite (SQLModel) | Singleton; reads `ClientRecord`; caches sessions 60s via TTLCache |
 | `OpenClawClient` | WebSocket v4 | Singleton per app; multiplexed — N concurrent sessions on one connection; sends `chat.abort` on barge-in |
 | `ReconnectingOpenClawClient` | — | Wraps `OpenClawClient`; auto-reconnects with exponential backoff; exposes state (CONNECTED/RECONNECTING/DEGRADED) |
-| `TranscriberClient` | WebSocket | One instance per session (audio mode only); receives PCM Float32 16kHz |
-| `TTSClient` | WebSocket | **Created fresh per turn** (both normal and push turns), not per session; receives tokens, yields PCM16 24kHz |
+| `TranscriberClient` | WebSocket | Protocol-only, unchanged; one instance per session (audio mode only); receives PCM Float32 16kHz |
+| `ReconnectingTranscriberClient` | — | Wraps `TranscriberClient`; **one per audio session**, constructed in `connect_internal_services()`; same CONNECTED/RECONNECTING/DEGRADED state machine as the orchestrator, background-task-driven (`run()` supervises listen + reconnect for the session's lifetime) |
+| `TTSClient` | WebSocket | Protocol-only, unchanged; **created fresh per turn** (both normal and push turns), not per session; receives tokens, yields PCM16 24kHz |
+| `ReconnectingTTSClient` | — | Wraps `TTSClient`; **process-level singleton** (`app.state.tts`, one per app, shared across all sessions) since TTS has no persistent connection to hold — a lazy backoff gate checked on each new per-turn attempt instead of a background reconnect loop |
+
+### Service reconnection (`src/services/reconnection.py`)
+
+`ConnectionState` (`CONNECTED`/`RECONNECTING`/`DEGRADED`) and `ServiceStatus` (dataclass: `name`, `state`, `connected_at`, `reconnect_attempts`, `last_error`) are shared across all three reconnection wrappers — `ReconnectingOpenClawClient`, `ReconnectingTranscriberClient`, `ReconnectingTTSClient` — so the pattern reads as one system rather than three accidental variations. `to_wire_state(state)` maps a transition to the client-facing `status` wire vocabulary (`CONNECTED→"restored"`, `RECONNECTING→"reconnecting"`, `DEGRADED→"unavailable"`); callers decide *whether* a transition merits notifying (e.g. never fire "restored" for a session's very first successful connect, since nothing was ever broken), this only decides *what word* to send.
+
+- **Trigger mechanism differs by service lifetime, deliberately**: OpenClaw and Transcriber hold a real socket open continuously, so losing it is an event (`on_disconnect` callback) and recovery is a background task retrying with backoff. TTS has no socket between turns by design (`TTSClient` is reconstructed every turn) — there's nothing to hold open in the background, so `ReconnectingTTSClient.connect()` is a lazy gate: if the last failure was more recent than the current backoff window, it returns `None` immediately without even attempting a socket; otherwise it tries, and records success/failure. No `DEGRADED` terminal state and no max-duration for TTS — every eligible turn always gets a fresh attempt, capped at 60s between attempts.
+- **Client notification** — every state-change path funnels through `JotaBridge.notify_service_status(service, state)`, a thin wrapper around `client_ws.send_json({"type":"status",...})`. Never a separate ad-hoc send call site.
+  - **Transcriber**: `ReconnectingTranscriberClient.on_state_change` is wired *after* the session's initial `connect()` call (not before) to avoid a spurious `"restored"` notice on a normal first-time success.
+  - **TTS**: since the singleton is shared, `JotaBridge._maybe_notify_tts_state()` tracks a per-bridge `_tts_degraded_notified` flag and compares it against `app.state.tts.status().state` after each attempted turn, sending `status` only on an actual transition — avoids spamming a message on every turn while the breaker is open.
+  - **Orchestrator**: `ClientRegistry.broadcast_status(service, state)` — wired via `openclaw.on_state_change` in `main.py`'s lifespan, after the initial `connect()` — notifies **every** connected session, not just the one attempting a turn. Closes a gap where an idle-but-connected client only learned about a drop/recovery reactively, on its next turn attempt.
+- **Never force-closes a session**: only the orchestrator remains a fatal dependency (in `health_check()`, at session start). Transcriber/TTS failures — at start or mid-session — degrade the session, they never close the WebSocket.
+- **Settings are dedicated per service** (`TRANSCRIBER_RECONNECT_*`, `TTS_RECONNECT_*`), not shared with `ORCHESTRATOR_RECONNECT_*` — see Environment variables above.
+- **Admin observability**: `GET /admin/transcriber/status` (live reachability via `TranscriberClient.ping()`, since Transcriber has no process-level connection to report — one instance per session) and `GET /admin/tts/status` (`app.state.tts.status()` — real memory of consecutive failures, current backoff, last error), same shape as the pre-existing `GET /admin/orchestrators/{name}/status`.
 
 ### OpenClaw package (`src/services/openclaw/`)
 
