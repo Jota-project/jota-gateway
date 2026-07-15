@@ -33,6 +33,8 @@ python3 src/cli.py delete-client <client_key>
 
 ## Architecture
 
+> 📋 **Estado del proyecto:** consulta [`docs/ROADMAP.md`](docs/ROADMAP.md) para el plan vivo de remediación (40 issues `#99`–`#138`, 5 fases). La auditoría completa está en [`docs/superpowers/plans/2026-07-15-production-readiness-roadmap.md`](docs/superpowers/plans/2026-07-15-production-readiness-roadmap.md). Cuando trabajes en una issue, márcala como `[x]` en el roadmap al cerrarla.
+
 jota-gateway is a **BFF (Backend For Frontend)** — the single entry point for all clients (ESP32, web, app, Home Assistant). It has four surfaces:
 
 - **WebSocket** `/ws/stream` — full voice+text session managed by `JotaBridge`
