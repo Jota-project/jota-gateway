@@ -19,9 +19,10 @@ ESP32 / Web / App / Home Assistant
   │  OpenClaw         WebSocket v4           │
   │  jota-transcriber WebSocket              │
   │  jota-tts         WebSocket              │
-  │  jota-db          HTTP REST (solo auth)  │
   └──────────────────────────────────────────┘
 ```
+
+No hay dependencia de `jota-db` — la identidad y configuración de clientes viven en una base de datos SQLite local (`data/gateway.db`).
 
 ---
 
@@ -62,12 +63,16 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la guía completa 
 | `/admin/sessions/{id}` | GET | Detalle con eventos y latencias por turno |
 | `/admin/orchestrators/{name}/status` | GET | Estado del orquestador (CONNECTED / RECONNECTING / DEGRADED) |
 | `/admin/orchestrators/{name}/reconnect` | POST | Fuerza reconexión — responde 202 |
-| `/admin/clients` | GET | Lista clientes *(pendiente DB interna — devuelve 501)* |
-| `/admin/clients` | POST | Crear cliente *(pendiente — 501)* |
-| `/admin/clients/{id}` | GET | Detalle *(pendiente — 501)* |
-| `/admin/clients/{id}` | PATCH | Actualizar *(pendiente — 501)* |
-| `/admin/clients/{id}` | DELETE | Borrar *(pendiente — 501)* |
-| `/admin/clients/{id}/rotate-key` | POST | Rotar `client_key` *(pendiente — 501)* |
+| `/admin/transcriber/status` | GET | Reachability en vivo del transcriptor (`TranscriberClient.ping()` — no hay conexión de proceso, es uno por sesión) |
+| `/admin/tts/status` | GET | Estado del breaker de reconexión de TTS (CONNECTED / RECONNECTING, intentos, último error) |
+| `/admin/clients` | GET | Lista clientes |
+| `/admin/clients` | POST | Crear cliente (`client_key` generado o provisto) |
+| `/admin/clients/{id}` | GET | Detalle de un cliente |
+| `/admin/clients/{id}` | PATCH | Actualizar cliente (campos parciales) |
+| `/admin/clients/{id}` | DELETE | Borrar cliente |
+| `/admin/clients/{id}/rotate-key` | POST | Rotar `client_key` |
+
+Los tres endpoints `*/status` devuelven la misma forma: `{"name", "state", "connected_at", "reconnect_attempts", "last_error"}`.
 
 Auth: header `X-Admin-Token`. Sin header → 422. Token incorrecto → 401. `ADMIN_TOKEN` vacío → 503.
 
@@ -113,8 +118,7 @@ Variables en `.env` (formato `host:port` sin protocolo para todos los URLs):
 
 | Variable | Default | Descripción |
 |----------|---------|-------------|
-| `JOTA_DB_BASE_URL` | `localhost:8001` | jota-db — solo para auth de clientes |
-| `JOTA_DB_API_KEY` | — | API key para jota-db |
+| `DATABASE_URL` | `sqlite:///data/gateway.db` | Ruta a la base de datos SQLite local (identidad y configuración de clientes) |
 | `TRANSCRIBER_WS_URL` | `localhost:9000` | jota-transcriber |
 | `TTS_WS_URL` | `localhost:8005` | jota-tts |
 | `TTS_TOKEN` | `gateway` | Token de auth para jota-tts |
@@ -122,10 +126,16 @@ Variables en `.env` (formato `host:port` sin protocolo para todos los URLs):
 | `OPENCLAW_PORT` | `18789` | Puerto de OpenClaw |
 | `OPENCLAW_TOKEN` | — | Token de auth para OpenClaw (obligatorio) |
 | `ADMIN_TOKEN` | — | Token para endpoints `/admin/*`; vacío deshabilita el admin API |
-| `ORCHESTRATOR_RECONNECT_INITIAL_BACKOFF` | `1.0` | Backoff inicial en reconexión (s) |
-| `ORCHESTRATOR_RECONNECT_MAX_BACKOFF` | `60.0` | Backoff máximo en reconexión (s) |
-| `ORCHESTRATOR_RECONNECT_MAX_DURATION` | `300.0` | Tiempo hasta DEGRADED (s) |
-| `TRANSCRIBER_SILENCE_TIMEOUT_S` | `25` | Silencio máximo sin transcripción antes de degradar (s) |
+| `ORCHESTRATOR_RECONNECT_INITIAL_BACKOFF` | `1.0` | Backoff inicial en reconexión del orquestador (s) |
+| `ORCHESTRATOR_RECONNECT_MAX_BACKOFF` | `60.0` | Backoff máximo en reconexión del orquestador (s) |
+| `ORCHESTRATOR_RECONNECT_MAX_DURATION` | `300.0` | Tiempo hasta DEGRADED del orquestador (s) |
+| `TRANSCRIBER_RECONNECT_INITIAL_BACKOFF` | `1.0` | Backoff inicial en reconexión del transcriptor (s) |
+| `TRANSCRIBER_RECONNECT_MAX_BACKOFF` | `60.0` | Backoff máximo en reconexión del transcriptor (s) |
+| `TRANSCRIBER_RECONNECT_MAX_DURATION` | `300.0` | Tiempo hasta DEGRADED del transcriptor (s) |
+| `TTS_RECONNECT_INITIAL_BACKOFF` | `1.0` | Backoff inicial del breaker de TTS (s) |
+| `TTS_RECONNECT_MAX_BACKOFF` | `60.0` | Backoff máximo del breaker de TTS (s) — sin estado DEGRADED, cada turno elegible reintenta |
+
+`silence_timeout_s` y `max_silence_turns` (umbral del watchdog de silencio) son campos de configuración **por cliente** en la base de datos, no variables de entorno globales — ver `ClientRecord` en `CLAUDE.md`.
 
 ---
 
@@ -192,13 +202,13 @@ real.
 
 ## Arquitectura interna
 
-El gateway instancia un `JotaBridge` por cada sesión WebSocket. `OpenClawClient` es un singleton persistente envuelto en `ReconnectingOpenClawClient` (reconexión automática con backoff exponencial; estados CONNECTED / RECONNECTING / DEGRADED).
+El gateway instancia un `JotaBridge` por cada sesión WebSocket. Los tres servicios downstream (OpenClaw, Transcriber, TTS) tienen reconexión automática con backoff exponencial, unificada en `services/reconnection.py` (estados compartidos CONNECTED / RECONNECTING / DEGRADED). `OpenClawClient` y `ReconnectingTTSClient` son singletons de proceso; `ReconnectingTranscriberClient` es uno por sesión de audio.
 
 ```
 src/
 ├── api/
 │   ├── routes.py            WebSocket /ws/stream — handshake, ready, bridge lifecycle
-│   ├── admin_routes.py      /admin/* — observabilidad + CRUD stubs
+│   ├── admin_routes.py      /admin/* — CRUD de clientes + observabilidad (sesiones, orquestador, transcriptor, TTS)
 │   ├── openai_routes.py     /v1/models, /v1/chat/completions
 │   ├── health_routes.py     /healthz, /ready
 │   └── deps.py              get_admin_auth — dependencia de auth para admin
@@ -206,11 +216,18 @@ src/
 │   ├── config.py            Settings (pydantic-settings, .env)
 │   ├── cache.py             make_cache() — TTLCache + asyncio.Lock
 │   └── session_key.py       make_session_key() — formato canónico de session key
+├── db/
+│   ├── models.py            ClientRecord (SQLModel) — identidad y config por cliente
+│   └── database.py          get_engine() / create_db_and_tables() / get_db_session()
+├── cli.py                   CLI — add-client / list-clients / (de)activate-client / delete-client
 └── services/
     ├── bridge.py            JotaBridge — coordinador de sesión WS
-    ├── db_client.py         HTTP → jota-db (singleton, caché 60s)
-    ├── transcriber_client.py  WebSocket → jota-transcriber (por sesión)
-    ├── tts_client.py        WebSocket → jota-tts (creado por turno)
+    ├── db_client.py         DbClient — lee ClientRecord de SQLite local (singleton, caché 60s)
+    ├── reconnection.py      ConnectionState / ServiceStatus / to_wire_state() — compartido por los 3 wrappers
+    ├── transcriber_client.py       WebSocket → jota-transcriber, protocolo puro (sin reconexión)
+    ├── transcriber_reconnecting.py ReconnectingTranscriberClient — uno por sesión de audio, backoff en background
+    ├── tts_client.py                WebSocket → jota-tts, protocolo puro, creado por turno
+    ├── tts_reconnecting.py          ReconnectingTTSClient — singleton, backoff perezoso por turno
     ├── orchestration.py     call_orchestrator() — helper compartido WS+HTTP
     ├── pipeline_tracker.py  PipelineTracker — latencias por turno
     ├── session_registry.py  SessionRegistry — observabilidad de sesiones
@@ -218,6 +235,6 @@ src/
         ├── client.py        OpenClawClient — WebSocket v4, multiplexado
         ├── reconnecting.py  ReconnectingOpenClawClient — backoff + DEGRADED
         ├── dispatcher.py    FrameDispatcher — enruta frames a turn/client registry
-        ├── registry.py      TurnRegistry + ClientRegistry
+        ├── registry.py      TurnRegistry + ClientRegistry (+ broadcast_status a todas las sesiones)
         └── models.py        GatewayInfo, AgentInfo
 ```
