@@ -180,6 +180,25 @@ def test_non_streaming_orchestrator_error_returns_502(client, mock_orchestrator)
     assert r.status_code == 502, f"Esperado 502, recibido {r.status_code}: {r.text}"
 
 
+def test_non_streaming_turn_conflict_returns_409(client, mock_orchestrator):
+    """Issue #99: a rejected duplicate-session_key turn must map to HTTP 409,
+    distinguishable from a generic orchestrator failure (502)."""
+    from src.services.openclaw.registry import TURN_IN_PROGRESS_ERROR
+
+    async def _conflict_stream(*args, **kwargs):
+        yield OrchestratorEvent(type="error", content=TURN_IN_PROGRESS_ERROR)
+
+    mock_orchestrator.stream_response = _conflict_stream
+
+    r = client.post("/v1/chat/completions", json={
+        "model": "openclaw",
+        "messages": [{"role": "user", "content": "Hola"}],
+        "stream": False,
+    })
+
+    assert r.status_code == 409, f"Esperado 409, recibido {r.status_code}: {r.text}"
+
+
 def test_streaming_done_delivered_when_tracker_close_raises(client, mock_orchestrator, monkeypatch):
     """[DONE] debe llegar aunque tracker.close() lance una excepción.
 

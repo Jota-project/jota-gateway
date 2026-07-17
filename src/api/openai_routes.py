@@ -13,6 +13,7 @@ from src.core.network import is_trusted_origin, resolve_client_ip
 from src.core.session_key import make_session_key
 from src.models.schemas import Client, ClientConfig
 from src.services.db_client import db_client
+from src.services.openclaw.registry import TURN_IN_PROGRESS_ERROR
 from src.services.orchestration import call_orchestrator
 from src.services.pipeline_tracker import PipelineTracker, _NullWS
 
@@ -191,6 +192,8 @@ async def chat_completions(
         await tracker.close()
 
     if orchestrator_error:
+        if str(orchestrator_error) == TURN_IN_PROGRESS_ERROR:
+            return JSONResponse({"error": str(orchestrator_error)}, status_code=409)
         return JSONResponse({"error": str(orchestrator_error)}, status_code=502)
 
     content = "".join(tokens)
