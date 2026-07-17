@@ -1,3 +1,10 @@
+## [1.14.2](https://github.com/Jota-project/jota-gateway/compare/v1.14.1...v1.14.2) (2026-07-17)
+
+
+### Bug Fixes
+
+* reject concurrent same-session_key turns (issue [#99](https://github.com/Jota-project/jota-gateway/issues/99)) ([#140](https://github.com/Jota-project/jota-gateway/issues/140)) ([a76cf15](https://github.com/Jota-project/jota-gateway/commit/a76cf154f3dc75f572f91ed84860c5583919e4f3))
+
 ## [1.14.1](https://github.com/Jota-project/jota-gateway/compare/v1.14.0...v1.14.1) (2026-07-15)
 
 
