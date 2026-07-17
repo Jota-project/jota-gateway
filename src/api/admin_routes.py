@@ -83,7 +83,6 @@ def create_client(
         max_silence_turns=body.max_silence_turns,
         push_enabled=body.push_enabled,
         tool_calls_enabled=body.tool_calls_enabled,
-        system_prompt_extra=body.system_prompt_extra,
     )
     session.add(record)
     session.commit()

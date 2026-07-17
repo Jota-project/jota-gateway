@@ -32,7 +32,7 @@ def test_chat_completions_uses_correct_session_key(client, mock_registry, mock_o
     from src.core.session_key import make_session_key
     captured = {}
 
-    async def _stream(text, user_id, model_id=None, system_prompt_extra=None, session_key=None):
+    async def _stream(text, user_id, model_id=None, session_key=None):
         captured["session_key"] = session_key
         yield OrchestratorEvent(type="token", content="ok")
         yield OrchestratorEvent(type="status", content="done")
@@ -293,7 +293,7 @@ def test_chat_completions_with_valid_key_uses_real_client_session_key(client_unt
     from src.core.session_key import make_session_key
     captured = {}
 
-    async def _stream(text, user_id, model_id=None, system_prompt_extra=None, session_key=None):
+    async def _stream(text, user_id, model_id=None, session_key=None):
         captured["session_key"] = session_key
         captured["user_id"] = user_id
         yield OrchestratorEvent(type="token", content="ok")

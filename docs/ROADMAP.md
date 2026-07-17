@@ -56,7 +56,7 @@ El gateway funciona correctamente en **happy path** (sesión única + backend sa
 **Acceptance gate:** cero issues 🔴 abiertas, `pytest` verde, suite e2e sin regresiones, ningún log contiene `client_key` completo.
 
 - [x] **#99** 🔴 `[001]` — `TurnRegistry` concurrent same-session_key race corrupts turns — **S** — *race en `register()` cuando dos `stream_response` comparten `session_key`* — [PR #140](https://github.com/Jota-project/jota-gateway/pull/140)
-- [ ] **#100** 🔴 `[002]` — `system_prompt_extra` silently dropped before reaching OpenClaw — **M** — ⚠️ *requiere decisión: ¿concatenar al mensaje, extender `chat.send`, o eliminar el campo?*
+- [x] **#100** 🔴 `[002]` — `system_prompt_extra` silently dropped before reaching OpenClaw — **M** — *decisión: eliminar el campo por completo (no había hook viable en el wire protocol de OpenClaw)*
 - [ ] **#101** 🔴 `[003]` — Pre-ready WebSocket failure paths leak transcriber, bridge, session state — **M**
 - [ ] **#102** 🔴 `[004]` — `ReconnectingOpenClawClient` has no circuit-breaker after DEGRADED — **S** — *regresión Bug 10*
 - [ ] **#103** 🔴 `[005]` — `OpenClawClient.connect()` does not close prior socket/tasks on reconnect — **S**

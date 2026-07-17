@@ -111,10 +111,8 @@ async def chat_completions(
 
     if caller.client is not None:
         client_id = caller.client.id
-        system_prompt_extra = caller.config.system_prompt_extra
     else:
         client_id = "ha"
-        system_prompt_extra = None
 
     session_key = make_session_key(default_agent, client_id)
 
@@ -137,7 +135,6 @@ async def chat_completions(
                 try:
                     await call_orchestrator(
                         orchestrator, text, session_key, client_id,
-                        system_prompt_extra=system_prompt_extra,
                         tracker=tracker, on_token=_on_token,
                     )
                 except RuntimeError as e:
@@ -182,7 +179,6 @@ async def chat_completions(
     try:
         await call_orchestrator(
             orchestrator, text, session_key, client_id,
-            system_prompt_extra=system_prompt_extra,
             tracker=tracker, on_token=_on_token,
         )
     except RuntimeError as e:

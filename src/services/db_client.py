@@ -71,7 +71,6 @@ class DbClient:
             tts_speed=record.tts_speed,
             barge_in_enabled=record.barge_in_enabled,
             barge_in_min_chars=record.barge_in_min_chars,
-            system_prompt_extra=record.system_prompt_extra,
             silence_timeout_s=record.silence_timeout_s,
             max_silence_turns=record.max_silence_turns,
             push_enabled=record.push_enabled,
