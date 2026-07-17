@@ -8,7 +8,7 @@ import pytest
 
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.dispatcher import FrameDispatcher
-from src.services.openclaw.registry import TurnRegistry, ClientRegistry
+from src.services.openclaw.registry import TurnRegistry, ClientRegistry, TURN_IN_PROGRESS_ERROR
 
 HELLO_OK_PAYLOAD = {
     "type": "hello-ok", "protocol": 4,
@@ -405,4 +405,78 @@ async def test_stream_response_yields_tool_call_events():
     assert tool_events[1].phase == "result"
     assert tool_events[1].result == "file.txt"
     assert tool_events[1].is_error is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_stream_response_same_session_key_rejects_one():
+    """Issue #99: two concurrent stream_response() calls sharing a session_key
+    must not corrupt each other's queue. Reproduced via asyncio.gather, per the
+    issue's repro steps — exactly one call is rejected immediately with the
+    stable TURN_IN_PROGRESS_ERROR content, the other completes normally, and
+    neither hangs."""
+    fake_ws = SmartFakeWS({"agent:main:client-a": ["Hola ", "mundo"]})
+    client = await connected_client(fake_ws)
+
+    async def _consume():
+        events = []
+        async for event in client.stream_response(
+            "hola", "client-a", session_key="agent:main:client-a"
+        ):
+            events.append(event)
+        return events
+
+    results = await asyncio.wait_for(
+        asyncio.gather(_consume(), _consume()),
+        timeout=1.0,
+    )
+
+    rejected = [r for r in results if r[0].type == "error"]
+    succeeded = [r for r in results if r[0].type != "error"]
+    assert len(rejected) == 1, f"expected exactly one rejected call, got: {results}"
+    assert len(succeeded) == 1, f"expected exactly one successful call, got: {results}"
+
+    assert len(rejected[0]) == 1  # rejected call yields exactly the error event, nothing else
+    assert rejected[0][0].content == TURN_IN_PROGRESS_ERROR
+
+    tokens = [e.content for e in succeeded[0] if e.type == "token"]
+    assert tokens == ["Hola ", "mundo"]
+    assert succeeded[0][-1].type == "status"
+    assert succeeded[0][-1].content == "done"
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_stream_response_different_session_keys_both_succeed():
+    """Regression guard: rejecting duplicate session_keys must not affect
+    unrelated sessions multiplexed on the same connection — both complete
+    normally when run concurrently via asyncio.gather."""
+    fake_ws = SmartFakeWS({
+        "agent:main:client-a": ["Hola ", "mundo"],
+        "agent:main:client-b": ["Adios ", "mundo"],
+    })
+    client = await connected_client(fake_ws)
+
+    async def _consume(user_id, session_key):
+        events = []
+        async for event in client.stream_response("hola", user_id, session_key=session_key):
+            events.append(event)
+        return events
+
+    events_a, events_b = await asyncio.wait_for(
+        asyncio.gather(
+            _consume("client-a", "agent:main:client-a"),
+            _consume("client-b", "agent:main:client-b"),
+        ),
+        timeout=1.0,
+    )
+
+    tokens_a = [e.content for e in events_a if e.type == "token"]
+    tokens_b = [e.content for e in events_b if e.type == "token"]
+    assert tokens_a == ["Hola ", "mundo"]
+    assert tokens_b == ["Adios ", "mundo"]
+    assert events_a[-1].content == "done"
+    assert events_b[-1].content == "done"
+
     await client.close()
