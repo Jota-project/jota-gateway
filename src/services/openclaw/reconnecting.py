@@ -40,6 +40,7 @@ class ReconnectingOpenClawClient:
         self._last_error: Optional[str] = None
         self._reconnect_task: Optional[asyncio.Task] = None
         self._reconnect_job_id: Optional[str] = None
+        self._reconnect_exhausted: bool = False
         self.on_state_change = None
         # Register disconnect callback so the inner client notifies us on unexpected drops.
         self._client.on_disconnect = self._handle_disconnect
@@ -54,6 +55,7 @@ class ReconnectingOpenClawClient:
             self._connected_at = datetime.now(timezone.utc)
             self._reconnect_attempts = 0
             self._last_error = None
+            self._reconnect_exhausted = False
         except Exception as e:
             self._last_error = str(e)
             logger.error("[%s] initial connect failed: %s — starting retry", self._name, e)
@@ -124,9 +126,12 @@ class ReconnectingOpenClawClient:
         in flight (e.g. from the background loop after an unexpected drop)
         instead of racing it with a second concurrent connect() — returns
         that attempt's job id instead of starting a duplicate one."""
+        self._reconnect_exhausted = False
         return self._ensure_reconnecting()
 
     def _ensure_reconnecting(self) -> str:
+        if self._reconnect_exhausted:
+            return self._reconnect_job_id
         if not self._reconnect_task or self._reconnect_task.done():
             self._reconnect_job_id = str(uuid.uuid4())
             self._set_state(ConnectionState.RECONNECTING)
@@ -156,6 +161,7 @@ class ReconnectingOpenClawClient:
 
             if time.monotonic() - start >= self._max_duration:
                 self._set_state(ConnectionState.DEGRADED)
+                self._reconnect_exhausted = True
                 logger.warning("[%s] reconnect exhausted — DEGRADED.", self._name)
                 return
 

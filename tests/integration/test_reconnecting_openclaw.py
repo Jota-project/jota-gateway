@@ -89,6 +89,84 @@ async def test_reconnect_exhausted_enters_degraded():
 
 
 @pytest.mark.asyncio
+async def test_circuit_breaker_stays_open_after_exhaustion():
+    """Issue #102: once the reconnect loop exhausts max_duration and enters
+    DEGRADED, further probes (ping()) must not relaunch a fresh 300s reconnect
+    window — the circuit stays open until an explicit trigger_reconnect() or
+    a successful connect()."""
+    inner = AsyncMock(spec=OpenClawClient)
+    inner.on_disconnect = None
+    inner.gateway_info = None
+    inner.connect.side_effect = RuntimeError("refused")
+    roc = ReconnectingOpenClawClient(inner, "test", max_duration=0.1, initial_backoff=0.05)
+    await roc.connect()  # fails → starts reconnect loop
+    await asyncio.sleep(0.3)
+    assert roc.state == ConnectionState.DEGRADED
+
+    calls_at_degraded = inner.connect.call_count
+    exhausted_task = roc._reconnect_task
+
+    for _ in range(100):
+        await roc.ping()
+
+    assert roc.state == ConnectionState.DEGRADED
+    assert inner.connect.call_count == calls_at_degraded
+    assert roc._reconnect_task is exhausted_task
+
+
+@pytest.mark.asyncio
+async def test_circuit_breaker_resets_on_manual_reconnect():
+    """Issue #102: an admin-triggered trigger_reconnect() must explicitly
+    reset _reconnect_exhausted, even though the circuit is open, so the
+    admin-facing reconnect endpoint always gets a fresh attempt."""
+    inner = AsyncMock(spec=OpenClawClient)
+    inner.on_disconnect = None
+    inner.gateway_info = None
+    inner.connect.side_effect = RuntimeError("refused")
+    roc = ReconnectingOpenClawClient(inner, "test", max_duration=0.1, initial_backoff=0.05)
+    await roc.connect()  # fails → starts reconnect loop
+    await asyncio.sleep(0.3)
+    assert roc.state == ConnectionState.DEGRADED
+    calls_before = inner.connect.call_count
+
+    inner.connect.side_effect = None
+    inner.connect.return_value = GATEWAY_INFO
+
+    job_id = roc.trigger_reconnect()
+
+    assert isinstance(job_id, str) and job_id
+    assert roc.state == ConnectionState.RECONNECTING
+    assert roc._reconnect_exhausted is False
+    await asyncio.sleep(0.05)
+    assert roc.state == ConnectionState.CONNECTED
+    assert inner.connect.call_count > calls_before
+
+
+@pytest.mark.asyncio
+async def test_circuit_breaker_resets_on_implicit_connect():
+    """Issue #102: a direct, successful connect() call (e.g. a caller that
+    retries connect() itself after observing DEGRADED) must also clear
+    _reconnect_exhausted — not just the admin-triggered path."""
+    inner = AsyncMock(spec=OpenClawClient)
+    inner.on_disconnect = None
+    inner.gateway_info = None
+    inner.connect.side_effect = RuntimeError("refused")
+    roc = ReconnectingOpenClawClient(inner, "test", max_duration=0.1, initial_backoff=0.05)
+    await roc.connect()  # fails → starts reconnect loop
+    await asyncio.sleep(0.3)
+    assert roc.state == ConnectionState.DEGRADED
+    assert roc._reconnect_exhausted is True
+
+    inner.connect.side_effect = None
+    inner.connect.return_value = GATEWAY_INFO
+
+    await roc.connect()
+
+    assert roc.state == ConnectionState.CONNECTED
+    assert roc._reconnect_exhausted is False
+
+
+@pytest.mark.asyncio
 async def test_trigger_reconnect_returns_job_id_and_reconnects():
     """Issue #103: the admin reconnect endpoint must not block on a full
     connect() — trigger_reconnect() hands back a job id immediately while the
