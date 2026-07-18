@@ -262,8 +262,8 @@ async def post_orchestrator_reconnect(name: str, request: Request) -> dict:
     openclaw = request.app.state.openclaw
     if name != openclaw.get_name():
         raise HTTPException(status_code=404, detail=f"Orchestrator '{name}' not registered")
-    await openclaw.connect()
-    return {"accepted": True}
+    job_id = openclaw.trigger_reconnect()
+    return {"accepted": True, "job_id": job_id}
 
 
 # ---------------------------------------------------------------------------

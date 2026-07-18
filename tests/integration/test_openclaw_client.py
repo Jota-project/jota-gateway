@@ -448,6 +448,69 @@ async def test_concurrent_stream_response_same_session_key_rejects_one():
 
 
 @pytest.mark.asyncio
+async def test_connect_twice_closes_and_cancels_previous_connection():
+    """Issue #103: connect() must tear down the previous ws/listener/keepalive
+    before establishing a new one. Otherwise the old listener keeps dispatching
+    frames from the old socket to the shared dispatcher, causing false
+    error_all events on healthy sessions, and the old socket/keepalive leak."""
+    fake_ws1 = SmartFakeWS({"agent:main:client-a": ["Hola"]})
+    client = await connected_client(fake_ws1)
+    old_listener_task = client._listener_task
+    old_keepalive_task = client._keepalive_task
+    assert not old_listener_task.done()
+
+    disconnected = []
+    client.on_disconnect = lambda: disconnected.append(True)
+
+    fake_ws2 = SmartFakeWS({"agent:main:client-a": ["Hola"]})
+    await fake_ws2.start()
+    with patch("websockets.connect", return_value=fake_ws2):
+        await client.connect()
+
+    assert fake_ws1.closed, "previous socket must be closed on reconnect"
+    assert old_listener_task.done(), "previous listener task must be cancelled"
+    assert old_keepalive_task.done(), "previous keepalive task must be cancelled"
+    assert client._listener_task is not old_listener_task
+    assert not client._listener_task.done()
+
+    # A forced reconnect legitimately replaces a healthy connection — cancelling
+    # the old listener must not be mistaken for an unexpected drop, or
+    # ReconnectingOpenClawClient would flip back into RECONNECTING right after
+    # a successful forced reconnect.
+    await asyncio.sleep(0.05)
+    assert disconnected == []
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_connect_calls_are_serialized():
+    """Two connect() calls racing (e.g. an admin-triggered reconnect racing the
+    background reconnect loop) must not interleave their handshakes — a
+    _connect_lock serializes them so exactly one final ws/listener survives,
+    with the other cleanly closed rather than orphaned."""
+    client = make_client(SmartFakeWS())
+    fake_ws_a = SmartFakeWS({"agent:main:client-a": ["Hola"]})
+    fake_ws_b = SmartFakeWS({"agent:main:client-a": ["Hola"]})
+    await fake_ws_a.start()
+    await fake_ws_b.start()
+
+    with patch("websockets.connect", side_effect=[fake_ws_a, fake_ws_b]):
+        await asyncio.wait_for(
+            asyncio.gather(client.connect(), client.connect()),
+            timeout=1.0,
+        )
+
+    assert [fake_ws_a.closed, fake_ws_b.closed].count(True) == 1, (
+        "exactly one of the two sockets must be closed as the loser of the race"
+    )
+    assert client._ws in (fake_ws_a, fake_ws_b)
+    assert not client._listener_task.done()
+
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_stream_response_different_session_keys_both_succeed():
     """Regression guard: rejecting duplicate session_keys must not affect
     unrelated sessions multiplexed on the same connection — both complete
