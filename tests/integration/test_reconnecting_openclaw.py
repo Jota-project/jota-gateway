@@ -86,3 +86,53 @@ async def test_reconnect_exhausted_enters_degraded():
     await roc.connect()  # this will fail → starts reconnect loop
     await asyncio.sleep(0.3)
     assert roc.state == ConnectionState.DEGRADED
+
+
+@pytest.mark.asyncio
+async def test_trigger_reconnect_returns_job_id_and_reconnects():
+    """Issue #103: the admin reconnect endpoint must not block on a full
+    connect() — trigger_reconnect() hands back a job id immediately while the
+    actual reconnect runs in the background reconnect loop."""
+    inner = make_mock_client(GATEWAY_INFO)
+    roc = ReconnectingOpenClawClient(inner, "test")
+
+    job_id = roc.trigger_reconnect()
+
+    assert isinstance(job_id, str) and job_id
+    assert roc.state == ConnectionState.RECONNECTING
+    await asyncio.sleep(0.05)
+    assert roc.state == ConnectionState.CONNECTED
+    assert inner.connect.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_trigger_reconnect_coalesces_with_in_flight_reconnect():
+    """An admin-triggered reconnect racing the background reconnect loop
+    (already in flight, e.g. after an unexpected disconnect) must coalesce
+    onto the same job — not spawn a second concurrent connect() attempt."""
+    connect_started = asyncio.Event()
+    release_connect = asyncio.Event()
+
+    inner = AsyncMock(spec=OpenClawClient)
+    inner.on_disconnect = None
+    inner.gateway_info = None
+
+    async def slow_connect():
+        connect_started.set()
+        await release_connect.wait()
+        return GATEWAY_INFO
+
+    inner.connect.side_effect = slow_connect
+
+    roc = ReconnectingOpenClawClient(inner, "test")
+    first_job_id = roc.trigger_reconnect()
+    await connect_started.wait()  # background loop is now mid-attempt
+
+    second_job_id = roc.trigger_reconnect()
+
+    assert second_job_id == first_job_id
+    assert inner.connect.call_count == 1  # no duplicate attempt spawned
+
+    release_connect.set()
+    await asyncio.sleep(0.05)
+    assert roc.state == ConnectionState.CONNECTED

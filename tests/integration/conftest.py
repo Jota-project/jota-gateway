@@ -114,6 +114,7 @@ def make_mock_orchestrator(tokens: list[str] = None) -> OrchestratorProtocol:
     mock.connect = AsyncMock()
     mock.close = AsyncMock()
     mock.ping = AsyncMock(return_value=True)
+    mock.trigger_reconnect = MagicMock(return_value="mock-job-id")
     mock.stream_response = _stream
     mock.gateway_info = _make_default_gateway_info()
     mock._name = "openclaw"

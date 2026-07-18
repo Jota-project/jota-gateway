@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
 
@@ -38,6 +39,7 @@ class ReconnectingOpenClawClient:
         self._reconnect_attempts: int = 0
         self._last_error: Optional[str] = None
         self._reconnect_task: Optional[asyncio.Task] = None
+        self._reconnect_job_id: Optional[str] = None
         self.on_state_change = None
         # Register disconnect callback so the inner client notifies us on unexpected drops.
         self._client.on_disconnect = self._handle_disconnect
@@ -116,10 +118,20 @@ class ReconnectingOpenClawClient:
     def _handle_disconnect(self) -> None:
         self._ensure_reconnecting()
 
-    def _ensure_reconnecting(self) -> None:
+    def trigger_reconnect(self) -> str:
+        """Admin-facing entry point: force/coalesce a reconnect attempt without
+        blocking on the socket handshake. Coalesces onto any reconnect already
+        in flight (e.g. from the background loop after an unexpected drop)
+        instead of racing it with a second concurrent connect() — returns
+        that attempt's job id instead of starting a duplicate one."""
+        return self._ensure_reconnecting()
+
+    def _ensure_reconnecting(self) -> str:
         if not self._reconnect_task or self._reconnect_task.done():
+            self._reconnect_job_id = str(uuid.uuid4())
             self._set_state(ConnectionState.RECONNECTING)
             self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+        return self._reconnect_job_id
 
     async def _reconnect_loop(self) -> None:
         start = time.monotonic()

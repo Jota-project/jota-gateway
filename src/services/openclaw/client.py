@@ -38,6 +38,7 @@ class OpenClawClient:
         self._ws: Optional[ClientConnection] = None
         self._listener_task: Optional[asyncio.Task] = None
         self._keepalive_task: Optional[asyncio.Task] = None
+        self._connect_lock = asyncio.Lock()
         self._health_futures: dict[str, asyncio.Future] = {}
         self.gateway_info: Optional[GatewayInfo] = None
         # Called only on unexpected disconnect (not on clean close()).
@@ -45,6 +46,11 @@ class OpenClawClient:
         self.on_disconnect: Optional[Callable[[], None]] = None
 
     async def connect(self) -> GatewayInfo:
+        async with self._connect_lock:
+            await self._cancel_and_close()
+            return await self._do_connect()
+
+    async def _do_connect(self) -> GatewayInfo:
         self._ws = await websockets.connect(self._uri)
         conn_err: Optional[Exception] = None
         try:
@@ -120,6 +126,36 @@ class OpenClawClient:
         self._listener_task = None
         if self._ws:
             await self._ws.close()
+            self._ws = None
+
+    async def _cancel_and_close(self) -> None:
+        """Best-effort teardown of a previous connection before connect()
+        establishes a new one — cancelling the old listener before the new
+        socket exists prevents it from ever racing the new handshake for
+        frames (issue #103).
+
+        Note: _listen()/_keepalive_loop() swallow their own CancelledError
+        and return normally (see _listen()'s docstring) — so if the caller
+        of connect() (e.g. the background _reconnect_loop task) is itself
+        cancelled while suspended on `await task` here, asyncio can absorb
+        that outer cancellation rather than re-raising it, since the awaited
+        task completes without an exception. Bounded impact: the caller
+        simply keeps running until this teardown finishes, it isn't lost.
+        """
+        for task in (self._keepalive_task, self._listener_task):
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (Exception, asyncio.CancelledError):
+                    pass
+        self._keepalive_task = None
+        self._listener_task = None
+        if self._ws:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
             self._ws = None
 
     async def ping(self) -> bool:
