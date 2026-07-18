@@ -1,3 +1,11 @@
+## [1.14.6](https://github.com/Jota-project/jota-gateway/compare/v1.14.5...v1.14.6) (2026-07-18)
+
+
+### Bug Fixes
+
+* add circuit breaker to ReconnectingOpenClawClient (issue [#102](https://github.com/Jota-project/jota-gateway/issues/102)) ([5d9b232](https://github.com/Jota-project/jota-gateway/commit/5d9b2321d5c986545d57738e493ed314a9bf6d0d))
+* circuit breaker for ReconnectingOpenClawClient after DEGRADED ([#146](https://github.com/Jota-project/jota-gateway/issues/146)) ([2bdb422](https://github.com/Jota-project/jota-gateway/commit/2bdb422d0ca76b6c3a7c0781a67135e5e08f6e3e)), closes [#103](https://github.com/Jota-project/jota-gateway/issues/103) [#102](https://github.com/Jota-project/jota-gateway/issues/102)
+
 ## [1.14.5](https://github.com/Jota-project/jota-gateway/compare/v1.14.4...v1.14.5) (2026-07-18)
 
 
