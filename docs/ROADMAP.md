@@ -60,7 +60,7 @@ El gateway funciona correctamente en **happy path** (sesión única + backend sa
 - [x] **#101** 🔴 `[003]` — Pre-ready WebSocket failure paths leak transcriber, bridge, session state — **M** — cerrado por PR (rama `fix/101-ws-setup-failure-leaks`)
 - [x] **#102** 🔴 `[004]` — `ReconnectingOpenClawClient` has no circuit-breaker after DEGRADED — **S** — *regresión Bug 10* — cerrado por PR (rama `fix/102-reconnect-circuit-breaker`)
 - [x] **#103** 🔴 `[005]` — `OpenClawClient.connect()` does not close prior socket/tasks on reconnect — **S** — cerrado por PR (rama `fix/103-openclaw-connect-leak`)
-- [ ] **#104** 🔴 `[006]` — `_last_error` not cleared after successful reconnect — **XS** — *regresión auditoría junio*
+- [x] **#104** 🔴 `[006]` — `_last_error` not cleared after successful reconnect — **XS** — *regresión auditoría junio* — cerrado por PR (rama `fix/104-last-error-reset`)
 
 **Revisión post-cierre (code review, rama `fix/phase1-review-followups`):** #99/#101/#103 tenían bugs reales sin tests que los cubrieran, encontrados releyendo el código ya mergeado (no solo el diff original):
 - **#101** — `close_all()` ponía `self._closed = True` *antes* del teardown real; si la primera llamada era cancelada a mitad, la red de seguridad de `routes.py` (añadida por el propio #101) se volvía un no-op permanente y `tracker.close()` nunca corría. Fix: `_closed` solo se marca al completar el teardown, todo el cuerpo serializado por un `_close_lock`.
