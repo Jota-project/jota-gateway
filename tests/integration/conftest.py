@@ -94,7 +94,11 @@ def _make_default_gateway_info() -> GatewayInfo:
         server_version="test",
         conn_id="test-conn",
         default_agent_id="main",
-        agents={"main": AgentInfo(agent_id="main", name="Main", is_default=True)},
+        agents={
+            "main": AgentInfo(agent_id="main", name="Main", is_default=True),
+            "a": AgentInfo(agent_id="a", name="Agent A", is_default=False),
+            "openclaw": AgentInfo(agent_id="openclaw", name="OpenClaw", is_default=False),
+        },
         tick_interval_ms=15000,
         max_payload=26214400,
     )
