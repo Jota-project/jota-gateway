@@ -273,7 +273,7 @@ async def post_orchestrator_reconnect(name: str, request: Request) -> dict:
 @router.get("/transcriber/status")
 async def get_transcriber_status() -> dict:
     """Transcriber has no process-level connection (one instance per audio
-    session) — this reports live reachability via /health, wrapped in the
+    session) — this reports live readiness via /ready, wrapped in the
     same shape as the other two status endpoints for consistency."""
     reachable = await TranscriberClient.ping(settings.TRANSCRIBER_WS_URL)
     state = ConnectionState.CONNECTED if reachable else ConnectionState.DEGRADED

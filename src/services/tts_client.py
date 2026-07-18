@@ -128,7 +128,11 @@ class TTSClient:
 
     @staticmethod
     async def ping(url: str) -> bool:
-        """Return True if the TTS /health endpoint responds with 2xx.
+        """Return True if the TTS /ready endpoint responds with 2xx.
+
+        Unlike /health (pure liveness, always 200 if the process is up),
+        /ready reflects real engine readiness (503 "not_ready" while a TTS
+        engine isn't loaded) — see issue #101.
 
         Expects url as host:port (no protocol, no path).
         Empty URLs return False.
@@ -137,7 +141,7 @@ class TTSClient:
             return False
         try:
             async with httpx.AsyncClient() as client:
-                r = await client.get(f"http://{url}/health", timeout=5.0)
+                r = await client.get(f"http://{url}/ready", timeout=5.0)
                 return r.is_success
         except Exception:
             return False

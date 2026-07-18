@@ -123,7 +123,11 @@ class TranscriberClient:
 
     @staticmethod
     async def ping(url: str) -> bool:
-        """Return True if the transcriber HTTP /health responds with 2xx.
+        """Return True if the transcriber HTTP /ready responds with 2xx.
+
+        Unlike /health (pure liveness, always 200 if the process is up),
+        /ready reflects real capacity (503 "busy" when GPU/inference is
+        saturated) — see issue #101.
 
         Expects url as host:port (no protocol).
         """
@@ -131,7 +135,7 @@ class TranscriberClient:
             return False
         try:
             async with httpx.AsyncClient() as client:
-                r = await client.get(f"http://{url}/health", timeout=5.0)
+                r = await client.get(f"http://{url}/ready", timeout=5.0)
                 return r.is_success
         except Exception:
             return False
