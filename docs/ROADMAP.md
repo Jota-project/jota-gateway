@@ -68,13 +68,22 @@ El gateway funciona correctamente en **happy path** (sesión única + backend sa
 - **#103** — `_listen()` no llamaba a `error_all()` en su rama de cancelación (solo en la de excepción real), así que cada reconexión huerfanizaba cualquier turn en vuelo para siempre (sin timeout en la cadena) y bloqueaba el `session_key` con `TurnInProgress`. Fix: `error_all()` también en la rama de cancelación (sin disparar `on_disconnect`).
 - **#99** — `call_orchestrator()` hacía `raise` dentro del `async for`, abandonando el generador de `stream_response()` sin cerrarlo — su `finally: unregister()` quedaba diferido al GC. Fix: `contextlib.aclosing()` en `call_orchestrator` + reordenar `_finished = True` para que se fije *antes* del yield terminal (si no, cerrar el generador tras un evento terminal disparaba un `chat.abort` espurio).
 
+**Segunda revisión post-cierre (2026-07-18, cubriendo #102/#104 + pase general sobre el resto):** 10 ángulos de review en paralelo + verificación manual. #102 y #104 en sí mismos están limpios (374 tests verdes, invariantes documentadas en CLAUDE.md se sostienen). El pase general encontró 4 issues nuevas, ninguna introducida por #102/#104:
+- [x] **#149** 🔴 — Watchdog de silencio cierra sesiones sanas justo tras reconectar el transcriber (`_last_transcription_at` no se resetea, `elapsed` cuenta desde antes del corte) — contradice el "resumes normally" documentado para el fix de la Fase 1 anterior.
+- [x] **#150** 🟠 — `ReconnectingOpenClawClient.stream_response()` no envuelve su generador interno en `aclosing()` — el fix de #99/#147 solo cierra el wrapper, no el generador real de `OpenClawClient` que tiene el `finally: unregister()`. Reintroduce la race de TurnRegistry un nivel más adentro, en cada evento `error`.
+- [ ] **#151** 🟡 — `agents.list` transitorio durante una reconexión en background deja el roster de agentes vacío sin fallback al último conocido — no se arregla ahora, queda en cola.
+- [ ] **#152** ⚪ — `ReconnectingTTSClient` muta `_backoff`/`_last_error`/`state` sin lock entre turnos concurrentes (singleton compartido por todas las sesiones) — no se arregla ahora, queda en cola.
+
+Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama `fix/149-150-phase1-review-followups-2`) — incluye además la reparación de dos tests del watchdog (`test_watchdog_resets_count_when_transcription_arrives`, `test_watchdog_pauses_but_does_not_exit_when_reconnecting`) que parcheaban `asyncio.sleep` de forma global y por tanto nunca ejercitaban de verdad el loop del watchdog (confirmado rompiendo a propósito el manejo de RECONNECTING: seguían en verde). #151/#152 quedan documentadas para priorizar más adelante — refuerzan la deuda ya trackeada en #126 (los 3 wrappers de reconexión duplican lógica sin base compartida).
+
 ### 🟠 Fase 2 — Seguridad & auth (semana 3)
 
 **Objetivo:** cerrar los huecos de seguridad y autorización.
 **Release target:** 1.16.0.
 **Acceptance gate:** pentest manual pasa, `/v1/*` rechaza untrusted sin bearer, `/admin/*` rechaza sin token, cero secrets en logs (verificado con grep sobre la salida de una sesión).
+**Estrategia de rama (decisión 2026-07-18):** a diferencia de Fase 1 (cada issue directa a `main`), Fase 2 usa una rama larga `phase/2-security` creada desde `main` (una vez mergeado PR #153). Cada issue (#105–#109) se desarrolla en su propia rama `fix/XXX-...`, mergeada a `phase/2-security` vía PR individual. Al cerrar las 5 issues, un PR único `phase/2-security` → `main` cierra la fase completa.
 
-- [ ] **#105** 🟠 `[007]` — `default_agent`/`allowed_agents` persisted but never enforced — **M** — ⚠️ *requiere decisión: semántica de `None` vs `[]`*
+- [ ] **#105** 🟠 `[007]` — `default_agent`/`allowed_agents` persisted but never enforced — **M** — semántica decidida: `None`=sin restricción, `[]`=denegado, `["x"]`=solo `x`
 - [ ] **#106** 🟠 `[008]` — Full `client_key` written to logs — **XS**
 - [ ] **#107** 🟠 `[009]` — Cache invalidation race + thread-safety — **M**
 - [ ] **#108** 🟠 `[010]` — `barge_in_enabled=False` ignored by the bridge — **XS**
@@ -203,7 +212,7 @@ Estos son enhancements identificados durante la auditoría y operación. **No es
 Antes de implementar las issues marcadas con ⚠️, hay que resolver:
 
 1. **`system_prompt_extra` (#100)** — ¿concatenar al mensaje con delimitador (`\n\n[Contexto del cliente]: {extra}`), extender `chat.send` con `systemPrompt`, o **eliminar** el campo? *Rec:* eliminar + migración.
-2. **`allowed_agents` semántica (#105)** — ¿`None` = sin restricción, `[]` = ningún agente permitido, `["x"]` = solo `x`? *Rec:* `None` = sin restricción, `[]` = denegado.
+2. ~~**`allowed_agents` semántica (#105)**~~ — **Decidido (2026-07-18):** `None` = sin restricción, `[]` = denegado, `["x"]` = solo `x`.
 3. **Concurrencia por `session_key` (#99)** — ¿`409 Conflict` en el segundo, o serialización con espera? *Rec:* 409 (casa con el contrato per-session de OpenClaw).
 4. **`ready.capabilities` (#114)** — ¿"requested" (actual) o "live availability"? *Rec:* añadir `live_capabilities` y mantener `capabilities` como requested.
 5. **Push durante normal turn (#112)** — ¿suprimir `agent.start/end` durante normal turn (más simple) o soportar concurrencia con IDs distintos? *Rec:* suprimir.
