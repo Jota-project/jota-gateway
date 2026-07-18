@@ -99,26 +99,26 @@ async def test_watchdog_resets_count_when_transcription_arrives():
 
     bridge.close_all = _fake_close
 
-    call_count = 0
+    ticks = {"n": 0}
 
     async def _controlled_sleep(n):
-        nonlocal call_count
-        call_count += 1
+        ticks["n"] += 1
         # Tras el primer ciclo (1 silencio), simular que llega una transcripción
-        if call_count == 2:
+        if ticks["n"] == 2:
             transcriber._last_transcription_at = time.monotonic()
+        elif ticks["n"] == 4:
+            from src.services.reconnection import ConnectionState
+            transcriber.state = ConnectionState.DEGRADED  # stop the loop cleanly
 
     with patch("src.services.bridge.asyncio.sleep", new=_controlled_sleep):
-        # Con max_silence_turns=2, si el conteo se resetea debería necesitar 2 ciclos más
-        # Dejamos correr suficiente para que si no se resetea ya habría cerrado
-        task = asyncio.create_task(bridge._transcription_watchdog())
-        for _ in range(6):
-            await asyncio.sleep(0)
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        # NOTE: must directly `await` the watchdog coroutine, not wrap it in
+        # `asyncio.create_task` + an outer polling loop — patching
+        # `asyncio.sleep` globally means a non-suspending mock never actually
+        # yields control back to the scheduler, so a separately-created task
+        # never gets to run at all (verified: deliberately breaking the
+        # watchdog's RECONNECTING handling didn't fail the old version of this
+        # test). Direct await drives the loop for real.
+        await asyncio.wait_for(bridge._transcription_watchdog(), timeout=2.0)
 
     assert not close_called, "No debería haber cerrado — el contador se reinició"
 
@@ -131,7 +131,7 @@ async def test_watchdog_pauses_but_does_not_exit_when_reconnecting():
     config = ClientConfig(silence_timeout_s=1, max_silence_turns=2)
     bridge, ws, transcriber = _make_bridge(config=config)
     bridge._first_audio_at = time.monotonic() - 2
-    transcriber._last_transcription_at = None
+    transcriber._last_transcription_at = time.monotonic()  # fresh, no silence yet
 
     ticks = {"n": 0}
 
@@ -142,19 +142,65 @@ async def test_watchdog_pauses_but_does_not_exit_when_reconnecting():
         elif ticks["n"] == 2:
             transcriber.state = ConnectionState.CONNECTED  # recovered
             transcriber._last_transcription_at = time.monotonic()
+        elif ticks["n"] == 4:
+            transcriber.state = ConnectionState.DEGRADED  # stop the loop cleanly
 
     close_called = []
-    bridge.close_all = lambda: close_called.append(True)
+    async def _fake_close():
+        close_called.append(True)
+
+    bridge.close_all = _fake_close
 
     with patch("src.services.bridge.asyncio.sleep", new=_controlled_sleep):
-        task = asyncio.create_task(bridge._transcription_watchdog())
-        for _ in range(6):
-            await asyncio.sleep(0)
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        # See NOTE above test_watchdog_resets_count_when_transcription_arrives —
+        # direct await, not create_task + outer polling loop.
+        await asyncio.wait_for(bridge._transcription_watchdog(), timeout=2.0)
 
-    assert ticks["n"] >= 3, "watchdog must still be ticking after the RECONNECTING blip"
+    assert ticks["n"] >= 4, "watchdog must still be ticking after the RECONNECTING blip"
     assert not close_called
+
+
+@pytest.mark.asyncio
+async def test_watchdog_does_not_close_immediately_after_reconnect_with_stale_timestamp():
+    """Issue #149: TranscriberClient.connect() never resets _last_transcription_at,
+    so after a real reconnect it stays at whatever it was before the outage. The
+    watchdog must not blame the client for the outage duration and force-close the
+    session the moment it observes CONNECTED again — it should grant a fresh
+    baseline instead, exactly like a brand-new session would get via
+    `_first_audio_at`."""
+    from src.services.reconnection import ConnectionState
+    config = ClientConfig(silence_timeout_s=1, max_silence_turns=2)
+    bridge, ws, transcriber = _make_bridge(config=config)
+    bridge._first_audio_at = time.monotonic() - 10
+    # A real transcription happened a while ago, then the transcriber dropped.
+    transcriber._last_transcription_at = time.monotonic() - 10
+
+    ticks = {"n": 0}
+
+    async def _controlled_sleep(n):
+        ticks["n"] += 1
+        if ticks["n"] == 1:
+            transcriber.state = ConnectionState.RECONNECTING  # transient drop
+        elif ticks["n"] == 2:
+            transcriber.state = ConnectionState.CONNECTED  # recovered
+            # Deliberately NOT touching _last_transcription_at here — production's
+            # TranscriberClient.connect() doesn't reset it either.
+        elif ticks["n"] == 4:
+            transcriber.state = ConnectionState.DEGRADED  # stop the loop cleanly
+
+    close_called = []
+
+    async def _fake_close():
+        close_called.append(True)
+
+    bridge.close_all = _fake_close
+
+    with patch("src.services.bridge.asyncio.sleep", new=_controlled_sleep):
+        # See NOTE above test_watchdog_resets_count_when_transcription_arrives —
+        # direct await, not create_task + outer polling loop.
+        await asyncio.wait_for(bridge._transcription_watchdog(), timeout=2.0)
+
+    assert not close_called, (
+        "session was force-closed right after a successful reconnect, "
+        "because elapsed was measured from a pre-outage timestamp"
+    )

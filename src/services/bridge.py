@@ -239,21 +239,34 @@ class JotaBridge:
 
         silence_count = 0
         last_seen_transcription_at = self.transcriber._last_transcription_at
+        was_connected = True
+        recovery_baseline: Optional[float] = None
 
         while True:
             await asyncio.sleep(2)
             if not self.transcriber or self.transcriber.state == ConnectionState.DEGRADED:
                 return
             if self.transcriber.state != ConnectionState.CONNECTED:
+                was_connected = False
                 continue  # RECONNECTING: skip silence-counting this tick, don't exit
 
             current_transcription_at = self.transcriber._last_transcription_at
             if current_transcription_at != last_seen_transcription_at:
                 silence_count = 0
                 last_seen_transcription_at = current_transcription_at
+                recovery_baseline = None
+            elif not was_connected:
+                # Just recovered from a drop with no new transcription yet.
+                # TranscriberClient.connect() never resets _last_transcription_at,
+                # so it still predates the outage — restart the silence clock from
+                # the recovery moment instead of blaming the client for however
+                # long the reconnect took (issue #149).
+                silence_count = 0
+                recovery_baseline = time.monotonic()
+            was_connected = True
 
-            last = self.transcriber._last_transcription_at
-            elapsed = time.monotonic() - last if last else time.monotonic() - self._first_audio_at
+            last = recovery_baseline or current_transcription_at or self._first_audio_at
+            elapsed = time.monotonic() - last
 
             if elapsed > self.config.silence_timeout_s:
                 silence_count += 1

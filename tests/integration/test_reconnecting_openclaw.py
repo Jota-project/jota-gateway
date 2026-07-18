@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import pytest
 from unittest.mock import AsyncMock
 from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
@@ -233,3 +234,41 @@ async def test_trigger_reconnect_coalesces_with_in_flight_reconnect():
     release_connect.set()
     await asyncio.sleep(0.05)
     assert roc.state == ConnectionState.CONNECTED
+
+
+@pytest.mark.asyncio
+async def test_stream_response_closes_inner_generator_on_early_exit():
+    """Issue #150: in production, `call_orchestrator()` (src/services/orchestration.py)
+    wraps `ReconnectingOpenClawClient.stream_response()` in `contextlib.aclosing()`
+    and raises on an `error` event, closing the OUTER generator early. The INNER
+    generator — the real `OpenClawClient.stream_response()`, which holds
+    `finally: self._turn_registry.unregister(...)` — must be closed synchronously
+    at that same moment, not abandoned for the asyncgen GC finalizer to eventually
+    get around to (which would leave the session_key locked with `TurnInProgress`)."""
+    inner_finally_ran = []
+
+    async def fake_stream(*args, **kwargs):
+        try:
+            yield OrchestratorEvent(type="error", content="boom")
+            yield OrchestratorEvent(type="token", content="never reached")
+        finally:
+            inner_finally_ran.append(True)
+
+    inner = make_mock_client(GATEWAY_INFO)
+    inner.stream_response = fake_stream
+    roc = ReconnectingOpenClawClient(inner, "test")
+    await roc.connect()
+
+    with pytest.raises(RuntimeError):
+        async with contextlib.aclosing(
+            roc.stream_response("hi", "user", session_key="agent:main:u")
+        ) as stream:
+            async for event in stream:
+                if event.type == "error":
+                    # Mirrors call_orchestrator() raising on an error event.
+                    raise RuntimeError(event.content)
+
+    assert inner_finally_ran, (
+        "inner OpenClawClient generator's finally (TurnRegistry.unregister) "
+        "never ran synchronously — it was abandoned instead of closed"
+    )

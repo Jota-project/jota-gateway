@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import time
 import uuid
@@ -90,13 +91,20 @@ class ReconnectingOpenClawClient:
             yield OrchestratorEvent(type="error", content="orchestrator_unavailable")
             return
         try:
-            async for event in self._client.stream_response(
+            # aclosing() here (not just around the outer generator in
+            # call_orchestrator) guarantees the inner OpenClawClient.stream_response()
+            # generator — which holds `finally: self._turn_registry.unregister(...)` —
+            # gets a synchronous GeneratorExit when this generator is closed early,
+            # instead of being abandoned for the asyncgen GC finalizer to eventually
+            # close (issue #150, one layer removed from the #99/#147 fix).
+            async with contextlib.aclosing(self._client.stream_response(
                 text=text,
                 user_id=user_id,
                 model_id=model_id,
                 session_key=session_key,
-            ):
-                yield event
+            )) as inner:
+                async for event in inner:
+                    yield event
         except asyncio.CancelledError:
             raise
         except Exception as e:
