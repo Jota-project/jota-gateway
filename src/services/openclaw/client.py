@@ -10,7 +10,7 @@ from websockets.asyncio.client import ClientConnection
 from src.services.openclaw import frames
 from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.models import GatewayInfo, ToolCallEvent
-from src.services.openclaw.registry import TurnRegistry
+from src.services.openclaw.registry import TURN_IN_PROGRESS_ERROR, TurnInProgress, TurnRegistry
 from src.services.protocol import OrchestratorEvent
 
 logger = logging.getLogger(__name__)
@@ -143,7 +143,6 @@ class OpenClawClient:
         text: str,
         user_id: str,
         model_id: Optional[str] = None,
-        system_prompt_extra: Optional[str] = None,
         session_key: Optional[str] = None,
     ) -> AsyncIterator[OrchestratorEvent]:
         if not self._ws:
@@ -153,7 +152,11 @@ class OpenClawClient:
             raise ValueError("session_key is required — callers must provide it via make_session_key()")
 
         req_id = str(uuid.uuid4())
-        queue = self._turn_registry.register(req_id, session_key)
+        try:
+            queue = self._turn_registry.register(req_id, session_key)
+        except TurnInProgress:
+            yield OrchestratorEvent(type="error", content=TURN_IN_PROGRESS_ERROR)
+            return
         _sent = False
         _finished = False
 

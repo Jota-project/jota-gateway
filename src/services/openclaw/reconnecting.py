@@ -78,7 +78,6 @@ class ReconnectingOpenClawClient:
         text: str,
         user_id: str,
         model_id: Optional[str] = None,
-        system_prompt_extra: Optional[str] = None,
         session_key: Optional[str] = None,
     ) -> AsyncIterator[OrchestratorEvent]:
         if self.state != ConnectionState.CONNECTED:
@@ -91,7 +90,6 @@ class ReconnectingOpenClawClient:
                 text=text,
                 user_id=user_id,
                 model_id=model_id,
-                system_prompt_extra=system_prompt_extra,
                 session_key=session_key,
             ):
                 yield event
