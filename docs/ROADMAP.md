@@ -58,7 +58,7 @@ El gateway funciona correctamente en **happy path** (sesión única + backend sa
 - [x] **#99** 🔴 `[001]` — `TurnRegistry` concurrent same-session_key race corrupts turns — **S** — *race en `register()` cuando dos `stream_response` comparten `session_key`* — cerrado por #140
 - [x] **#100** 🔴 `[002]` — `system_prompt_extra` silently dropped before reaching OpenClaw — **M** — *eliminado por completo (sin hook viable en el protocolo de OpenClaw)* — cerrado por #141
 - [x] **#101** 🔴 `[003]` — Pre-ready WebSocket failure paths leak transcriber, bridge, session state — **M** — cerrado por PR (rama `fix/101-ws-setup-failure-leaks`)
-- [ ] **#102** 🔴 `[004]` — `ReconnectingOpenClawClient` has no circuit-breaker after DEGRADED — **S** — *regresión Bug 10*
+- [x] **#102** 🔴 `[004]` — `ReconnectingOpenClawClient` has no circuit-breaker after DEGRADED — **S** — *regresión Bug 10* — cerrado por PR (rama `fix/102-reconnect-circuit-breaker`)
 - [x] **#103** 🔴 `[005]` — `OpenClawClient.connect()` does not close prior socket/tasks on reconnect — **S** — cerrado por PR (rama `fix/103-openclaw-connect-leak`)
 - [ ] **#104** 🔴 `[006]` — `_last_error` not cleared after successful reconnect — **XS** — *regresión auditoría junio*
 

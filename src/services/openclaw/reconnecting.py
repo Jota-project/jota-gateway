@@ -130,6 +130,9 @@ class ReconnectingOpenClawClient:
         return self._ensure_reconnecting()
 
     def _ensure_reconnecting(self) -> str:
+        # Always non-None here: _reconnect_exhausted only ever becomes True
+        # inside _reconnect_loop(), which _ensure_reconnecting() itself only
+        # ever starts after assigning a fresh _reconnect_job_id below.
         if self._reconnect_exhausted:
             return self._reconnect_job_id
         if not self._reconnect_task or self._reconnect_task.done():
