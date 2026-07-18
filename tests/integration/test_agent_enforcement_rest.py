@@ -1,10 +1,7 @@
 """REST /v1/chat/completions enforces per-client default_agent and allowed_agents."""
 import json
-import pytest
-from sqlalchemy.pool import StaticPool
-from sqlmodel import SQLModel, Session, create_engine
+from sqlmodel import Session
 
-from src.db import database as db_database
 from src.db.models import ClientRecord
 from src.services.db_client import db_client
 from tests.integration.conftest import VALID_KEY, CLIENT_ID
