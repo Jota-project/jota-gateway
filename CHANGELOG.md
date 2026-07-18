@@ -1,3 +1,12 @@
+## [1.14.7](https://github.com/Jota-project/jota-gateway/compare/v1.14.6...v1.14.7) (2026-07-18)
+
+
+### Bug Fixes
+
+* CLI misparses client_key positional args starting with '-' ([6eb453d](https://github.com/Jota-project/jota-gateway/commit/6eb453d87042da27b7ea78fb1a840cd37664008a))
+* close 3 correctness gaps found reviewing Phase 1 ([#99](https://github.com/Jota-project/jota-gateway/issues/99), [#101](https://github.com/Jota-project/jota-gateway/issues/101), [#103](https://github.com/Jota-project/jota-gateway/issues/103)) ([b1435ed](https://github.com/Jota-project/jota-gateway/commit/b1435ed3e1734ee61676898a9c7615420cf9bcbe))
+* close 3 correctness gaps found reviewing Phase 1 ([#99](https://github.com/Jota-project/jota-gateway/issues/99), [#101](https://github.com/Jota-project/jota-gateway/issues/101), [#103](https://github.com/Jota-project/jota-gateway/issues/103)) ([#147](https://github.com/Jota-project/jota-gateway/issues/147)) ([0802236](https://github.com/Jota-project/jota-gateway/commit/08022360f3738a4999d6b1ba07a9890b946191c8))
+
 ## [1.14.6](https://github.com/Jota-project/jota-gateway/compare/v1.14.5...v1.14.6) (2026-07-18)
 
 
