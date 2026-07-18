@@ -1,3 +1,11 @@
+## [1.14.8](https://github.com/Jota-project/jota-gateway/compare/v1.14.7...v1.14.8) (2026-07-18)
+
+
+### Bug Fixes
+
+* clear last_error on successful background reconnect ([#104](https://github.com/Jota-project/jota-gateway/issues/104)) ([5f259cd](https://github.com/Jota-project/jota-gateway/commit/5f259cde4190edc3bdb280353aa4a69419983db3))
+* clear last_error on successful background reconnect ([#104](https://github.com/Jota-project/jota-gateway/issues/104)) ([#148](https://github.com/Jota-project/jota-gateway/issues/148)) ([7c0f9c7](https://github.com/Jota-project/jota-gateway/commit/7c0f9c77f6c0e137644b8b681948fd91e0dab0ec))
+
 ## [1.14.7](https://github.com/Jota-project/jota-gateway/compare/v1.14.6...v1.14.7) (2026-07-18)
 
 
