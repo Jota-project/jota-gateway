@@ -150,6 +150,7 @@ class ReconnectingOpenClawClient:
                 self._set_state(ConnectionState.CONNECTED)
                 self._connected_at = datetime.now(timezone.utc)
                 self._reconnect_attempts = 0
+                self._last_error = None
                 logger.info("[%s] reconnected.", self._name)
                 return
             except asyncio.CancelledError:

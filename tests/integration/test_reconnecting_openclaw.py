@@ -184,6 +184,25 @@ async def test_trigger_reconnect_returns_job_id_and_reconnects():
 
 
 @pytest.mark.asyncio
+async def test_reconnect_loop_success_clears_last_error():
+    """Issue #104: a successful reconnect via the background _reconnect_loop()
+    (not the initial connect()) must clear _last_error — otherwise status()
+    keeps reporting a stale error from before the drop even though the
+    service is healthy again right now."""
+    inner = AsyncMock(spec=OpenClawClient)
+    inner.on_disconnect = None
+    inner.gateway_info = None
+    inner.connect.side_effect = [RuntimeError("refused"), GATEWAY_INFO]
+
+    roc = ReconnectingOpenClawClient(inner, "test", max_duration=5.0, initial_backoff=0.01)
+
+    await roc._reconnect_loop()
+
+    assert roc.state == ConnectionState.CONNECTED
+    assert roc.status().last_error is None
+
+
+@pytest.mark.asyncio
 async def test_trigger_reconnect_coalesces_with_in_flight_reconnect():
     """An admin-triggered reconnect racing the background reconnect loop
     (already in flight, e.g. after an unexpected disconnect) must coalesce
