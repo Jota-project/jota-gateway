@@ -1,3 +1,11 @@
+## [1.14.9](https://github.com/Jota-project/jota-gateway/compare/v1.14.8...v1.14.9) (2026-07-18)
+
+
+### Bug Fixes
+
+* close 2 correctness gaps found in Phase 1 post-closure review ([#149](https://github.com/Jota-project/jota-gateway/issues/149), [#150](https://github.com/Jota-project/jota-gateway/issues/150)) ([a6a3194](https://github.com/Jota-project/jota-gateway/commit/a6a319490de45fc130198163d7681c859e6cf57a)), closes [102/#104](https://github.com/Jota-project/jota-gateway/issues/104) [99/#147](https://github.com/Jota-project/jota-gateway/issues/147)
+* close final Phase 1 gaps ([#149](https://github.com/Jota-project/jota-gateway/issues/149), [#150](https://github.com/Jota-project/jota-gateway/issues/150)) — Fase 1 (bugs críticos) queda cerrada ([#153](https://github.com/Jota-project/jota-gateway/issues/153)) ([cfad33b](https://github.com/Jota-project/jota-gateway/commit/cfad33bf1fe72ad5d288589e41ae008d2dc4d32d)), closes [#104](https://github.com/Jota-project/jota-gateway/issues/104) [#102](https://github.com/Jota-project/jota-gateway/issues/102) [#104](https://github.com/Jota-project/jota-gateway/issues/104) [102/#104](https://github.com/Jota-project/jota-gateway/issues/104) [#99](https://github.com/Jota-project/jota-gateway/issues/99) [99/#147](https://github.com/Jota-project/jota-gateway/issues/147) [#99](https://github.com/Jota-project/jota-gateway/issues/99)
+
 ## [1.14.8](https://github.com/Jota-project/jota-gateway/compare/v1.14.7...v1.14.8) (2026-07-18)
 
 
