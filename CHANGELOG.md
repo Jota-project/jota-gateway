@@ -1,3 +1,11 @@
+## [1.14.5](https://github.com/Jota-project/jota-gateway/compare/v1.14.4...v1.14.5) (2026-07-18)
+
+
+### Bug Fixes
+
+* close prior socket/tasks on OpenClawClient reconnect ([#103](https://github.com/Jota-project/jota-gateway/issues/103)) ([#145](https://github.com/Jota-project/jota-gateway/issues/145)) ([6689183](https://github.com/Jota-project/jota-gateway/commit/66891838b91e05b878aa22b3a4c9e7c001f5ed15))
+* close prior socket/tasks on OpenClawClient reconnect (issue [#103](https://github.com/Jota-project/jota-gateway/issues/103)) ([8b4c75c](https://github.com/Jota-project/jota-gateway/commit/8b4c75cfe78f9abc7a7243ffd31f4f585fe8ddd0))
+
 ## [1.14.4](https://github.com/Jota-project/jota-gateway/compare/v1.14.3...v1.14.4) (2026-07-18)
 
 
