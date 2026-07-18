@@ -132,7 +132,16 @@ class OpenClawClient:
         """Best-effort teardown of a previous connection before connect()
         establishes a new one — cancelling the old listener before the new
         socket exists prevents it from ever racing the new handshake for
-        frames (issue #103)."""
+        frames (issue #103).
+
+        Note: _listen()/_keepalive_loop() swallow their own CancelledError
+        and return normally (see _listen()'s docstring) — so if the caller
+        of connect() (e.g. the background _reconnect_loop task) is itself
+        cancelled while suspended on `await task` here, asyncio can absorb
+        that outer cancellation rather than re-raising it, since the awaited
+        task completes without an exception. Bounded impact: the caller
+        simply keeps running until this teardown finishes, it isn't lost.
+        """
         for task in (self._keepalive_task, self._listener_task):
             if task and not task.done():
                 task.cancel()

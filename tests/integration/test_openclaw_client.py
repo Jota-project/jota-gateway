@@ -8,7 +8,9 @@ import pytest
 
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.dispatcher import FrameDispatcher
+from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
 from src.services.openclaw.registry import TurnRegistry, ClientRegistry, TURN_IN_PROGRESS_ERROR
+from src.services.reconnection import ConnectionState
 
 HELLO_OK_PAYLOAD = {
     "type": "hello-ok", "protocol": 4,
@@ -508,6 +510,45 @@ async def test_concurrent_connect_calls_are_serialized():
     assert not client._listener_task.done()
 
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_trigger_reconnect_coalesces_with_real_background_reconnect(fake_ws):
+    """End-to-end version of the issue #103 coalescing guarantee: a REAL
+    background reconnect (started by ReconnectingOpenClawClient after an
+    unexpected drop) that is still mid-handshake must not be joined by a
+    second, concurrent websocket handshake when an admin trigger_reconnect()
+    call races it — it must coalesce onto the one in-flight attempt."""
+    inner = await connected_client(fake_ws)
+    roc = ReconnectingOpenClawClient(inner, "openclaw")  # rewires inner.on_disconnect
+
+    reconnect_ws = SmartFakeWS({"agent:main:client-a": ["Hola"]})
+    await reconnect_ws.start()
+    connect_attempted = asyncio.Event()
+    release_connect = asyncio.Event()
+    connect_calls = 0
+
+    async def gated_connect(uri):
+        nonlocal connect_calls
+        connect_calls += 1
+        if connect_calls == 1:
+            connect_attempted.set()
+            await release_connect.wait()
+        return reconnect_ws
+
+    with patch("websockets.connect", side_effect=gated_connect):
+        await fake_ws.close()  # simulate an unexpected drop → background reconnect starts
+        await connect_attempted.wait()  # background reconnect is now mid-handshake
+
+        admin_job_id = roc.trigger_reconnect()
+        assert admin_job_id == roc._reconnect_job_id
+
+        release_connect.set()
+        await asyncio.sleep(0.05)
+
+    assert connect_calls == 1, "admin trigger must coalesce, not open a second socket"
+    assert roc.state == ConnectionState.CONNECTED
+    await inner.close()
 
 
 @pytest.mark.asyncio
