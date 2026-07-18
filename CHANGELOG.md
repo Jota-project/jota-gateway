@@ -1,3 +1,11 @@
+## [1.14.4](https://github.com/Jota-project/jota-gateway/compare/v1.14.3...v1.14.4) (2026-07-18)
+
+
+### Bug Fixes
+
+* close bridge/session cleanly on pre-ready WS setup failures (issue [#101](https://github.com/Jota-project/jota-gateway/issues/101)) ([a5ddbaa](https://github.com/Jota-project/jota-gateway/commit/a5ddbaa637d67c94a15fefebd478a0fcd6bffbbe)), closes [#143](https://github.com/Jota-project/jota-gateway/issues/143)
+* close bridge/session cleanly on pre-ready WS setup failures (issue [#101](https://github.com/Jota-project/jota-gateway/issues/101)) ([#144](https://github.com/Jota-project/jota-gateway/issues/144)) ([fa4dd47](https://github.com/Jota-project/jota-gateway/commit/fa4dd4781f3c798589ac90cf8f64748ca6ff7150)), closes [#143](https://github.com/Jota-project/jota-gateway/issues/143)
+
 ## [1.14.3](https://github.com/Jota-project/jota-gateway/compare/v1.14.2...v1.14.3) (2026-07-18)
 
 
