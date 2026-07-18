@@ -1,8 +1,8 @@
 # jota-gateway Roadmap
 
-> **Estado:** 🔧 En remediación (post auditoría 2026-07-15)
-> **Última actualización:** 2026-07-15
-> **Issues abiertas:** 40 (rango GitHub `#99`–`#138`)
+> **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fase 1 ✅ cerrada
+> **Última actualización:** 2026-07-18
+> **Issues abiertas:** 34 (rango GitHub `#99`–`#138`)
 > **Versión actual:** 1.15.x
 > **Próximo release:** 1.16.0 (al cerrar Fase 2)
 
@@ -24,7 +24,7 @@ Este documento es el **plan vivo de remediación y evolución** de jota-gateway.
 | 🟡 Medios | 14 |
 | ⚪ Tech-debt / polish | 5 |
 | Estimación | ~3 sprints (6–9 semanas) |
-| Próximo milestone | Cerrar Fase 1 (críticos) |
+| Próximo milestone | Cerrar Fase 2 (seguridad) |
 | Regresiones confirmadas vs auditoría junio | 2 |
 | Features documentadas sin implementar | 3 |
 
@@ -49,18 +49,19 @@ El gateway funciona correctamente en **happy path** (sesión única + backend sa
 
 ## Fases de remediación
 
-### 🔴 Fase 1 — Bugs críticos (semanas 1–2)
+### 🔴 Fase 1 — Bugs críticos (semanas 1–2) — ✅ CERRADA (2026-07-18)
 
 **Objetivo:** cerrar las 6 regresiones/latentes críticas.
 **Release target:** 1.15.x (patches incrementales).
 **Acceptance gate:** cero issues 🔴 abiertas, `pytest` verde, suite e2e sin regresiones, ningún log contiene `client_key` completo.
+**Estado del gate:** cero issues 🔴 abiertas ✅ · `pytest` verde ✅ (374 passed) · sin regresiones e2e ✅ · cero `client_key` completo en logs ⚠️ *no verificado aquí* — ese criterio es el alcance real de **#106** (Fase 2, todavía abierta); se mantiene el texto del gate tal cual pero se declara Fase 1 cerrada sobre la base de sus 6 issues críticas, no de ese criterio heredado.
 
 - [x] **#99** 🔴 `[001]` — `TurnRegistry` concurrent same-session_key race corrupts turns — **S** — *race en `register()` cuando dos `stream_response` comparten `session_key`* — cerrado por #140
 - [x] **#100** 🔴 `[002]` — `system_prompt_extra` silently dropped before reaching OpenClaw — **M** — *eliminado por completo (sin hook viable en el protocolo de OpenClaw)* — cerrado por #141
 - [x] **#101** 🔴 `[003]` — Pre-ready WebSocket failure paths leak transcriber, bridge, session state — **M** — cerrado por PR (rama `fix/101-ws-setup-failure-leaks`)
 - [x] **#102** 🔴 `[004]` — `ReconnectingOpenClawClient` has no circuit-breaker after DEGRADED — **S** — *regresión Bug 10* — cerrado por PR (rama `fix/102-reconnect-circuit-breaker`)
 - [x] **#103** 🔴 `[005]` — `OpenClawClient.connect()` does not close prior socket/tasks on reconnect — **S** — cerrado por PR (rama `fix/103-openclaw-connect-leak`)
-- [ ] **#104** 🔴 `[006]` — `_last_error` not cleared after successful reconnect — **XS** — *regresión auditoría junio*
+- [x] **#104** 🔴 `[006]` — `_last_error` not cleared after successful reconnect — **XS** — *regresión auditoría junio* — cerrado por PR (rama `fix/104-last-error-reset`)
 
 **Revisión post-cierre (code review, rama `fix/phase1-review-followups`):** #99/#101/#103 tenían bugs reales sin tests que los cubrieran, encontrados releyendo el código ya mergeado (no solo el diff original):
 - **#101** — `close_all()` ponía `self._closed = True` *antes* del teardown real; si la primera llamada era cancelada a mitad, la red de seguridad de `routes.py` (añadida por el propio #101) se volvía un no-op permanente y `tracker.close()` nunca corría. Fix: `_closed` solo se marca al completar el teardown, todo el cuerpo serializado por un `_close_lock`.
@@ -230,7 +231,7 @@ Antes de implementar las issues marcadas con ⚠️, hay que resolver:
 
 | Milestone | Criterio |
 |---|---|
-| **Fase 1 done** | 6 🔴 cerrados, `pytest` verde, e2e no regresiona, cero keys en logs |
+| **Fase 1 done** | ✅ 6 🔴 cerrados, `pytest` verde, e2e no regresiona — *cero keys en logs queda como alcance de #106 (Fase 2)* |
 | **Fase 2 done** | Pentest pasa, `/v1/*` rechaza untrusted sin bearer, admin rechaza sin token, grep sobre session no encuentra keys |
 | **Fase 3 done** | `kill -9` durante sesión deja DB consistente, 3 wrappers DEGRADED-stable, `ready.capabilities` correcto |
 | **Fase 4 done** | Cero referencias muertas, `.env.sample` levanta gateway limpio, `db_client` test de concurrencia |

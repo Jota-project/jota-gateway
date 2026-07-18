@@ -79,6 +79,30 @@ async def test_backoff_doubles_on_repeated_failure_capped_at_max():
     assert w._backoff == 1.5  # doubled from 1.0, capped at max_backoff
 
 
+@pytest.mark.asyncio
+async def test_record_success_clears_last_error_after_prior_failure():
+    """Issue #104 regression check: unlike the other two reconnecting
+    wrappers, TTS funnels both outcomes through a single _record_success()/
+    _record_failure() pair — _record_success() already clears _last_error
+    (no production change needed here), this locks that behavior in with an
+    explicit test rather than leaving it implicitly covered."""
+    w = ReconnectingTTSClient(url="test:1", token="t", initial_backoff=0.05)
+    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
+        failing_client = AsyncMock()
+        failing_client.connect.side_effect = OSError("refused")
+        MockTTS.return_value = failing_client
+        await w.connect(voice=None, speed=None, client_id="c1")
+        assert w.status().last_error == "refused"
+
+        time.sleep(0.1)  # let the backoff window elapse
+
+        succeeding_client = AsyncMock()
+        MockTTS.return_value = succeeding_client
+        await w.connect(voice=None, speed=None, client_id="c1")
+
+    assert w.status().last_error is None
+
+
 def test_status_shape_defaults_to_connected():
     w = ReconnectingTTSClient(url="test:1", token="t")
     s = w.status()

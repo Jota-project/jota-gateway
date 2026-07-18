@@ -126,6 +126,7 @@ class ReconnectingTranscriberClient:
                 self._set_state(ConnectionState.CONNECTED)
                 self._connected_at = datetime.now(timezone.utc)
                 self._reconnect_attempts = 0
+                self._last_error = None
                 logger.info("[%s] transcriber reconnected.", self._client_id)
                 return True
             except asyncio.CancelledError:
