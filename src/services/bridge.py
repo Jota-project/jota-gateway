@@ -84,7 +84,12 @@ class JotaBridge:
         # Guards close_all() so it's safe to call more than once (issue #101):
         # routes.py's outer try/finally always calls it on the way out, even
         # when bridge.run() already called it from its own internal finally.
+        # _closed is only set True once teardown fully completes; _close_lock
+        # serializes concurrent callers so a call interrupted mid-teardown
+        # doesn't race a second one, and a later call retries instead of
+        # observing a half-finished, permanently-poisoned guard.
         self._closed: bool = False
+        self._close_lock = asyncio.Lock()
 
     async def connect_internal_services(self):
         """Inicializa clientes de microservicios dependiendo del handshake."""
@@ -112,60 +117,68 @@ class JotaBridge:
     async def close_all(self, status: str = "completed"):
         """Tear down every microservice client and mark the session closed.
 
-        Idempotent — the second call in a row is a no-op, and the *first*
-        call's `status` wins. Callable from three independent sites (the
-        silence watchdog, run()'s own finally, and routes.py's outer
-        finally on the setup-phase paths from issue #101) without knowing
-        whether one of the others already ran.
+        Idempotent — the second call in a row is a no-op, and the *first
+        call to finish* wins the `status`. Callable from three independent
+        sites (the silence watchdog, run()'s own finally, and routes.py's
+        outer finally on the setup-phase paths from issue #101) without
+        knowing whether one of the others already ran.
+
+        `_closed` is only set to True once teardown actually completes — not
+        at entry — and the whole body is serialized by `_close_lock`. If a
+        call is interrupted mid-teardown (e.g. cancelled during shutdown), it
+        never sets `_closed`, so the next call retries the teardown instead of
+        silently no-op'ing forever (issue #101 follow-up: the eager guard used
+        to defeat the very safety net routes.py relies on).
         """
-        if self._closed:
-            return
-        self._closed = True
+        async with self._close_lock:
+            if self._closed:
+                return
 
-        self._client_registry.unregister(self.client_id)
-        # Await (don't cancel) the active turn so the orchestrator response is
-        # delivered before we tear down microservice clients.  Explicit cancellation
-        # only happens via _cancel_active_turn() (barge-in) or task cancellation
-        # from outside; close_all() itself should let the turn finish naturally.
-        if self._active_turn and not self._active_turn.done():
-            try:
-                await self._active_turn
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                logger.error(f"[{self.client_id}] _active_turn falló: {e}")
+            self._client_registry.unregister(self.client_id)
+            # Await (don't cancel) the active turn so the orchestrator response is
+            # delivered before we tear down microservice clients.  Explicit cancellation
+            # only happens via _cancel_active_turn() (barge-in) or task cancellation
+            # from outside; close_all() itself should let the turn finish naturally.
+            if self._active_turn and not self._active_turn.done():
+                try:
+                    await self._active_turn
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.error(f"[{self.client_id}] _active_turn falló: {e}")
 
-        if self._push_audio_task and not self._push_audio_task.done():
-            self._push_audio_task.cancel()
-            try:
-                await self._push_audio_task
-            except (asyncio.CancelledError, Exception):
-                pass
-        if self._push_tts:
-            try:
-                await self._push_tts.close()
-            except Exception:
-                pass
-            self._push_tts = None
+            if self._push_audio_task and not self._push_audio_task.done():
+                self._push_audio_task.cancel()
+                try:
+                    await self._push_audio_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if self._push_tts:
+                try:
+                    await self._push_tts.close()
+                except Exception:
+                    pass
+                self._push_tts = None
 
-        # Defensive reset — if the session ends between an agent start and its
-        # matching agent end (disconnect, orchestrator crash, reconnect mid-push),
-        # the flag would otherwise stay set forever, causing the next agent start
-        # received on this bridge instance to be silently dropped.
-        self._push_turn_open = False
+            # Defensive reset — if the session ends between an agent start and its
+            # matching agent end (disconnect, orchestrator crash, reconnect mid-push),
+            # the flag would otherwise stay set forever, causing the next agent start
+            # received on this bridge instance to be silently dropped.
+            self._push_turn_open = False
 
-        for task in self.tasks:
-            if not task.done():
-                task.cancel()
+            for task in self.tasks:
+                if not task.done():
+                    task.cancel()
 
-        close_aws = []
-        if self.transcriber:
-            close_aws.append(self.transcriber.close())
+            close_aws = []
+            if self.transcriber:
+                close_aws.append(self.transcriber.close())
 
-        if close_aws:
-            await asyncio.gather(*close_aws, return_exceptions=True)
+            if close_aws:
+                await asyncio.gather(*close_aws, return_exceptions=True)
 
-        await self.tracker.close(status=status)
+            await self.tracker.close(status=status)
+            self._closed = True
 
     async def health_check(self) -> bool:
         """Ping each microservice and notify the client of any issues.

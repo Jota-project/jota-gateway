@@ -7,6 +7,8 @@ its own internal finally before that outer finally runs — so close_all()
 must tolerate being called twice without duplicating side effects, and the
 first call's status must win.
 """
+import asyncio
+
 import pytest
 from unittest.mock import AsyncMock
 
@@ -78,3 +80,22 @@ async def test_close_all_second_call_status_does_not_override_first(bridge):
     await bridge.close_all(status="error")
     call_args = bridge.tracker._registry.close.call_args
     assert call_args.args[1] == "completed"
+
+
+async def test_close_all_completes_teardown_after_earlier_call_is_interrupted(bridge):
+    """The `_closed` guard used to be set *before* any teardown I/O ran, so if
+    the first call was interrupted mid-teardown (e.g. task cancellation during
+    app shutdown), every later call — including the routes.py outer-finally
+    safety net that issue #101 added specifically to guarantee cleanup — became
+    a silent no-op forever, and tracker.close() (which marks the session closed
+    in SessionRegistry) never ran."""
+    bridge._push_tts = AsyncMock()
+    bridge._push_tts.close.side_effect = asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        await bridge.close_all()
+
+    bridge._push_tts = None
+    await bridge.close_all()
+
+    bridge.tracker._registry.close.assert_called_once()

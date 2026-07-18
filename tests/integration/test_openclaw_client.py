@@ -450,6 +450,81 @@ async def test_concurrent_stream_response_same_session_key_rejects_one():
 
 
 @pytest.mark.asyncio
+async def test_reconnect_errors_out_in_flight_turn_instead_of_hanging_forever():
+    """Issue #103 follow-up: _cancel_and_close() cancels the old _listener_task
+    on every reconnect (forced via admin trigger_reconnect(), or automatic).
+    _listen()'s CancelledError branch used to skip error_all() entirely (only
+    the sibling `except Exception` branch called it), so any turn still in
+    flight on the old connection was orphaned: its stream_response() consumer
+    hung forever at `await queue.get()` (no timeout anywhere in the chain),
+    and its session_key stayed registered in TurnRegistry, rejecting every
+    subsequent turn on that session with TurnInProgress until the whole WS
+    session was torn down."""
+    slow_fake_ws = SmartFakeWS(
+        {"agent:main:client-a": ["Hola ", "mundo"]},
+        chat_response_delay=0.15,
+    )
+    client = await connected_client(slow_fake_ws)
+
+    events = []
+
+    async def consume():
+        async for event in client.stream_response(
+            "hola", "client-a", session_key="agent:main:client-a"
+        ):
+            events.append(event)
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0.01)  # let the turn register + send chat.send before reconnecting
+
+    reconnect_ws = SmartFakeWS({"agent:main:client-a": ["Otra"]})
+    await reconnect_ws.start()
+    with patch("websockets.connect", return_value=reconnect_ws):
+        await client.connect()  # forces _cancel_and_close() on the still in-flight turn
+
+    await asyncio.wait_for(task, timeout=1.0)  # must not hang
+
+    assert events, "in-flight turn must be told the connection dropped, not hang silently"
+    assert events[-1].type == "error"
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_terminal_event_then_generator_close_does_not_send_spurious_chat_abort():
+    """Issue #99 follow-up: stream_response()'s terminal branches used to set
+    _finished=True *after* their yield, not before. call_orchestrator now
+    closes the generator via contextlib.aclosing() instead of abandoning it
+    (see test_orchestration.py) — closing a generator throws GeneratorExit
+    exactly at its suspended yield, skipping any code written *after* that
+    yield. If _finished were still set after the yield, a legitimately
+    terminal turn would look unfinished to the `finally` block and trigger a
+    needless chat.abort."""
+    slow_fake_ws = SmartFakeWS(
+        {"agent:main:client-a": ["Hola ", "mundo"]},
+        chat_response_delay=0.15,
+    )
+    client = await connected_client(slow_fake_ws)
+    session_key = "agent:main:client-a"
+
+    stream = client.stream_response("hola", "client-a", session_key=session_key)
+
+    async def drive_and_close():
+        event = await stream.__anext__()
+        assert event.type == "error"
+        await stream.aclose()
+
+    task = asyncio.create_task(drive_and_close())
+    await asyncio.sleep(0.01)  # let register() + chat.send happen before erroring it out, ahead of the first (delayed) token
+    client._turn_registry.error_all("boom")
+    await asyncio.wait_for(task, timeout=1.0)
+
+    aborts = [f for f in slow_fake_ws.sent_frames if f.get("method") == "chat.abort"]
+    assert aborts == [], f"turn already ended in error, must not also send chat.abort: {aborts}"
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_connect_twice_closes_and_cancels_previous_connection():
     """Issue #103: connect() must tear down the previous ws/listener/keepalive
     before establishing a new one. Otherwise the old listener keeps dispatching

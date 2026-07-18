@@ -214,23 +214,29 @@ class OpenClawClient:
                     if delta:
                         yield OrchestratorEvent(type="token", content=delta)
                     if data.get("state") == "final":
-                        yield OrchestratorEvent(type="status", content="done")
+                        # Set *before* yielding: closing the generator right at
+                        # this suspended yield (contextlib.aclosing in
+                        # call_orchestrator) throws GeneratorExit here, skipping
+                        # any code written after the yield — _finished must
+                        # already be true by then or the `finally` below wrongly
+                        # sends a chat.abort for a turn that already ended.
                         _finished = True
+                        yield OrchestratorEvent(type="status", content="done")
                         break
                 elif kind == "tool":
                     tool_call = ToolCallEvent.from_session_tool_payload(data)
                     if tool_call is not None:
                         yield OrchestratorEvent(type="tool_call", tool_call=tool_call)
                 elif kind == "done":
+                    _finished = True
                     if not data.get("ok"):
                         yield OrchestratorEvent(type="error", content=str(data.get("error", {})))
                     else:
                         yield OrchestratorEvent(type="status", content="done")
-                    _finished = True
                     break
                 elif kind == "error":
-                    yield OrchestratorEvent(type="error", content=str(data))
                     _finished = True
+                    yield OrchestratorEvent(type="error", content=str(data))
                     break
         finally:
             self._turn_registry.unregister(session_key, req_id)
@@ -254,8 +260,14 @@ class OpenClawClient:
                     continue
                 await self._dispatcher.dispatch(frame)
         except asyncio.CancelledError:
-            # Clean shutdown via close() — do NOT call on_disconnect.
-            # Cancellation means we intentionally stopped listening; it is not a drop.
+            # Clean shutdown via close()/reconnect — do NOT call on_disconnect,
+            # that would wrongly trigger ReconnectingOpenClawClient's reconnect
+            # loop for an intentional teardown. But any turn still in flight on
+            # THIS connection has no one left to deliver its response — without
+            # error_all() it hangs forever at `await queue.get()` (no timeout
+            # anywhere in the chain) and permanently occupies its session_key
+            # in TurnRegistry (issue #103 follow-up).
+            self._turn_registry.error_all("connection closed")
             return
         except Exception as e:
             logger.error(f"_listen error: {e}")
