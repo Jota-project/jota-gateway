@@ -55,9 +55,9 @@ El gateway funciona correctamente en **happy path** (sesión única + backend sa
 **Release target:** 1.15.x (patches incrementales).
 **Acceptance gate:** cero issues 🔴 abiertas, `pytest` verde, suite e2e sin regresiones, ningún log contiene `client_key` completo.
 
-- [ ] **#99** 🔴 `[001]` — `TurnRegistry` concurrent same-session_key race corrupts turns — **S** — *race en `register()` cuando dos `stream_response` comparten `session_key`*
-- [ ] **#100** 🔴 `[002]` — `system_prompt_extra` silently dropped before reaching OpenClaw — **M** — ⚠️ *requiere decisión: ¿concatenar al mensaje, extender `chat.send`, o eliminar el campo?*
-- [ ] **#101** 🔴 `[003]` — Pre-ready WebSocket failure paths leak transcriber, bridge, session state — **M**
+- [x] **#99** 🔴 `[001]` — `TurnRegistry` concurrent same-session_key race corrupts turns — **S** — *race en `register()` cuando dos `stream_response` comparten `session_key`* — cerrado por #140
+- [x] **#100** 🔴 `[002]` — `system_prompt_extra` silently dropped before reaching OpenClaw — **M** — *eliminado por completo (sin hook viable en el protocolo de OpenClaw)* — cerrado por #141
+- [x] **#101** 🔴 `[003]` — Pre-ready WebSocket failure paths leak transcriber, bridge, session state — **M** — cerrado por PR (rama `fix/101-ws-setup-failure-leaks`)
 - [ ] **#102** 🔴 `[004]` — `ReconnectingOpenClawClient` has no circuit-breaker after DEGRADED — **S** — *regresión Bug 10*
 - [ ] **#103** 🔴 `[005]` — `OpenClawClient.connect()` does not close prior socket/tasks on reconnect — **S**
 - [ ] **#104** 🔴 `[006]` — `_last_error` not cleared after successful reconnect — **XS** — *regresión auditoría junio*

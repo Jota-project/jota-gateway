@@ -30,7 +30,7 @@ def test_ready_orchestrator_down_returns_503(client, mock_orchestrator):
 
 
 def test_ready_tts_down_returns_200_degraded(client, mock_services):
-    mock_services.get("http://localhost:8005/health").mock(
+    mock_services.get("http://localhost:8005/ready").mock(
         side_effect=httpx.ConnectError("down")
     )
     r = client.get("/ready")
@@ -42,7 +42,7 @@ def test_ready_tts_down_returns_200_degraded(client, mock_services):
 
 
 def test_ready_transcriber_down_returns_200_degraded(client, mock_services):
-    mock_services.get(f"http://{settings.TRANSCRIBER_WS_URL}/health").mock(
+    mock_services.get(f"http://{settings.TRANSCRIBER_WS_URL}/ready").mock(
         side_effect=httpx.ConnectError("down")
     )
     r = client.get("/ready")

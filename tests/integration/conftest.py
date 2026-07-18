@@ -140,12 +140,12 @@ def make_mock_registry(orchestrator=None):
 
 @pytest.fixture
 def mock_services():
-    """Mockea los health checks HTTP de transcriber y TTS."""
+    """Mockea los readiness checks HTTP de transcriber y TTS (/ready, no /health — ver issue #101)."""
     with respx.mock(assert_all_mocked=False, assert_all_called=False) as router:
-        router.get(f"http://{settings.TRANSCRIBER_WS_URL}/health").mock(
+        router.get(f"http://{settings.TRANSCRIBER_WS_URL}/ready").mock(
             return_value=httpx.Response(200)
         )
-        router.get("http://localhost:8005/health").mock(
+        router.get("http://localhost:8005/ready").mock(
             return_value=httpx.Response(200)
         )
         yield router

@@ -81,6 +81,10 @@ class JotaBridge:
         # for the whole multi-step reply, not one per agent event.
         self._push_turn_open: bool = False
         self._tts_degraded_notified: bool = False
+        # Guards close_all() so it's safe to call more than once (issue #101):
+        # routes.py's outer try/finally always calls it on the way out, even
+        # when bridge.run() already called it from its own internal finally.
+        self._closed: bool = False
 
     async def connect_internal_services(self):
         """Inicializa clientes de microservicios dependiendo del handshake."""
@@ -105,7 +109,19 @@ class JotaBridge:
 
         self._client_registry.register(self.client_id, self)
 
-    async def close_all(self):
+    async def close_all(self, status: str = "completed"):
+        """Tear down every microservice client and mark the session closed.
+
+        Idempotent — the second call in a row is a no-op, and the *first*
+        call's `status` wins. Callable from three independent sites (the
+        silence watchdog, run()'s own finally, and routes.py's outer
+        finally on the setup-phase paths from issue #101) without knowing
+        whether one of the others already ran.
+        """
+        if self._closed:
+            return
+        self._closed = True
+
         self._client_registry.unregister(self.client_id)
         # Await (don't cancel) the active turn so the orchestrator response is
         # delivered before we tear down microservice clients.  Explicit cancellation
@@ -149,7 +165,7 @@ class JotaBridge:
         if close_aws:
             await asyncio.gather(*close_aws, return_exceptions=True)
 
-        await self.tracker.close()
+        await self.tracker.close(status=status)
 
     async def health_check(self) -> bool:
         """Ping each microservice and notify the client of any issues.

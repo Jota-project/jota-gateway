@@ -73,44 +73,54 @@ async def gateway_websocket(websocket: WebSocket):
         default_agent=default_agent,
     )
 
+    # One single try/finally covers setup (connect_internal_services, health
+    # check, ready send) and bridge.run(): any early return/exception below
+    # still reaches bridge.close_all() — a failed handshake during an
+    # OpenClaw outage used to leak the transcriber socket, the bridge
+    # registration, and leave the session "active" forever (issue #101).
+    # bridge.run() already calls close_all() itself in its own finally on
+    # the normal-completion path, so this always runs it a second time —
+    # close_all() is idempotent, the first call's status wins.
     try:
-        await bridge.connect_internal_services()
-    except Exception as e:
-        logger.error(f"[{client.id}] Fallo al inicializar puentes internos. {e}")
-        await websocket.close(code=1011, reason="Problema estableciendo microservicios internos del hub.")
-        return
+        try:
+            await bridge.connect_internal_services()
+        except Exception as e:
+            logger.error(f"[{client.id}] Fallo al inicializar puentes internos. {e}")
+            await websocket.close(code=1011, reason="Problema estableciendo microservicios internos del hub.")
+            return
 
-    # 3.5 HEALTH CHECK — verifica disponibilidad de servicios antes de abrir la sesión
-    if not await bridge.health_check():
-        logger.warning(f"[{client.id}] Health check falló. Cerrando sesión.")
-        await websocket.close(code=1011, reason="Servicio crítico no disponible.")
-        return
+        # 3.5 HEALTH CHECK — verifica disponibilidad de servicios antes de abrir la sesión
+        if not await bridge.health_check():
+            logger.warning(f"[{client.id}] Health check falló. Cerrando sesión.")
+            await websocket.close(code=1011, reason="Servicio crítico no disponible.")
+            return
 
-    # 3.6 SEND READY — confirms session is established and announces capabilities
-    resolved_agent = handshake.agent or default_agent
-    try:
-        await websocket.send_json({
-            "type": "ready",
-            "session_id": session_id,
-            "agent": resolved_agent,
-            "input_mode": handshake.input_mode,
-            "output_mode": handshake.output_mode,
-            "capabilities": {
-                "barge_in": config.barge_in_enabled,
-                "tts": "audio" in handshake.output_mode,
-                "transcriber": handshake.input_mode == "audio",
-            },
-        })
-    except Exception as e:
-        logger.warning(f"[{client.id}] Failed to send ready: {e}")
-        return
+        # 3.6 SEND READY — confirms session is established and announces capabilities
+        resolved_agent = handshake.agent or default_agent
+        try:
+            await websocket.send_json({
+                "type": "ready",
+                "session_id": session_id,
+                "agent": resolved_agent,
+                "input_mode": handshake.input_mode,
+                "output_mode": handshake.output_mode,
+                "capabilities": {
+                    "barge_in": config.barge_in_enabled,
+                    "tts": "audio" in handshake.output_mode,
+                    "transcriber": handshake.input_mode == "audio",
+                },
+            })
+        except Exception as e:
+            logger.warning(f"[{client.id}] Failed to send ready: {e}")
+            return
 
-    # 4. LANZAR LOOPS CONCURRENTES
-    try:
-        await bridge.run()
-    except Exception as e:
-        logger.error(f"[{client.id}] Error crítico de Runtime en el Puente Principal: {e}")
+        # 4. LANZAR LOOPS CONCURRENTES
+        try:
+            await bridge.run()
+        except Exception as e:
+            logger.error(f"[{client.id}] Error crítico de Runtime en el Puente Principal: {e}")
     finally:
+        await bridge.close_all(status="error")
         if "DISCONNECTED" not in websocket.client_state.name:
             try:
                 await websocket.close()
