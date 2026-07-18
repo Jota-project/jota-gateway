@@ -108,7 +108,6 @@ SQLModel table (`__tablename__ = "clients"`) with the following columns:
 | `max_silence_turns` | `int` | `3` | Consecutive silence events before session is closed |
 | `push_enabled` | `bool` | `True` | Whether agent-initiated push turns are accepted |
 | `tool_calls_enabled` | `bool` | `False` | Whether `tool_call` WS messages are sent for this client (opt-in) |
-| `system_prompt_extra` | `str?` | `None` | Appended to the system prompt for all turns |
 
 ### `src/db/database.py`
 
@@ -178,7 +177,7 @@ db_client.invalidate(client_key)        # evict from 60s TTL cache
 ```
 
 `ClientConfig` fields mapped from `ClientRecord`:
-`stt_language`, `stt_vad_thold`, `tts_voice`, `tts_speed`, `barge_in_enabled`, `barge_in_min_chars`, `system_prompt_extra`, `silence_timeout_s`, `max_silence_turns`, `push_enabled`.
+`stt_language`, `stt_vad_thold`, `tts_voice`, `tts_speed`, `barge_in_enabled`, `barge_in_min_chars`, `silence_timeout_s`, `max_silence_turns`, `push_enabled`.
 
 The singleton `db_client = DbClient()` is imported from this module everywhere. An optional `engine` constructor parameter allows injecting a test engine.
 

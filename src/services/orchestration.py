@@ -14,7 +14,6 @@ async def call_orchestrator(
     session_key: str,
     user_id: str,
     model_id: Optional[str] = None,
-    system_prompt_extra: Optional[str] = None,
     tracker: Optional[PipelineTracker] = None,
     on_token: Optional[Callable[[str], Awaitable[None]]] = None,
     on_tool_call: Optional[Callable[[ToolCallEvent], Awaitable[None]]] = None,
@@ -34,7 +33,6 @@ async def call_orchestrator(
         text=text,
         user_id=user_id,
         model_id=model_id,
-        system_prompt_extra=system_prompt_extra,
         session_key=session_key,
     ):
         if event.type == "token":

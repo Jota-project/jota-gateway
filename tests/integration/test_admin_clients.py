@@ -180,3 +180,30 @@ def test_patch_client_tool_calls_enabled(http):
     )
     assert r.status_code == 200
     assert r.json()["tool_calls_enabled"] is True
+
+
+# --- system_prompt_extra removed (#100) ---
+# `ClientCreate`/`ClientUpdate` have no `model_config` overriding pydantic's
+# default `extra="ignore"` behavior, so an unrecognized field in the request
+# body is silently dropped rather than rejected with 422.
+
+def test_create_client_ignores_system_prompt_extra(http):
+    r = http.post(
+        "/admin/clients",
+        json={"name": "Legacy", "system_prompt_extra": "Habla en inglés"},
+        headers=HEADERS,
+    )
+    assert r.status_code == 201
+    data = r.json()
+    assert "system_prompt_extra" not in data
+
+
+def test_patch_client_ignores_system_prompt_extra(http):
+    created = http.post("/admin/clients", json={"name": "Legacy"}, headers=HEADERS).json()
+    r = http.patch(
+        f"/admin/clients/{created['id']}",
+        json={"system_prompt_extra": "Habla en inglés"},
+        headers=HEADERS,
+    )
+    assert r.status_code == 200
+    assert "system_prompt_extra" not in r.json()
