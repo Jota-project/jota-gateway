@@ -7,3 +7,5 @@ data/
 docs/superpowers/plans/
 docs/superpowers/specs/
 *.egg-info/
+.DS_Store
+*.vsix
