@@ -1,3 +1,10 @@
+## [1.14.3](https://github.com/Jota-project/jota-gateway/compare/v1.14.2...v1.14.3) (2026-07-18)
+
+
+### Bug Fixes
+
+* remove system_prompt_extra entirely (issue [#100](https://github.com/Jota-project/jota-gateway/issues/100)) ([#141](https://github.com/Jota-project/jota-gateway/issues/141)) ([1671c17](https://github.com/Jota-project/jota-gateway/commit/1671c17c6281d826c4a777729a36601050b7b3d9))
+
 ## [1.14.2](https://github.com/Jota-project/jota-gateway/compare/v1.14.1...v1.14.2) (2026-07-17)
 
 
