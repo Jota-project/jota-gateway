@@ -1,3 +1,4 @@
+import contextlib
 import logging
 from typing import Awaitable, Callable, Optional
 
@@ -29,27 +30,34 @@ async def call_orchestrator(
     _first_token = True
     _token_count = 0
 
-    async for event in orchestrator.stream_response(
+    # aclosing() guarantees stream_response()'s generator is closed on every
+    # exit path, including the `raise` below — exiting an `async for` early
+    # via an exception in the loop body does NOT call the generator's
+    # aclose() on its own, leaving it suspended and its `finally` (which
+    # unregisters the turn in TurnRegistry) deferred to whenever Python's
+    # asyncgen GC finalizer gets around to it (issue #99 follow-up).
+    async with contextlib.aclosing(orchestrator.stream_response(
         text=text,
         user_id=user_id,
         model_id=model_id,
         session_key=session_key,
-    ):
-        if event.type == "token":
-            if _first_token:
-                if tracker:
-                    await tracker.record("llm_first_token")
-                _first_token = False
-            _token_count += 1
-            if on_token:
-                await on_token(event.content)
+    )) as stream:
+        async for event in stream:
+            if event.type == "token":
+                if _first_token:
+                    if tracker:
+                        await tracker.record("llm_first_token")
+                    _first_token = False
+                _token_count += 1
+                if on_token:
+                    await on_token(event.content)
 
-        elif event.type == "tool_call":
-            if on_tool_call and event.tool_call is not None:
-                await on_tool_call(event.tool_call)
+            elif event.type == "tool_call":
+                if on_tool_call and event.tool_call is not None:
+                    await on_tool_call(event.tool_call)
 
-        elif event.type == "error":
-            raise RuntimeError(event.content)
+            elif event.type == "error":
+                raise RuntimeError(event.content)
 
     if tracker:
         await tracker.record("llm_done", token_count=_token_count)

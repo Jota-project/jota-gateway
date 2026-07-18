@@ -62,6 +62,11 @@ El gateway funciona correctamente en **happy path** (sesión única + backend sa
 - [x] **#103** 🔴 `[005]` — `OpenClawClient.connect()` does not close prior socket/tasks on reconnect — **S** — cerrado por PR (rama `fix/103-openclaw-connect-leak`)
 - [ ] **#104** 🔴 `[006]` — `_last_error` not cleared after successful reconnect — **XS** — *regresión auditoría junio*
 
+**Revisión post-cierre (code review, rama `fix/phase1-review-followups`):** #99/#101/#103 tenían bugs reales sin tests que los cubrieran, encontrados releyendo el código ya mergeado (no solo el diff original):
+- **#101** — `close_all()` ponía `self._closed = True` *antes* del teardown real; si la primera llamada era cancelada a mitad, la red de seguridad de `routes.py` (añadida por el propio #101) se volvía un no-op permanente y `tracker.close()` nunca corría. Fix: `_closed` solo se marca al completar el teardown, todo el cuerpo serializado por un `_close_lock`.
+- **#103** — `_listen()` no llamaba a `error_all()` en su rama de cancelación (solo en la de excepción real), así que cada reconexión huerfanizaba cualquier turn en vuelo para siempre (sin timeout en la cadena) y bloqueaba el `session_key` con `TurnInProgress`. Fix: `error_all()` también en la rama de cancelación (sin disparar `on_disconnect`).
+- **#99** — `call_orchestrator()` hacía `raise` dentro del `async for`, abandonando el generador de `stream_response()` sin cerrarlo — su `finally: unregister()` quedaba diferido al GC. Fix: `contextlib.aclosing()` en `call_orchestrator` + reordenar `_finished = True` para que se fije *antes* del yield terminal (si no, cerrar el generador tras un evento terminal disparaba un `chat.abort` espurio).
+
 ### 🟠 Fase 2 — Seguridad & auth (semana 3)
 
 **Objetivo:** cerrar los huecos de seguridad y autorización.
