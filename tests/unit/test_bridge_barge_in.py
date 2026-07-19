@@ -1,5 +1,6 @@
 """Tests for barge-in: _cancel_active_turn, _on_transcription, close_all."""
 import asyncio
+import logging
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from src.services.bridge import JotaBridge
@@ -132,6 +133,46 @@ async def test_final_sends_transcription_to_client(make_bridge):
     bridge.client_ws.send_json.assert_called_once_with(
         {"type": "transcription", "text": "hola mundo"}
     )
+
+
+async def test_final_transcription_is_not_logged_at_info(make_bridge, caplog):
+    """#106: the bridge's own final-transcription log moved from INFO to DEBUG.
+
+    Scope is the `src.services.bridge` logger only. The `pipeline_tracker` still
+    records the transcript at INFO (`tracker.record("transcription_final", ...)`)
+    — that separate leak is tracked by #133 and is out of scope for #106.
+    """
+    bridge = make_bridge()
+    text = "0123456789" * 4 + "TOP-SECRET-SUFFIX"
+
+    with caplog.at_level(logging.INFO, logger="src.services.bridge"):
+        await bridge._on_transcription(text, True)
+
+    bridge_info_logs = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "src.services.bridge" and r.levelno >= logging.INFO
+    ]
+    assert not any("Transcripción final" in m for m in bridge_info_logs)
+    assert not any("TOP-SECRET-SUFFIX" in m for m in bridge_info_logs)
+
+
+async def test_final_transcription_is_debug_only_and_truncated(make_bridge, caplog):
+    bridge = make_bridge()
+    text = "0123456789" * 4 + "TOP-SECRET-SUFFIX"
+
+    with caplog.at_level(logging.DEBUG, logger="src.services.bridge"):
+        await bridge._on_transcription(text, True)
+
+    records = [
+        record
+        for record in caplog.records
+        if "Transcripción final:" in record.getMessage()
+    ]
+    assert len(records) == 1
+    assert records[0].levelno == logging.DEBUG
+    assert text[:40] in records[0].getMessage()
+    assert text[40:] not in records[0].getMessage()
 
 
 async def test_final_does_not_start_active_turn(make_bridge):

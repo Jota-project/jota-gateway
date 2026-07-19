@@ -6,6 +6,8 @@ import time
 
 from src.core.agent_policy import AgentPolicyError, resolve_agent
 from src.core.exceptions import ClientInactive, ClientNotFound
+from src.core.logging import fingerprint_key
+from src.core.network import resolve_client_ip
 from src.models.schemas import Handshake
 from src.services.bridge import JotaBridge
 from src.services.db_client import db_client
@@ -33,14 +35,22 @@ async def gateway_websocket(websocket: WebSocket):
         return
 
     # 2. RESOLVER IDENTIDAD EN JOTA-DB
+    request_id = websocket.state.request_id
+    key_fingerprint = fingerprint_key(handshake.client_key)
     try:
         client, config = await db_client.get_session(handshake.client_key)
     except (ClientNotFound, ClientInactive):
-        logger.warning(f"[{handshake.client_key}] Handshake rechazado: key inválida o cliente inactivo.")
+        logger.warning(
+            f"request_id={request_id} source_ip={resolve_client_ip(websocket)} "
+            f"fp={key_fingerprint} Handshake rechazado: key inválida o cliente inactivo."
+        )
         await websocket.close(code=1008, reason="Clave de cliente invalida o inactiva.")
         return
 
-    logger.info(f"[{client.id}] Handshake verificado: key={handshake.client_key!r}")
+    logger.info(
+        f"request_id={request_id} client_id={client.id} fp={key_fingerprint} "
+        "Handshake verificado."
+    )
 
     # 3. INSTANCIAR EL PUENTE DE MICROSERVICIOS
     app_state = websocket.scope["app"].state
