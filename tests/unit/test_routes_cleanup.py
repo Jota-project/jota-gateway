@@ -34,6 +34,10 @@ class FakeWebSocket:
     def __init__(self, handshake_msg, app_state, send_json_raises_on=None):
         self._handshake_msg = handshake_msg
         self.scope = {"app": SimpleNamespace(state=app_state)}
+        # RequestIdMiddleware (issue #106) assigns scope["state"]["request_id"]
+        # for every real connection; routes.py reads it via websocket.state.
+        # The middleware is bypassed here (route driven directly), so model it.
+        self.state = SimpleNamespace(request_id="test-request-id")
         self._send_json_raises_on = send_json_raises_on
         self.sent: list[dict] = []
         self.closed_with = None
