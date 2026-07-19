@@ -33,11 +33,13 @@ def _parse_allowed_agents(raw: Optional[str]) -> Optional[List[str]]:
     Returns None for the legacy "empty/null" inputs so that an admin who
     has not configured the field exercises the no-restriction path.
     """
+    # The "null" string check below is load-bearing: json.loads("null")
+    # returns Python None, which would slip past the isinstance check and
+    # raise a confusing ValueError. Intercept it explicitly as "no
+    # restriction" instead.
     if raw is None or raw == "" or raw == "null":
         return None
     parsed = json.loads(raw)
-    if parsed is None:
-        return None
     if not isinstance(parsed, list):
         raise ValueError(
             f"allowed_agents must be a JSON list, got {type(parsed).__name__}"
