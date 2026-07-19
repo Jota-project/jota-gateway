@@ -138,17 +138,42 @@ def test_generation_guard_prevents_stale_repopulation_after_concurrent_invalidat
     assert "race-key" not in client._session_cache
 
 
-def test_concurrent_readers_and_invalidate_never_leave_stale_cache():
+def test_concurrent_readers_and_invalidate_never_leave_stale_cache(tmp_path):
     """100 get_session concurrentes + 1 invalidate intercalado: una lectura
     final debe reflejar siempre el estado post-mutación, nunca el valor
-    anterior a la invalidación."""
-    engine = _engine_with(ClientRecord(name="v1", client_key="hammer-key"))
+    anterior a la invalidación.
+
+    A diferencia de `_engine_with`, este motor usa un fichero SQLite real
+    en disco (sin `StaticPool`) para que cada uno de los 100 hilos obtenga
+    su propia conexión DBAPI real en lugar de contender por la única
+    conexión compartida que `:memory:` + `StaticPool` fuerza. Con 100
+    hilos golpeando una sola conexión SQLite compartida, SQLAlchemy/SQLite
+    pueden devolver filas corruptas de forma esporádica, lo que hacía que
+    este test fallase de forma silenciosa (excepciones perdidas dentro de
+    los hilos) en vez de fallar de forma explícita.
+    """
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/test.db",
+        connect_args={"check_same_thread": False},
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as s:
+        s.add(ClientRecord(name="v1", client_key="hammer-key"))
+        s.commit()
+
     client = DbClient(engine=engine)
 
-    def reader():
-        asyncio.run(client.get_session("hammer-key"))
+    reader_errors = []
+    errors_lock = threading.Lock()
 
-    threads = [threading.Thread(target=reader) for _ in range(100)]
+    def reader(idx):
+        try:
+            asyncio.run(client.get_session("hammer-key"))
+        except Exception as exc:  # cualquier fallo del lector debe ser visible, no silencioso
+            with errors_lock:
+                reader_errors.append((idx, exc))
+
+    threads = [threading.Thread(target=reader, args=(i,)) for i in range(100)]
     for t in threads:
         t.start()
 
@@ -161,6 +186,8 @@ def test_concurrent_readers_and_invalidate_never_leave_stale_cache():
 
     for t in threads:
         t.join(timeout=5)
+
+    assert reader_errors == [], f"reader thread(s) raised: {reader_errors}"
 
     client_obj, _ = asyncio.run(client.get_session("hammer-key"))
     assert client_obj.name == "v2"
