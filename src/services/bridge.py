@@ -442,7 +442,7 @@ class JotaBridge:
         # Final: cancel any running turn, notify client.
         # El orquestador se llama cuando el cliente envíe {"type": "send", "text": "..."}.
         await self._cancel_active_turn()
-        logger.info(f"[{self.client_id}] Transcripción final: '{text}'")
+        logger.debug(f"[{self.client_id}] Transcripción final: '{text[:40]}'")
         try:
             await self.client_ws.send_json({"type": "transcription", "text": text})
         except Exception as e:
