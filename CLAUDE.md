@@ -340,6 +340,16 @@ On first startup (`create_db_and_tables()` in the lifespan), the schema is creat
 
 ---
 
+## Production readiness / log hygiene
+
+`client_key` is a bearer credential and must never be written to logs in full or as a plaintext prefix. When correlation is necessary, use `src.core.logging.fingerprint_key(value)`, which returns the first 8 hexadecimal characters of the value's SHA-256 digest, and log it as `fp=<fingerprint>`. After successful authentication, use `client.id` as the primary correlation ID.
+
+Inbound HTTP requests and WebSocket connections receive a gateway-owned UUID4 in `scope["state"]["request_id"]` via `RequestIdMiddleware`. This identifier is local to the gateway and unrelated to OpenClaw `req_id`, `turn_id`, or `session_key`. Source IP resolution for HTTP and WebSocket must go through `resolve_client_ip()` so `X-Real-IP` is trusted only from `TRUSTED_PROXIES`.
+
+User transcripts must not be logged at INFO or above. DEBUG transcript logs must be deliberately truncated; the current maximum for final transcriptions is 40 characters.
+
+---
+
 ## Testing
 
 Tests live in `tests/integration/` and `tests/unit/`.
