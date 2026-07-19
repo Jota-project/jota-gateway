@@ -84,7 +84,7 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 **Estrategia de rama (decisión 2026-07-18):** a diferencia de Fase 1 (cada issue directa a `main`), Fase 2 usa una rama larga `phase/2-security` creada desde `main` (una vez mergeado PR #153). Cada issue (#105–#109) se desarrolla en su propia rama `fix/XXX-...`, mergeada a `phase/2-security` vía PR individual. Al cerrar las 5 issues, un PR único `phase/2-security` → `main` cierra la fase completa.
 
 - [x] **#105** 🟠 `[007]` — `default_agent`/`allowed_agents` persisted but never enforced — **M** — semántica decidida: `None`=sin restricción, `[]`=denegado, `["x"]`=solo `x` — cerrado por #154
-- [ ] **#106** 🟠 `[008]` — Full `client_key` written to logs — **XS**
+- [x] **#106** 🟠 `[008]` — Full `client_key` written to logs — **XS** — fingerprint SHA-256 de 8 hex + request ID + client.id post-auth; transcripts a DEBUG truncado — cerrado por #155
 - [ ] **#107** 🟠 `[009]` — Cache invalidation race + thread-safety — **M**
 - [ ] **#108** 🟠 `[010]` — `barge_in_enabled=False` ignored by the bridge — **XS**
 - [ ] **#109** 🟠 `[011]` — `push_enabled=False` suppresses only lifecycle start, not push payloads — **S**
