@@ -99,11 +99,24 @@ async def test_invalidate_advances_generation_counter():
     assert client._generations["gen-key"] == 2
 
 
-def test_generation_guard_prevents_stale_repopulation_after_concurrent_invalidate(monkeypatch):
+def test_generation_guard_prevents_stale_repopulation_after_concurrent_invalidate(monkeypatch, tmp_path):
     """Si invalidate() corre en otro hilo mientras get_session() está en
     vuelo (incluso antes de que la consulta a BD arranque), el resultado
-    obsoleto no debe repoblar el caché compartido."""
-    engine = _engine_with(ClientRecord(name="Before", client_key="race-key"))
+    obsoleto no debe repoblar el caché compartido.
+
+    Motor de BD en fichero (sin `StaticPool`) para que el hilo lector y el
+    hilo principal del test obtengan cada uno su propia conexión DBAPI real,
+    igual que en `test_concurrent_readers_and_invalidate_never_leave_stale_cache`.
+    """
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/test.db",
+        connect_args={"check_same_thread": False},
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as s:
+        s.add(ClientRecord(name="Before", client_key="race-key"))
+        s.commit()
+
     client = DbClient(engine=engine)
 
     query_started = threading.Event()
@@ -193,13 +206,26 @@ def test_concurrent_readers_and_invalidate_never_leave_stale_cache(tmp_path):
     assert client_obj.name == "v2"
 
 
-def test_rotated_key_does_not_poison_cache_when_read_races_the_commit(monkeypatch):
+def test_rotated_key_does_not_poison_cache_when_read_races_the_commit(monkeypatch, tmp_path):
     """Simula rotate_client_key: la consulta de un lector arranca y LEE la
     fila con la key vieja ANTES de que el admin mute + commitee + invalide
     (orden fijado por el fix de #107 en admin_routes.py). El resultado
     obsoleto no debe repoblar el caché, y una lectura posterior de la key
-    vieja debe fallar con ClientNotFound."""
-    engine = _engine_with(ClientRecord(name="R", client_key="old-key"))
+    vieja debe fallar con ClientNotFound.
+
+    Motor de BD en fichero (sin `StaticPool`) para que el hilo lector y el
+    hilo principal del test obtengan cada uno su propia conexión DBAPI real,
+    igual que en `test_concurrent_readers_and_invalidate_never_leave_stale_cache`.
+    """
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/test.db",
+        connect_args={"check_same_thread": False},
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as s:
+        s.add(ClientRecord(name="R", client_key="old-key"))
+        s.commit()
+
     client = DbClient(engine=engine)
 
     first_call_done = threading.Event()
