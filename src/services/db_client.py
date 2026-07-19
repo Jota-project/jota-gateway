@@ -70,7 +70,7 @@ class DbClient:
             ClientNotFound: la key no existe.
             ClientInactive: el cliente está desactivado.
         """
-        async with self._session_lock:
+        with self._session_lock:
             if client_key in self._session_cache:
                 return self._session_cache[client_key]
 
@@ -105,7 +105,7 @@ class DbClient:
             allowed_agents=_parse_allowed_agents(record.allowed_agents),
         )
         result = (client, config)
-        async with self._session_lock:
+        with self._session_lock:
             self._session_cache[client_key] = result
         return result
 
