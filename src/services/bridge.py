@@ -421,8 +421,8 @@ class JotaBridge:
                 return  # client disconnected
             await self.tracker.record("transcription_partial", text_len=len(text))
 
-            # Barge-in: interrupt active turn if partial is substantial enough
-            if len(text) >= self.config.barge_in_min_chars:
+            # Barge-in: interrupt active turn if enabled and partial is substantial enough
+            if self.config.barge_in_enabled and len(text) >= self.config.barge_in_min_chars:
                 if await self._cancel_active_turn():
                     logger.info(f"[{self.client_id}] Barge-in: turno cancelado por parcial '{text[:30]}'")
                     await self.tracker.record("barge_in")
