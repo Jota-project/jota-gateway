@@ -307,7 +307,7 @@ def test_chat_completions_with_valid_key_uses_real_client_session_key(client_unt
         headers=ha_bearer_headers,
     )
 
-    expected = make_session_key("main", CLIENT_ID)
+    expected = make_session_key("openclaw", CLIENT_ID)
     assert captured.get("session_key") == expected
     assert captured.get("user_id") == CLIENT_ID
 

@@ -228,14 +228,27 @@ The singleton `db_client = DbClient()` is imported from this module everywhere. 
 
 ### Session key derivation
 
-Each orchestrator turn uses a session key derived from the Handshake `agent` field and the client UUID:
+Each orchestrator turn uses a session key derived from the agent name and the client UUID:
 
 ```
 session_key = f"agent:{agent}:{client.id}"
 ```
 
-If `agent` is not provided in the Handshake, `gateway_info.default_agent_id` (received from OpenClaw at connect time) is used.
-The HA REST endpoint (`/v1/chat/completions`) uses a fixed key: `agent:{default_agent_id}:ha`.
+The `agent` is resolved by `src.core.agent_policy.resolve_agent(requested, client_config, gateway_info)` at the call site — WS handshake in `routes.py`, REST `/v1/chat/completions` in `openai_routes.py`. The cascade is:
+
+1. `requested` — `handshake.agent` (WS) or `body.model` (REST), if non-empty after stripping.
+2. `client_config.default_agent` — set per-client by admin via the CRUD.
+3. `gateway_info.default_agent_id` — server-wide default from OpenClaw's `hello-ok`.
+4. `"main"` — last-resort fallback (preserves legacy REST trusted-origin behavior when neither config nor gateway info is available).
+
+Validation runs after the cascade (issue #105):
+
+- If `client_config.allowed_agents` is an explicit list (`None` skips this check), the resolved agent must be in it.
+- If the agent was explicitly requested (`requested is not None`) and `gateway_info` is available, the resolved agent must be in `gateway_info.agents`. Cascade defaults are trusted server-side configuration, not user input — they skip the roster check.
+
+WS violation → close 1008 with a specific reason. REST violation → 403 JSON body with `{"error":"forbidden","reason":"agent_not_permitted"|"agent_not_available","message":...}`. The REST legacy trusted-origin path (no Bearer) skips `resolve_agent` entirely and uses the gateway default directly — preserves historical behavior for loopback callers.
+
+The HA REST endpoint (`/v1/chat/completions`) uses `client_id="ha"` for the trusted-origin legacy path and the caller's UUID otherwise.
 
 `client_id_from_session_key(sk)` extracts the client ID via `sk.rsplit(":", 1)[-1]` — safe for keys containing multiple colons (e.g. Telegram user IDs).
 

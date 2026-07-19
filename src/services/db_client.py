@@ -7,8 +7,9 @@ Interfaz pública invariante:
   db_client.get_session(client_key) → (Client, ClientConfig)
   db_client.invalidate(client_key)  → None
 """
+import json
 import logging
-from typing import Optional
+from typing import List, Optional
 
 from sqlmodel import Session, select
 
@@ -19,6 +20,31 @@ from src.db.models import ClientRecord
 from src.models.schemas import Client, ClientConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_allowed_agents(raw: Optional[str]) -> Optional[List[str]]:
+    """Parse the JSON-encoded `allowed_agents` field from ClientRecord.
+
+    - None / "" / "null"  → None   (sin restricción)
+    - "[]"                 → []     (deniega todo)
+    - '["a","b"]'         → ["a", "b"]
+    - malformed JSON       → raises ValueError (fail loud; never silently bypass)
+
+    Returns None for the legacy "empty/null" inputs so that an admin who
+    has not configured the field exercises the no-restriction path.
+    """
+    # The "null" string check below is load-bearing: json.loads("null")
+    # returns Python None, which would slip past the isinstance check and
+    # raise a confusing ValueError. Intercept it explicitly as "no
+    # restriction" instead.
+    if raw is None or raw == "" or raw == "null":
+        return None
+    parsed = json.loads(raw)
+    if not isinstance(parsed, list):
+        raise ValueError(
+            f"allowed_agents must be a JSON list, got {type(parsed).__name__}"
+        )
+    return [str(x) for x in parsed]
 
 
 class DbClient:
@@ -75,6 +101,8 @@ class DbClient:
             max_silence_turns=record.max_silence_turns,
             push_enabled=record.push_enabled,
             tool_calls_enabled=record.tool_calls_enabled,
+            default_agent=record.default_agent,
+            allowed_agents=_parse_allowed_agents(record.allowed_agents),
         )
         result = (client, config)
         async with self._session_lock:
