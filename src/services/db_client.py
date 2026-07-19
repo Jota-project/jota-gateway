@@ -58,6 +58,7 @@ class DbClient:
     def __init__(self, engine=None):
         self._engine = engine
         self._session_cache, self._session_lock = make_cache(maxsize=500, ttl=60)
+        self._generations: dict[str, int] = {}
 
     def _get_engine(self):
         return self._engine if self._engine is not None else get_engine()
@@ -66,6 +67,12 @@ class DbClient:
         """
         Resuelve client_key → (Client, ClientConfig). Resultado cacheado 60 s.
 
+        Usa un contador de generación por-key para evitar repoblar el
+        caché con un valor obsoleto: si invalidate() corre en otro hilo
+        mientras la consulta a BD está en vuelo, la generación capturada
+        antes de la consulta ya no coincide al terminar y el resultado NO
+        se escribe en caché (el siguiente acceso volverá a consultar BD).
+
         Raises:
             ClientNotFound: la key no existe.
             ClientInactive: el cliente está desactivado.
@@ -73,6 +80,7 @@ class DbClient:
         with self._session_lock:
             if client_key in self._session_cache:
                 return self._session_cache[client_key]
+            generation_before = self._generations.get(client_key, 0)
 
         with Session(self._get_engine()) as session:
             record: Optional[ClientRecord] = session.exec(
@@ -106,12 +114,21 @@ class DbClient:
         )
         result = (client, config)
         with self._session_lock:
-            self._session_cache[client_key] = result
+            if self._generations.get(client_key, 0) == generation_before:
+                self._session_cache[client_key] = result
         return result
 
     def invalidate(self, client_key: str) -> None:
-        """Elimina la entrada del caché. Llamar tras cualquier mutación en admin."""
-        self._session_cache.pop(client_key, None)
+        """Elimina la entrada del caché y avanza su generación.
+
+        Seguro de llamar desde cualquier hilo (p.ej. handlers `def`
+        síncronos de admin_routes.py, ejecutados en el threadpool de
+        Starlette, distinto del hilo del event loop). Llamar siempre
+        DESPUÉS de session.commit() en el mismo call site.
+        """
+        with self._session_lock:
+            self._session_cache.pop(client_key, None)
+            self._generations[client_key] = self._generations.get(client_key, 0) + 1
 
 
 # Singleton — importar este objeto directamente
