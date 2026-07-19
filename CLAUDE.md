@@ -181,6 +181,8 @@ db_client.invalidate(client_key)        # evict from 60s TTL cache
 
 The singleton `db_client = DbClient()` is imported from this module everywhere. An optional `engine` constructor parameter allows injecting a test engine.
 
+`invalidate()` must be called **after** the triggering `session.commit()`, never before — calling it first reopens the exact cache-repopulation race the generation-counter guard exists to close (see the Cache pattern section).
+
 ---
 
 ## WebSocket session lifecycle (`routes.py` → `bridge.py`)
@@ -328,7 +330,9 @@ The `/v1/*` routes use `Depends(resolve_ha_caller)` (`src/api/openai_routes.py`)
 
 ## Cache pattern (`src/core/cache.py`)
 
-`make_cache(maxsize, ttl)` returns `(TTLCache, asyncio.Lock)`. The lock must wrap **only dict access**, never IO calls — acquire lock to check/set, release before any await.
+`make_cache(maxsize, ttl)` returns `(TTLCache, threading.Lock)`. A real OS-level mutex, not `asyncio.Lock`, because callers span both the event loop (async handlers) and Starlette's threadpool (sync `def` route handlers, e.g. `admin_routes.py`) — `asyncio.Lock` is only safe to acquire from the loop it's bound to. The lock must wrap **only dict access, including TTLCache's internal expiry housekeeping** (`in`, `[]`, `.pop()` all trigger it), never IO calls — acquire lock to check/set, release before any query or await.
+
+Callers that cache the result of an external lookup (e.g. `DbClient._session_cache`) must guard against a stale write racing a concurrent invalidation: capture a per-key generation counter under the lock before the lookup, then only write to cache if the generation is unchanged after the lookup completes. See `DbClient.get_session` / `DbClient.invalidate` for the reference implementation.
 
 ---
 

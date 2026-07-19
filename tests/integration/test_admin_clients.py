@@ -1,7 +1,9 @@
 """Tests para /admin/clients/* CRUD."""
 import pytest
 from sqlalchemy.pool import StaticPool
-from sqlmodel import SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine
+
+from src.services.db_client import db_client
 
 
 ADMIN_TOKEN = "test-admin-token"
@@ -143,6 +145,56 @@ def test_rotate_key(http):
     new_key = r.json()["client_key"]
     assert new_key != old_key
     assert len(new_key) > 20
+
+
+# --- INVALIDATE ORDERING (issue #107) ---
+
+def test_delete_client_commits_before_invalidating_cache(http, monkeypatch):
+    created = http.post("/admin/clients", json={"name": "Del"}, headers=HEADERS).json()
+
+    order = []
+    original_commit = Session.commit
+    original_invalidate = db_client.invalidate
+
+    def spy_commit(self):
+        order.append("commit")
+        return original_commit(self)
+
+    def spy_invalidate(client_key):
+        order.append("invalidate")
+        return original_invalidate(client_key)
+
+    monkeypatch.setattr(Session, "commit", spy_commit)
+    monkeypatch.setattr(db_client, "invalidate", spy_invalidate)
+
+    r = http.delete(f"/admin/clients/{created['id']}", headers=HEADERS)
+
+    assert r.status_code == 204
+    assert order == ["commit", "invalidate"]
+
+
+def test_rotate_key_commits_before_invalidating_cache(http, monkeypatch):
+    created = http.post("/admin/clients", json={"name": "R"}, headers=HEADERS).json()
+
+    order = []
+    original_commit = Session.commit
+    original_invalidate = db_client.invalidate
+
+    def spy_commit(self):
+        order.append("commit")
+        return original_commit(self)
+
+    def spy_invalidate(client_key):
+        order.append("invalidate")
+        return original_invalidate(client_key)
+
+    monkeypatch.setattr(Session, "commit", spy_commit)
+    monkeypatch.setattr(db_client, "invalidate", spy_invalidate)
+
+    r = http.post(f"/admin/clients/{created['id']}/rotate-key", headers=HEADERS)
+
+    assert r.status_code == 200
+    assert order == ["commit", "invalidate"]
 
 
 # --- AUTH ---

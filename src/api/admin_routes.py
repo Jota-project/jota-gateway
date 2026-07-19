@@ -126,9 +126,10 @@ def delete_client(
     session: Session = Depends(get_db_session),
 ) -> None:
     rec = _get_or_404(session, client_id)
-    db_client.invalidate(rec.client_key)
+    client_key = rec.client_key
     session.delete(rec)
     session.commit()
+    db_client.invalidate(client_key)
 
 
 @router.post("/clients/{client_id}/rotate-key", response_model=ClientResponse)
@@ -137,11 +138,12 @@ def rotate_client_key(
     session: Session = Depends(get_db_session),
 ) -> ClientResponse:
     rec = _get_or_404(session, client_id)
-    db_client.invalidate(rec.client_key)
+    old_key = rec.client_key
     rec.client_key = secrets.token_urlsafe(32)
     session.add(rec)
     session.commit()
     session.refresh(rec)
+    db_client.invalidate(old_key)
     return ClientResponse.from_record(rec)
 
 
