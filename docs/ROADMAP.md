@@ -85,7 +85,7 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 
 - [x] **#105** 🟠 `[007]` — `default_agent`/`allowed_agents` persisted but never enforced — **M** — semántica decidida: `None`=sin restricción, `[]`=denegado, `["x"]`=solo `x` — cerrado por #154
 - [x] **#106** 🟠 `[008]` — Full `client_key` written to logs — **XS** — fingerprint SHA-256 de 8 hex + request ID + client.id post-auth; transcripts a DEBUG truncado — cerrado por #155
-- [ ] **#107** 🟠 `[009]` — Cache invalidation race + thread-safety — **M**
+- [x] **#107** 🟠 `[009]` — Cache invalidation race + thread-safety — **M** — threading.Lock cross-thread + contador de generación por-key + orden commit-antes-que-invalidate en admin_routes.py — cerrado por #157
 - [ ] **#108** 🟠 `[010]` — `barge_in_enabled=False` ignored by the bridge — **XS**
 - [ ] **#109** 🟠 `[011]` — `push_enabled=False` suppresses only lifecycle start, not push payloads — **S**
 
