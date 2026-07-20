@@ -87,7 +87,7 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 - [x] **#106** 🟠 `[008]` — Full `client_key` written to logs — **XS** — fingerprint SHA-256 de 8 hex + request ID + client.id post-auth; transcripts a DEBUG truncado — cerrado por #155
 - [x] **#107** 🟠 `[009]` — Cache invalidation race + thread-safety — **M** — threading.Lock cross-thread + contador de generación por-key + orden commit-antes-que-invalidate en admin_routes.py — cerrado por #157
 - [x] **#108** 🟠 `[010]` — `barge_in_enabled=False` ignored by the bridge — **XS** — gate en `_on_transcription` (`bridge.py:425`), partial siempre se reenvía al cliente independientemente del flag — cerrado por #158
-- [ ] **#109** 🟠 `[011]` — `push_enabled=False` suppresses only lifecycle start, not push payloads — **S**
+- [x] **#109** 🟠 `[011]` — `push_enabled=False` suppresses only lifecycle start, not push payloads — **S** — nuevo `_push_allowed()` como único punto de decisión, gatea `deliver_push`/`deliver_push_tool_call` — cerrado por #159
 
 ### 🟠 Fase 3 — Lifecycle & producción (semanas 4–5)
 
