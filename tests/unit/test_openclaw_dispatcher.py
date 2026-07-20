@@ -2,6 +2,9 @@ import pytest
 from unittest.mock import AsyncMock
 from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.registry import TurnRegistry, ClientRegistry
+from src.services.bridge import JotaBridge
+from src.services.reconnection import ConnectionState, ServiceStatus
+from src.models.schemas import Client, ClientConfig, Handshake
 
 
 def make_dispatcher():
@@ -9,6 +12,34 @@ def make_dispatcher():
     client_reg = ClientRegistry()
     dispatcher = FrameDispatcher(turn_reg, client_reg)
     return dispatcher, turn_reg, client_reg
+
+
+def _connected_status() -> ServiceStatus:
+    return ServiceStatus(
+        name="tts", state=ConnectionState.CONNECTED,
+        connected_at=None, reconnect_attempts=0, last_error=None,
+    )
+
+
+def make_real_bridge(client_id="hab_sito", push_enabled=True, tool_calls_enabled=False):
+    """A real JotaBridge (not AsyncMock) so dispatcher tests can exercise
+    _push_allowed() gating — mirrors tests/unit/test_bridge_push.py's
+    make_bridge(), kept local here to stay self-contained (issue #109)."""
+    client = Client(id=client_id, client_key="key-123", is_active=True)
+    config = ClientConfig(push_enabled=push_enabled, tool_calls_enabled=tool_calls_enabled)
+    ws = AsyncMock()
+    orchestrator = AsyncMock()
+    orchestrator.ping = AsyncMock(return_value=True)
+    tracker = AsyncMock()
+    handshake = Handshake(client_key="key-123", input_mode="text", output_mode=["text"], agent="main")
+    tts = AsyncMock()
+    tts.connect = AsyncMock(return_value=None)
+    bridge = JotaBridge(
+        client=client, config=config, client_ws=ws,
+        orchestrator=orchestrator, tts=tts, tracker=tracker, handshake=handshake,
+        client_registry=ClientRegistry(), default_agent="main",
+    )
+    return bridge, ws
 
 
 @pytest.mark.asyncio
@@ -183,3 +214,72 @@ async def test_session_tool_no_session_key_ignored():
         "payload": {"data": {"phase": "start", "name": "exec", "toolCallId": "call-1"}},
     }
     await dispatcher.dispatch(frame)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_chat_event_push_disabled_client_receives_nothing():
+    """#109: a chat push event routed through the real dispatcher→bridge
+    wiring for a push_enabled=False client, with NO turn_start ever sent,
+    must not reach the client — the acceptance criterion verbatim."""
+    dispatcher, _, client_reg = make_dispatcher()
+    bridge, ws = make_real_bridge(push_enabled=False)
+    client_reg.register("hab_sito", bridge)
+
+    payload = {"sessionKey": "agent:main:hab_sito", "runId": "r1", "seq": 1, "deltaText": "Push!"}
+    frame = {"type": "event", "event": "chat", "payload": payload}
+    await dispatcher.dispatch(frame)
+
+    ws.send_json.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_session_tool_push_disabled_client_receives_nothing():
+    dispatcher, _, client_reg = make_dispatcher()
+    bridge, ws = make_real_bridge(push_enabled=False, tool_calls_enabled=True)
+    client_reg.register("hab_sito", bridge)
+
+    payload = {
+        "sessionKey": "agent:main:hab_sito",
+        "data": {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {"command": "ls"}},
+    }
+    frame = {"type": "event", "event": "session.tool", "payload": payload}
+    await dispatcher.dispatch(frame)
+
+    ws.send_json.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_full_push_lifecycle_disabled_client_receives_nothing():
+    """Full agent start → chat → tool → agent end sequence through the real
+    dispatcher for a push_enabled=False client: zero frames at any point,
+    not just the first one — on_push_turn_start's own gate (Task-1-independent,
+    predates #109) already no-ops on start; this confirms deliver_push and
+    deliver_push_tool_call independently hold the line for whatever arrives
+    in between, and that nothing leaks around the (correctly) skipped
+    turn_start/turn_end pair."""
+    dispatcher, _, client_reg = make_dispatcher()
+    bridge, ws = make_real_bridge(push_enabled=False, tool_calls_enabled=True)
+    client_reg.register("hab_sito", bridge)
+
+    await dispatcher.dispatch({
+        "type": "event", "event": "agent",
+        "payload": {"sessionKey": "agent:main:hab_sito", "data": {"phase": "start"}},
+    })
+    await dispatcher.dispatch({
+        "type": "event", "event": "chat",
+        "payload": {"sessionKey": "agent:main:hab_sito", "deltaText": "Push!"},
+    })
+    await dispatcher.dispatch({
+        "type": "event", "event": "session.tool",
+        "payload": {
+            "sessionKey": "agent:main:hab_sito",
+            "data": {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {}},
+        },
+    })
+    await dispatcher.dispatch({
+        "type": "event", "event": "agent",
+        "payload": {"sessionKey": "agent:main:hab_sito", "data": {"phase": "end"}},
+    })
+
+    ws.send_json.assert_not_awaited()
+    assert bridge._push_turn_open is False
