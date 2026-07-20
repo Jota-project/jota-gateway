@@ -214,7 +214,7 @@ src/
 │   └── deps.py              get_admin_auth — dependencia de auth para admin
 ├── core/
 │   ├── config.py            Settings (pydantic-settings, .env)
-│   ├── cache.py             make_cache() — TTLCache + asyncio.Lock
+│   ├── cache.py             make_cache() — TTLCache + threading.Lock (cross-thread: event loop + Starlette threadpool)
 │   └── session_key.py       make_session_key() — formato canónico de session key
 ├── db/
 │   ├── models.py            ClientRecord (SQLModel) — identidad y config por cliente

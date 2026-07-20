@@ -27,6 +27,8 @@ class ClientConfig(BaseModel):
     max_silence_turns: int = 3
     push_enabled: bool = True
     tool_calls_enabled: bool = False
+    default_agent: Optional[str] = None
+    allowed_agents: Optional[List[str]] = None
 
     model_config = ConfigDict(extra="allow")
 

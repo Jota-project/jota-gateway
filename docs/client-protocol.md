@@ -41,7 +41,14 @@ El **primer mensaje** que envíes DEBE ser el handshake. Es el único mensaje si
 | `client_key` | string | ✓ | Clave de autenticación del cliente |
 | `input_mode` | `"audio"` \| `"text"` | ✓ | Cómo enviará datos este cliente |
 | `output_mode` | array | ✓ | Qué quiere recibir: `"text"`, `"audio"`, `"status"` |
-| `agent` | string | — | Agente OpenClaw a usar; omitir para usar el agente por defecto |
+| `agent` | string | — | Agente OpenClaw a usar; omitir para usar el agente por defecto (ver "Selección de agente" abajo) |
+
+### Selección de agente
+
+El agente efectivo de la sesión no es simplemente "el que pediste o el global": el gateway resuelve una cascada server-side (`requested` → `default_agent` configurado por el admin para tu `client_key` → default global de OpenClaw → `"main"`) y aplica dos comprobaciones de política antes de aceptar la conexión — ver `CLAUDE.md` ("Session key derivation") para el detalle completo. Como cliente solo necesitas saber dos cosas:
+
+1. Si omites `agent` en el handshake, el que acabes usando puede venir de una configuración por-cliente que un admin te haya asignado (no siempre el default global) — comprueba siempre `ready.agent`, no asumas cuál será.
+2. Pedir explícitamente un `agent` puede fallar de dos formas distintas (ver tabla siguiente): que ese agente no esté permitido para tu cliente, o que no exista en OpenClaw.
 
 ### Errores de handshake (el servidor cierra la conexión)
 
@@ -50,7 +57,8 @@ El **primer mensaje** que envíes DEBE ser el handshake. Es el único mensaje si
 | JSON inválido o campos incorrectos | 1008 | `"Handshake invalido"` |
 | `client_key` inválida o cliente inactivo | 1008 | `"Clave de cliente invalida o inactiva"` |
 | Servicio de identidad no disponible | 1011 | `"Servicio de identidad no disponible"` |
-| Agente solicitado no existe en OpenClaw | 1008 | `"Agent '{name}' not available"` |
+| Agente solicitado no está en la lista permitida para este cliente (`allowed_agents`) | 1008 | `"Agent '{name}' not permitted for this client."` |
+| Agente solicitado no existe en OpenClaw | 1008 | `"Agent '{name}' not available."` |
 | Orquestador no disponible tras health check | 1011 | `"Servicio crítico no disponible"` |
 
 > **El orquestador (OpenClaw) es el único servicio que puede cerrar la conexión en el handshake.** Transcriber y TTS ya **no** son críticos: si cualquiera de los dos no responde al arrancar la sesión, el gateway la abre igualmente en modo degradado y te lo notifica vía `status` (ver §8) — nunca cierra el WebSocket por esto. Antes de la versión que introdujo la reconexión automática (issue #46), un fallo de Transcriber en este punto sí cerraba la conexión con 1011; ya no es el caso.
@@ -441,6 +449,8 @@ OpenClaw puede iniciar turnos proactivamente sin que el usuario haya enviado nad
 ```
 
 El cliente no necesita distinguirlos de los turnos normales — el `turn_id` y `turn_seq` siguen la misma secuencia. Si `tool_calls_enabled` está activo, también pueden llegar mensajes `tool_call` (§5) intercalados.
+
+> **`push_enabled` (por defecto `True`, configurable por admin):** si tu `client_key` tiene este flag desactivado, no recibirás **ningún** mensaje de un turno iniciado por el agente — ni `turn_start`, ni `token`, ni audio, ni `tool_call` — para esa sesión. No hay ninguna señal explícita de que se haya suprimido un push; es indistinguible de que OpenClaw simplemente no haya iniciado ninguno. Si tu integración depende de notificaciones proactivas, confirma con el admin que `push_enabled=True` para tu cliente.
 
 > **Garantía de un único par por respuesta (issue #84):** cuando el agente hace tool use o razonamiento multi-paso, OpenClaw puede emitir varios eventos internos de inicio/fin para una sola respuesta LLM. El gateway los colapsa siempre en exactamente **un** `turn_start`/`turn_end` de cara al cliente — nunca verás duplicados. Si tu cliente implementó algún workaround para deduplicar `turn_end` repetidos (grace period, etc.) porque llegaban 2-3 veces por turno, ya no hace falta; puedes simplificarlo o quitarlo con seguridad.
 

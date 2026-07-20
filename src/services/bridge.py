@@ -421,8 +421,8 @@ class JotaBridge:
                 return  # client disconnected
             await self.tracker.record("transcription_partial", text_len=len(text))
 
-            # Barge-in: interrupt active turn if partial is substantial enough
-            if len(text) >= self.config.barge_in_min_chars:
+            # Barge-in: interrupt active turn if enabled and partial is substantial enough
+            if self.config.barge_in_enabled and len(text) >= self.config.barge_in_min_chars:
                 if await self._cancel_active_turn():
                     logger.info(f"[{self.client_id}] Barge-in: turno cancelado por parcial '{text[:30]}'")
                     await self.tracker.record("barge_in")
@@ -442,7 +442,7 @@ class JotaBridge:
         # Final: cancel any running turn, notify client.
         # El orquestador se llama cuando el cliente envíe {"type": "send", "text": "..."}.
         await self._cancel_active_turn()
-        logger.info(f"[{self.client_id}] Transcripción final: '{text}'")
+        logger.debug(f"[{self.client_id}] Transcripción final: '{text[:40]}'")
         try:
             await self.client_ws.send_json({"type": "transcription", "text": text})
         except Exception as e:
@@ -552,6 +552,17 @@ class JotaBridge:
         except Exception:
             pass
 
+    def _push_allowed(self) -> bool:
+        """Single decision point for whether an unsolicited (orchestrator-pushed)
+        frame may reach the client (issue #109): the client must have push
+        enabled AND a push turn must currently be open. Used by deliver_push
+        and deliver_push_tool_call so the check isn't duplicated/inconsistent
+        across the start vs. payload code paths — on_push_turn_start is the
+        only place that sets _push_turn_open True, and it already gates on
+        push_enabled before doing so.
+        """
+        return self.config.push_enabled and self._push_turn_open
+
     async def on_push_turn_start(self, session_key: str) -> None:
         if not self.config.push_enabled:
             # Intentionally do NOT set _push_turn_open here — push_enabled=False
@@ -603,6 +614,8 @@ class JotaBridge:
         self._push_audio_task = asyncio.create_task(_pipe_push_audio())
 
     async def deliver_push(self, payload: dict) -> None:
+        if not self._push_allowed():
+            return
         delta = payload.get("deltaText", "")
         if not delta:
             return
@@ -619,6 +632,8 @@ class JotaBridge:
             await self._push_tts.send_text_chunk(delta)
 
     async def deliver_push_tool_call(self, data: dict) -> None:
+        if not self._push_allowed():
+            return
         if not self.config.tool_calls_enabled:
             return
         tool_call = ToolCallEvent.from_session_tool_payload(data)

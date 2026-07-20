@@ -1,3 +1,5 @@
+import logging
+
 from alembic import command
 from sqlalchemy import create_engine, inspect, text
 from sqlmodel import SQLModel
@@ -90,3 +92,22 @@ def test_drop_system_prompt_extra_migration_applies_and_rolls_back(tmp_path, mon
     assert "system_prompt_extra" in columns
     assert columns["system_prompt_extra"]["nullable"] is True
     engine.dispose()
+
+
+def test_run_migrations_does_not_disable_existing_loggers(tmp_path, monkeypatch):
+    """migrations/env.py calls fileConfig(alembic.ini) on every run_migrations()
+    call — including at real gateway startup, not just in tests. alembic.ini's
+    [loggers] section only declares root/sqlalchemy/alembic, so fileConfig's
+    default disable_existing_loggers=True silently disables every already-
+    created src.* logger (main.py imports all of them before lifespan() calls
+    run_migrations()) for the rest of the process's life — no application log
+    line, including the security/audit ones, ever reaches stdout again."""
+    db_path = tmp_path / "logging_regression.db"
+    _point_at(monkeypatch, db_path)
+
+    probe_logger = logging.getLogger("src.some_module_that_already_exists")
+    probe_logger.disabled = False
+
+    database.run_migrations()
+
+    assert probe_logger.disabled is False

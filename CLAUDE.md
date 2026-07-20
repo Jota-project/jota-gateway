@@ -181,6 +181,8 @@ db_client.invalidate(client_key)        # evict from 60s TTL cache
 
 The singleton `db_client = DbClient()` is imported from this module everywhere. An optional `engine` constructor parameter allows injecting a test engine.
 
+`invalidate()` must be called **after** the triggering `session.commit()`, never before — calling it first reopens the exact cache-repopulation race the generation-counter guard exists to close (see the Cache pattern section).
+
 ---
 
 ## WebSocket session lifecycle (`routes.py` → `bridge.py`)
@@ -228,14 +230,27 @@ The singleton `db_client = DbClient()` is imported from this module everywhere. 
 
 ### Session key derivation
 
-Each orchestrator turn uses a session key derived from the Handshake `agent` field and the client UUID:
+Each orchestrator turn uses a session key derived from the agent name and the client UUID:
 
 ```
 session_key = f"agent:{agent}:{client.id}"
 ```
 
-If `agent` is not provided in the Handshake, `gateway_info.default_agent_id` (received from OpenClaw at connect time) is used.
-The HA REST endpoint (`/v1/chat/completions`) uses a fixed key: `agent:{default_agent_id}:ha`.
+The `agent` is resolved by `src.core.agent_policy.resolve_agent(requested, client_config, gateway_info)` at the call site — WS handshake in `routes.py`, REST `/v1/chat/completions` in `openai_routes.py`. The cascade is:
+
+1. `requested` — `handshake.agent` (WS) or `body.model` (REST), if non-empty after stripping.
+2. `client_config.default_agent` — set per-client by admin via the CRUD.
+3. `gateway_info.default_agent_id` — server-wide default from OpenClaw's `hello-ok`.
+4. `"main"` — last-resort fallback (preserves legacy REST trusted-origin behavior when neither config nor gateway info is available).
+
+Validation runs after the cascade (issue #105):
+
+- If `client_config.allowed_agents` is an explicit list (`None` skips this check), the resolved agent must be in it.
+- If the agent was explicitly requested (`requested is not None`) and `gateway_info` is available, the resolved agent must be in `gateway_info.agents`. Cascade defaults are trusted server-side configuration, not user input — they skip the roster check.
+
+WS violation → close 1008 with a specific reason. REST violation → 403 JSON body with `{"error":"forbidden","reason":"agent_not_permitted"|"agent_not_available","message":...}`. The REST legacy trusted-origin path (no Bearer) skips `resolve_agent` entirely and uses the gateway default directly — preserves historical behavior for loopback callers.
+
+The HA REST endpoint (`/v1/chat/completions`) uses `client_id="ha"` for the trusted-origin legacy path and the caller's UUID otherwise.
 
 `client_id_from_session_key(sk)` extracts the client ID via `sk.rsplit(":", 1)[-1]` — safe for keys containing multiple colons (e.g. Telegram user IDs).
 
@@ -315,7 +330,9 @@ The `/v1/*` routes use `Depends(resolve_ha_caller)` (`src/api/openai_routes.py`)
 
 ## Cache pattern (`src/core/cache.py`)
 
-`make_cache(maxsize, ttl)` returns `(TTLCache, asyncio.Lock)`. The lock must wrap **only dict access**, never IO calls — acquire lock to check/set, release before any await.
+`make_cache(maxsize, ttl)` returns `(TTLCache, threading.Lock)`. A real OS-level mutex, not `asyncio.Lock`, because callers span both the event loop (async handlers) and Starlette's threadpool (sync `def` route handlers, e.g. `admin_routes.py`) — `asyncio.Lock` is only safe to acquire from the loop it's bound to. The lock must wrap **only dict access, including TTLCache's internal expiry housekeeping** (`in`, `[]`, `.pop()` all trigger it), never IO calls — acquire lock to check/set, release before any query or await.
+
+Callers that cache the result of an external lookup (e.g. `DbClient._session_cache`) must guard against a stale write racing a concurrent invalidation: capture a per-key generation counter under the lock before the lookup, then only write to cache if the generation is unchanged after the lookup completes. See `DbClient.get_session` / `DbClient.invalidate` for the reference implementation.
 
 ---
 
@@ -324,6 +341,16 @@ The `/v1/*` routes use `Depends(resolve_ha_caller)` (`src/api/openai_routes.py`)
 `docker-compose.yml` mounts `./data:/app/data`. The SQLite file at `data/gateway.db` lives on the host and survives container rebuilds. `data/` is in `.gitignore`.
 
 On first startup (`create_db_and_tables()` in the lifespan), the schema is created automatically if the file doesn't exist.
+
+---
+
+## Production readiness / log hygiene
+
+`client_key` is a bearer credential and must never be written to logs in full or as a plaintext prefix. When correlation is necessary, use `src.core.logging.fingerprint_key(value)`, which returns the first 8 hexadecimal characters of the value's SHA-256 digest, and log it as `fp=<fingerprint>`. After successful authentication, use `client.id` as the primary correlation ID.
+
+Inbound HTTP requests and WebSocket connections receive a gateway-owned UUID4 in `scope["state"]["request_id"]` via `RequestIdMiddleware`. This identifier is local to the gateway and unrelated to OpenClaw `req_id`, `turn_id`, or `session_key`. Source IP resolution for HTTP and WebSocket must go through `resolve_client_ip()` so `X-Real-IP` is trusted only from `TRUSTED_PROXIES`.
+
+User transcripts must not be logged at INFO or above. DEBUG transcript logs must be deliberately truncated; the current maximum for final transcriptions is 40 characters.
 
 ---
 
