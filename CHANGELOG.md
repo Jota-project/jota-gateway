@@ -1,3 +1,10 @@
+## [1.14.10](https://github.com/Jota-project/jota-gateway/compare/v1.14.9...v1.14.10) (2026-07-20)
+
+
+### Bug Fixes
+
+* close Fase 2 — Seguridad & auth ([#105](https://github.com/Jota-project/jota-gateway/issues/105), [#106](https://github.com/Jota-project/jota-gateway/issues/106), [#107](https://github.com/Jota-project/jota-gateway/issues/107), [#108](https://github.com/Jota-project/jota-gateway/issues/108), [#109](https://github.com/Jota-project/jota-gateway/issues/109)) ([#160](https://github.com/Jota-project/jota-gateway/issues/160)) ([d143fb5](https://github.com/Jota-project/jota-gateway/commit/d143fb578cffa5afe59400dc2e3b40c4ab57fedc)), closes [#156](https://github.com/Jota-project/jota-gateway/issues/156) [#161](https://github.com/Jota-project/jota-gateway/issues/161) [#162](https://github.com/Jota-project/jota-gateway/issues/162) [#161](https://github.com/Jota-project/jota-gateway/issues/161) [#156](https://github.com/Jota-project/jota-gateway/issues/156) [#156](https://github.com/Jota-project/jota-gateway/issues/156)
+
 ## [1.14.9](https://github.com/Jota-project/jota-gateway/compare/v1.14.8...v1.14.9) (2026-07-18)
 
 
