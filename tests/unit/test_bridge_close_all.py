@@ -99,3 +99,41 @@ async def test_close_all_completes_teardown_after_earlier_call_is_interrupted(br
     await bridge.close_all()
 
     bridge.tracker._registry.close.assert_called_once()
+
+
+async def test_late_close_of_old_bridge_keeps_reconnected_session(mock_tracker):
+    """Issue #113 reconnect race, end to end through JotaBridge.close_all().
+
+    A client disconnects and reconnects: the new session registers a second
+    bridge under the SAME client_id, overwriting the old one in ClientRegistry.
+    When the old bridge finally tears down (close_all → unregister) it must not
+    evict the live new bridge — otherwise the reconnected client silently stops
+    receiving push events and status broadcasts.
+    """
+    registry = ClientRegistry()
+
+    def _make_bridge():
+        return JotaBridge(
+            client=_CLIENT, config=_CONFIG, client_ws=AsyncMock(),
+            orchestrator=AsyncMock(), tts=AsyncMock(), tracker=mock_tracker,
+            handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text"]),
+            client_registry=registry, default_agent="main",
+        )
+
+    old_bridge = _make_bridge()
+    new_bridge = _make_bridge()
+    registry.register(old_bridge.client_id, old_bridge)
+    registry.register(new_bridge.client_id, new_bridge)  # reconnect overwrites
+
+    # Old bridge tears down late.
+    await old_bridge.close_all()
+
+    # The reconnected session survives...
+    assert registry.get(new_bridge.client_id) is new_bridge
+
+    # ...and still receives status broadcasts (old bridge's ws must not).
+    await registry.broadcast_status("orchestrator", "restored")
+    new_bridge.client_ws.send_json.assert_awaited_once_with(
+        {"type": "status", "service": "orchestrator", "state": "restored"}
+    )
+    old_bridge.client_ws.send_json.assert_not_awaited()
