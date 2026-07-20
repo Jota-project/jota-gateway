@@ -101,6 +101,7 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 **Objetivo:** hacerlo production-grade (shutdown limpio, deadlines, race fixes).
 **Release target:** 1.17.0.
 **Acceptance gate:** `kill -9` durante sesión deja DB consistente, 50 sesiones concurrentes estables, los 3 wrappers pasan test "DEGRADED stable", `ready.capabilities` correcto.
+**Estrategia de rama (decisión 2026-07-20):** igual que Fase 2, Fase 3 usa una rama larga `phase/3-lifecycle` creada desde `main`. Cada issue (#110–#117) se desarrolla en su propia rama `fix/XXX-...`, mergeada a `phase/3-lifecycle` vía PR individual. Al cerrar las 8 issues, un PR único `phase/3-lifecycle` → `main` cierra la fase completa.
 
 - [ ] **#110** 🟠 `[012]` — Lifespan shutdown doesn't drain active sessions — **XL** — *bloqueado por #101*
 - [ ] **#111** 🟠 `[013]` — Streaming SSE returns 200 on orchestrator error — **S**
@@ -222,8 +223,8 @@ Antes de implementar las issues marcadas con ⚠️, hay que resolver:
 1. **`system_prompt_extra` (#100)** — ¿concatenar al mensaje con delimitador (`\n\n[Contexto del cliente]: {extra}`), extender `chat.send` con `systemPrompt`, o **eliminar** el campo? *Rec:* eliminar + migración.
 2. ~~**`allowed_agents` semántica (#105)**~~ — **Decidido (2026-07-18):** `None` = sin restricción, `[]` = denegado, `["x"]` = solo `x`.
 3. **Concurrencia por `session_key` (#99)** — ¿`409 Conflict` en el segundo, o serialización con espera? *Rec:* 409 (casa con el contrato per-session de OpenClaw).
-4. **`ready.capabilities` (#114)** — ¿"requested" (actual) o "live availability"? *Rec:* añadir `live_capabilities` y mantener `capabilities` como requested.
-5. **Push durante normal turn (#112)** — ¿suprimir `agent.start/end` durante normal turn (más simple) o soportar concurrencia con IDs distintos? *Rec:* suprimir.
+4. ~~**`ready.capabilities` (#114)**~~ — **Decidido (2026-07-20):** Opción A — renombrar `capabilities` → `requested_capabilities` en el mensaje `ready` y añadir `live_capabilities` reflejando la disponibilidad real de servicios.
+5. ~~**Push durante normal turn (#112)**~~ — **Decidido (2026-07-20):** Opción A — suprimir los eventos `agent` start/end mientras hay un turno normal activo para ese `session_key` (el cliente ve un solo `turn_start`/`turn_end` por `chat.send`).
 6. **Multi-worker** — ¿previsto? Si sí, `SessionRegistry` y `ClientRegistry` deben ser stores compartidos — cambia el alcance de #110.
 7. **`docs/skills/openclaw/`** — ¿eliminar (recomendado) o etiquetar como histórico?
 8. **`connect()` para sockets previos (#103)** — ¿cancelar antes de iniciar o lock central que coalesce todas las llamadas? *Rec:* cancelar + lock.
