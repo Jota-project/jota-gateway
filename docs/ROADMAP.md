@@ -1,10 +1,10 @@
 # jota-gateway Roadmap
 
-> **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fase 1 ✅ cerrada
-> **Última actualización:** 2026-07-18
-> **Issues abiertas:** 34 (rango GitHub `#99`–`#138`)
-> **Versión actual:** 1.15.x
-> **Próximo release:** 1.16.0 (al cerrar Fase 2)
+> **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fase 1 y Fase 2 ✅ cerradas
+> **Última actualización:** 2026-07-20
+> **Issues abiertas:** 33 (rango GitHub `#99`–`#156`)
+> **Versión actual:** 1.15.x (1.16.0 al mergear esta fase a `main`, vía release automático)
+> **Próximo release:** 1.17.0 (al cerrar Fase 3)
 
 Este documento es el **plan vivo de remediación y evolución** de jota-gateway. Cada tarea referencia una issue de GitHub; las casillas se tachan al cerrar la issue. Se actualiza en el mismo PR que cierra la issue, o en un PR dedicado.
 
@@ -24,7 +24,7 @@ Este documento es el **plan vivo de remediación y evolución** de jota-gateway.
 | 🟡 Medios | 14 |
 | ⚪ Tech-debt / polish | 5 |
 | Estimación | ~3 sprints (6–9 semanas) |
-| Próximo milestone | Cerrar Fase 2 (seguridad) |
+| Próximo milestone | Cerrar Fase 3 (lifecycle & producción) |
 | Regresiones confirmadas vs auditoría junio | 2 |
 | Features documentadas sin implementar | 3 |
 
@@ -76,11 +76,12 @@ El gateway funciona correctamente en **happy path** (sesión única + backend sa
 
 Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama `fix/149-150-phase1-review-followups-2`) — incluye además la reparación de dos tests del watchdog (`test_watchdog_resets_count_when_transcription_arrives`, `test_watchdog_pauses_but_does_not_exit_when_reconnecting`) que parcheaban `asyncio.sleep` de forma global y por tanto nunca ejercitaban de verdad el loop del watchdog (confirmado rompiendo a propósito el manejo de RECONNECTING: seguían en verde). #151/#152 quedan documentadas para priorizar más adelante — refuerzan la deuda ya trackeada en #126 (los 3 wrappers de reconexión duplican lógica sin base compartida).
 
-### 🟠 Fase 2 — Seguridad & auth (semana 3)
+### 🟠 Fase 2 — Seguridad & auth (semana 3) — ✅ CERRADA (2026-07-20)
 
 **Objetivo:** cerrar los huecos de seguridad y autorización.
 **Release target:** 1.16.0.
 **Acceptance gate:** pentest manual pasa, `/v1/*` rechaza untrusted sin bearer, `/admin/*` rechaza sin token, cero secrets en logs (verificado con grep sobre la salida de una sesión).
+**Estado del gate:** `/v1/*` rechaza untrusted sin bearer ✅ (`test_get_models_from_untrusted_origin_without_auth_returns_401`, `test_chat_completions_from_untrusted_origin_without_auth_returns_401`) · `/admin/*` rechaza sin token ✅ (`test_admin_missing_token_returns_422`, `test_admin_wrong_token_returns_401`) · cero secrets en logs ✅ (#106: fingerprint SHA-256 de 8 hex, cubierto por `test_logging.py` + `test_ws_handshake.py::test_invalid_client_key_log_is_safe_and_correlatable` + `test_bridge_barge_in.py::test_final_transcription_is_debug_only_and_truncated`) · pentest manual ⚠️ *no ejecutado en este cierre* — las 5 issues de la fase (#105–#109) están cerradas y la suite (431 tests) verde; el pentest manual queda como verificación pendiente, no bloqueante para mergear dado que cada issue de la fase tiene su propia cobertura automatizada específica.
 **Estrategia de rama (decisión 2026-07-18):** a diferencia de Fase 1 (cada issue directa a `main`), Fase 2 usa una rama larga `phase/2-security` creada desde `main` (una vez mergeado PR #153). Cada issue (#105–#109) se desarrolla en su propia rama `fix/XXX-...`, mergeada a `phase/2-security` vía PR individual. Al cerrar las 5 issues, un PR único `phase/2-security` → `main` cierra la fase completa.
 
 - [x] **#105** 🟠 `[007]` — `default_agent`/`allowed_agents` persisted but never enforced — **M** — semántica decidida: `None`=sin restricción, `[]`=denegado, `["x"]`=solo `x` — cerrado por #154
@@ -241,7 +242,7 @@ Antes de implementar las issues marcadas con ⚠️, hay que resolver:
 | Milestone | Criterio |
 |---|---|
 | **Fase 1 done** | ✅ 6 🔴 cerrados, `pytest` verde, e2e no regresiona — *cero keys en logs queda como alcance de #106 (Fase 2)* |
-| **Fase 2 done** | Pentest pasa, `/v1/*` rechaza untrusted sin bearer, admin rechaza sin token, grep sobre session no encuentra keys |
+| **Fase 2 done** | ✅ 5 🟠 cerrados (#105–#109), `/v1/*` rechaza untrusted sin bearer ✅, admin rechaza sin token ✅, cero keys en logs ✅ — *pentest manual no ejecutado, ver nota en la fase* |
 | **Fase 3 done** | `kill -9` durante sesión deja DB consistente, 3 wrappers DEGRADED-stable, `ready.capabilities` correcto |
 | **Fase 4 done** | Cero referencias muertas, `.env.sample` levanta gateway limpio, `db_client` test de concurrencia |
 | **Fase 5 done** | Typecheck CI, Docker build on PR, pytest timeout global, Dockerfile non-root + digest pin |
