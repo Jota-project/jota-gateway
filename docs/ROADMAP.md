@@ -103,7 +103,7 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 **Acceptance gate:** `kill -9` durante sesión deja DB consistente, 50 sesiones concurrentes estables, los 3 wrappers pasan test "DEGRADED stable", `ready.capabilities` correcto.
 **Estrategia de rama (decisión 2026-07-20):** igual que Fase 2, Fase 3 usa una rama larga `phase/3-lifecycle` creada desde `main`. Cada issue (#110–#117) se desarrolla en su propia rama `fix/XXX-...`, mergeada a `phase/3-lifecycle` vía PR individual. Al cerrar las 8 issues, un PR único `phase/3-lifecycle` → `main` cierra la fase completa.
 
-- [ ] **#110** 🟠 `[012]` — Lifespan shutdown doesn't drain active sessions — **XL** — *bloqueado por #101*
+- [ ] **#110** 🟠 `[012]` — Lifespan shutdown doesn't drain active sessions — **XL**
 - [x] **#111** 🟠 `[013]` — Streaming SSE returns 200 on orchestrator error — **S** — los fallos pre-token y post-token emiten `server_error` + `finish_reason="error"`, no emiten `[DONE]` y cierran el tracker con estado `error`.
 - [ ] **#112** 🟠 `[014]` — Normal vs push turn coordination — **L** — ⚠️ *requiere decisión de política*
 - [x] **#113** 🟠 `[015]` — Bridge unregisters newer bridge for same `client_id` — **S** — `ClientRegistry.unregister(client_id, expected_bridge)` ahora sólo desregistra si el bridge sigue siendo el dueño actual (mismo patrón de identidad que `TurnRegistry` para #99); `bridge.close_all()` pasa `self`. Un cierre tardío del bridge viejo ya no expulsa la sesión reconectada.
