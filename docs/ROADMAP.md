@@ -2,7 +2,7 @@
 
 > **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fase 1 y Fase 2 ✅ cerradas
 > **Última actualización:** 2026-07-20
-> **Issues abiertas:** 33 (rango GitHub `#99`–`#156`)
+> **Issues abiertas:** 33 (rango GitHub `#99`–`#163`)
 > **Versión actual:** 1.15.x (1.16.0 al mergear esta fase a `main`, vía release automático)
 > **Próximo release:** 1.17.0 (al cerrar Fase 3)
 
@@ -81,7 +81,7 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 **Objetivo:** cerrar los huecos de seguridad y autorización.
 **Release target:** 1.16.0.
 **Acceptance gate:** pentest manual pasa, `/v1/*` rechaza untrusted sin bearer, `/admin/*` rechaza sin token, cero secrets en logs (verificado con grep sobre la salida de una sesión).
-**Estado del gate:** `/v1/*` rechaza untrusted sin bearer ✅ (`test_get_models_from_untrusted_origin_without_auth_returns_401`, `test_chat_completions_from_untrusted_origin_without_auth_returns_401`) · `/admin/*` rechaza sin token ✅ (`test_admin_missing_token_returns_422`, `test_admin_wrong_token_returns_401`) · cero secrets en logs ✅ (#106: fingerprint SHA-256 de 8 hex, cubierto por `test_logging.py` + `test_ws_handshake.py::test_invalid_client_key_log_is_safe_and_correlatable` + `test_bridge_barge_in.py::test_final_transcription_is_debug_only_and_truncated`) · pentest manual ⚠️ *no ejecutado en este cierre* — las 5 issues de la fase (#105–#109) están cerradas y la suite (431 tests) verde; el pentest manual queda como verificación pendiente, no bloqueante para mergear dado que cada issue de la fase tiene su propia cobertura automatizada específica.
+**Estado del gate:** `/v1/*` rechaza untrusted sin bearer ✅ (`test_get_models_from_untrusted_origin_without_auth_returns_401`, `test_chat_completions_from_untrusted_origin_without_auth_returns_401`) · `/admin/*` rechaza sin token ✅ (`test_admin_missing_token_returns_422`, `test_admin_wrong_token_returns_401`) · cero secrets en logs ✅ (#106: fingerprint SHA-256 de 8 hex, cubierto por `test_logging.py` + `test_ws_handshake.py::test_invalid_client_key_log_is_safe_and_correlatable` + `test_bridge_barge_in.py::test_final_transcription_is_debug_only_and_truncated` — y desde la revisión de cierre, con la garantía adicional de que esos logs efectivamente *salen* en producción, ver #156 abajo) · pentest manual ⚠️ *no ejecutado en este cierre* — las 5 issues de la fase (#105–#109) están cerradas y la suite (438 tests) verde; el pentest manual queda como verificación pendiente, no bloqueante para mergear dado que cada issue de la fase tiene su propia cobertura automatizada específica.
 **Estrategia de rama (decisión 2026-07-18):** a diferencia de Fase 1 (cada issue directa a `main`), Fase 2 usa una rama larga `phase/2-security` creada desde `main` (una vez mergeado PR #153). Cada issue (#105–#109) se desarrolla en su propia rama `fix/XXX-...`, mergeada a `phase/2-security` vía PR individual. Al cerrar las 5 issues, un PR único `phase/2-security` → `main` cierra la fase completa.
 
 - [x] **#105** 🟠 `[007]` — `default_agent`/`allowed_agents` persisted but never enforced — **M** — semántica decidida: `None`=sin restricción, `[]`=denegado, `["x"]`=solo `x` — cerrado por #154
@@ -89,6 +89,12 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 - [x] **#107** 🟠 `[009]` — Cache invalidation race + thread-safety — **M** — threading.Lock cross-thread + contador de generación por-key + orden commit-antes-que-invalidate en admin_routes.py — cerrado por #157
 - [x] **#108** 🟠 `[010]` — `barge_in_enabled=False` ignored by the bridge — **XS** — gate en `_on_transcription` (`bridge.py:425`), partial siempre se reenvía al cliente independientemente del flag — cerrado por #158
 - [x] **#109** 🟠 `[011]` — `push_enabled=False` suppresses only lifecycle start, not push payloads — **S** — nuevo `_push_allowed()` como único punto de decisión, gatea `deliver_push`/`deliver_push_tool_call` — cerrado por #159
+
+**Revisión de cierre (code review, PR #160, 2026-07-20):** pase completo sobre el diff de fase (33 archivos) más trazado cruzado de todos los call sites de `resolve_agent`/`invalidate`/`fingerprint_key`. 3 issues nuevas encontradas y arregladas directamente en `phase/2-security`, 1 documentada para Fase 5:
+- [x] **#156** 🔴 *(preexistente, abierta durante #106, no trackeada en ninguna fase hasta ahora)* — `migrations/env.py` llama `fileConfig(alembic.ini)` con el default de `disable_existing_loggers=True`. Como `main.py` importa todos los módulos `src.*` (creando sus loggers) *antes* de que `lifespan()` llame a `run_migrations()`, y `alembic.ini` solo declara los loggers `root`/`sqlalchemy`/`alembic`, **cada arranque real del gateway deshabilita silenciosamente todos los loggers `src.*` para el resto de la vida del proceso** — incluidas las líneas de log de seguridad que #106 acaba de construir. Confirmado empíricamente (no solo en teoría) reproduciendo la secuencia exacta de arranque contra una BD temporal. Severidad subida de medium a **critical** al confirmar el impacto en producción. Fix de una línea (`disable_existing_loggers=False`) + limpieza del workaround de test que ya no hace falta (`tests/unit/conftest.py`).
+- [x] **#161** 🟠 — `create_client()` (`admin_routes.py:74`) guardaba `allowed_agents: []` (deniega todo, semántica de #105) como `None` (sin restricción) por un check *truthy* en vez de `is not None` — el PATCH (`update_client`) ya lo hacía bien. Con #105 recién mergeado, este bug pasa de inerte a activo: un admin que cree un cliente pensando que lo ha bloqueado a "ningún agente" le da acceso a todos. Mismo patrón en `output_mode` (menor severidad, "informational only"). Ningún test lo cubría — el test de "deny-all" existente inserta directo en BD, sin pasar por este endpoint.
+- [x] **#162** 🟡 — el handshake WS no recortaba espacios del `agent` solicitado antes de pasarlo a `resolve_agent()`, a diferencia de REST — inconsistencia entre las dos superficies para la misma entrada malformada, y contradecía la cascada documentada en este mismo `CLAUDE.md` ("if non-empty after stripping"). Fix: normalización centralizada dentro de `resolve_agent()` en vez de duplicada por call site.
+- [ ] **#163** ⚪ — `DbClient._generations` (contador de generación de #107) crece sin límite, una entrada por `client_key` histórico, nunca se purga. Bajo impacto, pero un "pop" ingenuo en `invalidate()` reintroduce la race que #107 cerró para la primera invalidación de una key — requiere diseño dedicado. Diferido a **Fase 5**.
 
 ### 🟠 Fase 3 — Lifecycle & producción (semanas 4–5)
 
@@ -139,6 +145,7 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 - [ ] **#136** ⚪ `[038]` — Dispatcher silently drops unknown event types — **XS**
 - [ ] **#137** ⚪ `[039]` — CI gaps: typecheck, Docker build, pytest timeout — **M**
 - [ ] **#138** ⚪ `[040]` — Dockerfile + dependency manifests hardening — **M**
+- [ ] **#163** ⚪ — `DbClient._generations` (contador de generación de #107) crece sin límite, nunca se purga — **S** — encontrada en la revisión de cierre de Fase 2 (PR #160); requiere diseño dedicado para no reabrir la race de #107
 
 ---
 
