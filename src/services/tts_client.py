@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from typing import AsyncGenerator, Optional
@@ -5,6 +6,8 @@ from typing import AsyncGenerator, Optional
 import httpx
 import websockets
 from websockets.exceptions import ConnectionClosed
+
+from src.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +33,9 @@ class TTSClient:
     ) -> None:
         """Open WS and authenticate. Raises RuntimeError on auth failure."""
         ws_url = f"ws://{self.url}/ws"
-        self.ws = await websockets.connect(ws_url)
-        auth_err: Optional[Exception] = None
+        _authenticated = False
         try:
+            self.ws = await websockets.connect(ws_url)
             auth_msg: dict = {"type": "auth", "token": self.token}
             if voice is not None:
                 auth_msg["voice"] = voice
@@ -40,7 +43,10 @@ class TTSClient:
                 auth_msg["speed"] = speed
             await self.ws.send(json.dumps(auth_msg))
             try:
-                raw = await self.ws.recv()
+                raw = await asyncio.wait_for(
+                    self.ws.recv(),
+                    timeout=settings.TTS_AUTH_TIMEOUT_S,
+                )
             except ConnectionClosed as exc:
                 raise RuntimeError(
                     f"[{self.client_id}] TTS connection closed during auth: {exc}"
@@ -56,17 +62,18 @@ class TTSClient:
             if msg.get("type") != "auth_ok":
                 raise RuntimeError(f"[{self.client_id}] TTS auth failed: {msg}")
 
+            _authenticated = True
             logger.info("[%s] Connected to TTS at ws://%s/ws", self.client_id, self.url)
-        except Exception as exc:
-            auth_err = exc
+        except asyncio.CancelledError:
             raise
         finally:
-            if auth_err is not None and self.ws is not None:
+            if not _authenticated and self.ws is not None:
                 try:
                     await self.ws.close(1000)
                 except Exception:
                     pass
-                self.ws = None
+                finally:
+                    self.ws = None
 
     async def send_text_chunk(self, text: str) -> None:
         """Send one LLM token. No-op if WS is unavailable."""
