@@ -35,7 +35,7 @@ def resolve_agent(
 ) -> str:
     """Resolve the effective agent name for a request.
 
-    Cascade (first non-empty wins):
+    Cascade (first non-empty-after-stripping wins):
       1. requested (handshake.agent or body.model)
       2. client_config.default_agent (if client_config is not None and set)
       3. gateway_info.default_agent_id (if gateway_info is not None)
@@ -56,6 +56,11 @@ def resolve_agent(
     Raises:
         AgentPolicyError: when policy (a) or roster (b) rejects the effective agent.
     """
+    # Normalize once, here, so every caller (WS handshake.agent, REST body.model)
+    # gets identical whitespace-only-is-absent handling instead of duplicating
+    # (and potentially diverging on) `.strip() or None` at each call site.
+    requested = (requested or "").strip() or None
+
     # 1. Cascade — pick the effective agent.
     if requested:
         effective = requested

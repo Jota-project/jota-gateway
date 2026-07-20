@@ -110,18 +110,17 @@ async def chat_completions(
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
     # body.model is the requested agent (analogous to handshake.agent in WS).
-    # Empty/whitespace-only is treated as None so the cascade falls through
-    # to client_config.default_agent, then gateway_info.default_agent_id,
-    # then the legacy "main" fallback. Issue #105.
+    # resolve_agent() normalizes empty/whitespace-only to None so the cascade
+    # falls through to client_config.default_agent, then
+    # gateway_info.default_agent_id, then the legacy "main" fallback. Issue #105.
     #
     # Trusted-origin legacy path (caller.config is None): skip policy checks,
     # use gateway default directly. This preserves the historical behaviour where
     # body.model was ignored for loopback/trusted-network callers.
     if caller.config is not None:
-        requested_model = (body.model or "").strip() or None
         try:
             resolved_agent = resolve_agent(
-                requested=requested_model,
+                requested=body.model,
                 client_config=caller.config,
                 gateway_info=orchestrator.gateway_info,
             )

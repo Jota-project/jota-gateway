@@ -118,6 +118,16 @@ def test_legacy_no_client_requested_in_roster_passes():
     assert resolve_agent("x", None, gi) == "x"
 
 
+def test_whitespace_only_requested_falls_through_cascade():
+    """A whitespace-only requested agent (e.g. WS handshake {"agent": "   "})
+    must be treated as absent, same as REST's `(body.model or "").strip() or
+    None` — not as an explicit (and likely invalid) agent name. Otherwise WS
+    and REST diverge on identical malformed input."""
+    gi = _StubGatewayInfo(default_agent_id="gw-default", agents={"a": None})
+    cc = _StubClientConfig(default_agent="a", allowed_agents=None)
+    assert resolve_agent("   ", cc, gi) == "a"
+
+
 def test_allowlist_runs_before_roster_check():
     """Acceptance criterion: allowed_agents is enforced BEFORE the global roster.
 
