@@ -1,5 +1,8 @@
 import asyncio
+import logging
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def client_id_from_session_key(session_key: str) -> str:
@@ -80,10 +83,26 @@ class ClientRegistry:
         self._clients: dict[str, Any] = {}
 
     def register(self, client_id: str, bridge: Any) -> None:
+        # A live mapping being overwritten means a client reconnected while the
+        # previous session's bridge was still registered (reconnect race, #113).
+        # The stale bridge's later unregister() is now a safe no-op (identity
+        # check below), but surface the overlap so it's diagnosable. client_id
+        # is the client UUID, safe to log (never the client_key).
+        if self._clients.get(client_id) is not None:
+            logger.warning(
+                "ClientRegistry: client_id=%s re-registered while a previous "
+                "bridge was still active (reconnect race)", client_id
+            )
         self._clients[client_id] = bridge
 
-    def unregister(self, client_id: str) -> None:
-        self._clients.pop(client_id, None)
+    def unregister(self, client_id: str, expected_bridge: Any) -> None:
+        # Only remove the mapping if expected_bridge is still the current owner
+        # of client_id. A reconnect race can register a newer bridge under the
+        # same client_id (register() overwrites); when the older bridge tears
+        # down late it must not evict the live newer one (issue #113). Mirrors
+        # TurnRegistry.unregister's owner check for #99.
+        if self._clients.get(client_id) is expected_bridge:
+            self._clients.pop(client_id, None)
 
     def get(self, client_id: str) -> Optional[Any]:
         return self._clients.get(client_id)

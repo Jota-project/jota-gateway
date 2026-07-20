@@ -106,7 +106,7 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 - [ ] **#110** 🟠 `[012]` — Lifespan shutdown doesn't drain active sessions — **XL** — *bloqueado por #101*
 - [ ] **#111** 🟠 `[013]` — Streaming SSE returns 200 on orchestrator error — **S**
 - [ ] **#112** 🟠 `[014]` — Normal vs push turn coordination — **L** — ⚠️ *requiere decisión de política*
-- [ ] **#113** 🟠 `[015]` — Bridge unregisters newer bridge for same `client_id` — **S**
+- [x] **#113** 🟠 `[015]` — Bridge unregisters newer bridge for same `client_id` — **S** — `ClientRegistry.unregister(client_id, expected_bridge)` ahora sólo desregistra si el bridge sigue siendo el dueño actual (mismo patrón de identidad que `TurnRegistry` para #99); `bridge.close_all()` pasa `self`. Un cierre tardío del bridge viejo ya no expulsa la sesión reconectada.
 - [ ] **#114** 🟠 `[016]` — `ready.capabilities` contradicts actual service availability — **S** — ⚠️ *requiere decisión de semántica*
 - [ ] **#115** 🟠 `[017]` — No bounded deadlines (handshake/turn/idle/shutdown drain) — **M**
 - [ ] **#116** 🟠 `[018]` — `TTSClient.connect()` leaks WebSocket on `CancelledError` — **S**

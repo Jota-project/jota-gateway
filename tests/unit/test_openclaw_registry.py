@@ -116,9 +116,46 @@ def test_client_registry_register_get():
 
 def test_client_registry_unregister():
     reg = ClientRegistry()
-    reg.register("hab_sito", object())
-    reg.unregister("hab_sito")
+    bridge = object()
+    reg.register("hab_sito", bridge)
+    reg.unregister("hab_sito", bridge)
     assert reg.get("hab_sito") is None
+
+
+def test_client_registry_unregister_stale_bridge_keeps_newer():
+    """Regression for #113: a reconnect race registers a new bridge for the
+    same client_id (overwriting the old one). When the OLD bridge later closes
+    and calls unregister(), it must not evict the NEW bridge that now owns that
+    client_id — otherwise the live session stops receiving push events and
+    status broadcasts."""
+    reg = ClientRegistry()
+    bridge_a = object()
+    bridge_b = object()
+    reg.register("client-x", bridge_a)
+    reg.register("client-x", bridge_b)  # new session overwrites the old one
+
+    # Old bridge (A) tears down late and unregisters itself.
+    reg.unregister("client-x", bridge_a)
+
+    # The new bridge (B) must survive.
+    assert reg.get("client-x") is bridge_b
+
+
+def test_client_registry_unregister_is_noop_for_any_superseded_owner():
+    """After multiple reconnects (A→B→C), a late unregister() from ANY former
+    owner (A or B) must be a no-op — only the current owner (C) can evict."""
+    reg = ClientRegistry()
+    bridge_a, bridge_b, bridge_c = object(), object(), object()
+    reg.register("client-x", bridge_a)
+    reg.register("client-x", bridge_b)
+    reg.register("client-x", bridge_c)
+
+    reg.unregister("client-x", bridge_a)  # oldest, long gone
+    reg.unregister("client-x", bridge_b)  # superseded too
+    assert reg.get("client-x") is bridge_c
+
+    reg.unregister("client-x", bridge_c)  # current owner tears down
+    assert reg.get("client-x") is None
 
 def test_client_registry_missing_returns_none():
     reg = ClientRegistry()

@@ -134,7 +134,7 @@ class JotaBridge:
             if self._closed:
                 return
 
-            self._client_registry.unregister(self.client_id)
+            self._client_registry.unregister(self.client_id, self)
             # Await (don't cancel) the active turn so the orchestrator response is
             # delivered before we tear down microservice clients.  Explicit cancellation
             # only happens via _cancel_active_turn() (barge-in) or task cancellation
