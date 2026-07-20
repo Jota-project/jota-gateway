@@ -95,6 +95,19 @@ def _parse_sse_tokens(body: str) -> list[str]:
     return tokens
 
 
+def _parse_sse_payloads(body: str) -> list[dict]:
+    """Parsea todos los frames SSE JSON y omite el sentinel [DONE]."""
+    import json as _json
+
+    payloads = []
+    for frame in body.split("\n\n"):
+        frame = frame.strip()
+        if not frame.startswith("data: ") or frame == "data: [DONE]":
+            continue
+        payloads.append(_json.loads(frame[len("data: "):]))
+    return payloads
+
+
 def test_streaming_each_token_maps_to_separate_sse_frame(client, mock_orchestrator):
     """Cada token del orquestador debe aparecer como un SSE frame separado con su contenido."""
     async def _stream(*args, **kwargs):
@@ -178,6 +191,82 @@ def test_non_streaming_orchestrator_error_returns_502(client, mock_orchestrator)
     })
 
     assert r.status_code == 502, f"Esperado 502, recibido {r.status_code}: {r.text}"
+
+
+def test_streaming_orchestrator_error_before_first_token_is_terminal_error(
+    client, mock_orchestrator,
+):
+    async def _error_stream(*args, **kwargs):
+        yield OrchestratorEvent(type="error", content="orchestrator_unavailable")
+
+    mock_orchestrator.stream_response = _error_stream
+
+    with client.stream("POST", "/v1/chat/completions", json={
+        "model": "openclaw",
+        "messages": [{"role": "user", "content": "Hola"}],
+        "stream": True,
+    }) as response:
+        response.read()
+        body = response.text
+
+    payloads = _parse_sse_payloads(body)
+    assert payloads[-2] == {
+        "error": {
+            "message": "orchestrator_unavailable",
+            "type": "server_error",
+        },
+    }
+    assert payloads[-1]["choices"][0]["finish_reason"] == "error"
+    assert not any(
+        payload.get("choices", [{}])[0].get("finish_reason") == "stop"
+        for payload in payloads
+    )
+    assert "[DONE]" not in body
+
+    http_sessions = [
+        session for session in app.state.session_registry.get_all()
+        if session.session_id.startswith("http:")
+    ]
+    assert http_sessions[-1].status == "error"
+
+
+def test_streaming_orchestrator_error_after_token_preserves_partial_output(
+    client, mock_orchestrator,
+):
+    async def _partial_error_stream(*args, **kwargs):
+        yield OrchestratorEvent(type="token", content="respuesta parcial")
+        yield OrchestratorEvent(type="error", content="orchestrator_unavailable")
+
+    mock_orchestrator.stream_response = _partial_error_stream
+
+    with client.stream("POST", "/v1/chat/completions", json={
+        "model": "openclaw",
+        "messages": [{"role": "user", "content": "Hola"}],
+        "stream": True,
+    }) as response:
+        response.read()
+        body = response.text
+
+    payloads = _parse_sse_payloads(body)
+    assert _parse_sse_tokens(body) == ["respuesta parcial"]
+    assert payloads[-2] == {
+        "error": {
+            "message": "orchestrator_unavailable",
+            "type": "server_error",
+        },
+    }
+    assert payloads[-1]["choices"][0]["finish_reason"] == "error"
+    assert not any(
+        payload.get("choices", [{}])[0].get("finish_reason") == "stop"
+        for payload in payloads
+    )
+    assert "[DONE]" not in body
+
+    http_sessions = [
+        session for session in app.state.session_registry.get_all()
+        if session.session_id.startswith("http:")
+    ]
+    assert http_sessions[-1].status == "error"
 
 
 def test_non_streaming_turn_conflict_returns_409(client, mock_orchestrator):
