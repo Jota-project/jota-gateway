@@ -68,6 +68,19 @@ def test_create_client_full(http):
     assert data["tts_voice"] == "en_heart"
 
 
+def test_create_client_with_empty_allowed_agents_denies_all(http):
+    """allowed_agents=[] means deny-all (issue #105 semantics) — must round-trip
+    as [] through storage, not collapse to None (unrestricted) via a Python
+    truthy check on the empty list."""
+    r = http.post(
+        "/admin/clients",
+        json={"name": "locked-down", "allowed_agents": []},
+        headers=HEADERS,
+    )
+    assert r.status_code == 201
+    assert r.json()["allowed_agents"] == []
+
+
 # --- LIST ---
 
 def test_list_clients_empty(http):
