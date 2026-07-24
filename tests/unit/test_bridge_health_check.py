@@ -57,7 +57,7 @@ async def test_health_check_returns_tts_false_when_ping_fails():
 
 
 async def test_health_check_returns_transcriber_false_when_degraded():
-    bridge, ws, orch = _make_bridge(input_mode="audio", output_mode=["audio", "text"])
+    bridge, ws, orch = _make_bridge(input_mode="audio", output_mode=["text"])
     bridge.transcriber = MagicMock()
     bridge.transcriber.state = ConnectionState.DEGRADED
 

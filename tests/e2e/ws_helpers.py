@@ -17,14 +17,21 @@ async def ws_handshake(client_key: str, agent: str, ws_url: str = GATEWAY_WS_URL
         "output_mode": ["text"],
         "agent": agent,
     }))
-    deadline = asyncio.get_event_loop().time() + 10
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 10
+    last_frame = None
     while True:
-        remaining = deadline - asyncio.get_event_loop().time()
+        remaining = deadline - loop.time()
         if remaining <= 0:
             await ws.close()
-            raise AssertionError("Handshake falló: sin mensaje 'ready' en 10s")
-        raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+            raise AssertionError(f"Handshake falló: sin mensaje 'ready' en 10s; último frame: {last_frame}")
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+        except asyncio.TimeoutError:
+            await ws.close()
+            raise AssertionError(f"Handshake falló: sin mensaje 'ready' en 10s; último frame: {last_frame}")
         frame = json.loads(raw)
+        last_frame = frame
         if frame.get("type") == "ready":
             return ws, frame
 
