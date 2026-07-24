@@ -180,42 +180,55 @@ class JotaBridge:
             await self.tracker.close(status=status)
             self._closed = True
 
-    async def health_check(self) -> bool:
-        """Ping each microservice and notify the client of any issues.
+    async def health_check(self) -> dict[str, bool] | None:
+        """Ping each microservice and return a snapshot of live capabilities.
 
-        Returns True if the session can proceed, False if a critical service
-        is unavailable (caller should close the WebSocket) — the orchestrator
-        is the only service that can make this return False.
+        Returns None if the orchestrator is unavailable — the caller must close
+        the WebSocket and skip sending `ready`. For non-fatal services the
+        snapshot records their current availability, and the same `status`
+        warnings sent today are still emitted so the client sees both the
+        pre-ready notification and the authoritative capabilities block.
         """
-        # Orchestrator — always critical
         if not await self.orchestrator.ping():
             await self.client_ws.send_json({
                 "type": "status",
                 "service": "orchestrator",
                 "state": "unavailable",
             })
-            return False
+            return None
 
-        # Transcriber — non-critical (session continues degraded if unavailable;
-        # the client decides whether to keep going text-only)
-        if self.handshake.input_mode == "audio":
-            if not self.transcriber or self.transcriber.state != ConnectionState.CONNECTED:
+        transcriber_requested = self.handshake.input_mode == "audio"
+        tts_requested = "audio" in self.handshake.output_mode
+
+        if transcriber_requested:
+            transcriber_live = bool(
+                self.transcriber and self.transcriber.state == ConnectionState.CONNECTED
+            )
+            if not transcriber_live:
                 await self.client_ws.send_json({
                     "type": "status",
                     "service": "transcriber",
                     "state": "unavailable",
                 })
+        else:
+            transcriber_live = False
 
-        # TTS — non-critical; session continues in degraded mode
-        if "audio" in self.handshake.output_mode:
-            if not await TTSClient.ping(settings.TTS_WS_URL):
+        if tts_requested:
+            tts_live = await TTSClient.ping(settings.TTS_WS_URL)
+            if not tts_live:
                 await self.client_ws.send_json({
                     "type": "status",
                     "service": "tts",
                     "state": "unavailable",
                 })
+        else:
+            tts_live = False
 
-        return True
+        return {
+            "barge_in": bool(self.config.barge_in_enabled) and transcriber_live,
+            "tts": tts_live,
+            "transcriber": transcriber_live,
+        }
 
     async def _cancel_active_turn(self) -> bool:
         """Cancel the active orchestrator turn if one is running. Returns True if cancelled."""

@@ -107,7 +107,8 @@ async def gateway_websocket(websocket: WebSocket):
             return
 
         # 3.5 HEALTH CHECK — verifica disponibilidad de servicios antes de abrir la sesión
-        if not await bridge.health_check():
+        live_capabilities = await bridge.health_check()
+        if live_capabilities is None:
             logger.warning(f"[{client.id}] Health check falló. Cerrando sesión.")
             await websocket.close(code=1011, reason="Servicio crítico no disponible.")
             return
@@ -121,11 +122,12 @@ async def gateway_websocket(websocket: WebSocket):
                 "agent": resolved_agent,
                 "input_mode": handshake.input_mode,
                 "output_mode": handshake.output_mode,
-                "capabilities": {
+                "requested_capabilities": {
                     "barge_in": config.barge_in_enabled,
                     "tts": "audio" in handshake.output_mode,
                     "transcriber": handshake.input_mode == "audio",
                 },
+                "live_capabilities": live_capabilities,
             })
         except Exception as e:
             logger.warning(f"[{client.id}] Failed to send ready: {e}")

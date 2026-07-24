@@ -17,12 +17,16 @@ async def ws_handshake(client_key: str, agent: str, ws_url: str = GATEWAY_WS_URL
         "output_mode": ["text"],
         "agent": agent,
     }))
-    raw = await asyncio.wait_for(ws.recv(), timeout=10)
-    ready = json.loads(raw)
-    if ready.get("type") != "ready":
-        await ws.close()
-        raise AssertionError(f"Handshake falló, esperaba 'ready': {ready}")
-    return ws, ready
+    deadline = asyncio.get_event_loop().time() + 10
+    while True:
+        remaining = deadline - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            await ws.close()
+            raise AssertionError("Handshake falló: sin mensaje 'ready' en 10s")
+        raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+        frame = json.loads(raw)
+        if frame.get("type") == "ready":
+            return ws, frame
 
 
 async def send_turn(ws, text: str, timeout: float = 60.0) -> dict:
