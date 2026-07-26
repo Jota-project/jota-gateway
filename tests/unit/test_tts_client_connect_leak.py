@@ -1,16 +1,19 @@
 """Tests for TTSClient.connect() socket leak on handshake failure (issue #96)."""
+
 import asyncio
 import json
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 from websockets.exceptions import ConnectionClosed
 
-from src.services.tts_client import TTSClient
 from src.core.config import settings
+from src.services.tts_client import TTSClient
 
 
 class FakeTTSSocket:
     """Fake websocket that records close() calls and simulates TTS handshake failure."""
+
     def __init__(self, recv_payloads=None):
         self._to_client = asyncio.Queue()
         for p in recv_payloads or []:
@@ -37,6 +40,7 @@ class FakeTTSSocket:
     def __await__(self):
         async def _():
             return self
+
         return _().__await__()
 
 
@@ -44,9 +48,9 @@ class FakeTTSSocket:
 async def test_connect_closes_socket_when_auth_fails():
     """If websockets.connect succeeds but TTS auth fails, the socket must
     be closed before re-raising — otherwise it leaks (issue #96)."""
-    fake_ws = FakeTTSSocket(recv_payloads=[
-        json.dumps({"type": "error", "code": "bad_token", "message": "invalid"})
-    ])
+    fake_ws = FakeTTSSocket(
+        recv_payloads=[json.dumps({"type": "error", "code": "bad_token", "message": "invalid"})]
+    )
 
     async def fake_connect(url):
         return fake_ws
@@ -90,13 +94,15 @@ async def test_connect_uses_configured_auth_timeout_and_closes_socket(monkeypatc
     monkeypatch.setattr(settings, "TTS_AUTH_TIMEOUT_S", 0.01)
     tts = TTSClient(url="test:1", token="token", client_id="c1")
 
-    with patch("websockets.connect", side_effect=fake_connect):
-        with patch(
+    with (
+        patch("websockets.connect", side_effect=fake_connect),
+        patch(
             "src.services.tts_client.asyncio.wait_for",
             wraps=asyncio.wait_for,
-        ) as wait_for:
-            with pytest.raises(asyncio.TimeoutError):
-                await tts.connect()
+        ) as wait_for,
+        pytest.raises(asyncio.TimeoutError),
+    ):
+        await tts.connect()
 
     wait_for.assert_awaited_once()
     assert wait_for.await_args.kwargs["timeout"] == 0.01

@@ -1,12 +1,14 @@
 import asyncio
 import contextlib
-import pytest
 from unittest.mock import AsyncMock
-from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
-from src.services.reconnection import ConnectionState
+
+import pytest
+
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.models import GatewayInfo
+from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
 from src.services.protocol import OrchestratorEvent
+from src.services.reconnection import ConnectionState
 
 
 def make_mock_client(gateway_info=None):
@@ -30,8 +32,13 @@ def make_mock_client(gateway_info=None):
 
 
 GATEWAY_INFO = GatewayInfo(
-    protocol_version=4, server_version="2026.6.6", conn_id="c1",
-    default_agent_id="main", agents={}, tick_interval_ms=30000, max_payload=26214400,
+    protocol_version=4,
+    server_version="2026.6.6",
+    conn_id="c1",
+    default_agent_id="main",
+    agents={},
+    tick_interval_ms=30000,
+    max_payload=26214400,
 )
 
 

@@ -74,18 +74,22 @@ def test_resolve_client_ip_accepts_websocket_connection():
     async def dummy_send(data):
         pass
 
-    websocket = WebSocket({
-        "type": "websocket",
-        "asgi": {"version": "3.0", "spec_version": "2.3"},
-        "scheme": "ws",
-        "path": "/ws/stream",
-        "raw_path": b"/ws/stream",
-        "query_string": b"",
-        "headers": [(b"x-real-ip", b"192.168.1.50")],
-        "client": ("127.0.0.1", 50000),
-        "server": ("testserver", 80),
-        "subprotocols": [],
-        "state": {},
-    }, receive=dummy_receive, send=dummy_send)
+    websocket = WebSocket(
+        {
+            "type": "websocket",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "scheme": "ws",
+            "path": "/ws/stream",
+            "raw_path": b"/ws/stream",
+            "query_string": b"",
+            "headers": [(b"x-real-ip", b"192.168.1.50")],
+            "client": ("127.0.0.1", 50000),
+            "server": ("testserver", 80),
+            "subprotocols": [],
+            "state": {},
+        },
+        receive=dummy_receive,
+        send=dummy_send,
+    )
 
     assert resolve_client_ip(websocket) == "192.168.1.50"

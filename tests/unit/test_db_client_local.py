@@ -99,7 +99,9 @@ async def test_invalidate_advances_generation_counter():
     assert client._generations["gen-key"] == 2
 
 
-def test_generation_guard_prevents_stale_repopulation_after_concurrent_invalidate(monkeypatch, tmp_path):
+def test_generation_guard_prevents_stale_repopulation_after_concurrent_invalidate(
+    monkeypatch, tmp_path
+):
     """Si invalidate() corre en otro hilo mientras get_session() está en
     vuelo (incluso antes de que la consulta a BD arranque), el resultado
     obsoleto no debe repoblar el caché compartido.

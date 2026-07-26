@@ -1,8 +1,9 @@
+import json
+import logging
+import time
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
-import logging
-import json
-import time
 
 from src.core.agent_policy import AgentPolicyError, resolve_agent
 from src.core.exceptions import ClientInactive, ClientNotFound
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
 @router.websocket("/ws/stream")
 async def gateway_websocket(websocket: WebSocket):
     await websocket.accept()
@@ -28,7 +30,9 @@ async def gateway_websocket(websocket: WebSocket):
         handshake = Handshake(**msg_data)
     except (json.JSONDecodeError, ValidationError) as e:
         logger.error(f"Payload inicial inválido de handshake. {e}")
-        await websocket.close(code=1008, reason="Handshake invalido. Se esperaba JSON de configuración.")
+        await websocket.close(
+            code=1008, reason="Handshake invalido. Se esperaba JSON de configuración."
+        )
         return
     except WebSocketDisconnect:
         logger.info("Cliente desconectado antes o durante el handshake.")
@@ -48,8 +52,7 @@ async def gateway_websocket(websocket: WebSocket):
         return
 
     logger.info(
-        f"request_id={request_id} client_id={client.id} fp={key_fingerprint} "
-        "Handshake verificado."
+        f"request_id={request_id} client_id={client.id} fp={key_fingerprint} Handshake verificado."
     )
 
     # 3. INSTANCIAR EL PUENTE DE MICROSERVICIOS
@@ -83,9 +86,13 @@ async def gateway_websocket(websocket: WebSocket):
     )
     session_registry.register(tracker)
     bridge = JotaBridge(
-        client=client, config=config, client_ws=websocket, orchestrator=openclaw,
+        client=client,
+        config=config,
+        client_ws=websocket,
+        orchestrator=openclaw,
         tts=app_state.tts,
-        tracker=tracker, handshake=handshake,
+        tracker=tracker,
+        handshake=handshake,
         client_registry=app_state.client_registry,
         default_agent=resolved_agent,
     )
@@ -103,7 +110,9 @@ async def gateway_websocket(websocket: WebSocket):
             await bridge.connect_internal_services()
         except Exception as e:
             logger.error(f"[{client.id}] Fallo al inicializar puentes internos. {e}")
-            await websocket.close(code=1011, reason="Problema estableciendo microservicios internos del hub.")
+            await websocket.close(
+                code=1011, reason="Problema estableciendo microservicios internos del hub."
+            )
             return
 
         # 3.5 HEALTH CHECK — verifica disponibilidad de servicios antes de abrir la sesión
@@ -116,19 +125,21 @@ async def gateway_websocket(websocket: WebSocket):
         # 3.6 SEND READY — confirms session is established and announces capabilities
         # resolved_agent comes from the policy helper above.
         try:
-            await websocket.send_json({
-                "type": "ready",
-                "session_id": session_id,
-                "agent": resolved_agent,
-                "input_mode": handshake.input_mode,
-                "output_mode": handshake.output_mode,
-                "requested_capabilities": {
-                    "barge_in": config.barge_in_enabled,
-                    "tts": "audio" in handshake.output_mode,
-                    "transcriber": handshake.input_mode == "audio",
-                },
-                "live_capabilities": live_capabilities,
-            })
+            await websocket.send_json(
+                {
+                    "type": "ready",
+                    "session_id": session_id,
+                    "agent": resolved_agent,
+                    "input_mode": handshake.input_mode,
+                    "output_mode": handshake.output_mode,
+                    "requested_capabilities": {
+                        "barge_in": config.barge_in_enabled,
+                        "tts": "audio" in handshake.output_mode,
+                        "transcriber": handshake.input_mode == "audio",
+                    },
+                    "live_capabilities": live_capabilities,
+                }
+            )
         except Exception as e:
             logger.warning(f"[{client.id}] Failed to send ready: {e}")
             return

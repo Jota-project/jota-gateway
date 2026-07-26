@@ -7,14 +7,15 @@ its own internal finally before that outer finally runs — so close_all()
 must tolerate being called twice without duplicating side effects, and the
 first call's status must win.
 """
-import asyncio
 
-import pytest
+import asyncio
 from unittest.mock import AsyncMock
 
+import pytest
+
+from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
-from src.models.schemas import Client, ClientConfig, Handshake
 
 _CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
 _CONFIG = ClientConfig()
@@ -25,10 +26,15 @@ def bridge(mock_tracker):
     ws = AsyncMock()
     registry = ClientRegistry()
     b = JotaBridge(
-        client=_CLIENT, config=_CONFIG, client_ws=ws, orchestrator=AsyncMock(),
-        tts=AsyncMock(), tracker=mock_tracker,
+        client=_CLIENT,
+        config=_CONFIG,
+        client_ws=ws,
+        orchestrator=AsyncMock(),
+        tts=AsyncMock(),
+        tracker=mock_tracker,
         handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text"]),
-        client_registry=registry, default_agent="main",
+        client_registry=registry,
+        default_agent="main",
     )
     registry.register(b.client_id, b)
     return b
@@ -114,10 +120,15 @@ async def test_late_close_of_old_bridge_keeps_reconnected_session(mock_tracker):
 
     def _make_bridge():
         return JotaBridge(
-            client=_CLIENT, config=_CONFIG, client_ws=AsyncMock(),
-            orchestrator=AsyncMock(), tts=AsyncMock(), tracker=mock_tracker,
+            client=_CLIENT,
+            config=_CONFIG,
+            client_ws=AsyncMock(),
+            orchestrator=AsyncMock(),
+            tts=AsyncMock(),
+            tracker=mock_tracker,
             handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text"]),
-            client_registry=registry, default_agent="main",
+            client_registry=registry,
+            default_agent="main",
         )
 
     old_bridge = _make_bridge()

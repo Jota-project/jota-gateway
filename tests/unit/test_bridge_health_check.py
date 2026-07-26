@@ -1,8 +1,10 @@
 """Tests for JotaBridge.health_check() snapshot."""
+
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
-from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.pipeline_tracker import PipelineTracker, _NullWS
 from src.services.reconnection import ConnectionState
 
@@ -16,16 +18,27 @@ def _make_bridge(input_mode="text", output_mode=None):
     ws = AsyncMock()
     registry = MagicMock()
     tracker = PipelineTracker(
-        session_id="test:hc", client_id="hab_sito",
-        input_mode=input_mode, output_mode=output_mode,
-        client_ws=_NullWS(), registry=registry,
+        session_id="test:hc",
+        client_id="hab_sito",
+        input_mode=input_mode,
+        output_mode=output_mode,
+        client_ws=_NullWS(),
+        registry=registry,
     )
     handshake = Handshake(client_key="test-key", input_mode=input_mode, output_mode=output_mode)
     orch = AsyncMock()
     orch.ping = AsyncMock(return_value=True)
-    bridge = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws,
-                        orchestrator=orch, tts=AsyncMock(), tracker=tracker, handshake=handshake,
-                        client_registry=ClientRegistry(), default_agent="main")
+    bridge = JotaBridge(
+        client=_CLIENT,
+        config=_CONFIG,
+        client_ws=ws,
+        orchestrator=orch,
+        tts=AsyncMock(),
+        tracker=tracker,
+        handshake=handshake,
+        client_registry=ClientRegistry(),
+        default_agent="main",
+    )
     return bridge, ws, orch
 
 
@@ -66,7 +79,9 @@ async def test_health_check_returns_transcriber_false_when_degraded():
     assert result == {"barge_in": False, "tts": False, "transcriber": False}
     status_calls = [c.args[0] for c in ws.send_json.call_args_list]
     assert any(
-        call["type"] == "status" and call["service"] == "transcriber" and call["state"] == "unavailable"
+        call["type"] == "status"
+        and call["service"] == "transcriber"
+        and call["state"] == "unavailable"
         for call in status_calls
     )
 

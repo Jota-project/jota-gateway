@@ -1,7 +1,7 @@
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from src.services.session_registry import SessionRegistry
@@ -53,22 +53,30 @@ class PipelineTracker:
         elapsed_ms = (now - self._last_event_at) * 1000
         self._last_event_at = now
 
-        event = PipelineEvent(stage=stage, ts_ms=ts_ms, elapsed_ms=elapsed_ms, turn=self._turn, meta=meta)
+        event = PipelineEvent(
+            stage=stage, ts_ms=ts_ms, elapsed_ms=elapsed_ms, turn=self._turn, meta=meta
+        )
         self.events.append(event)
 
         logger.info(
             "pipeline [%s] stage=%s ts_ms=%.0f elapsed_ms=%.0f %s",
-            self.session_id, stage, ts_ms, elapsed_ms, meta,
+            self.session_id,
+            stage,
+            ts_ms,
+            elapsed_ms,
+            meta,
         )
 
         if "status" in self.output_mode:
             try:
-                await self._ws.send_json({
-                    "type": "pipeline_event",
-                    "stage": stage,
-                    "elapsed_ms": round(elapsed_ms),
-                    "turn": self._turn,
-                })
+                await self._ws.send_json(
+                    {
+                        "type": "pipeline_event",
+                        "stage": stage,
+                        "elapsed_ms": round(elapsed_ms),
+                        "turn": self._turn,
+                    }
+                )
             except Exception:
                 pass
 
@@ -79,13 +87,13 @@ class PipelineTracker:
         await self.record("session_end", turn_count=self._turn, duration_s=duration_s)
         self._registry.close(self.session_id, status)
 
-    def _find_last(self, stage: str, turn: Optional[int] = None) -> Optional[PipelineEvent]:
+    def _find_last(self, stage: str, turn: int | None = None) -> PipelineEvent | None:
         for e in reversed(self.events):
             if e.stage == stage and (turn is None or e.turn == turn):
                 return e
         return None
 
-    def llm_first_token_ms(self) -> Optional[float]:
+    def llm_first_token_ms(self) -> float | None:
         first_token = self._find_last("llm_first_token")
         if first_token is None:
             return None
@@ -94,7 +102,7 @@ class PipelineTracker:
             return None
         return round(first_token.ts_ms - start.ts_ms, 1)
 
-    def tts_first_chunk_ms(self) -> Optional[float]:
+    def tts_first_chunk_ms(self) -> float | None:
         first_chunk = self._find_last("tts_first_chunk")
         if first_chunk is None:
             return None
@@ -103,7 +111,7 @@ class PipelineTracker:
             return None
         return round(first_chunk.ts_ms - start.ts_ms, 1)
 
-    def turn_e2e_ms(self) -> Optional[float]:
+    def turn_e2e_ms(self) -> float | None:
         done = self._find_last("tts_done")
         if done is None:
             return None

@@ -1,8 +1,10 @@
 import asyncio
-import pytest
 from unittest.mock import AsyncMock, patch
-from src.services.transcriber_reconnecting import ReconnectingTranscriberClient
+
+import pytest
+
 from src.services.reconnection import ConnectionState
+from src.services.transcriber_reconnecting import ReconnectingTranscriberClient
 
 
 def _wrap(**kwargs):

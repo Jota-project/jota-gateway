@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +61,10 @@ class TurnRegistry:
             self._session_owner.pop(session_key, None)
         self._req_to_session.pop(req_id, None)
 
-    def get_queue_by_session(self, session_key: str) -> Optional[asyncio.Queue]:
+    def get_queue_by_session(self, session_key: str) -> asyncio.Queue | None:
         return self._sessions.get(session_key)
 
-    def get_queue_by_req(self, req_id: str) -> Optional[asyncio.Queue]:
+    def get_queue_by_req(self, req_id: str) -> asyncio.Queue | None:
         sk = self._req_to_session.get(req_id)
         return self._sessions.get(sk) if sk else None
 
@@ -91,7 +91,8 @@ class ClientRegistry:
         if self._clients.get(client_id) is not None:
             logger.warning(
                 "ClientRegistry: client_id=%s re-registered while a previous "
-                "bridge was still active (reconnect race)", client_id
+                "bridge was still active (reconnect race)",
+                client_id,
             )
         self._clients[client_id] = bridge
 
@@ -104,7 +105,7 @@ class ClientRegistry:
         if self._clients.get(client_id) is expected_bridge:
             self._clients.pop(client_id, None)
 
-    def get(self, client_id: str) -> Optional[Any]:
+    def get(self, client_id: str) -> Any | None:
         return self._clients.get(client_id)
 
     async def broadcast_status(self, service: str, state: str) -> None:

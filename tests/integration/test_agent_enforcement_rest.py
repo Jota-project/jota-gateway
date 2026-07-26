@@ -1,10 +1,12 @@
 """REST /v1/chat/completions enforces per-client default_agent and allowed_agents."""
+
 import json
+
 from sqlmodel import Session
 
 from src.db.models import ClientRecord
 from src.services.db_client import db_client
-from tests.integration.conftest import VALID_KEY, CLIENT_ID
+from tests.integration.conftest import CLIENT_ID, VALID_KEY
 
 
 def _patch_client(engine, **fields):
@@ -19,6 +21,7 @@ def _patch_client(engine, **fields):
 
 # --- Tests ----------------------------------------------------------------
 
+
 def test_rest_allowed_model_passes(client, db_engine, mock_orchestrator, ha_bearer_headers):
     _patch_client(db_engine, allowed_agents=json.dumps(["a"]))
     r = client.post(
@@ -29,7 +32,9 @@ def test_rest_allowed_model_passes(client, db_engine, mock_orchestrator, ha_bear
     assert r.status_code == 200
 
 
-def test_rest_disallowed_model_returns_403_with_reason(client, db_engine, mock_orchestrator, ha_bearer_headers):
+def test_rest_disallowed_model_returns_403_with_reason(
+    client, db_engine, mock_orchestrator, ha_bearer_headers
+):
     _patch_client(db_engine, allowed_agents=json.dumps(["a"]))
     r = client.post(
         "/v1/chat/completions",
@@ -43,13 +48,14 @@ def test_rest_disallowed_model_returns_403_with_reason(client, db_engine, mock_o
     assert "Agent 'b' not permitted" in body["message"]
 
 
-def test_rest_model_not_in_roster_returns_403(client, db_engine, mock_orchestrator, ha_bearer_headers):
+def test_rest_model_not_in_roster_returns_403(
+    client, db_engine, mock_orchestrator, ha_bearer_headers
+):
     _patch_client(db_engine, allowed_agents=None)
     r = client.post(
         "/v1/chat/completions",
         headers=ha_bearer_headers,
-        json={"model": "nonexistent-agent-xyz",
-              "messages": [{"role": "user", "content": "hi"}]},
+        json={"model": "nonexistent-agent-xyz", "messages": [{"role": "user", "content": "hi"}]},
     )
     assert r.status_code == 403
     body = r.json()
@@ -57,12 +63,15 @@ def test_rest_model_not_in_roster_returns_403(client, db_engine, mock_orchestrat
     assert "Agent 'nonexistent-agent-xyz' not available" in body["message"]
 
 
-def test_rest_default_agent_applied_when_model_missing(client, db_engine, mock_orchestrator, ha_bearer_headers):
+def test_rest_default_agent_applied_when_model_missing(
+    client, db_engine, mock_orchestrator, ha_bearer_headers
+):
     """default_agent='a' set, body.model='' → 200, session uses agent='a'."""
     _patch_client(db_engine, default_agent="a", allowed_agents=None)
 
-    from src.services.protocol import OrchestratorEvent
     from src.core.session_key import make_session_key
+    from src.services.protocol import OrchestratorEvent
+
     captured = {}
 
     async def _stream(text, user_id, model_id=None, session_key=None):
@@ -87,8 +96,9 @@ def test_rest_legacy_trusted_origin_still_uses_gateway_default(client, mock_orch
 
     Regression check: this path must keep working exactly as before.
     """
-    from src.services.protocol import OrchestratorEvent
     from src.core.session_key import make_session_key
+    from src.services.protocol import OrchestratorEvent
+
     captured = {}
 
     async def _stream(text, user_id, model_id=None, session_key=None):
