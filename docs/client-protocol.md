@@ -78,7 +78,12 @@ Si el handshake es válido y todos los servicios críticos responden, el gateway
   "agent": "main",
   "input_mode": "audio",
   "output_mode": ["audio", "text"],
-  "capabilities": {
+  "requested_capabilities": {
+    "barge_in": true,
+    "tts": true,
+    "transcriber": true
+  },
+  "live_capabilities": {
     "barge_in": true,
     "tts": true,
     "transcriber": true
@@ -92,13 +97,20 @@ Si el handshake es válido y todos los servicios críticos responden, el gateway
 | `agent` | Agente OpenClaw activo (el solicitado o el por defecto) |
 | `input_mode` | Modo de entrada confirmado |
 | `output_mode` | Modos de salida activos |
-| `capabilities.barge_in` | Si el barge-in está habilitado para este cliente |
-| `capabilities.tts` | Si el audio TTS está disponible (`"audio"` en `output_mode` y TTS responde) |
-| `capabilities.transcriber` | Si el transcriptor está activo (`input_mode == "audio"`) |
+| `requested_capabilities.barge_in` | Si el barge-in está habilitado para este cliente |
+| `requested_capabilities.tts` | Si el cliente pidió salida de audio (`"audio"` en `output_mode`) |
+| `requested_capabilities.transcriber` | Si el cliente pidió modo audio (`input_mode == "audio"`) |
+| `live_capabilities.barge_in` | Si el barge-in está operativos (requiere transcriber activo) |
+| `live_capabilities.tts` | Si TTS responde en este momento |
+| `live_capabilities.transcriber` | Si el transcriptor está conectado (`input_mode == "audio"`) |
 
 Espera este mensaje antes de enviar audio o texto. Si no llega, la conexión fue cerrada por un error de handshake.
 
----
+> **Incompatibilidad de protocolo — #114 (v1.15.0)**
+> `ready.capabilities` fue reemplazado por `ready.requested_capabilities` + `ready.live_capabilities`.
+> `requested_capabilities` refleja lo que el cliente pidió en el handshake.
+> `live_capabilities` refleja el resultado del health check en el momento de la conexión.
+> Clientes que aún lean `capabilities` dejarán de encontrar el campo — deben actualizarse.
 
 ## 3. Enviar audio de micrófono
 
@@ -235,7 +247,8 @@ async for msg in ws:
             case "ready":
                 session_id = data["session_id"]
                 agent = data["agent"]
-                capabilities = data["capabilities"]
+                requested = data["requested_capabilities"]
+                live = data["live_capabilities"]
 
             case "turn_start":
                 turn_id = data["turn_id"]

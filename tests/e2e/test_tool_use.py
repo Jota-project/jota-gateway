@@ -10,6 +10,7 @@ hallucinated. Requires the test client to have tool_calls_enabled=True (see
 test_client_record_with_tools fixture) — otherwise the gateway never forwards
 tool_call messages at all (opt-in, see CLAUDE.md).
 """
+
 from tests.e2e.ws_helpers import send_turn_until_tool_call, ws_handshake
 
 EXPECTED_IDENTITY_SNIPPET = "This isn't just metadata. It's the start of figuring out who you are."

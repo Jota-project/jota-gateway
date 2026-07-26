@@ -5,23 +5,25 @@ BD: SQLite en memoria inyectada por monkeypatch (reemplaza respx/jota-db).
 WebSocket: fake servers TTS/transcriber en hilos de background (sin cambios).
 Orchestrator: MockOrchestrator inyectado via monkeypatch (sin cambios).
 """
-import pytest
-import httpx
-import respx
-from datetime import datetime, timezone
+
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
+
+import httpx
+import pytest
+import respx
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 from starlette.testclient import TestClient
 
 from src.core.config import settings
+from src.db.models import ClientRecord
 from src.main import app
 from src.services.db_client import db_client
-from src.services.protocol import OrchestratorProtocol, OrchestratorEvent
+from src.services.openclaw.models import AgentInfo, GatewayInfo
+from src.services.openclaw.registry import ClientRegistry, TurnRegistry
+from src.services.protocol import OrchestratorEvent, OrchestratorProtocol
 from src.services.reconnection import ConnectionState, ServiceStatus
-from src.services.openclaw.registry import TurnRegistry, ClientRegistry
-from src.services.openclaw.models import GatewayInfo, AgentInfo
-from src.db.models import ClientRecord
 
 # ---------------------------------------------------------------------------
 # Datos de test estándar
@@ -36,10 +38,12 @@ ADMIN_TOKEN = "test-admin-token"
 # BD SQLite en memoria
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
 def db_engine(monkeypatch):
     """SQLite in-memory inyectado en get_engine() para todos los integration tests."""
     from src import db
+
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -54,12 +58,14 @@ def db_engine(monkeypatch):
 def seed_client(db_engine):
     """Inserta el cliente de prueba estándar en la BD."""
     with Session(db_engine) as s:
-        s.add(ClientRecord(
-            id=CLIENT_ID,
-            name=CLIENT_NAME,
-            client_key=VALID_KEY,
-            is_active=True,
-        ))
+        s.add(
+            ClientRecord(
+                id=CLIENT_ID,
+                name=CLIENT_NAME,
+                client_key=VALID_KEY,
+                is_active=True,
+            )
+        )
         s.commit()
 
 
@@ -86,9 +92,11 @@ def configure_admin_token():
 def admin_headers():
     return {"x-admin-token": ADMIN_TOKEN}
 
+
 # ---------------------------------------------------------------------------
 # Mock Orchestrator
 # ---------------------------------------------------------------------------
+
 
 def _make_default_gateway_info() -> GatewayInfo:
     return GatewayInfo(
@@ -125,13 +133,15 @@ def make_mock_orchestrator(tokens: list[str] = None) -> OrchestratorProtocol:
     mock.gateway_info = _make_default_gateway_info()
     mock._name = "openclaw"
     mock.get_name = MagicMock(return_value="openclaw")
-    mock.status = MagicMock(return_value=ServiceStatus(
-        name="openclaw",
-        state=ConnectionState.CONNECTED,
-        connected_at=datetime(2026, 6, 4, 10, 0, tzinfo=timezone.utc),
-        reconnect_attempts=0,
-        last_error=None,
-    ))
+    mock.status = MagicMock(
+        return_value=ServiceStatus(
+            name="openclaw",
+            state=ConnectionState.CONNECTED,
+            connected_at=datetime(2026, 6, 4, 10, 0, tzinfo=UTC),
+            reconnect_attempts=0,
+            last_error=None,
+        )
+    )
     return mock
 
 
@@ -141,9 +151,11 @@ def make_mock_registry(orchestrator=None):
         orchestrator = make_mock_orchestrator()
     return orchestrator
 
+
 # ---------------------------------------------------------------------------
 # Health-check HTTP mocks (transcriber + TTS — sin jota-db)
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def mock_services():
@@ -152,9 +164,7 @@ def mock_services():
         router.get(f"http://{settings.TRANSCRIBER_WS_URL}/ready").mock(
             return_value=httpx.Response(200)
         )
-        router.get("http://localhost:8005/ready").mock(
-            return_value=httpx.Response(200)
-        )
+        router.get("http://localhost:8005/ready").mock(return_value=httpx.Response(200))
         yield router
 
 

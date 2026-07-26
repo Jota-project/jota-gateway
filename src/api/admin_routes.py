@@ -21,6 +21,7 @@ Observabilidad:
   GET    /admin/transcriber/status
   GET    /admin/tts/status
 """
+
 import json
 import secrets
 from collections import defaultdict
@@ -44,6 +45,7 @@ router = APIRouter(prefix="/admin", dependencies=[Depends(get_admin_auth)])
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _get_or_404(session: Session, client_id: str) -> ClientRecord:
     rec = session.get(ClientRecord, client_id)
     if rec is None:
@@ -54,6 +56,7 @@ def _get_or_404(session: Session, client_id: str) -> ClientRecord:
 # ---------------------------------------------------------------------------
 # Client CRUD
 # ---------------------------------------------------------------------------
+
 
 @router.get("/clients", response_model=list[ClientResponse])
 def list_clients(session: Session = Depends(get_db_session)) -> list[ClientResponse]:
@@ -110,7 +113,9 @@ def update_client(
     # Serializar listas a JSON antes de escribir en la BD
     for list_field in ("allowed_agents", "output_mode", "tags"):
         if list_field in patch:
-            patch[list_field] = json.dumps(patch[list_field]) if patch[list_field] is not None else None
+            patch[list_field] = (
+                json.dumps(patch[list_field]) if patch[list_field] is not None else None
+            )
     for field, value in patch.items():
         setattr(rec, field, value)
     session.add(rec)
@@ -150,6 +155,7 @@ def rotate_client_key(
 # ---------------------------------------------------------------------------
 # Sessions — observabilidad en memoria
 # ---------------------------------------------------------------------------
+
 
 def _serialize_events(events) -> list[dict]:
     return [
@@ -198,7 +204,9 @@ def _session_detail(record) -> dict:
         for turn_events in by_turn.values()
         if "llm_start" in turn_events and "llm_first_token" in turn_events
     ]
-    avg_llm_first_token_ms = round(sum(llm_latencies) / len(llm_latencies), 1) if llm_latencies else None
+    avg_llm_first_token_ms = (
+        round(sum(llm_latencies) / len(llm_latencies), 1) if llm_latencies else None
+    )
 
     e2e_latencies = [
         round(turn_events["tts_done"].ts_ms - turn_events["transcription_final"].ts_ms, 1)
@@ -244,6 +252,7 @@ async def get_session(session_id: str, request: Request) -> dict:
 # Orchestrators — estado y control
 # ---------------------------------------------------------------------------
 
+
 @router.get("/orchestrators/{name}/status")
 async def get_orchestrator_status(name: str, request: Request) -> dict:
     openclaw = request.app.state.openclaw
@@ -271,6 +280,7 @@ async def post_orchestrator_reconnect(name: str, request: Request) -> dict:
 # ---------------------------------------------------------------------------
 # Transcriber / TTS — estado (solo lectura; ver docstring del módulo)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/transcriber/status")
 async def get_transcriber_status() -> dict:

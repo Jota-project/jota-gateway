@@ -69,7 +69,7 @@ class GatewayInfo:
         )
 
 
-def _flatten_tool_result_content(content: Optional[list]) -> Optional[str]:
+def _flatten_tool_result_content(content: list | None) -> str | None:
     """Join result.content[].text blocks from a session.tool 'result' payload.
 
     OpenClaw tool results carry a list of typed content blocks; jota-gateway
@@ -91,9 +91,9 @@ class ToolCallEvent:
     phase: Literal["start", "result"]
     name: str
     tool_call_id: str
-    args: Optional[dict] = None
-    result: Optional[str] = None
-    is_error: Optional[bool] = None
+    args: dict | None = None
+    result: str | None = None
+    is_error: bool | None = None
 
     @classmethod
     def from_session_tool_payload(cls, data: dict) -> Optional["ToolCallEvent"]:

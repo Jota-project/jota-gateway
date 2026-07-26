@@ -1,7 +1,6 @@
 import asyncio
 import json
 import uuid
-from typing import Optional
 from unittest.mock import patch
 
 import pytest
@@ -9,11 +8,16 @@ import pytest
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
-from src.services.openclaw.registry import TurnRegistry, ClientRegistry, TURN_IN_PROGRESS_ERROR
+from src.services.openclaw.registry import (
+    TURN_IN_PROGRESS_ERROR,
+    ClientRegistry,
+    TurnRegistry,
+)
 from src.services.reconnection import ConnectionState
 
 HELLO_OK_PAYLOAD = {
-    "type": "hello-ok", "protocol": 4,
+    "type": "hello-ok",
+    "protocol": 4,
     "server": {"version": "2026.6.6", "connId": "test-conn"},
     "policy": {"tickIntervalMs": 30000, "maxPayload": 26214400, "maxBufferedBytes": 0},
     "snapshot": {
@@ -30,7 +34,8 @@ HELLO_OK_PAYLOAD = {
 # Matches OpenClaw server 2026.6.11+: hello-ok's snapshot no longer embeds the
 # agent roster at all — it must be fetched separately via agents.list.
 HELLO_OK_PAYLOAD_NO_SNAPSHOT_AGENTS = {
-    "type": "hello-ok", "protocol": 4,
+    "type": "hello-ok",
+    "protocol": 4,
     "server": {"version": "2026.6.11", "connId": "test-conn-2"},
     "policy": {"tickIntervalMs": 30000, "maxPayload": 26214400, "maxBufferedBytes": 0},
     "snapshot": {
@@ -63,11 +68,11 @@ class SmartFakeWS:
 
     def __init__(
         self,
-        chat_responses: Optional[dict] = None,
+        chat_responses: dict | None = None,
         chat_response_delay: float = 0.0,
-        hello_ok_payload: Optional[dict] = None,
-        agents_list_payload: Optional[dict] = None,
-        tool_calls: Optional[dict] = None,
+        hello_ok_payload: dict | None = None,
+        agents_list_payload: dict | None = None,
+        tool_calls: dict | None = None,
     ):
         self.chat_responses: dict[str, list[str]] = chat_responses or {}
         self.chat_response_delay: float = chat_response_delay  # delay between chunks (in seconds)
@@ -78,7 +83,7 @@ class SmartFakeWS:
         self._from_client: asyncio.Queue = asyncio.Queue()
         self.sent_frames: list[dict] = []
         self.closed = False
-        self._handler: Optional[asyncio.Task] = None
+        self._handler: asyncio.Task | None = None
 
     async def start(self):
         self._handler = asyncio.create_task(self._auto_respond())
@@ -104,6 +109,7 @@ class SmartFakeWS:
         # Allows `await websockets.connect(...)` when patched with return_value=fake_ws
         async def _noop():
             return self
+
         return _noop().__await__()
 
     def __aiter__(self):
@@ -117,10 +123,15 @@ class SmartFakeWS:
 
     async def _auto_respond(self):
         # 1. Send challenge
-        await self._to_client.put(json.dumps({
-            "type": "event", "event": "connect.challenge",
-            "payload": {"nonce": "test-nonce", "ts": 1234567890},
-        }))
+        await self._to_client.put(
+            json.dumps(
+                {
+                    "type": "event",
+                    "event": "connect.challenge",
+                    "payload": {"nonce": "test-nonce", "ts": 1234567890},
+                }
+            )
+        )
 
         while True:
             raw = await self._from_client.get()
@@ -130,58 +141,99 @@ class SmartFakeWS:
             params = frame.get("params", {})
 
             if method == "connect":
-                await self._to_client.put(json.dumps({
-                    "type": "res", "id": req_id, "ok": True,
-                    "payload": self.hello_ok_payload,
-                }))
+                await self._to_client.put(
+                    json.dumps(
+                        {
+                            "type": "res",
+                            "id": req_id,
+                            "ok": True,
+                            "payload": self.hello_ok_payload,
+                        }
+                    )
+                )
 
             elif method == "agents.list":
-                await self._to_client.put(json.dumps({
-                    "type": "res", "id": req_id, "ok": True,
-                    "payload": self.agents_list_payload,
-                }))
+                await self._to_client.put(
+                    json.dumps(
+                        {
+                            "type": "res",
+                            "id": req_id,
+                            "ok": True,
+                            "payload": self.agents_list_payload,
+                        }
+                    )
+                )
 
             elif method == "sessions.subscribe":
-                await self._to_client.put(json.dumps({
-                    "type": "res", "id": req_id, "ok": True,
-                    "payload": {"subscribed": True},
-                }))
+                await self._to_client.put(
+                    json.dumps(
+                        {
+                            "type": "res",
+                            "id": req_id,
+                            "ok": True,
+                            "payload": {"subscribed": True},
+                        }
+                    )
+                )
 
             elif method == "chat.send":
                 sk = params.get("sessionKey", "")
                 run_id = str(uuid.uuid4())
                 chunks = self.chat_responses.get(sk, ["Hello"])
 
-                await self._to_client.put(json.dumps({
-                    "type": "res", "id": req_id, "ok": True,
-                    "payload": {"runId": run_id, "status": "started"},
-                }))
+                await self._to_client.put(
+                    json.dumps(
+                        {
+                            "type": "res",
+                            "id": req_id,
+                            "ok": True,
+                            "payload": {"runId": run_id, "status": "started"},
+                        }
+                    )
+                )
                 if self.chat_response_delay > 0:
                     await asyncio.sleep(self.chat_response_delay)
                 for tool_data in self.tool_calls.get(sk, []):
-                    await self._to_client.put(json.dumps({
-                        "type": "event", "event": "session.tool",
-                        "payload": {"sessionKey": sk, "runId": run_id, "data": tool_data},
-                    }))
+                    await self._to_client.put(
+                        json.dumps(
+                            {
+                                "type": "event",
+                                "event": "session.tool",
+                                "payload": {"sessionKey": sk, "runId": run_id, "data": tool_data},
+                            }
+                        )
+                    )
                 for i, chunk in enumerate(chunks):
                     is_last = i == len(chunks) - 1
-                    await self._to_client.put(json.dumps({
-                        "type": "event", "event": "chat",
-                        "payload": {
-                            "runId": run_id, "sessionKey": sk,
-                            "seq": i + 1,
-                            "state": "final" if is_last else "delta",
-                            "deltaText": chunk,
-                        },
-                    }))
+                    await self._to_client.put(
+                        json.dumps(
+                            {
+                                "type": "event",
+                                "event": "chat",
+                                "payload": {
+                                    "runId": run_id,
+                                    "sessionKey": sk,
+                                    "seq": i + 1,
+                                    "state": "final" if is_last else "delta",
+                                    "deltaText": chunk,
+                                },
+                            }
+                        )
+                    )
                     if self.chat_response_delay > 0:
                         await asyncio.sleep(self.chat_response_delay)
 
             elif method == "health":
-                await self._to_client.put(json.dumps({
-                    "type": "res", "id": req_id, "ok": True,
-                    "payload": {"ok": True},
-                }))
+                await self._to_client.put(
+                    json.dumps(
+                        {
+                            "type": "res",
+                            "id": req_id,
+                            "ok": True,
+                            "payload": {"ok": True},
+                        }
+                    )
+                )
 
             elif method == "chat.abort":
                 pass
@@ -271,9 +323,7 @@ async def test_stream_response_ends_with_status_done(fake_ws):
 @pytest.mark.asyncio
 async def test_stream_response_uses_sessionKey_format(fake_ws):
     client = await connected_client(fake_ws)
-    async for _ in client.stream_response(
-        "hola", "client-a", session_key="agent:main:client-a"
-    ):
+    async for _ in client.stream_response("hola", "client-a", session_key="agent:main:client-a"):
         pass
     chat_sends = [f for f in fake_ws.sent_frames if f.get("method") == "chat.send"]
     assert len(chat_sends) == 1
@@ -337,7 +387,7 @@ async def test_chat_abort_frame_schema(fake_ws):
     # Create a fake WS with delays so cancellation races an in-flight response (not a completed one).
     slow_fake_ws = SmartFakeWS(
         {"agent:main:client-a": ["Hola ", "mundo"]},
-        chat_response_delay=0.15  # 150ms delay between responses
+        chat_response_delay=0.15,  # 150ms delay between responses
     )
     client = await connected_client(slow_fake_ws)
 
@@ -373,10 +423,7 @@ async def test_stream_response_completes_without_second_res(fake_ws):
         "hola", "client-a", session_key="agent:main:client-a"
     ):
         events.append(event)
-    res_frames_after_started = [
-        f for f in fake_ws.sent_frames
-        if f.get("method") == "chat.send"
-    ]
+    res_frames_after_started = [f for f in fake_ws.sent_frames if f.get("method") == "chat.send"]
     assert len(res_frames_after_started) == 1  # only the request itself was sent by us
     assert events[-1].type == "status"
     assert events[-1].content == "done"
@@ -387,11 +434,23 @@ async def test_stream_response_completes_without_second_res(fake_ws):
 async def test_stream_response_yields_tool_call_events():
     fake_ws = SmartFakeWS(
         chat_responses={"agent:main:client-a": ["Listo."]},
-        tool_calls={"agent:main:client-a": [
-            {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {"command": "ls"}},
-            {"phase": "result", "name": "exec", "toolCallId": "call-1", "isError": False,
-             "result": {"content": [{"type": "text", "text": "file.txt"}]}},
-        ]},
+        tool_calls={
+            "agent:main:client-a": [
+                {
+                    "phase": "start",
+                    "name": "exec",
+                    "toolCallId": "call-1",
+                    "args": {"command": "ls"},
+                },
+                {
+                    "phase": "result",
+                    "name": "exec",
+                    "toolCallId": "call-1",
+                    "isError": False,
+                    "result": {"content": [{"type": "text", "text": "file.txt"}]},
+                },
+            ]
+        },
     )
     client = await connected_client(fake_ws)
     tool_events = []
@@ -515,7 +574,9 @@ async def test_terminal_event_then_generator_close_does_not_send_spurious_chat_a
         await stream.aclose()
 
     task = asyncio.create_task(drive_and_close())
-    await asyncio.sleep(0.01)  # let register() + chat.send happen before erroring it out, ahead of the first (delayed) token
+    await asyncio.sleep(
+        0.01
+    )  # let register() + chat.send happen before erroring it out, ahead of the first (delayed) token
     client._turn_registry.error_all("boom")
     await asyncio.wait_for(task, timeout=1.0)
 
@@ -631,10 +692,12 @@ async def test_concurrent_stream_response_different_session_keys_both_succeed():
     """Regression guard: rejecting duplicate session_keys must not affect
     unrelated sessions multiplexed on the same connection — both complete
     normally when run concurrently via asyncio.gather."""
-    fake_ws = SmartFakeWS({
-        "agent:main:client-a": ["Hola ", "mundo"],
-        "agent:main:client-b": ["Adios ", "mundo"],
-    })
+    fake_ws = SmartFakeWS(
+        {
+            "agent:main:client-a": ["Hola ", "mundo"],
+            "agent:main:client-b": ["Adios ", "mundo"],
+        }
+    )
     client = await connected_client(fake_ws)
 
     async def _consume(user_id, session_key):

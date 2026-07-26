@@ -1,11 +1,14 @@
 """Tests for JotaBridge._transcription_watchdog."""
+
 import asyncio
 import time
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
-from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.pipeline_tracker import PipelineTracker, _NullWS
 
 _CLIENT = Client(id="hab_sito", client_key="test-key", is_active=True)
@@ -16,19 +19,31 @@ def _make_bridge(config=None):
     ws = AsyncMock()
     registry = MagicMock()
     tracker = PipelineTracker(
-        session_id="test:wd", client_id="hab_sito",
-        input_mode="audio", output_mode=["text"],
-        client_ws=_NullWS(), registry=registry,
+        session_id="test:wd",
+        client_id="hab_sito",
+        input_mode="audio",
+        output_mode=["text"],
+        client_ws=_NullWS(),
+        registry=registry,
     )
     handshake = Handshake(client_key="test-key", input_mode="audio", output_mode=["text"])
     orch = AsyncMock()
     transcriber = MagicMock()
     from src.services.reconnection import ConnectionState
+
     transcriber.state = ConnectionState.CONNECTED
     transcriber._last_transcription_at = None
-    bridge = JotaBridge(client=_CLIENT, config=config or _CONFIG, client_ws=ws,
-                        orchestrator=orch, tts=AsyncMock(), tracker=tracker, handshake=handshake,
-                        client_registry=ClientRegistry(), default_agent="main")
+    bridge = JotaBridge(
+        client=_CLIENT,
+        config=config or _CONFIG,
+        client_ws=ws,
+        orchestrator=orch,
+        tts=AsyncMock(),
+        tracker=tracker,
+        handshake=handshake,
+        client_registry=ClientRegistry(),
+        default_agent="main",
+    )
     bridge.transcriber = transcriber
     return bridge, ws, transcriber
 
@@ -58,6 +73,7 @@ async def test_watchdog_exits_if_transcriber_disconnects():
     bridge, ws, transcriber = _make_bridge()
     bridge._first_audio_at = time.monotonic()
     from src.services.reconnection import ConnectionState
+
     transcriber.state = ConnectionState.DEGRADED
 
     with patch("src.services.bridge.asyncio.sleep", new=AsyncMock(return_value=None)):
@@ -73,6 +89,7 @@ async def test_watchdog_closes_session_after_max_silence_turns():
     transcriber._last_transcription_at = None
 
     close_called = []
+
     async def _fake_close():
         close_called.append(True)
 
@@ -94,6 +111,7 @@ async def test_watchdog_resets_count_when_transcription_arrives():
     transcriber._last_transcription_at = None
 
     close_called = []
+
     async def _fake_close():
         close_called.append(True)
 
@@ -108,6 +126,7 @@ async def test_watchdog_resets_count_when_transcription_arrives():
             transcriber._last_transcription_at = time.monotonic()
         elif ticks["n"] == 4:
             from src.services.reconnection import ConnectionState
+
             transcriber.state = ConnectionState.DEGRADED  # stop the loop cleanly
 
     with patch("src.services.bridge.asyncio.sleep", new=_controlled_sleep):
@@ -128,6 +147,7 @@ async def test_watchdog_pauses_but_does_not_exit_when_reconnecting():
     """A transient RECONNECTING must not permanently kill the watchdog (the bug
     this task fixes: the old `if not _is_ready: return` treated any drop as final)."""
     from src.services.reconnection import ConnectionState
+
     config = ClientConfig(silence_timeout_s=1, max_silence_turns=2)
     bridge, ws, transcriber = _make_bridge(config=config)
     bridge._first_audio_at = time.monotonic() - 2
@@ -146,6 +166,7 @@ async def test_watchdog_pauses_but_does_not_exit_when_reconnecting():
             transcriber.state = ConnectionState.DEGRADED  # stop the loop cleanly
 
     close_called = []
+
     async def _fake_close():
         close_called.append(True)
 
@@ -169,6 +190,7 @@ async def test_watchdog_does_not_close_immediately_after_reconnect_with_stale_ti
     baseline instead, exactly like a brand-new session would get via
     `_first_audio_at`."""
     from src.services.reconnection import ConnectionState
+
     config = ClientConfig(silence_timeout_s=1, max_silence_turns=2)
     bridge, ws, transcriber = _make_bridge(config=config)
     bridge._first_audio_at = time.monotonic() - 10

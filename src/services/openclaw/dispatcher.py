@@ -1,5 +1,10 @@
 import logging
-from src.services.openclaw.registry import TurnRegistry, ClientRegistry, client_id_from_session_key
+
+from src.services.openclaw.registry import (
+    ClientRegistry,
+    TurnRegistry,
+    client_id_from_session_key,
+)
 
 logger = logging.getLogger(__name__)
 

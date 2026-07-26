@@ -12,7 +12,9 @@ class Settings(BaseSettings):
 
     # /v1/* trusted-origin auth (issue #52)
     TRUST_LOOPBACK: bool = True
-    TRUSTED_NETWORKS: str = ""              # CSV of CIDRs, e.g. "192.168.1.0/24". Empty = only loopback trusted.
+    TRUSTED_NETWORKS: str = (
+        ""  # CSV of CIDRs, e.g. "192.168.1.0/24". Empty = only loopback trusted.
+    )
     TRUSTED_PROXIES: str = "127.0.0.1,::1"  # CSV of IPs/CIDRs allowed to set X-Real-IP
 
     # Servicios externos
