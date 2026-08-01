@@ -281,6 +281,56 @@ dedicated OpenClaw plugin becomes worth building.
 
 ---
 
+## Usage/token/cost data exists on the wire — jota-gateway currently discards it
+
+**Investigated 2026-07-19** while scoping a future Redis-backed per-client quota/rate-limit
+layer (issue #107 is a different, unrelated bug — cache thread-safety — not this). Source:
+`openclaw/openclaw` GitHub repo (public, `pushedAt: 2026-07-19`, i.e. actively developed) —
+confirmed the relevant strings (`sessions.changed`, `usage.status`) are present in the actual
+installed build running on this machine, `~/.nvm/versions/node/v22.22.2/lib/node_modules/openclaw`
+**version `2026.7.1`**. Not yet confirmed via raw-frame capture against the live `sessionKey`s
+jota-gateway actually uses — treat field names as provisional until a real captured frame
+confirms the shape, per this file's usual standard.
+
+**`sessions.changed` event — pushed automatically, already reaching jota-gateway:**
+
+Every client that calls `sessions.subscribe` (jota-gateway already does, at connect) receives a
+`{"type":"event","event":"sessions.changed","payload":{...}}` frame after essentially every
+`chat.send` turn completion (and other session mutations — create/delete/compact/rewind/abort).
+The payload (`buildGatewaySessionEventFields`, `src/gateway/session-event-payload.ts` upstream)
+includes, among ~40 other session-metadata fields: `inputTokens`, `outputTokens`, `totalTokens`,
+`totalTokensFresh`, `contextTokens`, `estimatedCostUsd`, `model`, `modelProvider`. These are the
+**session's cumulative lifetime totals**, not a per-turn delta — `estimatedCostUsd` is computed
+server-side from a built-in per-model cost table, so jota-gateway would not need to maintain its
+own token→$ pricing.
+
+**jota-gateway's `FrameDispatcher._handle_event()` (`src/services/openclaw/dispatcher.py`)
+silently drops this event today** — it only matches `"chat"`/`"agent"`/`"session.tool"`, so
+`sessions.changed` frames arrive over the socket and are discarded with no log line. This is the
+general case of existing roadmap issue **#136** ("Dispatcher silently drops unknown event
+types") — handling `sessions.changed` is a small, additive change to that same dispatch
+function, not a new subscription or wire capability.
+
+**Separate RPC surface for aggregated/provider-level usage** (`src/gateway/server-methods/usage.ts`
+upstream, all presumably callable by an operator-role WS client the same way `chat.send` and
+`sessions.subscribe` already are — exact per-method scope requirement not yet confirmed):
+
+- `usage.status` → `loadProviderUsageSummary()` — live per-**provider** quota/window/spend data
+  (e.g. Anthropic's 5-hour Claude-subscription window, OpenRouter key budgets, etc.) — the same
+  data OpenClaw's own Control UI "Usage" tab and `openclaw status --usage` CLI show.
+- `usage.cost` — aggregated cost/token history over a date range.
+- `sessions.usage`, `sessions.usage.timeseries`, `sessions.usage.logs` — per-session/day usage
+  aggregates, independent of the passive `sessions.changed` stream above.
+
+**Open question for the quota-layer design (not resolved here):** OpenClaw's token/cost figures
+are cumulative **per OpenClaw session** (long-lived, tied to `agent`+client), while a per-client
+billing-plan quota is scoped to a **billing period** (e.g. calendar month). Reconciling the two
+needs jota-gateway to snapshot a baseline (`totalTokens`/`estimatedCostUsd` at period start) and
+compute `usage_this_period = current − baseline` itself — OpenClaw has no concept of
+jota-gateway's billing periods.
+
+---
+
 ## Change log of this file
 
 - **2026-07-18**: added "No per-session/per-message system-prompt hook exists" — researched
