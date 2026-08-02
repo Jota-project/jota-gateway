@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     HANDSHAKE_TIMEOUT_S: float = 10.0
     TURN_TIMEOUT_S: float = 120.0
     IDLE_TIMEOUT_S: float = 300.0
+    SHUTDOWN_DRAIN_S: float = 5.0
 
 
 settings = Settings()

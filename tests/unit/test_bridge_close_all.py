@@ -9,6 +9,7 @@ first call's status must win.
 """
 
 import asyncio
+import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -148,3 +149,55 @@ async def test_late_close_of_old_bridge_keeps_reconnected_session(mock_tracker):
         {"type": "status", "service": "orchestrator", "state": "restored"}
     )
     old_bridge.client_ws.send_json.assert_not_awaited()
+
+
+async def test_close_all_bounds_wait_on_hanging_active_turn(bridge, monkeypatch):
+    """#115: si _active_turn nunca termina, close_all() no debe colgarse —
+    lo cancela tras SHUTDOWN_DRAIN_S en vez de esperar para siempre.
+
+    This test discriminates fixed vs unfixed code by measuring elapsed time:
+    - With the fix (asyncio.wait_for bound): completes in ~0.05s
+    - Without the fix (unbounded await): would hang until outer safety net times out
+    Assertion: elapsed time proves the bound was applied, not just that the
+    task was cancelled eventually by something else."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "SHUTDOWN_DRAIN_S", 0.05)
+
+    gate = asyncio.Event()
+
+    async def _blocking():
+        await gate.wait()
+
+    hanging_turn = asyncio.create_task(_blocking())
+    bridge._active_turn = hanging_turn
+
+    start = time.monotonic()
+    # Outer safety net (generous limit to prevent test from hanging forever,
+    # but not the thing that should bound close_all()).
+    await asyncio.wait_for(bridge.close_all(), timeout=2.0)
+    elapsed = time.monotonic() - start
+
+    # With the fix, close_all() respects SHUTDOWN_DRAIN_S=0.05s and returns quickly.
+    # Without the fix, it would await forever, and this assertion would fail.
+    assert elapsed < 0.5, f"close_all() took {elapsed:.2f}s — likely unbounded"
+    assert hanging_turn.cancelled()
+
+
+async def test_close_all_does_not_cancel_turn_that_finishes_before_drain(bridge, monkeypatch):
+    """Caso de control: un turno que termina por sí solo antes del drain no
+    se ve afectado por el cambio."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "SHUTDOWN_DRAIN_S", 1.0)
+
+    async def _quick():
+        return "done"
+
+    quick_turn = asyncio.create_task(_quick())
+    bridge._active_turn = quick_turn
+
+    await asyncio.wait_for(bridge.close_all(), timeout=1.0)
+
+    assert quick_turn.done()
+    assert not quick_turn.cancelled()

@@ -144,9 +144,17 @@ class JotaBridge:
             # from outside; close_all() itself should let the turn finish naturally.
             if self._active_turn and not self._active_turn.done():
                 try:
-                    await self._active_turn
+                    await asyncio.wait_for(self._active_turn, timeout=settings.SHUTDOWN_DRAIN_S)
                 except asyncio.CancelledError:
                     pass
+                except TimeoutError:
+                    # asyncio.wait_for() already cancelled _active_turn and
+                    # awaited that cancellation before raising — nothing left
+                    # to do here but log. No orphaned task.
+                    logger.warning(
+                        f"[{self.client_id}] _active_turn no terminó dentro de "
+                        f"SHUTDOWN_DRAIN_S={settings.SHUTDOWN_DRAIN_S}s — forzando cierre."
+                    )
                 except Exception as e:
                     logger.error(f"[{self.client_id}] _active_turn falló: {e}")
 
