@@ -72,6 +72,7 @@ class JotaBridge:
         self._notification_tasks: set[asyncio.Task] = set()
         self._active_turn: asyncio.Task | None = None
         self._session_start: float = 0.0
+        self._last_client_activity: float = 0.0
         self._first_audio_at: float | None = None
         self._last_final_text: str | None = None
         self._turn_seq: int = 0
@@ -82,6 +83,13 @@ class JotaBridge:
         # is already open so we emit exactly one turn_start/turn_end to the client
         # for the whole multi-step reply, not one per agent event.
         self._push_turn_open: bool = False
+        # Bounds how long an open push turn can gate _idle_watchdog() (issue #115
+        # follow-up): a push has no timeout of its own the way _active_turn does
+        # via stream_response()'s TURN_TIMEOUT_S, so an orphaned push (agent
+        # start with no matching agent end — OpenClaw crash, reconnect mid-push)
+        # combined with a silent client would otherwise block the idle watchdog
+        # from ever calling close_all() and leak the session indefinitely.
+        self._push_turn_opened_at: float | None = None
         self._tts_degraded_notified: bool = False
         # Guards close_all() so it's safe to call more than once (issue #101):
         # routes.py's outer try/finally always calls it on the way out, even
@@ -137,15 +145,31 @@ class JotaBridge:
                 return
 
             self._client_registry.unregister(self.client_id, self)
-            # Await (don't cancel) the active turn so the orchestrator response is
-            # delivered before we tear down microservice clients.  Explicit cancellation
-            # only happens via _cancel_active_turn() (barge-in) or task cancellation
-            # from outside; close_all() itself should let the turn finish naturally.
+            # Await (don't cancel outright) the active turn so the orchestrator
+            # response is delivered before we tear down microservice clients.
+            # The wait is bounded by SHUTDOWN_DRAIN_S (default 30s), not truly
+            # unbounded/natural — it's a safety net, primarily relevant when a
+            # turn is genuinely stuck rather than merely slow. TURN_TIMEOUT_S's
+            # idle-reset semantics mean a turn making steady progress (events
+            # keep arriving within TURN_TIMEOUT_S of each other) can still be
+            # running when close_all() is called for an unrelated reason (e.g.
+            # client disconnect) — SHUTDOWN_DRAIN_S gives it room to finish
+            # naturally without holding up shutdown forever if it never does.
+            # Explicit cancellation otherwise only happens via
+            # _cancel_active_turn() (barge-in) or task cancellation from outside.
             if self._active_turn and not self._active_turn.done():
                 try:
-                    await self._active_turn
+                    await asyncio.wait_for(self._active_turn, timeout=settings.SHUTDOWN_DRAIN_S)
                 except asyncio.CancelledError:
                     pass
+                except TimeoutError:
+                    # asyncio.wait_for() already cancelled _active_turn and
+                    # awaited that cancellation before raising — nothing left
+                    # to do here but log. No orphaned task.
+                    logger.warning(
+                        f"[{self.client_id}] _active_turn no terminó dentro de "
+                        f"SHUTDOWN_DRAIN_S={settings.SHUTDOWN_DRAIN_S}s — forzando cierre."
+                    )
                 except Exception as e:
                     logger.error(f"[{self.client_id}] _active_turn falló: {e}")
 
@@ -167,6 +191,7 @@ class JotaBridge:
             # the flag would otherwise stay set forever, causing the next agent start
             # received on this bridge instance to be silently dropped.
             self._push_turn_open = False
+            self._push_turn_opened_at = None
 
             for task in self.tasks:
                 if not task.done():
@@ -309,8 +334,56 @@ class JotaBridge:
                     await self.close_all()
                     return
 
+    async def _idle_watchdog(self):
+        """Cierra la sesión si el cliente no manda ningún mensaje (audio o
+        texto) durante IDLE_TIMEOUT_S (issue #115). Sin aviso previo al
+        cliente — a diferencia del silence watchdog, que sí notifica
+        degradación progresiva de la transcripción.
+
+        Gated on activity actually in flight (issue #115 follow-up): a client
+        that goes quiet while the orchestrator is mid-turn, or a push-only
+        session that never sends anything by design, must not be cut off just
+        because IDLE_TIMEOUT_S has elapsed since the client's *last inbound
+        message*. When the idle window has expired but `_active_turn` or
+        `_push_turn_open` shows something is actively in flight, this skips
+        the close for this tick and re-checks shortly after — it does not
+        reset the idle window, it just defers the decision until nothing is
+        in flight anymore.
+
+        `_active_turn` is safe to trust indefinitely because it's implicitly
+        bounded — the orchestrator call underneath it is capped by
+        TURN_TIMEOUT_S inside stream_response(). `_push_turn_open` has no
+        such bound of its own (it's just a flag toggled by on_push_turn_start/
+        on_push_turn_end), so an orphaned push — OpenClaw crashes or a
+        reconnect happens between an agent start and its matching agent end —
+        would otherwise gate this watchdog forever, leaking the session. A
+        push only counts as "in flight" here while it's within its own
+        TURN_TIMEOUT_S grace period since it opened (`_push_turn_opened_at`);
+        past that, close_all()'s existing defensive reset handles clearing
+        the stale flag.
+        """
+        while True:
+            remaining = settings.IDLE_TIMEOUT_S - (
+                time.monotonic() - self._last_client_activity
+            )
+            if remaining <= 0:
+                push_in_flight = self._push_turn_open and (
+                    self._push_turn_opened_at is None
+                    or time.monotonic() - self._push_turn_opened_at < settings.TURN_TIMEOUT_S
+                )
+                if (self._active_turn and not self._active_turn.done()) or push_in_flight:
+                    # Not idle — a turn/push is actively in flight. Re-check
+                    # shortly rather than closing or resetting the full window.
+                    await asyncio.sleep(2)
+                    continue
+                logger.info(f"[{self.client_id}] Idle timeout — cerrando sesión.")
+                await self.close_all()
+                return
+            await asyncio.sleep(remaining)
+
     async def run(self):
         self._session_start = time.monotonic()
+        self._last_client_activity = time.monotonic()
         await self.tracker.record(
             "session_start",
             input_mode=self.handshake.input_mode,
@@ -319,6 +392,8 @@ class JotaBridge:
 
         # Loop principal de lectura del cliente
         self.tasks.append(asyncio.create_task(self._client_input_loop()))
+        # Idle watchdog: cierra la sesión si el cliente no manda nada (issue #115).
+        self.tasks.append(asyncio.create_task(self._idle_watchdog()))
 
         # Loop del Transcriptor (solo si hay audio de entrada)
         if self.transcriber:
@@ -349,6 +424,7 @@ class JotaBridge:
         try:
             while True:
                 message = await self.client_ws.receive()
+                self._last_client_activity = time.monotonic()
 
                 if message.get("type") == "websocket.disconnect":
                     logger.info(f"[{self.client_id}] Cliente físico desconectado.")
@@ -623,6 +699,7 @@ class JotaBridge:
         self._push_turn_seq = self._turn_seq
         self._push_turn_id = f"t-{self._turn_seq}"
         self._push_turn_open = True
+        self._push_turn_opened_at = time.monotonic()
 
         try:
             await self.client_ws.send_json(
@@ -717,3 +794,4 @@ class JotaBridge:
         except Exception:
             pass
         self._push_turn_open = False
+        self._push_turn_opened_at = None

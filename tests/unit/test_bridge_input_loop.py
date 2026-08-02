@@ -103,6 +103,26 @@ async def test_plain_text_sets_active_turn():
     bridge._active_turn.cancel()
 
 
+async def test_receiving_message_updates_last_client_activity():
+    """#115: cualquier mensaje del cliente (aquí texto plano) actualiza el
+    reloj que consume el idle watchdog."""
+    bridge, ws, _ = _make_bridge(input_mode="text")
+    bridge.transcriber = None
+    bridge._last_client_activity = 0.0
+
+    ws.receive = AsyncMock(
+        side_effect=[
+            {"type": "websocket.message", "text": "hola"},
+            {"type": "websocket.disconnect"},
+        ]
+    )
+
+    await bridge._client_input_loop()
+
+    assert bridge._last_client_activity > 0.0
+    bridge._active_turn.cancel()
+
+
 async def test_plain_text_cancels_previous_active_turn():
     """En modo texto, un segundo mensaje plano debe cancelar el turn en vuelo."""
     bridge, ws, _ = _make_bridge(input_mode="text")
