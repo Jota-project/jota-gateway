@@ -1,8 +1,8 @@
 # jota-gateway Roadmap
 
-> **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fase 1 y Fase 2 ✅ cerradas
-> **Última actualización:** 2026-07-20
-> **Issues abiertas:** 33 (rango GitHub `#99`–`#163`)
+> **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fase 1 y Fase 2 ✅ cerradas, Fase 3 en curso (5/8 issues cerradas)
+> **Última actualización:** 2026-08-02
+> **Issues abiertas:** 28 (rango GitHub `#99`–`#163`)
 > **Versión actual:** 1.15.x (1.16.0 al mergear esta fase a `main`, vía release automático)
 > **Próximo release:** 1.17.0 (al cerrar Fase 3)
 
@@ -105,7 +105,7 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 
 - [ ] **#110** 🟠 `[012]` — Lifespan shutdown doesn't drain active sessions — **XL**
 - [x] **#111** 🟠 `[013]` — Streaming SSE returns 200 on orchestrator error — **S** — los fallos pre-token y post-token emiten `server_error` + `finish_reason="error"`, no emiten `[DONE]` y cierran el tracker con estado `error`.
-- [ ] **#112** 🟠 `[014]` — Normal vs push turn coordination — **L** — ⚠️ *requiere decisión de política*
+- [ ] **#112** 🟠 `[014]` — Normal vs push turn coordination — **L** — política ya decidida (commit `8554148`, Opción A: suprimir eventos `agent` start/end mientras hay un turno normal activo para ese `session_key`), pendiente de implementar. **Reproducida en vivo por accidente (2026-08-02)**, verificando #115 manualmente contra el OpenClaw local real: un turno de texto trivial ("Responde solo con la palabra: hola") produjo dos `turn_start` (`t-1` normal + `t-2` push) y el cliente recibió `token` con `turn_id=t-1` pero `turn_end` con `turn_id=t-2` — confirma que el bug se dispara con el prompt más simple posible contra el agente por defecto, no es un caso raro.
 - [x] **#113** 🟠 `[015]` — Bridge unregisters newer bridge for same `client_id` — **S** — `ClientRegistry.unregister(client_id, expected_bridge)` ahora sólo desregistra si el bridge sigue siendo el dueño actual (mismo patrón de identidad que `TurnRegistry` para #99); `bridge.close_all()` pasa `self`. Un cierre tardío del bridge viejo ya no expulsa la sesión reconectada.
 - [x] **#114** 🟠 `[016]` — `ready.capabilities` contradicts actual service availability — **S** — `ready` separa `requested_capabilities` y `live_capabilities` (instantánea de health check).
 - [x] **#115** 🟠 `[017]` — No bounded deadlines (handshake/turn/idle/shutdown drain) — **M** — 4 settings nuevas (`HANDSHAKE_TIMEOUT_S`, `TURN_TIMEOUT_S` con reset por evento (idle-reset), `IDLE_TIMEOUT_S`, `SHUTDOWN_DRAIN_S`); turn timeout implementado en `OpenClawClient.stream_response()` reutilizando el `chat.abort`/`TURN_ERROR` ya existente de #99/#111/#150 — el turn timeout no toca `bridge.py` ni `openai_routes.py`. Fix wave de revisión final: el idle watchdog de `bridge.py` ahora comprueba `_active_turn`/`_push_turn_open` antes de cerrar, para no cortar turnos en curso ni limitar sesiones push-only a `IDLE_TIMEOUT_S`.
