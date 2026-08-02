@@ -359,6 +359,69 @@ async def test_idle_watchdog_closes_once_active_turn_finishes_and_idle_elapses(m
 
 
 @pytest.mark.asyncio
+async def test_idle_watchdog_does_not_close_while_push_within_grace_period(monkeypatch):
+    """An orphaned push (agent-start with no matching agent-end, e.g. OpenClaw
+    crashed mid-push) must still defer the idle close while it's within its
+    own TURN_TIMEOUT_S grace period — same behavior as an active turn."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 5)
+    bridge, ws, _ = _make_bridge()
+    bridge._last_client_activity = time.monotonic() - 10  # idle-timeout would fire
+
+    bridge._push_turn_open = True
+    bridge._push_turn_opened_at = time.monotonic()  # just opened
+
+    close_called = []
+
+    async def _fake_close():
+        close_called.append(True)
+
+    bridge.close_all = _fake_close
+
+    task = asyncio.create_task(bridge._idle_watchdog())
+    await asyncio.sleep(0.1)
+    assert not task.done()
+    assert not close_called, "watchdog must not close while push is within its grace period"
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_idle_watchdog_closes_when_push_exceeds_grace_period(monkeypatch):
+    """Regression test for the orphaned-push leak: a push turn left open
+    (agent-start with no matching agent-end) past TURN_TIMEOUT_S must no
+    longer block the idle watchdog from calling close_all() — without the
+    fix, `_push_turn_open` alone gates the close forever and this test
+    fails because close_all() is never called."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.05)
+    bridge, ws, _ = _make_bridge()
+    bridge._last_client_activity = time.monotonic() - 10  # idle-timeout would fire
+
+    bridge._push_turn_open = True
+    bridge._push_turn_opened_at = time.monotonic() - 5  # opened long ago, past grace period
+
+    close_called = []
+
+    async def _fake_close():
+        close_called.append(True)
+
+    bridge.close_all = _fake_close
+
+    await asyncio.wait_for(bridge._idle_watchdog(), timeout=2.0)
+
+    assert close_called, "watchdog must close once the orphaned push exceeds TURN_TIMEOUT_S"
+
+
+@pytest.mark.asyncio
 async def test_run_launches_idle_watchdog_that_closes_the_session(monkeypatch, mock_tracker):
     """Drives the REAL bridge.run() (not `_idle_watchdog()` directly) end to
     end, so a regression that deletes

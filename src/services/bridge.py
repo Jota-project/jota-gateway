@@ -83,6 +83,13 @@ class JotaBridge:
         # is already open so we emit exactly one turn_start/turn_end to the client
         # for the whole multi-step reply, not one per agent event.
         self._push_turn_open: bool = False
+        # Bounds how long an open push turn can gate _idle_watchdog() (issue #115
+        # follow-up): a push has no timeout of its own the way _active_turn does
+        # via stream_response()'s TURN_TIMEOUT_S, so an orphaned push (agent
+        # start with no matching agent end — OpenClaw crash, reconnect mid-push)
+        # combined with a silent client would otherwise block the idle watchdog
+        # from ever calling close_all() and leak the session indefinitely.
+        self._push_turn_opened_at: float | None = None
         self._tts_degraded_notified: bool = False
         # Guards close_all() so it's safe to call more than once (issue #101):
         # routes.py's outer try/finally always calls it on the way out, even
@@ -184,6 +191,7 @@ class JotaBridge:
             # the flag would otherwise stay set forever, causing the next agent start
             # received on this bridge instance to be silently dropped.
             self._push_turn_open = False
+            self._push_turn_opened_at = None
 
             for task in self.tasks:
                 if not task.done():
@@ -341,15 +349,29 @@ class JotaBridge:
         the close for this tick and re-checks shortly after — it does not
         reset the idle window, it just defers the decision until nothing is
         in flight anymore.
+
+        `_active_turn` is safe to trust indefinitely because it's implicitly
+        bounded — the orchestrator call underneath it is capped by
+        TURN_TIMEOUT_S inside stream_response(). `_push_turn_open` has no
+        such bound of its own (it's just a flag toggled by on_push_turn_start/
+        on_push_turn_end), so an orphaned push — OpenClaw crashes or a
+        reconnect happens between an agent start and its matching agent end —
+        would otherwise gate this watchdog forever, leaking the session. A
+        push only counts as "in flight" here while it's within its own
+        TURN_TIMEOUT_S grace period since it opened (`_push_turn_opened_at`);
+        past that, close_all()'s existing defensive reset handles clearing
+        the stale flag.
         """
         while True:
             remaining = settings.IDLE_TIMEOUT_S - (
                 time.monotonic() - self._last_client_activity
             )
             if remaining <= 0:
-                if (self._active_turn and not self._active_turn.done()) or (
-                    self._push_turn_open
-                ):
+                push_in_flight = self._push_turn_open and (
+                    self._push_turn_opened_at is None
+                    or time.monotonic() - self._push_turn_opened_at < settings.TURN_TIMEOUT_S
+                )
+                if (self._active_turn and not self._active_turn.done()) or push_in_flight:
                     # Not idle — a turn/push is actively in flight. Re-check
                     # shortly rather than closing or resetting the full window.
                     await asyncio.sleep(2)
@@ -677,6 +699,7 @@ class JotaBridge:
         self._push_turn_seq = self._turn_seq
         self._push_turn_id = f"t-{self._turn_seq}"
         self._push_turn_open = True
+        self._push_turn_opened_at = time.monotonic()
 
         try:
             await self.client_ws.send_json(
@@ -771,3 +794,4 @@ class JotaBridge:
         except Exception:
             pass
         self._push_turn_open = False
+        self._push_turn_opened_at = None
