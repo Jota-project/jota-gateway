@@ -18,6 +18,7 @@ Guía completa para implementar clientes que se conecten a jota-gateway. Cubre e
 10. [Turns iniciados por el agente (push)](#10-turns-iniciados-por-el-agente-push)
 11. [Modos de operación](#11-modos-de-operación)
 12. [Referencia completa de mensajes](#12-referencia-completa-de-mensajes)
+13. [Timeouts y cierre de sesión](#13-timeouts-y-cierre-de-sesión)
 
 ---
 
@@ -54,6 +55,7 @@ El agente efectivo de la sesión no es simplemente "el que pediste o el global":
 
 | Situación | Código WS | Motivo |
 |-----------|-----------|--------|
+| No se recibe el handshake JSON en los primeros `HANDSHAKE_TIMEOUT_S` (10s por defecto) | 1008 | `"Handshake timeout"` |
 | JSON inválido o campos incorrectos | 1008 | `"Handshake invalido"` |
 | `client_key` inválida o cliente inactivo | 1008 | `"Clave de cliente invalida o inactiva"` |
 | Servicio de identidad no disponible | 1011 | `"Servicio de identidad no disponible"` |
@@ -438,7 +440,7 @@ Los errores llegan independientemente de `output_mode`:
 
 | Código | Fatal | Cuándo ocurre |
 |--------|-------|---------------|
-| `TURN_ERROR` | false | Fallo en un turno concreto (incluye orquestador caído/reconectando durante una sesión activa); la sesión continúa — **el único código realmente emitido hoy** |
+| `TURN_ERROR` | false | Fallo en un turno concreto (orquestador caído/reconectando durante una sesión activa, **o** el turno se cuelga sin progreso — `message: "turn_timeout"`, ver §13); la sesión continúa — **el único código realmente emitido hoy** |
 | `AUTH_FAILED` | true | Documentado para `client_key` inválida o inactiva — en la práctica se señaliza cerrando el WS con 1008, sin este mensaje previo |
 | `AGENT_NOT_FOUND` | true | Documentado para agente inexistente — en la práctica se señaliza cerrando el WS con 1008, sin este mensaje previo |
 | `ORCHESTRATOR_UNAVAILABLE` | true | Documentado para orquestador no disponible al iniciar — en la práctica se señaliza cerrando el WS con 1011, sin este mensaje previo |
@@ -534,7 +536,7 @@ El cliente escribe; el gateway sintetiza audio con el texto de la respuesta.
 
 | Tipo | Formato | Cuándo |
 |------|---------|--------|
-| `ready` | `{"type":"ready","session_id":"...","agent":"...","input_mode":"...","output_mode":[...],"capabilities":{...}}` | Tras handshake exitoso, antes de cualquier otro mensaje |
+| `ready` | `{"type":"ready","session_id":"...","agent":"...","input_mode":"...","output_mode":[...],"requested_capabilities":{...},"live_capabilities":{...}}` | Tras handshake exitoso, antes de cualquier otro mensaje |
 | `turn_start` | `{"type":"turn_start","turn_id":"t-N","turn_seq":N}` | Inicio de cada turno |
 | `token` | `{"type":"token","turn_id":"t-N","text":"..."}` | `"text"` en `output_mode` — tokens en streaming |
 | `turn_end` | `{"type":"turn_end","turn_id":"t-N"}` | Fin de cada turno |
@@ -552,3 +554,37 @@ El cliente escribe; el gateway sintetiza audio con el texto de la respuesta.
 ```
 
 Llegan entrelazados con los mensajes JSON. Identifica audio por el magic byte `0xA1` en el primer byte.
+
+---
+
+## 13. Timeouts y cierre de sesión
+
+**Nuevo — issue #115 (v1.17.0).** El gateway acota cuatro esperas que antes eran indefinidas. Tres son visibles en el wire; la cuarta es puramente interna.
+
+| Deadline | Valor por defecto | Qué provoca | Cómo lo ves |
+|---|---|---|---|
+| `HANDSHAKE_TIMEOUT_S` | 10s | No mandas el JSON de handshake a tiempo | Cierre WS 1008, `"Handshake timeout"` (ver §1) |
+| `TURN_TIMEOUT_S` | 120s, **idle-reset** | El orquestador deja de mandar nada durante un turno ya en marcha (cuelgue real, no duración total) | `{"type":"error","code":"TURN_ERROR","message":"turn_timeout","fatal":false,"turn_id":"..."}` (ver §9) — la sesión sigue viva, solo ese turno se aborta |
+| `IDLE_TIMEOUT_S` | 300s (5 min) | No mandas **ningún** mensaje (ni audio ni texto) durante ese tiempo | Cierre WS con código 1000, **sin ningún mensaje de error o aviso previo** |
+| `SHUTDOWN_DRAIN_S` | 30s | Interno — límite que el gateway se da a sí mismo para esperar un turno en curso al cerrar una sesión (reinicio del servidor, u otro camino de cierre) | Ninguno directo; en el peor caso el turno se corta sin `turn_end` |
+
+### `TURN_TIMEOUT_S` es "idle-reset", no un techo total
+
+El reloj se reinicia con cada evento que llega del orquestador (cada token, cada evento de herramienta). Un turno con una respuesta larga pero activa (tool-use multi-paso, por ejemplo) nunca se corta por esto — solo se corta si el orquestador deja de mandar absolutamente nada durante 120s seguidos. No necesitas ningún cambio de cliente para esto: ya manejas `TURN_ERROR` (§9), y `turn_timeout` es simplemente un valor más de `message` dentro de ese mismo mecanismo.
+
+### `IDLE_TIMEOUT_S` — la que sí te afecta si mantienes conexiones abiertas
+
+Esta es la novedad más relevante para clientes de larga duración (dispositivos siempre-conectados, sesiones que solo reciben *pushes* del agente sin que el usuario hable):
+
+- El contador se basa **solo en mensajes entrantes del cliente** (audio o texto) — nada que el gateway te mande a ti cuenta como actividad.
+- **Se pausa mientras haya un turno o un push en curso**: si el orquestador está respondiendo activamente o hay un turno iniciado por el agente abierto, el cierre por idle no se dispara aunque hayan pasado los 5 minutos — el contador solo corre cuando de verdad no hay nada pasando en ninguna dirección.
+- Si se dispara, el gateway simplemente cierra el WebSocket (código 1000, cierre normal) — **no** manda un `error` ni un `status` avisando antes. Detectas esto como cualquier otro cierre inesperado de socket.
+- No hay campo en `ready` que indique este valor — si tu cliente necesita conocerlo para decidir cuándo mandar un keep-alive, tiene que estar hardcodeado o configurado del lado del cliente (no se expone por protocolo todavía).
+
+**Qué implica para tu cliente:** si tu caso de uso implica abrir una sesión y quedarte a la escucha de *pushes* del agente sin que el usuario interactúe activamente durante más de 5 minutos seguidos, tu cliente debe:
+1. Mandar algo periódicamente para resetear el contador (aunque sea un mensaje que el gateway ignore a nivel de negocio, cualquier frame válido cuenta), **o**
+2. Implementar reconexión automática tras un cierre inesperado del WebSocket con código 1000 y sin haber recibido `error` — no lo trates como un fallo, es un cierre esperado por inactividad.
+
+### `SHUTDOWN_DRAIN_S` — informativo
+
+No requiere ningún cambio de cliente. Si el gateway se reinicia con un turno tuyo en curso, tiene hasta 30s para dejarlo terminar antes de forzar el cierre. Si tu cliente ya maneja reconexión tras un cierre de socket inesperado durante un turno (recomendado en general, no solo por esto), ya estás cubierto.
