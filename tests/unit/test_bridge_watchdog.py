@@ -226,3 +226,54 @@ async def test_watchdog_does_not_close_immediately_after_reconnect_with_stale_ti
         "session was force-closed right after a successful reconnect, "
         "because elapsed was measured from a pre-outage timestamp"
     )
+
+
+@pytest.mark.asyncio
+async def test_idle_watchdog_closes_session_when_no_activity(monkeypatch):
+    """#115: sin ningún mensaje del cliente durante IDLE_TIMEOUT_S, la
+    sesión se cierra."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
+    bridge, ws, _ = _make_bridge()
+    bridge._last_client_activity = time.monotonic()
+
+    close_called = []
+
+    async def _fake_close():
+        close_called.append(True)
+
+    bridge.close_all = _fake_close
+
+    await asyncio.wait_for(bridge._idle_watchdog(), timeout=1.0)
+
+    assert close_called
+
+
+@pytest.mark.asyncio
+async def test_idle_watchdog_does_not_close_while_activity_is_recent(monkeypatch):
+    """Caso de control: con IDLE_TIMEOUT_S holgado y actividad reciente, el
+    watchdog sigue durmiendo — no cierra la sesión."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 5)
+    bridge, ws, _ = _make_bridge()
+    bridge._last_client_activity = time.monotonic()
+
+    close_called = []
+
+    async def _fake_close():
+        close_called.append(True)
+
+    bridge.close_all = _fake_close
+
+    task = asyncio.create_task(bridge._idle_watchdog())
+    await asyncio.sleep(0.05)
+    assert not task.done()
+    assert not close_called
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass

@@ -72,6 +72,7 @@ class JotaBridge:
         self._notification_tasks: set[asyncio.Task] = set()
         self._active_turn: asyncio.Task | None = None
         self._session_start: float = 0.0
+        self._last_client_activity: float = 0.0
         self._first_audio_at: float | None = None
         self._last_final_text: str | None = None
         self._turn_seq: int = 0
@@ -309,8 +310,24 @@ class JotaBridge:
                     await self.close_all()
                     return
 
+    async def _idle_watchdog(self):
+        """Cierra la sesión si el cliente no manda ningún mensaje (audio o
+        texto) durante IDLE_TIMEOUT_S (issue #115). Sin aviso previo al
+        cliente — a diferencia del silence watchdog, que sí notifica
+        degradación progresiva de la transcripción."""
+        while True:
+            remaining = settings.IDLE_TIMEOUT_S - (
+                time.monotonic() - self._last_client_activity
+            )
+            if remaining <= 0:
+                logger.info(f"[{self.client_id}] Idle timeout — cerrando sesión.")
+                await self.close_all()
+                return
+            await asyncio.sleep(remaining)
+
     async def run(self):
         self._session_start = time.monotonic()
+        self._last_client_activity = time.monotonic()
         await self.tracker.record(
             "session_start",
             input_mode=self.handshake.input_mode,
@@ -319,6 +336,8 @@ class JotaBridge:
 
         # Loop principal de lectura del cliente
         self.tasks.append(asyncio.create_task(self._client_input_loop()))
+        # Idle watchdog: cierra la sesión si el cliente no manda nada (issue #115).
+        self.tasks.append(asyncio.create_task(self._idle_watchdog()))
 
         # Loop del Transcriptor (solo si hay audio de entrada)
         if self.transcriber:
@@ -349,6 +368,7 @@ class JotaBridge:
         try:
             while True:
                 message = await self.client_ws.receive()
+                self._last_client_activity = time.monotonic()
 
                 if message.get("type") == "websocket.disconnect":
                     logger.info(f"[{self.client_id}] Cliente físico desconectado.")

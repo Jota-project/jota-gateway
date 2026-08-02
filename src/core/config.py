@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     # Deadlines acotados (issue #115)
     HANDSHAKE_TIMEOUT_S: float = 10.0
     TURN_TIMEOUT_S: float = 120.0
+    IDLE_TIMEOUT_S: float = 300.0
 
 
 settings = Settings()
