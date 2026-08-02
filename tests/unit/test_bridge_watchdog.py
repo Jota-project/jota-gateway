@@ -277,3 +277,145 @@ async def test_idle_watchdog_does_not_close_while_activity_is_recent(monkeypatch
         await task
     except asyncio.CancelledError:
         pass
+
+
+@pytest.mark.asyncio
+async def test_idle_watchdog_does_not_close_during_active_turn(monkeypatch):
+    """#115 follow-up (real production bug): a text session with the
+    orchestrator actively streaming tokens must not be cut off mid-turn just
+    because IDLE_TIMEOUT_S has elapsed since the client's last inbound
+    message — `_last_client_activity` only reflects the client's last
+    *message*, not whether the server is still actively responding."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
+    bridge, ws, _ = _make_bridge()
+    bridge._last_client_activity = time.monotonic() - 10  # idle-timeout would fire
+
+    active_turn = MagicMock()
+    active_turn.done.return_value = False
+    bridge._active_turn = active_turn
+
+    close_called = []
+
+    async def _fake_close():
+        close_called.append(True)
+
+    bridge.close_all = _fake_close
+
+    ticks = {"n": 0}
+
+    async def _controlled_sleep(n):
+        ticks["n"] += 1
+        if ticks["n"] >= 3:
+            raise RuntimeError("stop-test")  # bounded termination, see below
+
+    with patch("src.services.bridge.asyncio.sleep", new=_controlled_sleep):
+        with pytest.raises(RuntimeError, match="stop-test"):
+            await asyncio.wait_for(bridge._idle_watchdog(), timeout=2.0)
+
+    # The watchdog looped several times (re-checking every ~2s per the fix)
+    # without ever calling close_all() while the turn stayed active.
+    assert ticks["n"] >= 3
+    assert not close_called, "watchdog must not close while a turn is active"
+
+
+@pytest.mark.asyncio
+async def test_idle_watchdog_closes_once_active_turn_finishes_and_idle_elapses(monkeypatch):
+    """Control case for the fix above: once the in-flight turn completes
+    (task done) and the client is still genuinely idle, the watchdog must
+    still close the session on its next re-check — the active-turn gate only
+    defers the close while something is in flight, it doesn't disable idle
+    timeout permanently."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
+    bridge, ws, _ = _make_bridge()
+    bridge._last_client_activity = time.monotonic() - 10  # stale from the start
+
+    active_turn = MagicMock()
+    active_turn.done.return_value = False
+    bridge._active_turn = active_turn
+
+    close_called = []
+
+    async def _fake_close():
+        close_called.append(True)
+
+    bridge.close_all = _fake_close
+
+    ticks = {"n": 0}
+
+    async def _controlled_sleep(n):
+        ticks["n"] += 1
+        if ticks["n"] == 1:
+            assert not close_called, "must not close on the first tick — turn still active"
+            active_turn.done.return_value = True  # turn finishes between checks
+
+    with patch("src.services.bridge.asyncio.sleep", new=_controlled_sleep):
+        await asyncio.wait_for(bridge._idle_watchdog(), timeout=2.0)
+
+    assert close_called, "watchdog must close once the turn finished and idle time elapsed"
+
+
+@pytest.mark.asyncio
+async def test_run_launches_idle_watchdog_that_closes_the_session(monkeypatch, mock_tracker):
+    """Drives the REAL bridge.run() (not `_idle_watchdog()` directly) end to
+    end, so a regression that deletes
+    `self.tasks.append(asyncio.create_task(self._idle_watchdog()))` from
+    run() fails this test instead of passing silently — the deleted line
+    left the rest of the suite green because nothing else exercises run()'s
+    task-launching code for the idle watchdog specifically.
+
+    client_ws.receive() hangs forever (client never sends anything, e.g. a
+    push-only session), so _client_input_loop never finishes on its own —
+    only the idle watchdog closing the session can make run() return before
+    the outer wait_for's own timeout.
+
+    Timing, not just eventual completion, is what discriminates fixed vs.
+    unfixed here: run()'s own try/except/finally swallows CancelledError and
+    always calls close_all() during cleanup, so if the idle watchdog were
+    never launched, the outer wait_for's cancellation at its own timeout
+    would *also* end up with `_closed is True` — just ~40x slower. The
+    elapsed-time assertion is what proves it was IDLE_TIMEOUT_S=0.05s that
+    closed the session, not the outer safety net.
+    """
+    import time as time_module
+
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
+
+    ws = AsyncMock()
+    hang = asyncio.Event()
+
+    async def _hanging_receive():
+        await hang.wait()  # never set — mimics a client that never sends anything
+
+    ws.receive = _hanging_receive
+
+    bridge = JotaBridge(
+        client=_CLIENT,
+        config=ClientConfig(),
+        client_ws=ws,
+        orchestrator=AsyncMock(),
+        tts=AsyncMock(),
+        tracker=mock_tracker,
+        handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text"]),
+        client_registry=ClientRegistry(),
+        default_agent="main",
+    )
+
+    start = time_module.monotonic()
+    # Generous outer safety net — NOT the mechanism under test. If the idle
+    # watchdog isn't wired in, this will still eventually "complete" via
+    # wait_for's own cancellation being absorbed by run()'s cleanup, but only
+    # after ~2s — the elapsed assertion below is what actually catches that.
+    await asyncio.wait_for(bridge.run(), timeout=2.0)
+    elapsed = time_module.monotonic() - start
+
+    assert bridge._closed is True
+    assert elapsed < 1.0, (
+        f"run() took {elapsed:.2f}s — the idle watchdog likely wasn't launched "
+        "and this only completed via the outer wait_for's own timeout"
+    )

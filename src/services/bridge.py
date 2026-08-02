@@ -138,10 +138,18 @@ class JotaBridge:
                 return
 
             self._client_registry.unregister(self.client_id, self)
-            # Await (don't cancel) the active turn so the orchestrator response is
-            # delivered before we tear down microservice clients.  Explicit cancellation
-            # only happens via _cancel_active_turn() (barge-in) or task cancellation
-            # from outside; close_all() itself should let the turn finish naturally.
+            # Await (don't cancel outright) the active turn so the orchestrator
+            # response is delivered before we tear down microservice clients.
+            # The wait is bounded by SHUTDOWN_DRAIN_S (default 30s), not truly
+            # unbounded/natural — it's a safety net, primarily relevant when a
+            # turn is genuinely stuck rather than merely slow. TURN_TIMEOUT_S's
+            # idle-reset semantics mean a turn making steady progress (events
+            # keep arriving within TURN_TIMEOUT_S of each other) can still be
+            # running when close_all() is called for an unrelated reason (e.g.
+            # client disconnect) — SHUTDOWN_DRAIN_S gives it room to finish
+            # naturally without holding up shutdown forever if it never does.
+            # Explicit cancellation otherwise only happens via
+            # _cancel_active_turn() (barge-in) or task cancellation from outside.
             if self._active_turn and not self._active_turn.done():
                 try:
                     await asyncio.wait_for(self._active_turn, timeout=settings.SHUTDOWN_DRAIN_S)
@@ -322,12 +330,30 @@ class JotaBridge:
         """Cierra la sesión si el cliente no manda ningún mensaje (audio o
         texto) durante IDLE_TIMEOUT_S (issue #115). Sin aviso previo al
         cliente — a diferencia del silence watchdog, que sí notifica
-        degradación progresiva de la transcripción."""
+        degradación progresiva de la transcripción.
+
+        Gated on activity actually in flight (issue #115 follow-up): a client
+        that goes quiet while the orchestrator is mid-turn, or a push-only
+        session that never sends anything by design, must not be cut off just
+        because IDLE_TIMEOUT_S has elapsed since the client's *last inbound
+        message*. When the idle window has expired but `_active_turn` or
+        `_push_turn_open` shows something is actively in flight, this skips
+        the close for this tick and re-checks shortly after — it does not
+        reset the idle window, it just defers the decision until nothing is
+        in flight anymore.
+        """
         while True:
             remaining = settings.IDLE_TIMEOUT_S - (
                 time.monotonic() - self._last_client_activity
             )
             if remaining <= 0:
+                if (self._active_turn and not self._active_turn.done()) or (
+                    self._push_turn_open
+                ):
+                    # Not idle — a turn/push is actively in flight. Re-check
+                    # shortly rather than closing or resetting the full window.
+                    await asyncio.sleep(2)
+                    continue
                 logger.info(f"[{self.client_id}] Idle timeout — cerrando sesión.")
                 await self.close_all()
                 return

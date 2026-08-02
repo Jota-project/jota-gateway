@@ -1,7 +1,9 @@
 """Tests para WebSocket handshake (/ws/stream)."""
 
 import logging
+import queue
 import re
+import threading
 from uuid import UUID
 
 import pytest
@@ -26,10 +28,45 @@ def test_malformed_json_closes_ws(client):
 
 def test_handshake_timeout_closes_ws(client, monkeypatch):
     """Cliente conecta pero nunca manda el JSON de handshake → cierre 1008
-    tras HANDSHAKE_TIMEOUT_S (issue #115)."""
+    tras HANDSHAKE_TIMEOUT_S (issue #115).
+
+    Bounded via a daemon worker thread + queue.get(timeout=...), not
+    pytest-timeout (not a dependency of this project — flagging rather than
+    adding one). TestClient's websocket helpers are synchronous, so
+    ws.receive_text() can't be wrapped in asyncio.wait_for the way the other
+    three bounded-deadline mechanisms' tests are. If the HANDSHAKE_TIMEOUT_S
+    enforcement in routes.py were ever reverted, the server would never close
+    this idle connection and a plain `ws.receive_text()` call would block
+    forever, hanging the whole test run instead of failing. Running it on a
+    daemon thread means an actual regression still fails fast here (5s,
+    generous relative to HANDSHAKE_TIMEOUT_S=0.05s below) — the abandoned
+    thread doesn't block interpreter exit since it's a daemon.
+    """
     monkeypatch.setattr(settings, "HANDSHAKE_TIMEOUT_S", 0.05)
-    with pytest.raises(Exception), client.websocket_connect("/ws/stream") as ws:
-        ws.receive_text()  # nunca mandamos nada — debe llegar el close frame
+    with client.websocket_connect("/ws/stream") as ws:
+        result: queue.Queue = queue.Queue(maxsize=1)
+
+        def _receive():
+            try:
+                ws.receive_text()  # nunca mandamos nada — debe llegar el close frame
+                result.put(("ok", None))
+            except Exception as exc:
+                result.put(("exc", exc))
+
+        threading.Thread(target=_receive, daemon=True).start()
+        try:
+            kind, _exc = result.get(timeout=5.0)
+        except queue.Empty:
+            pytest.fail(
+                "ws.receive_text() did not return within 5s — HANDSHAKE_TIMEOUT_S "
+                "enforcement in routes.py appears to have regressed (the server "
+                "never closed a connection that never sent a handshake)."
+            )
+        if kind == "ok":
+            pytest.fail(
+                "expected ws.receive_text() to raise once the server closes the "
+                "connection on handshake timeout, but it returned normally"
+            )
 
 
 def test_invalid_client_key_log_is_safe_and_correlatable(client, caplog, monkeypatch):
