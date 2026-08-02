@@ -24,6 +24,14 @@ def test_malformed_json_closes_ws(client):
         ws.receive_text()  # debe lanzar excepción al recibir close frame
 
 
+def test_handshake_timeout_closes_ws(client, monkeypatch):
+    """Cliente conecta pero nunca manda el JSON de handshake → cierre 1008
+    tras HANDSHAKE_TIMEOUT_S (issue #115)."""
+    monkeypatch.setattr(settings, "HANDSHAKE_TIMEOUT_S", 0.05)
+    with pytest.raises(Exception), client.websocket_connect("/ws/stream") as ws:
+        ws.receive_text()  # nunca mandamos nada — debe llegar el close frame
+
+
 def test_invalid_client_key_log_is_safe_and_correlatable(client, caplog, monkeypatch):
     key = "bad-key\nforged-log-entry"
     source_ip = "198.51.100.23"

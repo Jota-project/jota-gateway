@@ -34,5 +34,8 @@ class Settings(BaseSettings):
     TTS_RECONNECT_MAX_BACKOFF: float = 60.0
     TTS_AUTH_TIMEOUT_S: float = 10.0
 
+    # Deadlines acotados (issue #115)
+    HANDSHAKE_TIMEOUT_S: float = 10.0
+
 
 settings = Settings()
