@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Callable
 import websockets
 from websockets.asyncio.client import ClientConnection
 
+from src.core.config import settings
 from src.services.openclaw import frames
 from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.models import GatewayInfo, ToolCallEvent
@@ -214,7 +215,16 @@ class OpenClawClient:
                 return
 
             while True:
-                kind, data = await queue.get()
+                try:
+                    kind, data = await asyncio.wait_for(
+                        queue.get(), timeout=settings.TURN_TIMEOUT_S
+                    )
+                except TimeoutError:
+                    # _finished stays False on purpose: the turn did not
+                    # complete, it's being aborted — the `finally` below must
+                    # still send chat.abort, same as any other anomalous exit.
+                    yield OrchestratorEvent(type="error", content="turn_timeout")
+                    break
                 if kind == "chat":
                     delta = data.get("deltaText", "")
                     if delta:

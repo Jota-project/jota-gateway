@@ -313,6 +313,58 @@ def test_streaming_orchestrator_error_after_token_preserves_partial_output(
     assert http_sessions[-1].status == "error"
 
 
+def test_non_streaming_turn_timeout_returns_502(client, mock_orchestrator):
+    """#115: a turn_timeout error from the orchestrator maps to 502 exactly
+    like any other orchestrator error — it must not hang the HTTP response."""
+
+    async def _timeout_stream(*args, **kwargs):
+        yield OrchestratorEvent(type="error", content="turn_timeout")
+
+    mock_orchestrator.stream_response = _timeout_stream
+
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "openclaw",
+            "messages": [{"role": "user", "content": "Hola"}],
+            "stream": False,
+        },
+    )
+
+    assert r.status_code == 502, f"Esperado 502, recibido {r.status_code}: {r.text}"
+
+
+def test_streaming_turn_timeout_is_terminal_error(client, mock_orchestrator):
+    """#115: same as above, streaming mode — reuses #111's error-frame path."""
+
+    async def _timeout_stream(*args, **kwargs):
+        yield OrchestratorEvent(type="error", content="turn_timeout")
+
+    mock_orchestrator.stream_response = _timeout_stream
+
+    with client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json={
+            "model": "openclaw",
+            "messages": [{"role": "user", "content": "Hola"}],
+            "stream": True,
+        },
+    ) as response:
+        response.read()
+        body = response.text
+
+    payloads = _parse_sse_payloads(body)
+    assert payloads[-2] == {
+        "error": {
+            "message": "turn_timeout",
+            "type": "server_error",
+        },
+    }
+    assert payloads[-1]["choices"][0]["finish_reason"] == "error"
+    assert "[DONE]" not in body
+
+
 def test_non_streaming_turn_conflict_returns_409(client, mock_orchestrator):
     """Issue #99: a rejected duplicate-session_key turn must map to HTTP 409,
     distinguishable from a generic orchestrator failure (502)."""
