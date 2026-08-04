@@ -61,6 +61,18 @@ class FrameDispatcher:
         sk = payload.get("sessionKey")
         if sk is None:
             return
+        if self._turns.get_queue_by_session(sk) is not None:
+            # Issue #112: a normal chat.send turn is active for this
+            # session_key — OpenClaw's own agent start/end pairs (tool use,
+            # multi-step reasoning) must not open a second client-facing
+            # turn on top of it. That turn's chat tokens and session.tool
+            # events already reach the client via _handle_chat/
+            # _handle_session_tool's own queue routing; only the lifecycle
+            # framing (which would open/close a *second* turn) is dropped.
+            logger.debug(
+                "agent lifecycle event suppressed: normal turn active for sk=%s", sk
+            )
+            return
         phase = payload.get("data", {}).get("phase")
         client_id = client_id_from_session_key(sk)
         bridge = self._clients.get(client_id)
