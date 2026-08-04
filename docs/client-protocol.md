@@ -470,10 +470,11 @@ El cliente no necesita distinguirlos de los turnos normales — el `turn_id` y `
 > **Garantía de un único par por respuesta (issue #84):** cuando el agente hace tool use o razonamiento multi-paso, OpenClaw puede emitir varios eventos internos de inicio/fin para una sola respuesta LLM. El gateway los colapsa siempre en exactamente **un** `turn_start`/`turn_end` de cara al cliente — nunca verás duplicados. Si tu cliente implementó algún workaround para deduplicar `turn_end` repetidos (grace period, etc.) porque llegaban 2-3 veces por turno, ya no hace falta; puedes simplificarlo o quitarlo con seguridad.
 
 > **Coordinación con turnos normales (issue #112):** si ya hay un turno normal en curso (uno que
-> tú mismo iniciaste con `send`), cualquier evento `agent` interno de OpenClaw para esa misma
-> sesión se suprime por completo — no verás un `turn_start`/`turn_end` de push superpuesto al
-> tuyo. El contenido de ese turno (tokens, `tool_call`) te sigue llegando con normalidad dentro
-> del turno que ya tenías abierto.
+> tú mismo iniciaste con `send`), ningún evento `agent` interno de OpenClaw para esa misma sesión
+> abrirá un `turn_start` de push superpuesto al tuyo — el contenido de ese turno (tokens,
+> `tool_call`) te sigue llegando con normalidad dentro del turno que ya tenías abierto. Si un
+> turno de push ya estaba en curso *antes* de que empezaras el tuyo, su propio `turn_end` sigue
+> llegando con normalidad para cerrarlo correctamente.
 
 ---
 

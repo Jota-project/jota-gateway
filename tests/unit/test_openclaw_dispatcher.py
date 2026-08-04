@@ -182,9 +182,13 @@ async def test_agent_lifecycle_start_suppressed_when_normal_turn_active():
 
 
 @pytest.mark.asyncio
-async def test_agent_lifecycle_end_suppressed_when_normal_turn_active():
+async def test_agent_lifecycle_end_always_forwarded_regardless_of_normal_turn():
+    """#112 final-review correction: unlike "start", "end" is never gated on
+    TurnRegistry state — on_push_turn_end() already no-ops safely when no
+    push turn is open (issue #84), so the dispatcher forwards every "end"
+    unconditionally and lets the bridge decide."""
     dispatcher, turn_reg, client_reg = make_dispatcher()
-    q = turn_reg.register("req-1", "agent:main:client-a")
+    turn_reg.register("req-1", "agent:main:client-a")
     bridge = AsyncMock()
     client_reg.register("client-a", bridge)
     payload = {
@@ -195,8 +199,7 @@ async def test_agent_lifecycle_end_suppressed_when_normal_turn_active():
     }
     frame = {"type": "event", "event": "agent", "payload": payload}
     await dispatcher.dispatch(frame)
-    bridge.on_push_turn_end.assert_not_awaited()
-    assert q.empty()
+    bridge.on_push_turn_end.assert_awaited_once_with("agent:main:client-a")
 
 
 @pytest.mark.asyncio
@@ -448,3 +451,42 @@ async def test_dispatcher_agent_lifecycle_suppressed_full_sequence_with_active_t
 
     assert bridge._push_turn_open is False
     ws.send_json.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_agent_lifecycle_end_closes_push_turn_opened_before_normal_turn():
+    """#112 final-review regression test: a push turn that opened *before* a
+    normal turn registers for the same session_key must still be closable by
+    its own agent end — suppressing "end" symmetrically with "start" (the
+    original implementation) would orphan it: dangling turn_end, leaked TTS,
+    push path dead for the rest of the session."""
+    dispatcher, turn_reg, client_reg = make_dispatcher()
+    bridge, ws = make_real_bridge(push_enabled=True)
+    client_reg.register("hab_sito", bridge)
+
+    # Genuine push starts first — no normal turn registered yet.
+    await dispatcher.dispatch(
+        {
+            "type": "event",
+            "event": "agent",
+            "payload": {"sessionKey": "agent:main:hab_sito", "data": {"phase": "start"}},
+        }
+    )
+    assert bridge._push_turn_open is True
+    push_turn_id = bridge._push_turn_id
+
+    # A normal turn now registers for the same session_key while the push
+    # turn is still open (e.g. the user replies mid-push).
+    turn_reg.register("req-1", "agent:main:hab_sito")
+
+    # The push run's own "end" must still close it, not be suppressed.
+    await dispatcher.dispatch(
+        {
+            "type": "event",
+            "event": "agent",
+            "payload": {"sessionKey": "agent:main:hab_sito", "data": {"phase": "end"}},
+        }
+    )
+
+    assert bridge._push_turn_open is False
+    ws.send_json.assert_any_call({"type": "turn_end", "turn_id": push_turn_id})
