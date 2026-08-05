@@ -10,7 +10,7 @@ from src.api.openai_routes import router as openai_router
 from src.api.routes import router as stream_router
 from src.core.config import settings
 from src.core.request_id import RequestIdMiddleware
-from src.db.database import run_migrations
+from src.db.database import dispose_engine, run_migrations
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
@@ -94,9 +94,35 @@ async def lifespan(app: FastAPI):
     app.state.client_registry = client_registry
     app.state.session_registry = SessionRegistry()
 
-    yield
+    try:
+        yield
+    finally:
+        # 1. Drain active sessions first — each bridge's close_all() awaits
+        #    its own in-flight turn (bounded by SHUTDOWN_DRAIN_S already,
+        #    see JotaBridge.close_all), so by the time this returns no
+        #    surviving session still needs the OpenClaw connection.
+        await client_registry.close_all_sessions(
+            status="shutdown", timeout=settings.SHUTDOWN_DRAIN_S
+        )
 
-    await openclaw.close()
+        # 2. Cancel/await the orchestrator/TTS state-change broadcast tasks
+        #    created via on_state_change above — nothing should still be
+        #    scheduling client notifications by the time we tear down the
+        #    services those notifications describe.
+        for task in list(_notification_tasks):
+            if not task.done():
+                task.cancel()
+        if _notification_tasks:
+            await asyncio.gather(*_notification_tasks, return_exceptions=True)
+
+        # 3. Close OpenClaw only now that active turns have drained.
+        try:
+            await openclaw.close()
+        except Exception:
+            logger.exception("Error closing OpenClaw client during shutdown")
+
+        # 4. Dispose the DB engine last — nothing above touches the DB.
+        dispose_engine()
 
 
 app = FastAPI(
