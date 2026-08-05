@@ -1,6 +1,8 @@
 """Tests for GET /healthz and GET /ready."""
-import httpx
+
 from unittest.mock import AsyncMock
+
+import httpx
 
 from src.core.config import settings
 
@@ -30,9 +32,7 @@ def test_ready_orchestrator_down_returns_503(client, mock_orchestrator):
 
 
 def test_ready_tts_down_returns_200_degraded(client, mock_services):
-    mock_services.get("http://localhost:8005/ready").mock(
-        side_effect=httpx.ConnectError("down")
-    )
+    mock_services.get("http://localhost:8005/ready").mock(side_effect=httpx.ConnectError("down"))
     r = client.get("/ready")
     assert r.status_code == 200
     body = r.json()

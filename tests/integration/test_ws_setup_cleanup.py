@@ -6,6 +6,7 @@ early without calling `bridge.close_all()` or `tracker.close()` — the bridge
 stayed registered in `ClientRegistry` forever, and the session stayed
 "active" forever in `SessionRegistry` (which never evicts active entries).
 """
+
 from unittest.mock import AsyncMock
 
 import pytest

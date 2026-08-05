@@ -14,6 +14,7 @@ def test_admin_wrong_token_returns_401(client):
 
 def test_admin_no_token_configured_returns_503(client, monkeypatch):
     from src.core.config import settings
+
     monkeypatch.setattr(settings, "ADMIN_TOKEN", "")
     r = client.get("/admin/sessions", headers={"x-admin-token": "anything"})
     assert r.status_code == 503

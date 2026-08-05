@@ -19,6 +19,7 @@ def _engine():
 
 def _run(args: list[str], engine) -> str:
     from src.cli import run
+
     out = StringIO()
     with patch("src.cli._get_engine", return_value=engine), patch("sys.stdout", out):
         run(args)

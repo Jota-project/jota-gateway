@@ -8,7 +8,9 @@ OpenClaw down → 503 "unavailable"
 TTS or transcriber down → 200 "degraded"
 All ok → 200 "ok"
 """
+
 import asyncio
+
 from fastapi import APIRouter, Request, Response
 
 from src.core.config import settings
