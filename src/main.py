@@ -77,6 +77,17 @@ async def lifespan(app: FastAPI):
         max_backoff=settings.TTS_RECONNECT_MAX_BACKOFF,
     )
 
+    # Unlike openclaw/transcriber, TTS has no lifespan-level initial connect to
+    # wire "after" — ReconnectingTTSClient starts CONNECTED by construction and
+    # only fires on_state_change on an actual transition (issue #117), so
+    # wiring it immediately can't produce a spurious first-time "restored".
+    def _on_tts_state_change(state: ConnectionState) -> None:
+        task = asyncio.create_task(client_registry.broadcast_status("tts", to_wire_state(state)))
+        _notification_tasks.add(task)
+        task.add_done_callback(_notification_tasks.discard)
+
+    tts.on_state_change = _on_tts_state_change
+
     app.state.openclaw = openclaw
     app.state.tts = tts
     app.state.turn_registry = turn_registry

@@ -9,24 +9,9 @@ from src.services.bridge import JotaBridge
 from src.services.openclaw.models import ToolCallEvent
 from src.services.openclaw.registry import ClientRegistry
 from src.services.protocol import OrchestratorEvent
-from src.services.reconnection import ConnectionState, ServiceStatus
 
 _CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
 _CONFIG = ClientConfig()
-
-
-def _connected_status() -> ServiceStatus:
-    """ReconnectingTTSClient.status() is synchronous, unlike AsyncMock's
-    auto-mocked attributes — tests that stub tts.connect() to succeed must
-    also stub tts.status() as a plain callable, or _maybe_notify_tts_state()
-    receives an unawaited coroutine instead of a ServiceStatus."""
-    return ServiceStatus(
-        name="tts",
-        state=ConnectionState.CONNECTED,
-        connected_at=None,
-        reconnect_attempts=0,
-        last_error=None,
-    )
 
 
 @pytest.fixture
@@ -167,7 +152,6 @@ async def test_audio_send_failure_does_not_propagate(mock_tracker):
 
     tts_wrapper = AsyncMock()
     tts_wrapper.connect = AsyncMock(return_value=FakeTTS())
-    tts_wrapper.status = lambda: _connected_status()
 
     b = JotaBridge(
         client=_CLIENT,
@@ -238,7 +222,6 @@ async def test_tts_end_called_when_orchestrator_raises_non_runtime_error(mock_tr
 
     tts_wrapper = AsyncMock()
     tts_wrapper.connect = AsyncMock(return_value=FakeTTS())
-    tts_wrapper.status = lambda: _connected_status()
 
     b = JotaBridge(
         client=_CLIENT,

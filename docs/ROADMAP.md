@@ -1,7 +1,7 @@
 # jota-gateway Roadmap
 
-> **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fase 1 y Fase 2 ✅ cerradas, Fase 3 en curso (6/8 issues cerradas)
-> **Última actualización:** 2026-08-02
+> **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fase 1 y Fase 2 ✅ cerradas, Fase 3 en curso (7/8 issues cerradas, solo queda #110)
+> **Última actualización:** 2026-08-05
 > **Issues abiertas:** 28 (rango GitHub `#99`–`#163`)
 > **Versión actual:** 1.15.x (1.16.0 al mergear esta fase a `main`, vía release automático)
 > **Próximo release:** 1.17.0 (al cerrar Fase 3)
@@ -110,7 +110,7 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 - [x] **#114** 🟠 `[016]` — `ready.capabilities` contradicts actual service availability — **S** — `ready` separa `requested_capabilities` y `live_capabilities` (instantánea de health check).
 - [x] **#115** 🟠 `[017]` — No bounded deadlines (handshake/turn/idle/shutdown drain) — **M** — 4 settings nuevas (`HANDSHAKE_TIMEOUT_S`, `TURN_TIMEOUT_S` con reset por evento (idle-reset), `IDLE_TIMEOUT_S`, `SHUTDOWN_DRAIN_S`); turn timeout implementado en `OpenClawClient.stream_response()` reutilizando el `chat.abort`/`TURN_ERROR` ya existente de #99/#111/#150 — el turn timeout no toca `bridge.py` ni `openai_routes.py`. Fix wave de revisión final: el idle watchdog de `bridge.py` ahora comprueba `_active_turn`/`_push_turn_open` antes de cerrar, para no cortar turnos en curso ni limitar sesiones push-only a `IDLE_TIMEOUT_S`.
 - [x] **#116** 🟠 `[018]` — `TTSClient.connect()` leaks WebSocket on `CancelledError` — **S** — cleanup gobernado por `_authenticated`, cancellation relanzada y auth `recv()` acotado por `TTS_AUTH_TIMEOUT_S=10.0`.
-- [ ] **#117** 🟠 `[019]` — `ReconnectingTTSClient` missing `on_state_change` hook — **M**
+- [x] **#117** 🟠 `[019]` — `ReconnectingTTSClient` missing `on_state_change` hook — **M** — `on_state_change` fires from `_record_failure`/`_record_success` only on an actual transition (`_set_state()` guard); wired in `main.py`'s lifespan to `ClientRegistry.broadcast_status`, same pattern as the orchestrator; old per-bridge `_maybe_notify_tts_state`/`_tts_degraded_notified` polling removed. Session-start notification for a brand-new session mid-outage was already covered by `health_check()`'s pre-existing live TTS ping (not duplicated — a review pass caught that a second, wrapper-state-based check in `connect_internal_services()` could show a stale `"reconnecting"` alongside an already-recovered `live_capabilities.tts: true`).
 
 ### 🟠🟡 Fase 4 — Consistencia & docs (semana 6)
 
