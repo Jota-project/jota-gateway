@@ -8,6 +8,7 @@ resolve_client_ip(conn)  -> str   — IP real a evaluar, respetando X-Real-IP
                                     solo cuando el peer TCP es un proxy confiable.
                                     Compartido por HTTP y WebSocket.
 """
+
 import ipaddress
 import logging
 
@@ -73,7 +74,6 @@ def resolve_client_ip(connection: HTTPConnection) -> str:
 
     if connection.headers.get("x-real-ip"):
         logger.warning(
-            f"Ignoring X-Real-IP header from untrusted peer {peer!r} "
-            "(possible spoofing attempt)"
+            f"Ignoring X-Real-IP header from untrusted peer {peer!r} (possible spoofing attempt)"
         )
     return peer

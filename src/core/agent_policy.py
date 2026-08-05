@@ -5,6 +5,7 @@ two policy checks (allowlist, global roster). Pure helper — no DB, no
 FastAPI, no WebSocket. Translation of AgentPolicyError into wire formats
 (close 1008 reason / 403 JSON body) happens at the call sites.
 """
+
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -22,14 +23,14 @@ class AgentPolicyError(Exception):
         agent_name: the offending agent, or None if no name is meaningful.
     """
 
-    def __init__(self, kind: str, agent_name: Optional[str], message: str):
+    def __init__(self, kind: str, agent_name: str | None, message: str):
         super().__init__(message)
         self.kind = kind
         self.agent_name = agent_name
 
 
 def resolve_agent(
-    requested: Optional[str],
+    requested: str | None,
     client_config: Optional["ClientConfig"],
     gateway_info: Optional["GatewayInfo"],
 ) -> str:
@@ -86,11 +87,7 @@ def resolve_agent(
     # 2b. Global roster check (only when agent was explicitly requested,
     # not when it came from the cascade — gateway/client defaults are
     # trusted configuration, not user input).
-    if (
-        requested is not None
-        and gateway_info is not None
-        and effective not in gateway_info.agents
-    ):
+    if requested is not None and gateway_info is not None and effective not in gateway_info.agents:
         raise AgentPolicyError(
             "not_available",
             effective,

@@ -4,6 +4,7 @@ Tests para JotaBridge en modo audio.
 input_mode=audio: el bridge conecta al transcriber WS, manda PCM,
 recibe transcripción is_final, llama al orchestrator, devuelve tokens al cliente.
 """
+
 import asyncio
 import json
 import threading
@@ -12,16 +13,18 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 import websockets
-
 from sqlmodel import Session
+from starlette.testclient import TestClient
 
+from src.core.config import settings
 from src.db.models import ClientRecord
 from src.main import app
-from src.core.config import settings
-from starlette.testclient import TestClient
 from tests.integration.conftest import (
-    VALID_KEY, CLIENT_ID, CLIENT_NAME,
-    make_mock_orchestrator, make_mock_registry,
+    CLIENT_ID,
+    CLIENT_NAME,
+    VALID_KEY,
+    make_mock_orchestrator,
+    make_mock_registry,
 )
 
 HANDSHAKE_AUDIO = {
@@ -50,19 +53,27 @@ def _start_fake_transcriber():
         raw = await ws.recv()
         msg = json.loads(raw)
         assert msg["type"] == "config"
-        await ws.send(json.dumps({
-            "type": "ready",
-            "protocol_version": 1,
-            "session_id": "test-audio-session",
-        }))
+        await ws.send(
+            json.dumps(
+                {
+                    "type": "ready",
+                    "protocol_version": 1,
+                    "session_id": "test-audio-session",
+                }
+            )
+        )
         # Espera audio, responde con transcripción final
         async for chunk in ws:
             if isinstance(chunk, bytes) and len(chunk) > 0:
-                await ws.send(json.dumps({
-                    "type": "transcription",
-                    "text": "hola desde audio",
-                    "is_final": True,
-                }))
+                await ws.send(
+                    json.dumps(
+                        {
+                            "type": "transcription",
+                            "text": "hola desde audio",
+                            "is_final": True,
+                        }
+                    )
+                )
                 break
 
     loop = asyncio.new_event_loop()
@@ -94,7 +105,9 @@ def start_fake_transcriber():
 # ---------------------------------------------------------------------------
 
 
-def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(mock_services, seed_client, monkeypatch):
+def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(
+    mock_services, seed_client, monkeypatch
+):
     """PCM → transcriber fake emite is_final → cliente recibe transcripción
     → cliente envía {"type":"send"} → orchestrator llamado con el texto."""
     from src.services.protocol import OrchestratorEvent
@@ -110,7 +123,9 @@ def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(mock_services, se
     mock_orch.stream_response = _stream
     mock_reg = make_mock_registry(mock_orch)
 
-    from unittest.mock import MagicMock, AsyncMock as _AM
+    from unittest.mock import AsyncMock as _AM
+    from unittest.mock import MagicMock
+
     monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_reg)
     monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: MagicMock())
     monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: MagicMock())
@@ -143,12 +158,21 @@ def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(mock_services, se
 def test_transcriber_connect_uses_stt_language_from_config(mock_services, db_engine, monkeypatch):
     """stt_language de ClientConfig se pasa a TranscriberClient.connect()."""
     with Session(db_engine) as s:
-        s.add(ClientRecord(id=CLIENT_ID, name=CLIENT_NAME, client_key=VALID_KEY,
-                           is_active=True, stt_language="fr"))
+        s.add(
+            ClientRecord(
+                id=CLIENT_ID,
+                name=CLIENT_NAME,
+                client_key=VALID_KEY,
+                is_active=True,
+                stt_language="fr",
+            )
+        )
         s.commit()
 
     mock_reg = make_mock_registry()
-    from unittest.mock import MagicMock, AsyncMock as _AM
+    from unittest.mock import AsyncMock as _AM
+    from unittest.mock import MagicMock
+
     monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_reg)
     monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: MagicMock())
     monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: MagicMock())
@@ -181,12 +205,22 @@ def test_transcriber_connect_uses_stt_language_from_config(mock_services, db_eng
 def test_tts_connect_uses_voice_and_speed_from_config(mock_services, db_engine, monkeypatch):
     """tts_voice y tts_speed de ClientConfig se pasan a TTSClient.connect()."""
     with Session(db_engine) as s:
-        s.add(ClientRecord(id=CLIENT_ID, name=CLIENT_NAME, client_key=VALID_KEY,
-                           is_active=True, tts_voice="bf_emma", tts_speed=1.2))
+        s.add(
+            ClientRecord(
+                id=CLIENT_ID,
+                name=CLIENT_NAME,
+                client_key=VALID_KEY,
+                is_active=True,
+                tts_voice="bf_emma",
+                tts_speed=1.2,
+            )
+        )
         s.commit()
 
     mock_reg = make_mock_registry()
-    from unittest.mock import MagicMock, AsyncMock as _AM
+    from unittest.mock import AsyncMock as _AM
+    from unittest.mock import MagicMock
+
     monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_reg)
     monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: MagicMock())
     monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: MagicMock())
@@ -206,11 +240,13 @@ def test_tts_connect_uses_voice_and_speed_from_config(mock_services, db_engine, 
         with TestClient(app) as client:
             with client.websocket_connect("/ws/stream") as ws:
                 # output_mode=["audio"] para que el bridge instancie TTSClient
-                ws.send_json({
-                    "client_key": VALID_KEY,
-                    "input_mode": "text",
-                    "output_mode": ["audio", "text"],
-                })
+                ws.send_json(
+                    {
+                        "client_key": VALID_KEY,
+                        "input_mode": "text",
+                        "output_mode": ["audio", "text"],
+                    }
+                )
                 ws.send_text("test")
                 try:
                     ws.receive_json()

@@ -4,6 +4,7 @@
 jota-transcriber and jota-speaker. /ready reflects real capacity/readiness
 (503 when GPU-saturated / engine not loaded) — see issue #101.
 """
+
 import httpx
 import respx
 
