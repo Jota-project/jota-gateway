@@ -2,6 +2,7 @@
 Integration test for #108: barge_in_enabled=False must not interrupt
 an in-flight orchestrator response when a partial transcription arrives.
 """
+
 import asyncio
 import json
 import threading
@@ -9,17 +10,19 @@ import time
 
 import pytest
 import websockets
-
 from sqlmodel import Session
 from starlette.testclient import TestClient
 
+from src.core.config import settings
 from src.db.models import ClientRecord
 from src.main import app
-from src.core.config import settings
 from src.services.protocol import OrchestratorEvent
 from tests.integration.conftest import (
-    VALID_KEY, CLIENT_ID, CLIENT_NAME,
-    make_mock_orchestrator, make_mock_registry,
+    CLIENT_ID,
+    CLIENT_NAME,
+    VALID_KEY,
+    make_mock_orchestrator,
+    make_mock_registry,
 )
 
 HANDSHAKE_AUDIO = {
@@ -47,27 +50,39 @@ def _start_fake_transcriber():
         raw = await ws.recv()
         msg = json.loads(raw)
         assert msg["type"] == "config"
-        await ws.send(json.dumps({
-            "type": "ready",
-            "protocol_version": 1,
-            "session_id": "test-barge-in-session",
-        }))
+        await ws.send(
+            json.dumps(
+                {
+                    "type": "ready",
+                    "protocol_version": 1,
+                    "session_id": "test-barge-in-session",
+                }
+            )
+        )
         chunk_count = 0
         async for chunk in ws:
             if isinstance(chunk, bytes) and len(chunk) > 0:
                 chunk_count += 1
                 if chunk_count == 1:
-                    await ws.send(json.dumps({
-                        "type": "transcription",
-                        "text": "hola audio",
-                        "is_final": True,
-                    }))
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "type": "transcription",
+                                "text": "hola audio",
+                                "is_final": True,
+                            }
+                        )
+                    )
                 elif chunk_count == 2:
-                    await ws.send(json.dumps({
-                        "type": "transcription",
-                        "text": "esto es una interrupcion larga",
-                        "is_final": False,
-                    }))
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "type": "transcription",
+                                "text": "esto es una interrupcion larga",
+                                "is_final": False,
+                            }
+                        )
+                    )
                     break
 
     loop = asyncio.new_event_loop()
@@ -98,15 +113,23 @@ def start_fake_transcriber():
 # ---------------------------------------------------------------------------
 
 
-def test_disabled_barge_in_does_not_interrupt_in_flight_response(mock_services, db_engine, monkeypatch):
+def test_disabled_barge_in_does_not_interrupt_in_flight_response(
+    mock_services, db_engine, monkeypatch
+):
     """#108: handshake with barge_in_enabled=False + a slow (long) agent response
     + a partial transcription mid-response → the response keeps streaming to
     completion, no {"type": "interrupted"} is ever sent."""
     with Session(db_engine) as s:
-        s.add(ClientRecord(
-            id=CLIENT_ID, name=CLIENT_NAME, client_key=VALID_KEY,
-            is_active=True, barge_in_enabled=False, barge_in_min_chars=5,
-        ))
+        s.add(
+            ClientRecord(
+                id=CLIENT_ID,
+                name=CLIENT_NAME,
+                client_key=VALID_KEY,
+                is_active=True,
+                barge_in_enabled=False,
+                barge_in_min_chars=5,
+            )
+        )
         s.commit()
 
     mock_orch = make_mock_orchestrator()
@@ -120,7 +143,9 @@ def test_disabled_barge_in_does_not_interrupt_in_flight_response(mock_services, 
     mock_orch.stream_response = _stream
     mock_reg = make_mock_registry(mock_orch)
 
-    from unittest.mock import MagicMock, AsyncMock as _AM
+    from unittest.mock import AsyncMock as _AM
+    from unittest.mock import MagicMock
+
     monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_reg)
     monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: MagicMock())
     monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: MagicMock())

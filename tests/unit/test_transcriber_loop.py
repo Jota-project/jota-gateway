@@ -1,6 +1,9 @@
 """Tests for TranscriberClient.listen_loop callback signature change."""
+
 import json
+
 import pytest
+
 from src.services.transcriber_client import TranscriberClient
 
 
@@ -21,6 +24,7 @@ async def test_listen_loop_passes_text_and_is_final_true(client):
     client.ws = make_ws(msg)
 
     received = []
+
     async def callback(text: str, is_final: bool):
         received.append((text, is_final))
 
@@ -35,6 +39,7 @@ async def test_listen_loop_passes_text_and_is_final_false(client):
     client.ws = make_ws(msg)
 
     received = []
+
     async def callback(text: str, is_final: bool):
         received.append((text, is_final))
 
@@ -49,6 +54,7 @@ async def test_listen_loop_passes_is_final_none_as_false(client):
     client.ws = make_ws(msg)
 
     received = []
+
     async def callback(text: str, is_final: bool):
         received.append((text, is_final))
 
@@ -66,6 +72,7 @@ async def test_listen_loop_ignores_non_transcription_messages(client):
     client.ws = make_ws(*msgs)
 
     received = []
+
     async def callback(text: str, is_final: bool):
         received.append((text, is_final))
 
@@ -80,6 +87,7 @@ async def test_listen_loop_ignores_empty_text(client):
     client.ws = make_ws(msg)
 
     received = []
+
     async def callback(text: str, is_final: bool):
         received.append((text, is_final))
 
@@ -93,6 +101,7 @@ async def test_listen_loop_returns_immediately_when_ws_is_none(client):
     client.ws = None
 
     called = []
+
     async def callback(text: str, is_final: bool):
         called.append(True)
 

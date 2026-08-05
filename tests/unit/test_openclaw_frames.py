@@ -1,7 +1,7 @@
 from src.services.openclaw import frames
 
-
 # ── Shape ─────────────────────────────────────────────────────────
+
 
 def test_every_frame_is_req_type():
     for fn, args in [
@@ -26,6 +26,7 @@ def test_every_frame_is_req_type():
 
 
 # ── connect_backend ───────────────────────────────────────────────
+
 
 def test_connect_backend_method():
     frame = frames.connect_backend("r1", "secret")
@@ -62,6 +63,7 @@ def test_connect_backend_operator_role():
 
 # ── sessions_subscribe ────────────────────────────────────────────
 
+
 def test_sessions_subscribe_method():
     assert frames.sessions_subscribe("r1")["method"] == "sessions.subscribe"
 
@@ -72,6 +74,7 @@ def test_sessions_subscribe_empty_params():
 
 # ── health ────────────────────────────────────────────────────────
 
+
 def test_health_method():
     assert frames.health("r1")["method"] == "health"
 
@@ -81,6 +84,7 @@ def test_health_empty_params():
 
 
 # ── chat_send ─────────────────────────────────────────────────────
+
 
 def test_chat_send_method():
     assert frames.chat_send("r", "sk", "msg", "idem")["method"] == "chat.send"
@@ -101,6 +105,7 @@ def test_chat_send_message_and_idempotency_key():
 
 # ── chat_abort ────────────────────────────────────────────────────
 
+
 def test_chat_abort_method():
     assert frames.chat_abort("r", "sk")["method"] == "chat.abort"
 
@@ -113,6 +118,7 @@ def test_chat_abort_uses_sessionkey_not_session():
 
 
 # ── chat_history ──────────────────────────────────────────────────
+
 
 def test_chat_history_method():
     assert frames.chat_history("r", "sk")["method"] == "chat.history"
@@ -132,6 +138,7 @@ def test_chat_history_custom_pagination():
 
 # ── chat_inject ───────────────────────────────────────────────────
 
+
 def test_chat_inject_method():
     assert frames.chat_inject("r", "sk", "ctx")["method"] == "chat.inject"
 
@@ -143,6 +150,7 @@ def test_chat_inject_content():
 
 
 # ── sessions_steer ────────────────────────────────────────────────
+
 
 def test_sessions_steer_method():
     assert frames.sessions_steer("r", "sk", "txt")["method"] == "sessions.steer"
@@ -156,11 +164,13 @@ def test_sessions_steer_params():
 
 # ── sessions_list ─────────────────────────────────────────────────
 
+
 def test_sessions_list_method():
     assert frames.sessions_list("r")["method"] == "sessions.list"
 
 
 # ── agents_list ───────────────────────────────────────────────────
+
 
 def test_agents_list_method():
     assert frames.agents_list("r")["method"] == "agents.list"
@@ -172,6 +182,7 @@ def test_agents_list_empty_params():
 
 # ── agent_identity_get ────────────────────────────────────────────
 
+
 def test_agent_identity_get_method():
     assert frames.agent_identity_get("r", "main")["method"] == "agent.identity.get"
 
@@ -181,6 +192,7 @@ def test_agent_identity_get_param():
 
 
 # ── models_list ───────────────────────────────────────────────────
+
 
 def test_models_list_method():
     assert frames.models_list("r")["method"] == "models.list"
@@ -195,6 +207,7 @@ def test_models_list_custom_view():
 
 
 # ── models_auth_status ────────────────────────────────────────────
+
 
 def test_models_auth_status_method():
     assert frames.models_auth_status("r")["method"] == "models.authStatus"

@@ -2,24 +2,24 @@ import asyncio
 import json
 import logging
 import time
-from typing import Optional
+
 from fastapi import WebSocket, WebSocketDisconnect
 
 from src.core.config import settings
 from src.models.schemas import Client, ClientConfig, Handshake
-from src.services.protocol import OrchestratorProtocol
 from src.services.openclaw.models import ToolCallEvent
+from src.services.openclaw.registry import ClientRegistry
 from src.services.pipeline_tracker import PipelineTracker
+from src.services.protocol import OrchestratorProtocol
 from src.services.reconnection import ConnectionState, to_wire_state
 from src.services.transcriber_reconnecting import ReconnectingTranscriberClient
 from src.services.tts_client import TTSClient
 from src.services.tts_reconnecting import ReconnectingTTSClient
-from src.services.openclaw.registry import ClientRegistry
 
 logger = logging.getLogger(__name__)
 
 
-def _tool_call_message(turn_id: Optional[str], tool_call: ToolCallEvent) -> dict:
+def _tool_call_message(turn_id: str | None, tool_call: ToolCallEvent) -> dict:
     return {
         "type": "tool_call",
         "turn_id": turn_id,
@@ -31,11 +31,13 @@ def _tool_call_message(turn_id: Optional[str], tool_call: ToolCallEvent) -> dict
         "is_error": tool_call.is_error,
     }
 
+
 class JotaBridge:
     """
     Titiritero principal. Gestiona la conexión de un cliente físico
     y enruta asincrónicamente los mensajes utilizando los adaptadores de microservicio.
     """
+
     def __init__(
         self,
         client: Client,
@@ -53,14 +55,14 @@ class JotaBridge:
         self.client_id = client.id  # nombre legible del cliente (hab_sito, jota_desktop…)
         self.client_ws = client_ws
         self.handshake: Handshake = handshake
-        self.orchestrator: OrchestratorProtocol = orchestrator   # injected, not created here
+        self.orchestrator: OrchestratorProtocol = orchestrator  # injected, not created here
         self.tts = tts
         self.tracker: PipelineTracker = tracker
         self._client_registry = client_registry
         self._default_agent = default_agent
-        self.transcriber: Optional[ReconnectingTranscriberClient] = None
+        self.transcriber: ReconnectingTranscriberClient | None = None
         self._push_tts = None
-        self._push_audio_task: Optional[asyncio.Task] = None
+        self._push_audio_task: asyncio.Task | None = None
 
         self.tasks: list[asyncio.Task] = []
         # Fire-and-forget notification tasks (e.g. _on_transcriber_state_change)
@@ -68,13 +70,13 @@ class JotaBridge:
         # they're short-lived and self-cleaning. Kept here only so the event
         # loop's weak reference doesn't let them get GC'd mid-flight.
         self._notification_tasks: set[asyncio.Task] = set()
-        self._active_turn: Optional[asyncio.Task] = None
+        self._active_turn: asyncio.Task | None = None
         self._session_start: float = 0.0
-        self._first_audio_at: Optional[float] = None
-        self._last_final_text: Optional[str] = None
+        self._first_audio_at: float | None = None
+        self._last_final_text: str | None = None
         self._turn_seq: int = 0
         self._push_turn_seq: int = 0
-        self._push_turn_id: Optional[str] = None
+        self._push_turn_id: str | None = None
         # Issue #84: OpenClaw emits multiple agent start/end pairs during a single
         # LLM response (tool use, multi-step reasoning). Track whether a push turn
         # is already open so we emit exactly one turn_start/turn_end to the client
@@ -189,31 +191,37 @@ class JotaBridge:
         """
         # Orchestrator — always critical
         if not await self.orchestrator.ping():
-            await self.client_ws.send_json({
-                "type": "status",
-                "service": "orchestrator",
-                "state": "unavailable",
-            })
+            await self.client_ws.send_json(
+                {
+                    "type": "status",
+                    "service": "orchestrator",
+                    "state": "unavailable",
+                }
+            )
             return False
 
         # Transcriber — non-critical (session continues degraded if unavailable;
         # the client decides whether to keep going text-only)
         if self.handshake.input_mode == "audio":
             if not self.transcriber or self.transcriber.state != ConnectionState.CONNECTED:
-                await self.client_ws.send_json({
-                    "type": "status",
-                    "service": "transcriber",
-                    "state": "unavailable",
-                })
+                await self.client_ws.send_json(
+                    {
+                        "type": "status",
+                        "service": "transcriber",
+                        "state": "unavailable",
+                    }
+                )
 
         # TTS — non-critical; session continues in degraded mode
         if "audio" in self.handshake.output_mode:
             if not await TTSClient.ping(settings.TTS_WS_URL):
-                await self.client_ws.send_json({
-                    "type": "status",
-                    "service": "tts",
-                    "state": "unavailable",
-                })
+                await self.client_ws.send_json(
+                    {
+                        "type": "status",
+                        "service": "tts",
+                        "state": "unavailable",
+                    }
+                )
 
         return True
 
@@ -240,7 +248,7 @@ class JotaBridge:
         silence_count = 0
         last_seen_transcription_at = self.transcriber._last_transcription_at
         was_connected = True
-        recovery_baseline: Optional[float] = None
+        recovery_baseline: float | None = None
 
         while True:
             await asyncio.sleep(2)
@@ -275,11 +283,13 @@ class JotaBridge:
                     f"({silence_count}/{self.config.max_silence_turns})"
                 )
                 try:
-                    await self.client_ws.send_json({
-                        "type": "status",
-                        "service": "transcriber",
-                        "state": "degraded",
-                    })
+                    await self.client_ws.send_json(
+                        {
+                            "type": "status",
+                            "service": "transcriber",
+                            "state": "degraded",
+                        }
+                    )
                 except Exception:
                     pass
                 if silence_count >= self.config.max_silence_turns:
@@ -299,12 +309,14 @@ class JotaBridge:
 
         # Loop del Transcriptor (solo si hay audio de entrada)
         if self.transcriber:
-            self.tasks.append(asyncio.create_task(
-                self.transcriber.run(
-                    on_transcription_callback=self._on_transcription,
-                    on_warning_callback=self._on_transcriber_warning,
+            self.tasks.append(
+                asyncio.create_task(
+                    self.transcriber.run(
+                        on_transcription_callback=self._on_transcription,
+                        on_warning_callback=self._on_transcriber_warning,
+                    )
                 )
-            ))
+            )
             self.tasks.append(asyncio.create_task(self._transcription_watchdog()))
 
         # El ciclo de vida de la sesión lo marca _client_input_loop.
@@ -371,16 +383,18 @@ class JotaBridge:
         except Exception as e:
             logger.error(f"[{self.client_id}] Error en input loop: {e}")
 
-    async def _on_transcriber_warning(self, code: str, message: Optional[str]):
+    async def _on_transcriber_warning(self, code: str, message: str | None):
         """Reenvía warnings del transcriber al cliente (e.g. buffer_full)."""
         try:
-            await self.client_ws.send_json({
-                "type": "status",
-                "service": "transcriber",
-                "state": "degraded",
-                "code": code,
-                "message": message or code,
-            })
+            await self.client_ws.send_json(
+                {
+                    "type": "status",
+                    "service": "transcriber",
+                    "state": "degraded",
+                    "code": code,
+                    "message": message or code,
+                }
+            )
         except Exception:
             pass  # cliente desconectado
 
@@ -424,7 +438,9 @@ class JotaBridge:
             # Barge-in: interrupt active turn if enabled and partial is substantial enough
             if self.config.barge_in_enabled and len(text) >= self.config.barge_in_min_chars:
                 if await self._cancel_active_turn():
-                    logger.info(f"[{self.client_id}] Barge-in: turno cancelado por parcial '{text[:30]}'")
+                    logger.info(
+                        f"[{self.client_id}] Barge-in: turno cancelado por parcial '{text[:30]}'"
+                    )
                     await self.tracker.record("barge_in")
                     try:
                         await self.client_ws.send_json({"type": "interrupted"})
@@ -434,7 +450,9 @@ class JotaBridge:
 
         # Final: deduplicate — transcriber may emit the same text more than once
         if text == self._last_final_text:
-            logger.debug(f"[{self.client_id}] Transcripción final duplicada descartada: '{text[:40]}'")
+            logger.debug(
+                f"[{self.client_id}] Transcripción final duplicada descartada: '{text[:40]}'"
+            )
             return
         self._last_final_text = text
         await self.tracker.record("transcription_final", text=text[:60])
@@ -455,8 +473,8 @@ class JotaBridge:
         Si el cliente pidió audio, crea un TTSClient por petición y corre
         pipe_tokens + pipe_audio concurrentemente vía asyncio.gather.
         """
-        from src.services.orchestration import call_orchestrator
         from src.core.session_key import make_session_key
+        from src.services.orchestration import call_orchestrator
 
         self._turn_seq += 1
         turn_seq = self._turn_seq
@@ -465,13 +483,15 @@ class JotaBridge:
         self.tracker.start_turn()
 
         try:
-            await self.client_ws.send_json({"type": "turn_start", "turn_id": turn_id, "turn_seq": turn_seq})
+            await self.client_ws.send_json(
+                {"type": "turn_start", "turn_id": turn_id, "turn_seq": turn_seq}
+            )
         except Exception:
             return
 
         needs_audio = "audio" in self.handshake.output_mode
 
-        tts: Optional[TTSClient] = None
+        tts: TTSClient | None = None
         if needs_audio:
             tts = await self.tts.connect(
                 voice=self.config.tts_voice,
@@ -488,7 +508,9 @@ class JotaBridge:
         async def _on_token(token_text: str):
             try:
                 if "text" in self.handshake.output_mode:
-                    await self.client_ws.send_json({"type": "token", "turn_id": turn_id, "text": token_text})
+                    await self.client_ws.send_json(
+                        {"type": "token", "turn_id": turn_id, "text": token_text}
+                    )
             except Exception:
                 pass
             if tts:
@@ -505,7 +527,10 @@ class JotaBridge:
         async def pipe_tokens():
             try:
                 await call_orchestrator(
-                    self.orchestrator, text, session_key, self.client_id,
+                    self.orchestrator,
+                    text,
+                    session_key,
+                    self.client_id,
                     tracker=self.tracker,
                     on_token=_on_token,
                     on_tool_call=_on_tool_call,
@@ -513,13 +538,15 @@ class JotaBridge:
             except RuntimeError as e:
                 logger.error(f"[{self.client_id}] Orchestrator error: {e}")
                 try:
-                    await self.client_ws.send_json({
-                        "type": "error",
-                        "code": "TURN_ERROR",
-                        "message": str(e),
-                        "fatal": False,
-                        "turn_id": turn_id,
-                    })
+                    await self.client_ws.send_json(
+                        {
+                            "type": "error",
+                            "code": "TURN_ERROR",
+                            "message": str(e),
+                            "fatal": False,
+                            "turn_id": turn_id,
+                        }
+                    )
                 except Exception:
                     pass
             finally:
@@ -585,11 +612,13 @@ class JotaBridge:
         self._push_turn_open = True
 
         try:
-            await self.client_ws.send_json({
-                "type": "turn_start",
-                "turn_id": self._push_turn_id,
-                "turn_seq": self._turn_seq,
-            })
+            await self.client_ws.send_json(
+                {
+                    "type": "turn_start",
+                    "turn_id": self._push_turn_id,
+                    "turn_seq": self._turn_seq,
+                }
+            )
         except Exception:
             pass
 
@@ -621,11 +650,13 @@ class JotaBridge:
             return
         if "text" in self.handshake.output_mode:
             try:
-                await self.client_ws.send_json({
-                    "type": "token",
-                    "turn_id": self._push_turn_id,
-                    "text": delta,
-                })
+                await self.client_ws.send_json(
+                    {
+                        "type": "token",
+                        "turn_id": self._push_turn_id,
+                        "text": delta,
+                    }
+                )
             except Exception:
                 pass
         if self._push_tts:
@@ -648,9 +679,7 @@ class JotaBridge:
         # Issue #84: if no push turn is open, this agent end has no matching
         # turn_start on the client side. Ignoring it avoids orphan turn_end frames.
         if not self._push_turn_open:
-            logger.debug(
-                f"[{self.client_id}] push_turn_end ignored: no push turn open"
-            )
+            logger.debug(f"[{self.client_id}] push_turn_end ignored: no push turn open")
             return
 
         if self._push_tts:
