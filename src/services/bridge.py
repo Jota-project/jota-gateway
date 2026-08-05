@@ -90,7 +90,6 @@ class JotaBridge:
         # combined with a silent client would otherwise block the idle watchdog
         # from ever calling close_all() and leak the session indefinitely.
         self._push_turn_opened_at: float | None = None
-        self._tts_degraded_notified: bool = False
         # Guards close_all() so it's safe to call more than once (issue #101):
         # routes.py's outer try/finally always calls it on the way out, even
         # when bridge.run() already called it from its own internal finally.
@@ -123,6 +122,16 @@ class JotaBridge:
             self.transcriber.on_state_change = self._on_transcriber_state_change
 
         self._client_registry.register(self.client_id, self)
+
+        # TTS is a process-level singleton (issue #117): a brand new session
+        # starting mid-outage would otherwise stay silent about it until its
+        # own first turn attempt — already-connected sessions learn about a
+        # transition immediately via on_state_change → broadcast_status
+        # (main.py), but that broadcast fired before this bridge existed.
+        if "audio" in self.handshake.output_mode:
+            tts_state = self.tts.status().state
+            if tts_state != ConnectionState.CONNECTED:
+                await self.notify_service_status("tts", to_wire_state(tts_state))
 
     async def close_all(self, status: str = "completed"):
         """Tear down every microservice client and mark the session closed.
@@ -493,17 +502,6 @@ class JotaBridge:
         except Exception:
             pass  # cliente desconectado
 
-    async def _maybe_notify_tts_state(self) -> None:
-        current = self.tts.status().state
-        if current == ConnectionState.CONNECTED:
-            if self._tts_degraded_notified:
-                self._tts_degraded_notified = False
-                await self.notify_service_status("tts", to_wire_state(ConnectionState.CONNECTED))
-        else:
-            if not self._tts_degraded_notified:
-                self._tts_degraded_notified = True
-                await self.notify_service_status("tts", to_wire_state(current))
-
     def _on_transcriber_state_change(self, state: ConnectionState) -> None:
         task = asyncio.create_task(self.notify_service_status("transcriber", to_wire_state(state)))
         self._notification_tasks.add(task)
@@ -589,7 +587,6 @@ class JotaBridge:
             )
             if tts:
                 await self.tracker.record("tts_start", voice=self.config.tts_voice or "")
-            await self._maybe_notify_tts_state()
 
         agent = self.handshake.agent or self._default_agent
         session_key = make_session_key(agent, self.client_id)
@@ -717,7 +714,6 @@ class JotaBridge:
         tts = await self.tts.connect(
             voice=self.config.tts_voice, speed=self.config.tts_speed, client_id=self.client_id
         )
-        await self._maybe_notify_tts_state()
         if tts is None:
             return
         self._push_tts = tts

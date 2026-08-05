@@ -112,3 +112,68 @@ def test_status_shape_defaults_to_connected():
     assert s.state == ConnectionState.CONNECTED
     assert s.reconnect_attempts == 0
     assert s.connected_at is None
+
+
+@pytest.mark.asyncio
+async def test_on_state_change_fires_on_transition_to_reconnecting():
+    w = ReconnectingTTSClient(url="test:1", token="t", initial_backoff=10.0)
+    seen = []
+    w.on_state_change = seen.append
+    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
+        mock_client = AsyncMock()
+        mock_client.connect.side_effect = OSError("refused")
+        MockTTS.return_value = mock_client
+        await w.connect(voice=None, speed=None, client_id="c1")
+    assert seen == [ConnectionState.RECONNECTING]
+
+
+@pytest.mark.asyncio
+async def test_on_state_change_fires_on_recovery_to_connected():
+    w = ReconnectingTTSClient(url="test:1", token="t", initial_backoff=0.05)
+    seen = []
+    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
+        failing_client = AsyncMock()
+        failing_client.connect.side_effect = OSError("refused")
+        MockTTS.return_value = failing_client
+        await w.connect(voice=None, speed=None, client_id="c1")  # first failure
+
+        w.on_state_change = seen.append  # wired after the initial failure on purpose
+
+        time.sleep(0.1)  # let the backoff window elapse
+        succeeding_client = AsyncMock()
+        MockTTS.return_value = succeeding_client
+        await w.connect(voice=None, speed=None, client_id="c1")
+
+    assert seen == [ConnectionState.CONNECTED]
+
+
+@pytest.mark.asyncio
+async def test_on_state_change_does_not_refire_for_repeated_same_state():
+    """A sustained outage calls _record_failure once per turn attempt that
+    clears the backoff window — the callback must only fire on the actual
+    transition into RECONNECTING, not on every subsequent still-down attempt,
+    or every connected client would get spammed with a fresh 'reconnecting'
+    notice each time the singleton backoff window elapses."""
+    w = ReconnectingTTSClient(url="test:1", token="t", initial_backoff=0.05)
+    seen = []
+    w.on_state_change = seen.append
+    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
+        failing_client = AsyncMock()
+        failing_client.connect.side_effect = OSError("refused")
+        MockTTS.return_value = failing_client
+        await w.connect(voice=None, speed=None, client_id="c1")  # first failure
+
+        time.sleep(0.1)  # let the backoff window elapse
+        await w.connect(voice=None, speed=None, client_id="c1")  # still down
+
+    assert seen == [ConnectionState.RECONNECTING]
+
+
+@pytest.mark.asyncio
+async def test_on_state_change_not_called_when_unset():
+    w = ReconnectingTTSClient(url="test:1", token="t", initial_backoff=10.0)
+    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
+        mock_client = AsyncMock()
+        mock_client.connect.side_effect = OSError("refused")
+        MockTTS.return_value = mock_client
+        await w.connect(voice=None, speed=None, client_id="c1")  # must not raise
