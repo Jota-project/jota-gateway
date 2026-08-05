@@ -7,6 +7,7 @@ real ASGI transport: the pre-fix code path (ready-send failure) never called
 hangs forever — exercising it through a fake object sidesteps that entirely
 and lets us assert on cleanup deterministically.
 """
+
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -106,7 +107,8 @@ async def test_connect_internal_services_failure_leaves_no_zombie_session(monkey
     from src.services.bridge import JotaBridge
 
     monkeypatch.setattr(
-        JotaBridge, "connect_internal_services",
+        JotaBridge,
+        "connect_internal_services",
         AsyncMock(side_effect=RuntimeError("boom")),
     )
     app_state, _ = _make_app_state(orchestrator_ping_result=True)

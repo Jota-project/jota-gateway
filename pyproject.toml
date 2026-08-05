@@ -34,3 +34,33 @@ where = ["."]
 include = ["src*"]
 
 
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+    "BLE001",
+    "S110",
+    "TRY002",
+    "TRY203",
+    "TRY004",
+    "ASYNC251",
+    "B008",
+    "B017",
+    "RUF059",
+    "RUF013",
+    "SIM102",
+    "SIM117",
+    "SIM105",
+    "B904",
+    "B905",
+    "RUF002",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E501", "SIM105"]
+"src/**" = ["E501"]
+

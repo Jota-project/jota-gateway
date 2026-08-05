@@ -6,9 +6,9 @@ Schemas Pydantic para la API de administración /admin/clients/*.
 Separados de schemas.py (modelos runtime del bridge) para no mezclar
 contratos internos con la interfaz HTTP de administración.
 """
+
 import json
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel
 
@@ -17,10 +17,10 @@ from src.db.models import ClientRecord
 
 class ClientCreate(BaseModel):
     name: str
-    client_key: Optional[str] = None  # si se omite, se genera uno aleatorio
-    client_type: Optional[str] = None
-    default_agent: Optional[str] = None
-    allowed_agents: Optional[list[str]] = None
+    client_key: str | None = None  # si se omite, se genera uno aleatorio
+    client_type: str | None = None
+    default_agent: str | None = None
+    allowed_agents: list[str] | None = None
     # Pipeline config
     stt_language: str = "es"
     stt_vad_thold: float = 0.0
@@ -28,7 +28,7 @@ class ClientCreate(BaseModel):
     tts_speed: float = 1.0
     barge_in_enabled: bool = True
     barge_in_min_chars: int = 5
-    output_mode: Optional[list[str]] = None
+    output_mode: list[str] | None = None
     silence_timeout_s: float = 2.0
     max_silence_turns: int = 3
     push_enabled: bool = True
@@ -37,22 +37,23 @@ class ClientCreate(BaseModel):
 
 class ClientUpdate(BaseModel):
     """Todos los campos opcionales — PATCH semántico (exclude_unset)."""
-    name: Optional[str] = None
-    is_active: Optional[bool] = None
-    client_type: Optional[str] = None
-    default_agent: Optional[str] = None
-    allowed_agents: Optional[list[str]] = None
-    stt_language: Optional[str] = None
-    stt_vad_thold: Optional[float] = None
-    tts_voice: Optional[str] = None
-    tts_speed: Optional[float] = None
-    barge_in_enabled: Optional[bool] = None
-    barge_in_min_chars: Optional[int] = None
-    output_mode: Optional[list[str]] = None
-    silence_timeout_s: Optional[float] = None
-    max_silence_turns: Optional[int] = None
-    push_enabled: Optional[bool] = None
-    tool_calls_enabled: Optional[bool] = None
+
+    name: str | None = None
+    is_active: bool | None = None
+    client_type: str | None = None
+    default_agent: str | None = None
+    allowed_agents: list[str] | None = None
+    stt_language: str | None = None
+    stt_vad_thold: float | None = None
+    tts_voice: str | None = None
+    tts_speed: float | None = None
+    barge_in_enabled: bool | None = None
+    barge_in_min_chars: int | None = None
+    output_mode: list[str] | None = None
+    silence_timeout_s: float | None = None
+    max_silence_turns: int | None = None
+    push_enabled: bool | None = None
+    tool_calls_enabled: bool | None = None
 
 
 class ClientResponse(BaseModel):
@@ -60,9 +61,9 @@ class ClientResponse(BaseModel):
     name: str
     client_key: str
     is_active: bool
-    client_type: Optional[str]
-    default_agent: Optional[str]
-    allowed_agents: Optional[list[str]]
+    client_type: str | None
+    default_agent: str | None
+    allowed_agents: list[str] | None
     created_at: datetime
     # Pipeline config
     stt_language: str
@@ -71,7 +72,7 @@ class ClientResponse(BaseModel):
     tts_speed: float
     barge_in_enabled: bool
     barge_in_min_chars: int
-    output_mode: Optional[list[str]]
+    output_mode: list[str] | None
     silence_timeout_s: float
     max_silence_turns: int
     push_enabled: bool

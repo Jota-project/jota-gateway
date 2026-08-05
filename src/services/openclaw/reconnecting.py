@@ -3,8 +3,8 @@ import contextlib
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
-from typing import AsyncIterator, Optional
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.models import GatewayInfo
@@ -35,12 +35,12 @@ class ReconnectingOpenClawClient:
         self._max_backoff = max_backoff
         self._max_duration = max_duration
         self.state = ConnectionState.DEGRADED
-        self.gateway_info: Optional[GatewayInfo] = None
-        self._connected_at: Optional[datetime] = None
+        self.gateway_info: GatewayInfo | None = None
+        self._connected_at: datetime | None = None
         self._reconnect_attempts: int = 0
-        self._last_error: Optional[str] = None
-        self._reconnect_task: Optional[asyncio.Task] = None
-        self._reconnect_job_id: Optional[str] = None
+        self._last_error: str | None = None
+        self._reconnect_task: asyncio.Task | None = None
+        self._reconnect_job_id: str | None = None
         self._reconnect_exhausted: bool = False
         self.on_state_change = None
         # Register disconnect callback so the inner client notifies us on unexpected drops.
@@ -53,7 +53,7 @@ class ReconnectingOpenClawClient:
         try:
             self.gateway_info = await self._client.connect()
             self._set_state(ConnectionState.CONNECTED)
-            self._connected_at = datetime.now(timezone.utc)
+            self._connected_at = datetime.now(UTC)
             self._reconnect_attempts = 0
             self._last_error = None
             self._reconnect_exhausted = False
@@ -82,8 +82,8 @@ class ReconnectingOpenClawClient:
         self,
         text: str,
         user_id: str,
-        model_id: Optional[str] = None,
-        session_key: Optional[str] = None,
+        model_id: str | None = None,
+        session_key: str | None = None,
     ) -> AsyncIterator[OrchestratorEvent]:
         if self.state != ConnectionState.CONNECTED:
             if self.state == ConnectionState.DEGRADED:
@@ -97,12 +97,14 @@ class ReconnectingOpenClawClient:
             # gets a synchronous GeneratorExit when this generator is closed early,
             # instead of being abandoned for the asyncgen GC finalizer to eventually
             # close (issue #150, one layer removed from the #99/#147 fix).
-            async with contextlib.aclosing(self._client.stream_response(
-                text=text,
-                user_id=user_id,
-                model_id=model_id,
-                session_key=session_key,
-            )) as inner:
+            async with contextlib.aclosing(
+                self._client.stream_response(
+                    text=text,
+                    user_id=user_id,
+                    model_id=model_id,
+                    session_key=session_key,
+                )
+            ) as inner:
                 async for event in inner:
                     yield event
         except asyncio.CancelledError:
@@ -156,7 +158,7 @@ class ReconnectingOpenClawClient:
             try:
                 self.gateway_info = await self._client.connect()
                 self._set_state(ConnectionState.CONNECTED)
-                self._connected_at = datetime.now(timezone.utc)
+                self._connected_at = datetime.now(UTC)
                 self._reconnect_attempts = 0
                 self._last_error = None
                 logger.info("[%s] reconnected.", self._name)
@@ -168,7 +170,9 @@ class ReconnectingOpenClawClient:
                 self._last_error = str(e)
                 logger.warning(
                     "[%s] reconnect attempt %d failed: %s",
-                    self._name, self._reconnect_attempts, e,
+                    self._name,
+                    self._reconnect_attempts,
+                    e,
                 )
 
             if time.monotonic() - start >= self._max_duration:

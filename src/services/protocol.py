@@ -1,5 +1,6 @@
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Literal, AsyncIterator, Optional, Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from src.services.openclaw.models import ToolCallEvent
 
@@ -8,7 +9,7 @@ from src.services.openclaw.models import ToolCallEvent
 class OrchestratorEvent:
     type: Literal["token", "status", "error", "tool_call"]
     content: str = ""
-    tool_call: Optional[ToolCallEvent] = None
+    tool_call: ToolCallEvent | None = None
 
 
 @runtime_checkable
@@ -21,6 +22,6 @@ class OrchestratorProtocol(Protocol):
         self,
         text: str,
         user_id: str,
-        model_id: Optional[str] = None,
-        session_key: Optional[str] = None,
+        model_id: str | None = None,
+        session_key: str | None = None,
     ) -> AsyncIterator[OrchestratorEvent]: ...

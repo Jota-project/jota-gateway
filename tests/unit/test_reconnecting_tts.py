@@ -1,8 +1,10 @@
 import time
-import pytest
 from unittest.mock import AsyncMock, patch
-from src.services.tts_reconnecting import ReconnectingTTSClient
+
+import pytest
+
 from src.services.reconnection import ConnectionState
+from src.services.tts_reconnecting import ReconnectingTTSClient
 
 
 @pytest.mark.asyncio
