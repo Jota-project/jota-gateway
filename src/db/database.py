@@ -22,6 +22,18 @@ def get_engine():
     return _engine
 
 
+def dispose_engine() -> None:
+    """Disposes the current engine's connection pool and resets the module-
+    level singleton so a subsequent get_engine() call builds a fresh one.
+    Called by the app lifespan on shutdown (issue #110) — without this, the
+    SQLite file handle can outlive the process's graceful-shutdown window,
+    which is how "database is locked" errors on restart happen."""
+    global _engine
+    if _engine is not None:
+        _engine.dispose()
+        _engine = None
+
+
 def _alembic_config() -> Config:
     return Config(str(_ALEMBIC_INI))
 
