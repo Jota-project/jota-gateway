@@ -1,3 +1,6 @@
+import logging
+
+from alembic import command
 from sqlalchemy import create_engine, inspect, text
 from sqlmodel import SQLModel
 
@@ -22,7 +25,8 @@ def test_fresh_db_upgrades_from_scratch(tmp_path, monkeypatch):
     assert "clients" in tables
     assert "alembic_version" in tables
     columns = {c["name"] for c in inspect(engine).get_columns("clients")}
-    assert {"id", "client_key", "tool_calls_enabled", "system_prompt_extra"} <= columns
+    assert {"id", "client_key", "tool_calls_enabled"} <= columns
+    assert "system_prompt_extra" not in columns
 
 
 def test_legacy_db_gets_stamped_without_altering_schema(tmp_path, monkeypatch):
@@ -57,3 +61,53 @@ def test_already_versioned_db_is_a_clean_noop(tmp_path, monkeypatch):
 
     engine = create_engine(f"sqlite:///{db_path}")
     assert "clients" in inspect(engine).get_table_names()
+
+
+def test_drop_system_prompt_extra_migration_applies_and_rolls_back(tmp_path, monkeypatch):
+    """Revision 106077a95a0f drops `system_prompt_extra`; downgrading restores it
+    with the same type/nullability as the initial migration (#100)."""
+    db_path = tmp_path / "rollback.db"
+    _point_at(monkeypatch, db_path)
+    cfg = database._alembic_config()
+
+    # Start from the initial schema — column present.
+    command.upgrade(cfg, "21cb0cf4f6f9")
+    engine = create_engine(f"sqlite:///{db_path}")
+    columns = {c["name"]: c for c in inspect(engine).get_columns("clients")}
+    assert "system_prompt_extra" in columns
+    assert columns["system_prompt_extra"]["nullable"] is True
+    engine.dispose()
+
+    # Upgrade to head (106077a95a0f) — column dropped.
+    command.upgrade(cfg, "106077a95a0f")
+    engine = create_engine(f"sqlite:///{db_path}")
+    columns = {c["name"] for c in inspect(engine).get_columns("clients")}
+    assert "system_prompt_extra" not in columns
+    engine.dispose()
+
+    # Downgrade back to the initial revision — column restored.
+    command.downgrade(cfg, "21cb0cf4f6f9")
+    engine = create_engine(f"sqlite:///{db_path}")
+    columns = {c["name"]: c for c in inspect(engine).get_columns("clients")}
+    assert "system_prompt_extra" in columns
+    assert columns["system_prompt_extra"]["nullable"] is True
+    engine.dispose()
+
+
+def test_run_migrations_does_not_disable_existing_loggers(tmp_path, monkeypatch):
+    """migrations/env.py calls fileConfig(alembic.ini) on every run_migrations()
+    call — including at real gateway startup, not just in tests. alembic.ini's
+    [loggers] section only declares root/sqlalchemy/alembic, so fileConfig's
+    default disable_existing_loggers=True silently disables every already-
+    created src.* logger (main.py imports all of them before lifespan() calls
+    run_migrations()) for the rest of the process's life — no application log
+    line, including the security/audit ones, ever reaches stdout again."""
+    db_path = tmp_path / "logging_regression.db"
+    _point_at(monkeypatch, db_path)
+
+    probe_logger = logging.getLogger("src.some_module_that_already_exists")
+    probe_logger.disabled = False
+
+    database.run_migrations()
+
+    assert probe_logger.disabled is False

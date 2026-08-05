@@ -1,6 +1,8 @@
 import asyncio
+import contextlib
 import logging
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
 
@@ -38,6 +40,8 @@ class ReconnectingOpenClawClient:
         self._reconnect_attempts: int = 0
         self._last_error: Optional[str] = None
         self._reconnect_task: Optional[asyncio.Task] = None
+        self._reconnect_job_id: Optional[str] = None
+        self._reconnect_exhausted: bool = False
         self.on_state_change = None
         # Register disconnect callback so the inner client notifies us on unexpected drops.
         self._client.on_disconnect = self._handle_disconnect
@@ -52,6 +56,7 @@ class ReconnectingOpenClawClient:
             self._connected_at = datetime.now(timezone.utc)
             self._reconnect_attempts = 0
             self._last_error = None
+            self._reconnect_exhausted = False
         except Exception as e:
             self._last_error = str(e)
             logger.error("[%s] initial connect failed: %s — starting retry", self._name, e)
@@ -78,7 +83,6 @@ class ReconnectingOpenClawClient:
         text: str,
         user_id: str,
         model_id: Optional[str] = None,
-        system_prompt_extra: Optional[str] = None,
         session_key: Optional[str] = None,
     ) -> AsyncIterator[OrchestratorEvent]:
         if self.state != ConnectionState.CONNECTED:
@@ -87,14 +91,20 @@ class ReconnectingOpenClawClient:
             yield OrchestratorEvent(type="error", content="orchestrator_unavailable")
             return
         try:
-            async for event in self._client.stream_response(
+            # aclosing() here (not just around the outer generator in
+            # call_orchestrator) guarantees the inner OpenClawClient.stream_response()
+            # generator — which holds `finally: self._turn_registry.unregister(...)` —
+            # gets a synchronous GeneratorExit when this generator is closed early,
+            # instead of being abandoned for the asyncgen GC finalizer to eventually
+            # close (issue #150, one layer removed from the #99/#147 fix).
+            async with contextlib.aclosing(self._client.stream_response(
                 text=text,
                 user_id=user_id,
                 model_id=model_id,
-                system_prompt_extra=system_prompt_extra,
                 session_key=session_key,
-            ):
-                yield event
+            )) as inner:
+                async for event in inner:
+                    yield event
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -118,10 +128,26 @@ class ReconnectingOpenClawClient:
     def _handle_disconnect(self) -> None:
         self._ensure_reconnecting()
 
-    def _ensure_reconnecting(self) -> None:
+    def trigger_reconnect(self) -> str:
+        """Admin-facing entry point: force/coalesce a reconnect attempt without
+        blocking on the socket handshake. Coalesces onto any reconnect already
+        in flight (e.g. from the background loop after an unexpected drop)
+        instead of racing it with a second concurrent connect() — returns
+        that attempt's job id instead of starting a duplicate one."""
+        self._reconnect_exhausted = False
+        return self._ensure_reconnecting()
+
+    def _ensure_reconnecting(self) -> str:
+        # Always non-None here: _reconnect_exhausted only ever becomes True
+        # inside _reconnect_loop(), which _ensure_reconnecting() itself only
+        # ever starts after assigning a fresh _reconnect_job_id below.
+        if self._reconnect_exhausted:
+            return self._reconnect_job_id
         if not self._reconnect_task or self._reconnect_task.done():
+            self._reconnect_job_id = str(uuid.uuid4())
             self._set_state(ConnectionState.RECONNECTING)
             self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+        return self._reconnect_job_id
 
     async def _reconnect_loop(self) -> None:
         start = time.monotonic()
@@ -132,6 +158,7 @@ class ReconnectingOpenClawClient:
                 self._set_state(ConnectionState.CONNECTED)
                 self._connected_at = datetime.now(timezone.utc)
                 self._reconnect_attempts = 0
+                self._last_error = None
                 logger.info("[%s] reconnected.", self._name)
                 return
             except asyncio.CancelledError:
@@ -146,6 +173,7 @@ class ReconnectingOpenClawClient:
 
             if time.monotonic() - start >= self._max_duration:
                 self._set_state(ConnectionState.DEGRADED)
+                self._reconnect_exhausted = True
                 logger.warning("[%s] reconnect exhausted — DEGRADED.", self._name)
                 return
 
