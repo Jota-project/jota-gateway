@@ -33,8 +33,6 @@ class ClientCreate(BaseModel):
     max_silence_turns: int = 3
     push_enabled: bool = True
     tool_calls_enabled: bool = False
-    # Personalización
-    system_prompt_extra: Optional[str] = None
 
 
 class ClientUpdate(BaseModel):
@@ -55,7 +53,6 @@ class ClientUpdate(BaseModel):
     max_silence_turns: Optional[int] = None
     push_enabled: Optional[bool] = None
     tool_calls_enabled: Optional[bool] = None
-    system_prompt_extra: Optional[str] = None
 
 
 class ClientResponse(BaseModel):
@@ -79,8 +76,6 @@ class ClientResponse(BaseModel):
     max_silence_turns: int
     push_enabled: bool
     tool_calls_enabled: bool
-    # Personalización
-    system_prompt_extra: Optional[str]
 
     @classmethod
     def from_record(cls, r: ClientRecord) -> "ClientResponse":
@@ -104,5 +99,4 @@ class ClientResponse(BaseModel):
             max_silence_turns=r.max_silence_turns,
             push_enabled=r.push_enabled,
             tool_calls_enabled=r.tool_calls_enabled,
-            system_prompt_extra=r.system_prompt_extra,
         )

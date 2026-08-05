@@ -81,6 +81,15 @@ class JotaBridge:
         # for the whole multi-step reply, not one per agent event.
         self._push_turn_open: bool = False
         self._tts_degraded_notified: bool = False
+        # Guards close_all() so it's safe to call more than once (issue #101):
+        # routes.py's outer try/finally always calls it on the way out, even
+        # when bridge.run() already called it from its own internal finally.
+        # _closed is only set True once teardown fully completes; _close_lock
+        # serializes concurrent callers so a call interrupted mid-teardown
+        # doesn't race a second one, and a later call retries instead of
+        # observing a half-finished, permanently-poisoned guard.
+        self._closed: bool = False
+        self._close_lock = asyncio.Lock()
 
     async def connect_internal_services(self):
         """Inicializa clientes de microservicios dependiendo del handshake."""
@@ -105,51 +114,71 @@ class JotaBridge:
 
         self._client_registry.register(self.client_id, self)
 
-    async def close_all(self):
-        self._client_registry.unregister(self.client_id)
-        # Await (don't cancel) the active turn so the orchestrator response is
-        # delivered before we tear down microservice clients.  Explicit cancellation
-        # only happens via _cancel_active_turn() (barge-in) or task cancellation
-        # from outside; close_all() itself should let the turn finish naturally.
-        if self._active_turn and not self._active_turn.done():
-            try:
-                await self._active_turn
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                logger.error(f"[{self.client_id}] _active_turn falló: {e}")
+    async def close_all(self, status: str = "completed"):
+        """Tear down every microservice client and mark the session closed.
 
-        if self._push_audio_task and not self._push_audio_task.done():
-            self._push_audio_task.cancel()
-            try:
-                await self._push_audio_task
-            except (asyncio.CancelledError, Exception):
-                pass
-        if self._push_tts:
-            try:
-                await self._push_tts.close()
-            except Exception:
-                pass
-            self._push_tts = None
+        Idempotent — the second call in a row is a no-op, and the *first
+        call to finish* wins the `status`. Callable from three independent
+        sites (the silence watchdog, run()'s own finally, and routes.py's
+        outer finally on the setup-phase paths from issue #101) without
+        knowing whether one of the others already ran.
 
-        # Defensive reset — if the session ends between an agent start and its
-        # matching agent end (disconnect, orchestrator crash, reconnect mid-push),
-        # the flag would otherwise stay set forever, causing the next agent start
-        # received on this bridge instance to be silently dropped.
-        self._push_turn_open = False
+        `_closed` is only set to True once teardown actually completes — not
+        at entry — and the whole body is serialized by `_close_lock`. If a
+        call is interrupted mid-teardown (e.g. cancelled during shutdown), it
+        never sets `_closed`, so the next call retries the teardown instead of
+        silently no-op'ing forever (issue #101 follow-up: the eager guard used
+        to defeat the very safety net routes.py relies on).
+        """
+        async with self._close_lock:
+            if self._closed:
+                return
 
-        for task in self.tasks:
-            if not task.done():
-                task.cancel()
+            self._client_registry.unregister(self.client_id)
+            # Await (don't cancel) the active turn so the orchestrator response is
+            # delivered before we tear down microservice clients.  Explicit cancellation
+            # only happens via _cancel_active_turn() (barge-in) or task cancellation
+            # from outside; close_all() itself should let the turn finish naturally.
+            if self._active_turn and not self._active_turn.done():
+                try:
+                    await self._active_turn
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.error(f"[{self.client_id}] _active_turn falló: {e}")
 
-        close_aws = []
-        if self.transcriber:
-            close_aws.append(self.transcriber.close())
+            if self._push_audio_task and not self._push_audio_task.done():
+                self._push_audio_task.cancel()
+                try:
+                    await self._push_audio_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if self._push_tts:
+                try:
+                    await self._push_tts.close()
+                except Exception:
+                    pass
+                self._push_tts = None
 
-        if close_aws:
-            await asyncio.gather(*close_aws, return_exceptions=True)
+            # Defensive reset — if the session ends between an agent start and its
+            # matching agent end (disconnect, orchestrator crash, reconnect mid-push),
+            # the flag would otherwise stay set forever, causing the next agent start
+            # received on this bridge instance to be silently dropped.
+            self._push_turn_open = False
 
-        await self.tracker.close()
+            for task in self.tasks:
+                if not task.done():
+                    task.cancel()
+
+            close_aws = []
+            if self.transcriber:
+                close_aws.append(self.transcriber.close())
+
+            if close_aws:
+                await asyncio.gather(*close_aws, return_exceptions=True)
+
+            await self.tracker.close(status=status)
+            self._closed = True
 
     async def health_check(self) -> bool:
         """Ping each microservice and notify the client of any issues.
@@ -210,21 +239,34 @@ class JotaBridge:
 
         silence_count = 0
         last_seen_transcription_at = self.transcriber._last_transcription_at
+        was_connected = True
+        recovery_baseline: Optional[float] = None
 
         while True:
             await asyncio.sleep(2)
             if not self.transcriber or self.transcriber.state == ConnectionState.DEGRADED:
                 return
             if self.transcriber.state != ConnectionState.CONNECTED:
+                was_connected = False
                 continue  # RECONNECTING: skip silence-counting this tick, don't exit
 
             current_transcription_at = self.transcriber._last_transcription_at
             if current_transcription_at != last_seen_transcription_at:
                 silence_count = 0
                 last_seen_transcription_at = current_transcription_at
+                recovery_baseline = None
+            elif not was_connected:
+                # Just recovered from a drop with no new transcription yet.
+                # TranscriberClient.connect() never resets _last_transcription_at,
+                # so it still predates the outage — restart the silence clock from
+                # the recovery moment instead of blaming the client for however
+                # long the reconnect took (issue #149).
+                silence_count = 0
+                recovery_baseline = time.monotonic()
+            was_connected = True
 
-            last = self.transcriber._last_transcription_at
-            elapsed = time.monotonic() - last if last else time.monotonic() - self._first_audio_at
+            last = recovery_baseline or current_transcription_at or self._first_audio_at
+            elapsed = time.monotonic() - last
 
             if elapsed > self.config.silence_timeout_s:
                 silence_count += 1
@@ -379,8 +421,8 @@ class JotaBridge:
                 return  # client disconnected
             await self.tracker.record("transcription_partial", text_len=len(text))
 
-            # Barge-in: interrupt active turn if partial is substantial enough
-            if len(text) >= self.config.barge_in_min_chars:
+            # Barge-in: interrupt active turn if enabled and partial is substantial enough
+            if self.config.barge_in_enabled and len(text) >= self.config.barge_in_min_chars:
                 if await self._cancel_active_turn():
                     logger.info(f"[{self.client_id}] Barge-in: turno cancelado por parcial '{text[:30]}'")
                     await self.tracker.record("barge_in")
@@ -400,7 +442,7 @@ class JotaBridge:
         # Final: cancel any running turn, notify client.
         # El orquestador se llama cuando el cliente envíe {"type": "send", "text": "..."}.
         await self._cancel_active_turn()
-        logger.info(f"[{self.client_id}] Transcripción final: '{text}'")
+        logger.debug(f"[{self.client_id}] Transcripción final: '{text[:40]}'")
         try:
             await self.client_ws.send_json({"type": "transcription", "text": text})
         except Exception as e:
@@ -464,7 +506,6 @@ class JotaBridge:
             try:
                 await call_orchestrator(
                     self.orchestrator, text, session_key, self.client_id,
-                    system_prompt_extra=self.config.system_prompt_extra,
                     tracker=self.tracker,
                     on_token=_on_token,
                     on_tool_call=_on_tool_call,
@@ -510,6 +551,17 @@ class JotaBridge:
             await self.client_ws.send_json({"type": "turn_end", "turn_id": turn_id})
         except Exception:
             pass
+
+    def _push_allowed(self) -> bool:
+        """Single decision point for whether an unsolicited (orchestrator-pushed)
+        frame may reach the client (issue #109): the client must have push
+        enabled AND a push turn must currently be open. Used by deliver_push
+        and deliver_push_tool_call so the check isn't duplicated/inconsistent
+        across the start vs. payload code paths — on_push_turn_start is the
+        only place that sets _push_turn_open True, and it already gates on
+        push_enabled before doing so.
+        """
+        return self.config.push_enabled and self._push_turn_open
 
     async def on_push_turn_start(self, session_key: str) -> None:
         if not self.config.push_enabled:
@@ -562,6 +614,8 @@ class JotaBridge:
         self._push_audio_task = asyncio.create_task(_pipe_push_audio())
 
     async def deliver_push(self, payload: dict) -> None:
+        if not self._push_allowed():
+            return
         delta = payload.get("deltaText", "")
         if not delta:
             return
@@ -578,6 +632,8 @@ class JotaBridge:
             await self._push_tts.send_text_chunk(delta)
 
     async def deliver_push_tool_call(self, data: dict) -> None:
+        if not self._push_allowed():
+            return
         if not self.config.tool_calls_enabled:
             return
         tool_call = ToolCallEvent.from_session_tool_payload(data)

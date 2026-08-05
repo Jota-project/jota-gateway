@@ -69,6 +69,34 @@ async def test_error_event_raises():
         await call_orchestrator(orch, "hi", "agent:main:ha", "ha")
 
 
+async def test_error_event_closes_the_stream_response_generator():
+    """Issue #99 follow-up: raising on an 'error' event used to just abandon
+    the stream_response() generator mid-iteration instead of closing it.
+    Exiting an `async for` early via an exception in the loop body does not
+    call the generator's aclose() — its `finally` (which unregisters the
+    session_key from TurnRegistry in the real OpenClawClient) was deferred
+    until Python's asyncgen GC finalizer eventually got around to it, leaving
+    the session_key falsely marked in-progress in the meantime. Since the
+    session_key is deterministic per (agent, client_id), the client's very
+    next turn reuses it and could hit that window, getting a spurious
+    TurnInProgress/409 on what should be a normal retry."""
+    closed = []
+
+    async def _stream(**kwargs):
+        try:
+            yield OrchestratorEvent(type="error", content="boom")
+        finally:
+            closed.append(True)
+
+    orch = MagicMock()
+    orch.stream_response = _stream
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await call_orchestrator(orch, "hi", "agent:main:ha", "ha")
+
+    assert closed, "generator's finally (unregister) must run synchronously, not be abandoned"
+
+
 async def test_tool_call_reaches_callback():
     tc_start = ToolCallEvent(phase="start", name="exec", tool_call_id="call-1", args={"command": "ls"})
     tc_result = ToolCallEvent(phase="result", name="exec", tool_call_id="call-1", result="ok", is_error=False)

@@ -73,3 +73,19 @@ def test_delete_client():
     _run(["delete-client", key], e)
     with Session(e) as s:
         assert s.exec(select(ClientRecord)).first() is None
+
+
+def test_delete_client_accepts_key_starting_with_dash():
+    """secrets.token_urlsafe(32) (used for generated client_keys) can start
+    with '-' — argparse then misreads the positional client_key as an
+    unknown option ('the following arguments are required: client_key'), a
+    real bug for any user whose generated key happens to start with '-', not
+    just bad luck in this test. Insert the record directly to isolate the
+    positional-argument parsing bug from add-client's own --key parsing."""
+    e = _engine()
+    with Session(e) as s:
+        s.add(ClientRecord(name="ToDelete", client_key="-AbCdEf123"))
+        s.commit()
+    _run(["delete-client", "-AbCdEf123"], e)
+    with Session(e) as s:
+        assert s.exec(select(ClientRecord)).first() is None

@@ -1,7 +1,9 @@
 """Tests para /admin/clients/* CRUD."""
 import pytest
 from sqlalchemy.pool import StaticPool
-from sqlmodel import SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine
+
+from src.services.db_client import db_client
 
 
 ADMIN_TOKEN = "test-admin-token"
@@ -64,6 +66,19 @@ def test_create_client_full(http):
     assert data["default_agent"] == "home"
     assert data["allowed_agents"] == ["home", "kitchen"]
     assert data["tts_voice"] == "en_heart"
+
+
+def test_create_client_with_empty_allowed_agents_denies_all(http):
+    """allowed_agents=[] means deny-all (issue #105 semantics) — must round-trip
+    as [] through storage, not collapse to None (unrestricted) via a Python
+    truthy check on the empty list."""
+    r = http.post(
+        "/admin/clients",
+        json={"name": "locked-down", "allowed_agents": []},
+        headers=HEADERS,
+    )
+    assert r.status_code == 201
+    assert r.json()["allowed_agents"] == []
 
 
 # --- LIST ---
@@ -145,6 +160,56 @@ def test_rotate_key(http):
     assert len(new_key) > 20
 
 
+# --- INVALIDATE ORDERING (issue #107) ---
+
+def test_delete_client_commits_before_invalidating_cache(http, monkeypatch):
+    created = http.post("/admin/clients", json={"name": "Del"}, headers=HEADERS).json()
+
+    order = []
+    original_commit = Session.commit
+    original_invalidate = db_client.invalidate
+
+    def spy_commit(self):
+        order.append("commit")
+        return original_commit(self)
+
+    def spy_invalidate(client_key):
+        order.append("invalidate")
+        return original_invalidate(client_key)
+
+    monkeypatch.setattr(Session, "commit", spy_commit)
+    monkeypatch.setattr(db_client, "invalidate", spy_invalidate)
+
+    r = http.delete(f"/admin/clients/{created['id']}", headers=HEADERS)
+
+    assert r.status_code == 204
+    assert order == ["commit", "invalidate"]
+
+
+def test_rotate_key_commits_before_invalidating_cache(http, monkeypatch):
+    created = http.post("/admin/clients", json={"name": "R"}, headers=HEADERS).json()
+
+    order = []
+    original_commit = Session.commit
+    original_invalidate = db_client.invalidate
+
+    def spy_commit(self):
+        order.append("commit")
+        return original_commit(self)
+
+    def spy_invalidate(client_key):
+        order.append("invalidate")
+        return original_invalidate(client_key)
+
+    monkeypatch.setattr(Session, "commit", spy_commit)
+    monkeypatch.setattr(db_client, "invalidate", spy_invalidate)
+
+    r = http.post(f"/admin/clients/{created['id']}/rotate-key", headers=HEADERS)
+
+    assert r.status_code == 200
+    assert order == ["commit", "invalidate"]
+
+
 # --- AUTH ---
 
 def test_missing_token_returns_422(http):
@@ -180,3 +245,30 @@ def test_patch_client_tool_calls_enabled(http):
     )
     assert r.status_code == 200
     assert r.json()["tool_calls_enabled"] is True
+
+
+# --- system_prompt_extra removed (#100) ---
+# `ClientCreate`/`ClientUpdate` have no `model_config` overriding pydantic's
+# default `extra="ignore"` behavior, so an unrecognized field in the request
+# body is silently dropped rather than rejected with 422.
+
+def test_create_client_ignores_system_prompt_extra(http):
+    r = http.post(
+        "/admin/clients",
+        json={"name": "Legacy", "system_prompt_extra": "Habla en inglés"},
+        headers=HEADERS,
+    )
+    assert r.status_code == 201
+    data = r.json()
+    assert "system_prompt_extra" not in data
+
+
+def test_patch_client_ignores_system_prompt_extra(http):
+    created = http.post("/admin/clients", json={"name": "Legacy"}, headers=HEADERS).json()
+    r = http.patch(
+        f"/admin/clients/{created['id']}",
+        json={"system_prompt_extra": "Habla en inglés"},
+        headers=HEADERS,
+    )
+    assert r.status_code == 200
+    assert "system_prompt_extra" not in r.json()

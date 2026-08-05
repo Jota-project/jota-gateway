@@ -11,7 +11,12 @@ config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: the default (True) disables every
+    # already-created logger not listed in alembic.ini's [loggers] section
+    # (root/sqlalchemy/alembic) — including every src.* module logger, since
+    # main.py imports them all before lifespan() calls run_migrations(). That
+    # silently kills all application logging, in production, on every startup.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = SQLModel.metadata
 

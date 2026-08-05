@@ -1,6 +1,14 @@
 import asyncio
 from unittest.mock import AsyncMock
-from src.services.openclaw.registry import TurnRegistry, ClientRegistry, client_id_from_session_key
+
+import pytest
+
+from src.services.openclaw.registry import (
+    TurnRegistry,
+    ClientRegistry,
+    TurnInProgress,
+    client_id_from_session_key,
+)
 
 
 # --- client_id_from_session_key ---
@@ -43,6 +51,41 @@ def test_unregister_clears_both():
     reg.unregister("agent:main:client-a", "req-1")
     assert reg.get_queue_by_session("agent:main:client-a") is None
     assert reg.get_queue_by_req("req-1") is None
+
+def test_register_rejects_duplicate_session_key():
+    reg = TurnRegistry()
+    qa = reg.register("req-a", "agent:main:client-a")
+
+    with pytest.raises(TurnInProgress):
+        reg.register("req-b", "agent:main:client-a")
+
+    # The first caller's queue is untouched by the rejected attempt.
+    assert reg.get_queue_by_session("agent:main:client-a") is qa
+    assert reg.get_queue_by_req("req-a") is qa
+    # The rejected req_id was never registered.
+    assert reg.get_queue_by_req("req-b") is None
+
+
+def test_unregister_does_not_pop_unrelated_queue():
+    """Locks in the identity-confusion half of the bug: unregister() must
+    only remove a session_key's queue if the caller is still its current
+    owner, not just because the session_key string matches."""
+    reg = TurnRegistry()
+    reg.register("req-a", "agent:main:client-a")
+
+    # Simulate the desync a pre-fix duplicate registration would have left
+    # behind: the session_key's queue entry disappears (as if overwritten)
+    # while the stale req_id -> session_key mapping for A survives.
+    del reg._sessions["agent:main:client-a"]
+
+    qb = reg.register("req-b", "agent:main:client-a")
+
+    # A's belated cleanup call must not evict B's live queue.
+    reg.unregister("agent:main:client-a", "req-a")
+
+    assert reg.get_queue_by_session("agent:main:client-a") is qb
+    assert reg.get_queue_by_req("req-b") is qb
+
 
 def test_two_sessions_independent():
     reg = TurnRegistry()
