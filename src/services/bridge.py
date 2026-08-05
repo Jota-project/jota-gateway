@@ -123,16 +123,6 @@ class JotaBridge:
 
         self._client_registry.register(self.client_id, self)
 
-        # TTS is a process-level singleton (issue #117): a brand new session
-        # starting mid-outage would otherwise stay silent about it until its
-        # own first turn attempt — already-connected sessions learn about a
-        # transition immediately via on_state_change → broadcast_status
-        # (main.py), but that broadcast fired before this bridge existed.
-        if "audio" in self.handshake.output_mode:
-            tts_state = self.tts.status().state
-            if tts_state != ConnectionState.CONNECTED:
-                await self.notify_service_status("tts", to_wire_state(tts_state))
-
     async def close_all(self, status: str = "completed"):
         """Tear down every microservice client and mark the session closed.
 
