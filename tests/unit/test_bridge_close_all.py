@@ -201,3 +201,53 @@ async def test_close_all_does_not_cancel_turn_that_finishes_before_drain(bridge,
 
     assert quick_turn.done()
     assert not quick_turn.cancelled()
+
+
+async def test_close_all_completes_when_called_from_its_own_tracked_task(bridge):
+    """A watchdog task (_idle_watchdog/_transcription_watchdog) that triggers
+    its own session's close_all() must not be cancelled by close_all()'s own
+    task-cancellation loop — self-cancellation delivers a CancelledError into
+    close_all() at its next real suspension point (awaiting the transcriber's
+    close(), here), aborting teardown before tracker.close()/registry.close()
+    ever run."""
+
+    class _SlowTranscriber:
+        async def close(self):
+            await asyncio.sleep(0)  # forces a genuine event-loop checkpoint
+
+    bridge.transcriber = _SlowTranscriber()
+
+    async def _self_closing_watchdog():
+        await bridge.close_all()
+
+    watchdog_task = asyncio.create_task(_self_closing_watchdog())
+    bridge.tasks.append(watchdog_task)
+
+    await asyncio.wait_for(watchdog_task, timeout=1.0)  # must not raise CancelledError
+
+    assert bridge._closed is True
+    bridge.tracker._registry.close.assert_called_once()
+
+
+async def test_close_all_cancels_and_awaits_other_tracked_tasks(bridge):
+    """close_all() must not just call .cancel() and move on — it must await
+    the cancelled tasks so none are left dangling when it returns."""
+    finished = False
+
+    async def _long_task():
+        nonlocal finished
+        try:
+            await asyncio.sleep(10)
+        finally:
+            finished = True
+
+    task = asyncio.create_task(_long_task())
+    bridge.tasks.append(task)
+
+    # Let the task start running before we call close_all()
+    await asyncio.sleep(0)
+
+    await bridge.close_all()
+
+    assert task.done()
+    assert finished is True

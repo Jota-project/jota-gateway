@@ -192,9 +192,14 @@ class JotaBridge:
             self._push_turn_open = False
             self._push_turn_opened_at = None
 
-            for task in self.tasks:
-                if not task.done():
-                    task.cancel()
+            current_task = asyncio.current_task()
+            tasks_to_cancel = [
+                t for t in self.tasks if t is not current_task and not t.done()
+            ]
+            for task in tasks_to_cancel:
+                task.cancel()
+            if tasks_to_cancel:
+                await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
 
             close_aws = []
             if self.transcriber:
