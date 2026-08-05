@@ -67,8 +67,31 @@ class FrameDispatcher:
         if bridge is None:
             return
         if phase == "start":
+            if self._turns.get_queue_by_session(sk) is not None:
+                # Issue #112: a normal chat.send turn is active for this
+                # session_key — OpenClaw's own agent start pairs (tool use,
+                # multi-step reasoning) must not open a second client-facing
+                # turn on top of it. That turn's chat tokens and session.tool
+                # events already reach the client via _handle_chat/
+                # _handle_session_tool's own queue routing; only the
+                # lifecycle framing (which would open a *second* turn) is
+                # dropped.
+                logger.debug(
+                    "agent start suppressed: normal turn active for sk=%s", sk
+                )
+                return
             await bridge.on_push_turn_start(sk)
         elif phase == "end":
+            # Always forwarded, never suppressed: on_push_turn_end() already
+            # no-ops when no push turn is open (issue #84's orphan-end
+            # branch), so a start suppressed above never produces a
+            # client-visible turn_end here. Suppressing "end" too — as this
+            # guard originally did — could orphan a push turn that was
+            # already open *before* a normal turn started for the same
+            # session_key: its own "end" would be dropped, leaving
+            # _push_turn_open stuck True, its TTS connection never closed,
+            # and the push path permanently dead for the rest of the session
+            # (caught in final review, 2026-08-04).
             await bridge.on_push_turn_end(sk)
 
     async def _handle_session_tool(self, payload: dict) -> None:

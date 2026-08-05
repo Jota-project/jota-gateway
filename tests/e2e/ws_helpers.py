@@ -58,7 +58,10 @@ async def send_turn(ws, text: str, timeout: float = 60.0) -> dict:
     triggered by this send) is tracked for `text`/stop purposes; frames
     belonging to other turn_ids are still recorded in `frames` but ignored
     otherwise, so a stray turn_end from an unrelated turn can't truncate
-    collection early.
+    collection early. As of issue #112 the gateway suppresses these for the
+    *same* session_key while a normal turn is active — this defense stays in
+    place regardless, since it also covers unrelated sessions and older
+    server versions.
     """
     await ws.send(json.dumps({"type": "send", "text": text}))
     loop = asyncio.get_event_loop()
@@ -98,7 +101,11 @@ async def send_turn_until_tool_call(ws, text: str, timeout: float = 100.0) -> di
     invoke tools routinely chain several turn_start/turn_end pairs for a
     single user message (tool invocation, intermediate replies, final text),
     per docs/client-protocol.md §5. Requires the client to have
-    tool_calls_enabled=True (see test_client_record_with_tools fixture).
+    tool_calls_enabled=True (see test_client_record_with_tools fixture). As
+    of issue #112, a genuinely single-turn chat.send response no longer
+    produces these extra pairs — this helper's tolerance for them now only
+    matters for agents that intentionally use multiple turns, or against
+    older OpenClaw server versions.
     """
     await ws.send(json.dumps({"type": "send", "text": text}))
     loop = asyncio.get_event_loop()
