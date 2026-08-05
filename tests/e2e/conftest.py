@@ -4,6 +4,7 @@ excluded by default (see pytest.ini addopts). Run explicitly with:
 
     PYTHONPATH=. pytest tests/e2e -m e2e_real -v
 """
+
 import os
 import secrets
 

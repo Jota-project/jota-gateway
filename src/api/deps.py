@@ -3,6 +3,7 @@ deps.py
 ~~~~~~~
 FastAPI dependencies compartidas.
 """
+
 from fastapi import Header, HTTPException
 
 from src.core.config import settings

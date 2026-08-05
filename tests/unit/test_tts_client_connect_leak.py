@@ -1,8 +1,10 @@
 """Tests for TTSClient.connect() socket leak on handshake failure (issue #96)."""
+
 import asyncio
 import json
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 from websockets.exceptions import ConnectionClosed
 
 from src.services.tts_client import TTSClient
@@ -10,6 +12,7 @@ from src.services.tts_client import TTSClient
 
 class FakeTTSSocket:
     """Fake websocket that records close() calls and simulates TTS handshake failure."""
+
     def __init__(self, recv_payloads=None):
         self._to_client = asyncio.Queue()
         for p in recv_payloads or []:
@@ -34,6 +37,7 @@ class FakeTTSSocket:
     def __await__(self):
         async def _():
             return self
+
         return _().__await__()
 
 
@@ -41,9 +45,9 @@ class FakeTTSSocket:
 async def test_connect_closes_socket_when_auth_fails():
     """If websockets.connect succeeds but TTS auth fails, the socket must
     be closed before re-raising — otherwise it leaks (issue #96)."""
-    fake_ws = FakeTTSSocket(recv_payloads=[
-        json.dumps({"type": "error", "code": "bad_token", "message": "invalid"})
-    ])
+    fake_ws = FakeTTSSocket(
+        recv_payloads=[json.dumps({"type": "error", "code": "bad_token", "message": "invalid"})]
+    )
 
     async def fake_connect(url):
         return fake_ws

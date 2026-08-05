@@ -1,10 +1,10 @@
 import contextlib
 import logging
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
-from src.services.protocol import OrchestratorProtocol
 from src.services.openclaw.models import ToolCallEvent
 from src.services.pipeline_tracker import PipelineTracker
+from src.services.protocol import OrchestratorProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -14,10 +14,10 @@ async def call_orchestrator(
     text: str,
     session_key: str,
     user_id: str,
-    model_id: Optional[str] = None,
-    tracker: Optional[PipelineTracker] = None,
-    on_token: Optional[Callable[[str], Awaitable[None]]] = None,
-    on_tool_call: Optional[Callable[[ToolCallEvent], Awaitable[None]]] = None,
+    model_id: str | None = None,
+    tracker: PipelineTracker | None = None,
+    on_token: Callable[[str], Awaitable[None]] | None = None,
+    on_tool_call: Callable[[ToolCallEvent], Awaitable[None]] | None = None,
 ) -> None:
     """Iterate orchestrator.stream_response(), record pipeline events, call on_token per token
     and on_tool_call per tool-call event.
@@ -36,12 +36,14 @@ async def call_orchestrator(
     # aclose() on its own, leaving it suspended and its `finally` (which
     # unregisters the turn in TurnRegistry) deferred to whenever Python's
     # asyncgen GC finalizer gets around to it (issue #99 follow-up).
-    async with contextlib.aclosing(orchestrator.stream_response(
-        text=text,
-        user_id=user_id,
-        model_id=model_id,
-        session_key=session_key,
-    )) as stream:
+    async with contextlib.aclosing(
+        orchestrator.stream_response(
+            text=text,
+            user_id=user_id,
+            model_id=model_id,
+            session_key=session_key,
+        )
+    ) as stream:
         async for event in stream:
             if event.type == "token":
                 if _first_token:

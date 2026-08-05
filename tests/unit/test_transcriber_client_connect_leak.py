@@ -1,8 +1,10 @@
 """Tests for TranscriberClient.connect() socket leak on handshake failure (issue #96)."""
+
 import asyncio
 import json
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 from websockets.exceptions import ConnectionClosed
 
 from src.services.transcriber_client import TranscriberClient
@@ -10,6 +12,7 @@ from src.services.transcriber_client import TranscriberClient
 
 class FakeSocket:
     """Fake websocket that records close() calls and simulates handshake failure."""
+
     def __init__(self, recv_payloads=None):
         self._to_client = asyncio.Queue()
         for p in recv_payloads or []:
@@ -34,6 +37,7 @@ class FakeSocket:
     def __await__(self):
         async def _():
             return self
+
         return _().__await__()
 
 
@@ -41,9 +45,9 @@ class FakeSocket:
 async def test_connect_closes_socket_when_handshake_fails():
     """If websockets.connect succeeds but the handshake fails, the socket must
     be closed before re-raising — otherwise it leaks (issue #96)."""
-    fake_ws = FakeSocket(recv_payloads=[
-        json.dumps({"type": "error", "code": "auth_failed", "message": "bad token"})
-    ])
+    fake_ws = FakeSocket(
+        recv_payloads=[json.dumps({"type": "error", "code": "auth_failed", "message": "bad token"})]
+    )
 
     with patch("websockets.connect", side_effect=lambda url: fake_ws):
         with pytest.raises(Exception) as exc_info:

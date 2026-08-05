@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock, MagicMock
-from src.services.session_registry import SessionRegistry
+
 from src.services.pipeline_tracker import PipelineTracker
+from src.services.session_registry import SessionRegistry
 
 
 def _make_tracker(session_id="s1", client_id="c1"):

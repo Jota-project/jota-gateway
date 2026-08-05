@@ -1,4 +1,5 @@
 """Global test fixtures shared across unit and integration tests."""
+
 import pytest
 from starlette.testclient import TestClient
 

@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import uuid
-from typing import AsyncIterator, Callable, Optional
+from collections.abc import AsyncIterator, Callable
 
 import websockets
 from websockets.asyncio.client import ClientConnection
@@ -35,15 +35,15 @@ class OpenClawClient:
         self._token = token
         self._turn_registry = turn_registry
         self._dispatcher = dispatcher
-        self._ws: Optional[ClientConnection] = None
-        self._listener_task: Optional[asyncio.Task] = None
-        self._keepalive_task: Optional[asyncio.Task] = None
+        self._ws: ClientConnection | None = None
+        self._listener_task: asyncio.Task | None = None
+        self._keepalive_task: asyncio.Task | None = None
         self._connect_lock = asyncio.Lock()
         self._health_futures: dict[str, asyncio.Future] = {}
-        self.gateway_info: Optional[GatewayInfo] = None
+        self.gateway_info: GatewayInfo | None = None
         # Called only on unexpected disconnect (not on clean close()).
         # Set by ReconnectingOrchestrator after wrapping this client.
-        self.on_disconnect: Optional[Callable[[], None]] = None
+        self.on_disconnect: Callable[[], None] | None = None
 
     async def connect(self) -> GatewayInfo:
         async with self._connect_lock:
@@ -52,7 +52,7 @@ class OpenClawClient:
 
     async def _do_connect(self) -> GatewayInfo:
         self._ws = await websockets.connect(self._uri)
-        conn_err: Optional[Exception] = None
+        conn_err: Exception | None = None
         try:
             raw = await asyncio.wait_for(self._ws.recv(), timeout=15.0)
             frame = json.loads(raw)
@@ -108,7 +108,7 @@ class OpenClawClient:
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
-                raise asyncio.TimeoutError(f"No response for req_id={req_id} within {timeout}s")
+                raise TimeoutError(f"No response for req_id={req_id} within {timeout}s")
             raw = await asyncio.wait_for(self._ws.recv(), timeout=remaining)
             frame = json.loads(raw)
             if frame.get("id") == req_id:
@@ -178,14 +178,16 @@ class OpenClawClient:
         self,
         text: str,
         user_id: str,
-        model_id: Optional[str] = None,
-        session_key: Optional[str] = None,
+        model_id: str | None = None,
+        session_key: str | None = None,
     ) -> AsyncIterator[OrchestratorEvent]:
         if not self._ws:
             yield OrchestratorEvent(type="error", content="not connected")
             return
         if not session_key:
-            raise ValueError("session_key is required — callers must provide it via make_session_key()")
+            raise ValueError(
+                "session_key is required — callers must provide it via make_session_key()"
+            )
 
         req_id = str(uuid.uuid4())
         try:
@@ -198,9 +200,9 @@ class OpenClawClient:
 
         try:
             try:
-                await self._ws.send(json.dumps(
-                    frames.chat_send(req_id, session_key, text, str(uuid.uuid4()))
-                ))
+                await self._ws.send(
+                    json.dumps(frames.chat_send(req_id, session_key, text, str(uuid.uuid4())))
+                )
                 _sent = True
             except Exception as e:
                 yield OrchestratorEvent(type="error", content=f"send failed: {e}")
@@ -242,9 +244,9 @@ class OpenClawClient:
             self._turn_registry.unregister(session_key, req_id)
             if _sent and not _finished and self._ws:
                 try:
-                    await asyncio.shield(self._ws.send(json.dumps(
-                        frames.chat_abort(str(uuid.uuid4()), session_key)
-                    )))
+                    await asyncio.shield(
+                        self._ws.send(json.dumps(frames.chat_abort(str(uuid.uuid4()), session_key)))
+                    )
                 except Exception:
                     pass
 
