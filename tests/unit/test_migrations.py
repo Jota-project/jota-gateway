@@ -33,9 +33,7 @@ def test_legacy_db_gets_stamped_without_altering_schema(tmp_path, monkeypatch):
     db_path = tmp_path / "legacy.db"
     # Simular la BD de producción: esquema ya creado directamente (sin Alembic),
     # tal y como quedó tras el ALTER TABLE manual del incidente original.
-    legacy_engine = create_engine(
-        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
-    )
+    legacy_engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
     SQLModel.metadata.create_all(legacy_engine)
     legacy_engine.dispose()
 

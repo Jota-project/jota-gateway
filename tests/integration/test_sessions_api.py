@@ -1,4 +1,5 @@
 from unittest.mock import AsyncMock, MagicMock
+
 from src.services.pipeline_tracker import PipelineTracker
 
 
@@ -33,6 +34,7 @@ def test_list_sessions_requires_admin_token(client):
 
 def test_list_sessions_shows_active_session(client, admin_headers):
     from src.main import app
+
     _make_live_tracker(app, "sess:active")
     try:
         r = client.get("/admin/sessions", headers=admin_headers)
@@ -49,6 +51,7 @@ def test_list_sessions_shows_active_session(client, admin_headers):
 
 def test_list_sessions_includes_completed(client, admin_headers):
     from src.main import app
+
     _make_live_tracker(app, "sess:done")
     app.state.session_registry.close("sess:done", "completed")
     r = client.get("/admin/sessions", headers=admin_headers)
@@ -64,6 +67,7 @@ def test_get_session_not_found(client, admin_headers):
 
 def test_get_session_returns_required_fields(client, admin_headers):
     from src.main import app
+
     _make_live_tracker(app, "sess:fields")
     r = client.get("/admin/sessions/sess:fields", headers=admin_headers)
     assert r.status_code == 200
@@ -79,6 +83,7 @@ def test_get_session_returns_required_fields(client, admin_headers):
 
 def test_get_session_last_latencies_fields_present(client, admin_headers):
     from src.main import app
+
     _make_live_tracker(app, "sess:lat")
     r = client.get("/admin/sessions/sess:lat", headers=admin_headers)
     data = r.json()
@@ -91,6 +96,7 @@ def test_get_session_last_latencies_fields_present(client, admin_headers):
 
 async def test_get_session_avg_latencies_computed_correctly(client, admin_headers):
     import asyncio
+
     from src.main import app
 
     ws = AsyncMock()
@@ -123,6 +129,7 @@ async def test_get_session_avg_latencies_computed_correctly(client, admin_header
 
 async def test_get_session_avg_latencies_exclude_cancelled_turns(client, admin_headers):
     import asyncio
+
     from src.main import app
 
     ws = AsyncMock()

@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
 
 import httpx
 import websockets
@@ -25,13 +25,13 @@ class TTSClient:
 
     async def connect(
         self,
-        voice: Optional[str] = None,
-        speed: Optional[float] = None,
+        voice: str | None = None,
+        speed: float | None = None,
     ) -> None:
         """Open WS and authenticate. Raises RuntimeError on auth failure."""
         ws_url = f"ws://{self.url}/ws"
         self.ws = await websockets.connect(ws_url)
-        auth_err: Optional[Exception] = None
+        auth_err: Exception | None = None
         try:
             auth_msg: dict = {"type": "auth", "token": self.token}
             if voice is not None:
@@ -109,7 +109,9 @@ class TTSClient:
                     elif msg_type == "error":
                         logger.warning(
                             "[%s] TTS error: %s — %s",
-                            self.client_id, data.get("code"), data.get("message"),
+                            self.client_id,
+                            data.get("code"),
+                            data.get("message"),
                         )
                         break
                     else:

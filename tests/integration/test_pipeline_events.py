@@ -1,4 +1,5 @@
 """Integration: pipeline_event messages appear in WS stream when status in output_mode."""
+
 from tests.integration.conftest import VALID_KEY
 
 HANDSHAKE_WITH_STATUS = {

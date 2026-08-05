@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Optional
 
 
 class ConnectionState(Enum):
@@ -14,9 +13,9 @@ class ConnectionState(Enum):
 class ServiceStatus:
     name: str
     state: ConnectionState
-    connected_at: Optional[datetime]
+    connected_at: datetime | None
     reconnect_attempts: int
-    last_error: Optional[str]
+    last_error: str | None
 
 
 def to_wire_state(state: ConnectionState) -> str:
