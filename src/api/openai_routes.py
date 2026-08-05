@@ -10,9 +10,11 @@ from pydantic import BaseModel
 
 from src.core.exceptions import ClientInactive, ClientNotFound
 from src.core.network import is_trusted_origin, resolve_client_ip
+from src.core.agent_policy import AgentPolicyError, resolve_agent
 from src.core.session_key import make_session_key
 from src.models.schemas import Client, ClientConfig
 from src.services.db_client import db_client
+from src.services.openclaw.registry import TURN_IN_PROGRESS_ERROR
 from src.services.orchestration import call_orchestrator
 from src.services.pipeline_tracker import PipelineTracker, _NullWS
 
@@ -106,16 +108,44 @@ async def chat_completions(
     orchestrator = request.app.state.openclaw
     session_registry = request.app.state.session_registry
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-    default_agent = orchestrator.gateway_info.default_agent_id if orchestrator.gateway_info else "main"
 
-    if caller.client is not None:
-        client_id = caller.client.id
-        system_prompt_extra = caller.config.system_prompt_extra
+    # body.model is the requested agent (analogous to handshake.agent in WS).
+    # resolve_agent() normalizes empty/whitespace-only to None so the cascade
+    # falls through to client_config.default_agent, then
+    # gateway_info.default_agent_id, then the legacy "main" fallback. Issue #105.
+    #
+    # Trusted-origin legacy path (caller.config is None): skip policy checks,
+    # use gateway default directly. This preserves the historical behaviour where
+    # body.model was ignored for loopback/trusted-network callers.
+    if caller.config is not None:
+        try:
+            resolved_agent = resolve_agent(
+                requested=body.model,
+                client_config=caller.config,
+                gateway_info=orchestrator.gateway_info,
+            )
+        except AgentPolicyError as e:
+            return JSONResponse(
+                {
+                    "error": "forbidden",
+                    "reason": (
+                        "agent_not_permitted"
+                        if e.kind == "not_permitted"
+                        else "agent_not_available"
+                    ),
+                    "message": str(e),
+                },
+                status_code=403,
+            )
     else:
-        client_id = "ha"
-        system_prompt_extra = None
+        # Legacy trusted-origin path: no policy checks, use gateway default.
+        resolved_agent = (
+            orchestrator.gateway_info.default_agent_id
+            if orchestrator.gateway_info else "main"
+        )
 
-    session_key = make_session_key(default_agent, client_id)
+    client_id = caller.client.id if caller.client else "ha"
+    session_key = make_session_key(resolved_agent, client_id)
 
     tracker = _make_http_tracker(f"http:{completion_id}", session_registry, client_id)
     session_registry.register(tracker)
@@ -136,7 +166,6 @@ async def chat_completions(
                 try:
                     await call_orchestrator(
                         orchestrator, text, session_key, client_id,
-                        system_prompt_extra=system_prompt_extra,
                         tracker=tracker, on_token=_on_token,
                     )
                 except RuntimeError as e:
@@ -181,7 +210,6 @@ async def chat_completions(
     try:
         await call_orchestrator(
             orchestrator, text, session_key, client_id,
-            system_prompt_extra=system_prompt_extra,
             tracker=tracker, on_token=_on_token,
         )
     except RuntimeError as e:
@@ -191,6 +219,8 @@ async def chat_completions(
         await tracker.close()
 
     if orchestrator_error:
+        if str(orchestrator_error) == TURN_IN_PROGRESS_ERROR:
+            return JSONResponse({"error": str(orchestrator_error)}, status_code=409)
         return JSONResponse({"error": str(orchestrator_error)}, status_code=502)
 
     content = "".join(tokens)

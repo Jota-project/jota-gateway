@@ -65,10 +65,12 @@ def seed_client(db_engine):
 
 @pytest.fixture(autouse=True)
 def clear_db_cache():
-    """Limpia el caché de db_client antes y después de cada test."""
+    """Limpia el caché y el contador de generaciones de db_client antes y después de cada test."""
     db_client._session_cache.clear()
+    db_client._generations.clear()
     yield
     db_client._session_cache.clear()
+    db_client._generations.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -94,7 +96,11 @@ def _make_default_gateway_info() -> GatewayInfo:
         server_version="test",
         conn_id="test-conn",
         default_agent_id="main",
-        agents={"main": AgentInfo(agent_id="main", name="Main", is_default=True)},
+        agents={
+            "main": AgentInfo(agent_id="main", name="Main", is_default=True),
+            "a": AgentInfo(agent_id="a", name="Agent A", is_default=False),
+            "openclaw": AgentInfo(agent_id="openclaw", name="OpenClaw", is_default=False),
+        },
         tick_interval_ms=15000,
         max_payload=26214400,
     )
@@ -114,6 +120,7 @@ def make_mock_orchestrator(tokens: list[str] = None) -> OrchestratorProtocol:
     mock.connect = AsyncMock()
     mock.close = AsyncMock()
     mock.ping = AsyncMock(return_value=True)
+    mock.trigger_reconnect = MagicMock(return_value="mock-job-id")
     mock.stream_response = _stream
     mock.gateway_info = _make_default_gateway_info()
     mock._name = "openclaw"
@@ -140,12 +147,12 @@ def make_mock_registry(orchestrator=None):
 
 @pytest.fixture
 def mock_services():
-    """Mockea los health checks HTTP de transcriber y TTS."""
+    """Mockea los readiness checks HTTP de transcriber y TTS (/ready, no /health — ver issue #101)."""
     with respx.mock(assert_all_mocked=False, assert_all_called=False) as router:
-        router.get(f"http://{settings.TRANSCRIBER_WS_URL}/health").mock(
+        router.get(f"http://{settings.TRANSCRIBER_WS_URL}/ready").mock(
             return_value=httpx.Response(200)
         )
-        router.get("http://localhost:8005/health").mock(
+        router.get("http://localhost:8005/ready").mock(
             return_value=httpx.Response(200)
         )
         yield router

@@ -4,7 +4,10 @@ import logging
 import json
 import time
 
+from src.core.agent_policy import AgentPolicyError, resolve_agent
 from src.core.exceptions import ClientInactive, ClientNotFound
+from src.core.logging import fingerprint_key
+from src.core.network import resolve_client_ip
 from src.models.schemas import Handshake
 from src.services.bridge import JotaBridge
 from src.services.db_client import db_client
@@ -32,27 +35,41 @@ async def gateway_websocket(websocket: WebSocket):
         return
 
     # 2. RESOLVER IDENTIDAD EN JOTA-DB
+    request_id = websocket.state.request_id
+    key_fingerprint = fingerprint_key(handshake.client_key)
     try:
         client, config = await db_client.get_session(handshake.client_key)
     except (ClientNotFound, ClientInactive):
-        logger.warning(f"[{handshake.client_key}] Handshake rechazado: key inválida o cliente inactivo.")
+        logger.warning(
+            f"request_id={request_id} source_ip={resolve_client_ip(websocket)} "
+            f"fp={key_fingerprint} Handshake rechazado: key inválida o cliente inactivo."
+        )
         await websocket.close(code=1008, reason="Clave de cliente invalida o inactiva.")
         return
 
-    logger.info(f"[{client.id}] Handshake verificado: key={handshake.client_key!r}")
+    logger.info(
+        f"request_id={request_id} client_id={client.id} fp={key_fingerprint} "
+        "Handshake verificado."
+    )
 
     # 3. INSTANCIAR EL PUENTE DE MICROSERVICIOS
     app_state = websocket.scope["app"].state
     openclaw = app_state.openclaw
 
-    # Validate requested agent against hello-ok agent list
-    requested_agent = handshake.agent
-    if requested_agent and openclaw.gateway_info and not openclaw.gateway_info.has_agent(requested_agent):
-        logger.warning(f"[{client.id}] Requested agent '{requested_agent}' not in OpenClaw")
-        await websocket.close(code=1008, reason=f"Agent '{requested_agent}' not available.")
+    # Per-client agent policy enforcement (issue #105).
+    # resolve_agent owns the cascade (requested -> client_config.default_agent
+    # -> gateway_info.default_agent_id -> "main") and the policy checks
+    # (allowlist before global roster).
+    try:
+        resolved_agent = resolve_agent(
+            requested=handshake.agent,
+            client_config=config,
+            gateway_info=openclaw.gateway_info,
+        )
+    except AgentPolicyError as e:
+        logger.warning(f"[{client.id}] Agent policy rejected: {e}")
+        await websocket.close(code=1008, reason=str(e))
         return
-
-    default_agent = openclaw.gateway_info.default_agent_id if openclaw.gateway_info else "main"
 
     session_id = f"{client.id}:{int(time.time() * 1000)}"
     session_registry = app_state.session_registry
@@ -70,47 +87,57 @@ async def gateway_websocket(websocket: WebSocket):
         tts=app_state.tts,
         tracker=tracker, handshake=handshake,
         client_registry=app_state.client_registry,
-        default_agent=default_agent,
+        default_agent=resolved_agent,
     )
 
+    # One single try/finally covers setup (connect_internal_services, health
+    # check, ready send) and bridge.run(): any early return/exception below
+    # still reaches bridge.close_all() — a failed handshake during an
+    # OpenClaw outage used to leak the transcriber socket, the bridge
+    # registration, and leave the session "active" forever (issue #101).
+    # bridge.run() already calls close_all() itself in its own finally on
+    # the normal-completion path, so this always runs it a second time —
+    # close_all() is idempotent, the first call's status wins.
     try:
-        await bridge.connect_internal_services()
-    except Exception as e:
-        logger.error(f"[{client.id}] Fallo al inicializar puentes internos. {e}")
-        await websocket.close(code=1011, reason="Problema estableciendo microservicios internos del hub.")
-        return
+        try:
+            await bridge.connect_internal_services()
+        except Exception as e:
+            logger.error(f"[{client.id}] Fallo al inicializar puentes internos. {e}")
+            await websocket.close(code=1011, reason="Problema estableciendo microservicios internos del hub.")
+            return
 
-    # 3.5 HEALTH CHECK — verifica disponibilidad de servicios antes de abrir la sesión
-    if not await bridge.health_check():
-        logger.warning(f"[{client.id}] Health check falló. Cerrando sesión.")
-        await websocket.close(code=1011, reason="Servicio crítico no disponible.")
-        return
+        # 3.5 HEALTH CHECK — verifica disponibilidad de servicios antes de abrir la sesión
+        if not await bridge.health_check():
+            logger.warning(f"[{client.id}] Health check falló. Cerrando sesión.")
+            await websocket.close(code=1011, reason="Servicio crítico no disponible.")
+            return
 
-    # 3.6 SEND READY — confirms session is established and announces capabilities
-    resolved_agent = handshake.agent or default_agent
-    try:
-        await websocket.send_json({
-            "type": "ready",
-            "session_id": session_id,
-            "agent": resolved_agent,
-            "input_mode": handshake.input_mode,
-            "output_mode": handshake.output_mode,
-            "capabilities": {
-                "barge_in": config.barge_in_enabled,
-                "tts": "audio" in handshake.output_mode,
-                "transcriber": handshake.input_mode == "audio",
-            },
-        })
-    except Exception as e:
-        logger.warning(f"[{client.id}] Failed to send ready: {e}")
-        return
+        # 3.6 SEND READY — confirms session is established and announces capabilities
+        # resolved_agent comes from the policy helper above.
+        try:
+            await websocket.send_json({
+                "type": "ready",
+                "session_id": session_id,
+                "agent": resolved_agent,
+                "input_mode": handshake.input_mode,
+                "output_mode": handshake.output_mode,
+                "capabilities": {
+                    "barge_in": config.barge_in_enabled,
+                    "tts": "audio" in handshake.output_mode,
+                    "transcriber": handshake.input_mode == "audio",
+                },
+            })
+        except Exception as e:
+            logger.warning(f"[{client.id}] Failed to send ready: {e}")
+            return
 
-    # 4. LANZAR LOOPS CONCURRENTES
-    try:
-        await bridge.run()
-    except Exception as e:
-        logger.error(f"[{client.id}] Error crítico de Runtime en el Puente Principal: {e}")
+        # 4. LANZAR LOOPS CONCURRENTES
+        try:
+            await bridge.run()
+        except Exception as e:
+            logger.error(f"[{client.id}] Error crítico de Runtime en el Puente Principal: {e}")
     finally:
+        await bridge.close_all(status="error")
         if "DISCONNECTED" not in websocket.client_state.name:
             try:
                 await websocket.close()

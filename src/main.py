@@ -8,6 +8,7 @@ from src.api.health_routes import router as health_router
 from src.api.openai_routes import router as openai_router
 from src.api.admin_routes import router as admin_router
 from src.core.config import settings
+from src.core.request_id import RequestIdMiddleware
 from src.db.database import run_migrations
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.dispatcher import FrameDispatcher
@@ -93,6 +94,8 @@ app = FastAPI(
     version="3.0.0",
     lifespan=lifespan,
 )
+
+app.add_middleware(RequestIdMiddleware)
 
 app.include_router(stream_router)           # WS /ws/stream
 app.include_router(openai_router)           # HTTP /v1/*

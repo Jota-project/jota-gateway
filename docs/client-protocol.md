@@ -41,7 +41,14 @@ El **primer mensaje** que envíes DEBE ser el handshake. Es el único mensaje si
 | `client_key` | string | ✓ | Clave de autenticación del cliente |
 | `input_mode` | `"audio"` \| `"text"` | ✓ | Cómo enviará datos este cliente |
 | `output_mode` | array | ✓ | Qué quiere recibir: `"text"`, `"audio"`, `"status"` |
-| `agent` | string | — | Agente OpenClaw a usar; omitir para usar el agente por defecto |
+| `agent` | string | — | Agente OpenClaw a usar; omitir para usar el agente por defecto (ver "Selección de agente" abajo) |
+
+### Selección de agente
+
+El agente efectivo de la sesión no es simplemente "el que pediste o el global": el gateway resuelve una cascada server-side (`requested` → `default_agent` configurado por el admin para tu `client_key` → default global de OpenClaw → `"main"`) y aplica dos comprobaciones de política antes de aceptar la conexión — ver `CLAUDE.md` ("Session key derivation") para el detalle completo. Como cliente solo necesitas saber dos cosas:
+
+1. Si omites `agent` en el handshake, el que acabes usando puede venir de una configuración por-cliente que un admin te haya asignado (no siempre el default global) — comprueba siempre `ready.agent`, no asumas cuál será.
+2. Pedir explícitamente un `agent` puede fallar de dos formas distintas (ver tabla siguiente): que ese agente no esté permitido para tu cliente, o que no exista en OpenClaw.
 
 ### Errores de handshake (el servidor cierra la conexión)
 
@@ -50,8 +57,13 @@ El **primer mensaje** que envíes DEBE ser el handshake. Es el único mensaje si
 | JSON inválido o campos incorrectos | 1008 | `"Handshake invalido"` |
 | `client_key` inválida o cliente inactivo | 1008 | `"Clave de cliente invalida o inactiva"` |
 | Servicio de identidad no disponible | 1011 | `"Servicio de identidad no disponible"` |
-| Agente solicitado no existe en OpenClaw | 1008 | `"Agent '{name}' not available"` |
-| Servicio crítico no disponible tras health check | 1011 | `"Servicio crítico no disponible"` |
+| Agente solicitado no está en la lista permitida para este cliente (`allowed_agents`) | 1008 | `"Agent '{name}' not permitted for this client."` |
+| Agente solicitado no existe en OpenClaw | 1008 | `"Agent '{name}' not available."` |
+| Orquestador no disponible tras health check | 1011 | `"Servicio crítico no disponible"` |
+
+> **El orquestador (OpenClaw) es el único servicio que puede cerrar la conexión en el handshake.** Transcriber y TTS ya **no** son críticos: si cualquiera de los dos no responde al arrancar la sesión, el gateway la abre igualmente en modo degradado y te lo notifica vía `status` (ver §8) — nunca cierra el WebSocket por esto. Antes de la versión que introdujo la reconexión automática (issue #46), un fallo de Transcriber en este punto sí cerraba la conexión con 1011; ya no es el caso.
+>
+> Estos mensajes `status` de arranque pueden llegar **antes** del `ready` (el health check se ejecuta justo antes de enviarlo) — no asumas que `ready` es el primer mensaje posible tras el handshake, solo que es el primero que confirma que la sesión quedó establecida.
 
 ---
 
@@ -355,12 +367,22 @@ El gateway notifica cambios en el estado de sus microservicios durante la sesió
 { "type": "status", "service": "tts", "state": "degraded" }
 ```
 
-| `service` | `state` | Impacto |
-|-----------|---------|---------|
-| `orchestrator` | `unavailable` | **Fatal** — el gateway cerrará la sesión |
-| `transcriber` | `unavailable` | Degradado — sin transcripción automática; puedes seguir en modo texto |
-| `transcriber` | `degraded` | Parcial — el transcriptor responde pero detectó un problema (buffer lleno, etc.) |
-| `tts` | `unavailable` | Degradado — sin audio; los tokens de texto siguen llegando |
+Los tres microservicios downstream (orquestador, Transcriber, TTS) tienen reconexión automática con backoff exponencial. El vocabulario de conectividad es:
+
+| `state` | Significado |
+|---------|-------------|
+| `unavailable` | El servicio está caído. Puede o no estar reintentando activamente en segundo plano (ver tabla siguiente). |
+| `reconnecting` | Reintentando activamente ahora mismo. |
+| `restored` | Volvió a la normalidad tras haber estado `unavailable`/`reconnecting`. |
+| `degraded` | Solo para `transcriber` — señal de **calidad**, no de conectividad (silencio prolongado, buffer lleno). No forma parte del ciclo unavailable→reconnecting→restored. |
+
+Por servicio:
+
+| `service` | Comportamiento e impacto en la sesión |
+|-----------|-----------------------------------------|
+| `orchestrator` | Reintenta en segundo plano con backoff mientras la sesión está activa. Si cae **antes o durante el handshake** (health check inicial), es el único caso fatal: el gateway cierra el WebSocket con 1011 y nunca llega a enviar `ready` (ver §1). Si cae **durante una sesión ya establecida**, el WebSocket **no se cierra** — solo falla el turno en curso (`error` con `code: "TURN_ERROR"`, `fatal: false`) y **todas** las sesiones conectadas reciben proactivamente `status: {orchestrator, unavailable→reconnecting→restored}`, incluso si están inactivas en ese momento (no hace falta intentar un turno para enterarte). |
+| `transcriber` | Un `TranscriberClient` por sesión de audio; reconecta en segundo plano. `unavailable` significa que no hay transcripción automática — puedes seguir enviando texto con `send`. Puede llegar desde el arranque mismo de la sesión (ver nota en §1) o en cualquier punto intermedio. Nunca cierra la sesión. |
+| `tts` | Sin conexión persistente — TTS se reconstruye en cada turno por diseño. `reconnecting`/`unavailable` aquí significa "el último intento falló y el siguiente turno con audio puede fallar también hasta que pase el backoff" — no hay un reintento en segundo plano independiente del propio turno. Los `token` de texto siguen llegando igual; solo falta el audio. |
 
 Los mensajes de estado también pueden incluir `code` y `message` con detalles adicionales:
 
@@ -399,15 +421,17 @@ Los errores llegan independientemente de `output_mode`:
 
 ### Códigos de error
 
+> **Nota de precisión:** en la implementación actual, el único código que el gateway envía de verdad como mensaje `{"type":"error",...}` es `TURN_ERROR` (fallo dentro de un turno ya en marcha, `fatal: false`). Los fallos de handshake (`client_key` inválida, agente inexistente, orquestador no disponible al arrancar) **no** se comunican con un mensaje `error` previo — el gateway cierra directamente el WebSocket con el código y `reason` de la tabla de la §1. La tabla siguiente documenta la intención original del formato `code`/`fatal`; trátala como referencia de forma, no como lista exhaustiva de códigos que verás en producción hoy.
+
 | Código | Fatal | Cuándo ocurre |
 |--------|-------|---------------|
-| `AUTH_FAILED` | true | `client_key` inválida o inactiva |
-| `AGENT_NOT_FOUND` | true | El agente solicitado no existe en OpenClaw |
-| `ORCHESTRATOR_UNAVAILABLE` | true | OpenClaw no disponible al iniciar la sesión |
-| `TTS_UNAVAILABLE` | false | TTS caído; la sesión continúa sin audio |
-| `TRANSCRIBER_UNAVAILABLE` | false | Transcriber caído; puedes cambiar a modo texto |
-| `TURN_ERROR` | false | Fallo en un turno concreto; la sesión continúa |
-| `INTERNAL_ERROR` | true/false | Error inesperado; `fatal` según criticidad |
+| `TURN_ERROR` | false | Fallo en un turno concreto (incluye orquestador caído/reconectando durante una sesión activa); la sesión continúa — **el único código realmente emitido hoy** |
+| `AUTH_FAILED` | true | Documentado para `client_key` inválida o inactiva — en la práctica se señaliza cerrando el WS con 1008, sin este mensaje previo |
+| `AGENT_NOT_FOUND` | true | Documentado para agente inexistente — en la práctica se señaliza cerrando el WS con 1008, sin este mensaje previo |
+| `ORCHESTRATOR_UNAVAILABLE` | true | Documentado para orquestador no disponible al iniciar — en la práctica se señaliza cerrando el WS con 1011, sin este mensaje previo |
+| `TTS_UNAVAILABLE` | false | Documentado para TTS caído — en la práctica ver `status: {tts, unavailable}` (§8), no este código |
+| `TRANSCRIBER_UNAVAILABLE` | false | Documentado para Transcriber caído — en la práctica ver `status: {transcriber, unavailable}` (§8), no este código |
+| `INTERNAL_ERROR` | true/false | Reservado para error inesperado; no confirmado en el código actual |
 
 Si `fatal: true`, no envíes más mensajes — el servidor cerrará la conexión WS inmediatamente.
 
@@ -425,6 +449,10 @@ OpenClaw puede iniciar turnos proactivamente sin que el usuario haya enviado nad
 ```
 
 El cliente no necesita distinguirlos de los turnos normales — el `turn_id` y `turn_seq` siguen la misma secuencia. Si `tool_calls_enabled` está activo, también pueden llegar mensajes `tool_call` (§5) intercalados.
+
+> **`push_enabled` (por defecto `True`, configurable por admin):** si tu `client_key` tiene este flag desactivado, no recibirás **ningún** mensaje de un turno iniciado por el agente — ni `turn_start`, ni `token`, ni audio, ni `tool_call` — para esa sesión. No hay ninguna señal explícita de que se haya suprimido un push; es indistinguible de que OpenClaw simplemente no haya iniciado ninguno. Si tu integración depende de notificaciones proactivas, confirma con el admin que `push_enabled=True` para tu cliente.
+
+> **Garantía de un único par por respuesta (issue #84):** cuando el agente hace tool use o razonamiento multi-paso, OpenClaw puede emitir varios eventos internos de inicio/fin para una sola respuesta LLM. El gateway los colapsa siempre en exactamente **un** `turn_start`/`turn_end` de cara al cliente — nunca verás duplicados. Si tu cliente implementó algún workaround para deduplicar `turn_end` repetidos (grace period, etc.) porque llegaban 2-3 veces por turno, ya no hace falta; puedes simplificarlo o quitarlo con seguridad.
 
 ---
 

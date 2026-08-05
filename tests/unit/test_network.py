@@ -1,4 +1,5 @@
 import pytest
+from starlette.websockets import WebSocket
 
 from src.core.config import settings
 from src.core.network import is_trusted_origin, is_trusted_proxy, resolve_client_ip
@@ -64,3 +65,27 @@ def test_resolve_client_ip_ignores_x_real_ip_from_untrusted_peer():
 def test_resolve_client_ip_falls_back_to_peer_when_no_header():
     request = _FakeRequest("127.0.0.1")
     assert resolve_client_ip(request) == "127.0.0.1"
+
+
+def test_resolve_client_ip_accepts_websocket_connection():
+    async def dummy_receive():
+        return {"type": "websocket.connect"}
+
+    async def dummy_send(data):
+        pass
+
+    websocket = WebSocket({
+        "type": "websocket",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "scheme": "ws",
+        "path": "/ws/stream",
+        "raw_path": b"/ws/stream",
+        "query_string": b"",
+        "headers": [(b"x-real-ip", b"192.168.1.50")],
+        "client": ("127.0.0.1", 50000),
+        "server": ("testserver", 80),
+        "subprotocols": [],
+        "state": {},
+    }, receive=dummy_receive, send=dummy_send)
+
+    assert resolve_client_ip(websocket) == "192.168.1.50"
