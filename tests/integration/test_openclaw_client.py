@@ -8,7 +8,9 @@ import pytest
 
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.dispatcher import FrameDispatcher
-from src.services.openclaw.registry import TurnRegistry, ClientRegistry
+from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
+from src.services.openclaw.registry import TurnRegistry, ClientRegistry, TURN_IN_PROGRESS_ERROR
+from src.services.reconnection import ConnectionState
 
 HELLO_OK_PAYLOAD = {
     "type": "hello-ok", "protocol": 4,
@@ -405,4 +407,255 @@ async def test_stream_response_yields_tool_call_events():
     assert tool_events[1].phase == "result"
     assert tool_events[1].result == "file.txt"
     assert tool_events[1].is_error is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_stream_response_same_session_key_rejects_one():
+    """Issue #99: two concurrent stream_response() calls sharing a session_key
+    must not corrupt each other's queue. Reproduced via asyncio.gather, per the
+    issue's repro steps — exactly one call is rejected immediately with the
+    stable TURN_IN_PROGRESS_ERROR content, the other completes normally, and
+    neither hangs."""
+    fake_ws = SmartFakeWS({"agent:main:client-a": ["Hola ", "mundo"]})
+    client = await connected_client(fake_ws)
+
+    async def _consume():
+        events = []
+        async for event in client.stream_response(
+            "hola", "client-a", session_key="agent:main:client-a"
+        ):
+            events.append(event)
+        return events
+
+    results = await asyncio.wait_for(
+        asyncio.gather(_consume(), _consume()),
+        timeout=1.0,
+    )
+
+    rejected = [r for r in results if r[0].type == "error"]
+    succeeded = [r for r in results if r[0].type != "error"]
+    assert len(rejected) == 1, f"expected exactly one rejected call, got: {results}"
+    assert len(succeeded) == 1, f"expected exactly one successful call, got: {results}"
+
+    assert len(rejected[0]) == 1  # rejected call yields exactly the error event, nothing else
+    assert rejected[0][0].content == TURN_IN_PROGRESS_ERROR
+
+    tokens = [e.content for e in succeeded[0] if e.type == "token"]
+    assert tokens == ["Hola ", "mundo"]
+    assert succeeded[0][-1].type == "status"
+    assert succeeded[0][-1].content == "done"
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_errors_out_in_flight_turn_instead_of_hanging_forever():
+    """Issue #103 follow-up: _cancel_and_close() cancels the old _listener_task
+    on every reconnect (forced via admin trigger_reconnect(), or automatic).
+    _listen()'s CancelledError branch used to skip error_all() entirely (only
+    the sibling `except Exception` branch called it), so any turn still in
+    flight on the old connection was orphaned: its stream_response() consumer
+    hung forever at `await queue.get()` (no timeout anywhere in the chain),
+    and its session_key stayed registered in TurnRegistry, rejecting every
+    subsequent turn on that session with TurnInProgress until the whole WS
+    session was torn down."""
+    slow_fake_ws = SmartFakeWS(
+        {"agent:main:client-a": ["Hola ", "mundo"]},
+        chat_response_delay=0.15,
+    )
+    client = await connected_client(slow_fake_ws)
+
+    events = []
+
+    async def consume():
+        async for event in client.stream_response(
+            "hola", "client-a", session_key="agent:main:client-a"
+        ):
+            events.append(event)
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0.01)  # let the turn register + send chat.send before reconnecting
+
+    reconnect_ws = SmartFakeWS({"agent:main:client-a": ["Otra"]})
+    await reconnect_ws.start()
+    with patch("websockets.connect", return_value=reconnect_ws):
+        await client.connect()  # forces _cancel_and_close() on the still in-flight turn
+
+    await asyncio.wait_for(task, timeout=1.0)  # must not hang
+
+    assert events, "in-flight turn must be told the connection dropped, not hang silently"
+    assert events[-1].type == "error"
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_terminal_event_then_generator_close_does_not_send_spurious_chat_abort():
+    """Issue #99 follow-up: stream_response()'s terminal branches used to set
+    _finished=True *after* their yield, not before. call_orchestrator now
+    closes the generator via contextlib.aclosing() instead of abandoning it
+    (see test_orchestration.py) — closing a generator throws GeneratorExit
+    exactly at its suspended yield, skipping any code written *after* that
+    yield. If _finished were still set after the yield, a legitimately
+    terminal turn would look unfinished to the `finally` block and trigger a
+    needless chat.abort."""
+    slow_fake_ws = SmartFakeWS(
+        {"agent:main:client-a": ["Hola ", "mundo"]},
+        chat_response_delay=0.15,
+    )
+    client = await connected_client(slow_fake_ws)
+    session_key = "agent:main:client-a"
+
+    stream = client.stream_response("hola", "client-a", session_key=session_key)
+
+    async def drive_and_close():
+        event = await stream.__anext__()
+        assert event.type == "error"
+        await stream.aclose()
+
+    task = asyncio.create_task(drive_and_close())
+    await asyncio.sleep(0.01)  # let register() + chat.send happen before erroring it out, ahead of the first (delayed) token
+    client._turn_registry.error_all("boom")
+    await asyncio.wait_for(task, timeout=1.0)
+
+    aborts = [f for f in slow_fake_ws.sent_frames if f.get("method") == "chat.abort"]
+    assert aborts == [], f"turn already ended in error, must not also send chat.abort: {aborts}"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_connect_twice_closes_and_cancels_previous_connection():
+    """Issue #103: connect() must tear down the previous ws/listener/keepalive
+    before establishing a new one. Otherwise the old listener keeps dispatching
+    frames from the old socket to the shared dispatcher, causing false
+    error_all events on healthy sessions, and the old socket/keepalive leak."""
+    fake_ws1 = SmartFakeWS({"agent:main:client-a": ["Hola"]})
+    client = await connected_client(fake_ws1)
+    old_listener_task = client._listener_task
+    old_keepalive_task = client._keepalive_task
+    assert not old_listener_task.done()
+
+    disconnected = []
+    client.on_disconnect = lambda: disconnected.append(True)
+
+    fake_ws2 = SmartFakeWS({"agent:main:client-a": ["Hola"]})
+    await fake_ws2.start()
+    with patch("websockets.connect", return_value=fake_ws2):
+        await client.connect()
+
+    assert fake_ws1.closed, "previous socket must be closed on reconnect"
+    assert old_listener_task.done(), "previous listener task must be cancelled"
+    assert old_keepalive_task.done(), "previous keepalive task must be cancelled"
+    assert client._listener_task is not old_listener_task
+    assert not client._listener_task.done()
+
+    # A forced reconnect legitimately replaces a healthy connection — cancelling
+    # the old listener must not be mistaken for an unexpected drop, or
+    # ReconnectingOpenClawClient would flip back into RECONNECTING right after
+    # a successful forced reconnect.
+    await asyncio.sleep(0.05)
+    assert disconnected == []
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_connect_calls_are_serialized():
+    """Two connect() calls racing (e.g. an admin-triggered reconnect racing the
+    background reconnect loop) must not interleave their handshakes — a
+    _connect_lock serializes them so exactly one final ws/listener survives,
+    with the other cleanly closed rather than orphaned."""
+    client = make_client(SmartFakeWS())
+    fake_ws_a = SmartFakeWS({"agent:main:client-a": ["Hola"]})
+    fake_ws_b = SmartFakeWS({"agent:main:client-a": ["Hola"]})
+    await fake_ws_a.start()
+    await fake_ws_b.start()
+
+    with patch("websockets.connect", side_effect=[fake_ws_a, fake_ws_b]):
+        await asyncio.wait_for(
+            asyncio.gather(client.connect(), client.connect()),
+            timeout=1.0,
+        )
+
+    assert [fake_ws_a.closed, fake_ws_b.closed].count(True) == 1, (
+        "exactly one of the two sockets must be closed as the loser of the race"
+    )
+    assert client._ws in (fake_ws_a, fake_ws_b)
+    assert not client._listener_task.done()
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_trigger_reconnect_coalesces_with_real_background_reconnect(fake_ws):
+    """End-to-end version of the issue #103 coalescing guarantee: a REAL
+    background reconnect (started by ReconnectingOpenClawClient after an
+    unexpected drop) that is still mid-handshake must not be joined by a
+    second, concurrent websocket handshake when an admin trigger_reconnect()
+    call races it — it must coalesce onto the one in-flight attempt."""
+    inner = await connected_client(fake_ws)
+    roc = ReconnectingOpenClawClient(inner, "openclaw")  # rewires inner.on_disconnect
+
+    reconnect_ws = SmartFakeWS({"agent:main:client-a": ["Hola"]})
+    await reconnect_ws.start()
+    connect_attempted = asyncio.Event()
+    release_connect = asyncio.Event()
+    connect_calls = 0
+
+    async def gated_connect(uri):
+        nonlocal connect_calls
+        connect_calls += 1
+        if connect_calls == 1:
+            connect_attempted.set()
+            await release_connect.wait()
+        return reconnect_ws
+
+    with patch("websockets.connect", side_effect=gated_connect):
+        await fake_ws.close()  # simulate an unexpected drop → background reconnect starts
+        await connect_attempted.wait()  # background reconnect is now mid-handshake
+
+        admin_job_id = roc.trigger_reconnect()
+        assert admin_job_id == roc._reconnect_job_id
+
+        release_connect.set()
+        await asyncio.sleep(0.05)
+
+    assert connect_calls == 1, "admin trigger must coalesce, not open a second socket"
+    assert roc.state == ConnectionState.CONNECTED
+    await inner.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_stream_response_different_session_keys_both_succeed():
+    """Regression guard: rejecting duplicate session_keys must not affect
+    unrelated sessions multiplexed on the same connection — both complete
+    normally when run concurrently via asyncio.gather."""
+    fake_ws = SmartFakeWS({
+        "agent:main:client-a": ["Hola ", "mundo"],
+        "agent:main:client-b": ["Adios ", "mundo"],
+    })
+    client = await connected_client(fake_ws)
+
+    async def _consume(user_id, session_key):
+        events = []
+        async for event in client.stream_response("hola", user_id, session_key=session_key):
+            events.append(event)
+        return events
+
+    events_a, events_b = await asyncio.wait_for(
+        asyncio.gather(
+            _consume("client-a", "agent:main:client-a"),
+            _consume("client-b", "agent:main:client-b"),
+        ),
+        timeout=1.0,
+    )
+
+    tokens_a = [e.content for e in events_a if e.type == "token"]
+    tokens_b = [e.content for e in events_b if e.type == "token"]
+    assert tokens_a == ["Hola ", "mundo"]
+    assert tokens_b == ["Adios ", "mundo"]
+    assert events_a[-1].content == "done"
+    assert events_b[-1].content == "done"
+
     await client.close()

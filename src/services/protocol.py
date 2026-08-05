@@ -22,6 +22,5 @@ class OrchestratorProtocol(Protocol):
         text: str,
         user_id: str,
         model_id: Optional[str] = None,
-        system_prompt_extra: Optional[str] = None,
         session_key: Optional[str] = None,
     ) -> AsyncIterator[OrchestratorEvent]: ...

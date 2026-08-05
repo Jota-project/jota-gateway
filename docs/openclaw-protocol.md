@@ -224,8 +224,69 @@ turn's tokens mid-word (reproduced twice: an empty tool-use response, `"CHARLIE"
 
 ---
 
+## No per-session/per-message system-prompt hook exists (as of npm `openclaw@2026.4.12`)
+
+**Investigated 2026-07-18** while resolving issue #100 (`system_prompt_extra` silently dropped).
+Source: the local `openclaw` npm package (`~/node_modules/openclaw`, version `2026.4.12` —
+**older** than the `2026.6.11` server version referenced elsewhere in this file; not verified
+live against a running instance, but these are long-stable core schema/session methods, not the
+volatile turn-completion signal documented above). If behavior here ever contradicts a real
+server response, trust the server and update this section.
+
+**`chat.send` cannot carry a system prompt.** Its wire schema
+(`ChatSendParamsSchema`, TypeBox, `additionalProperties: false`) accepts exactly: `sessionKey,
+message, thinking, deliver, originatingChannel, originatingTo, originatingAccountId,
+originatingThreadId, attachments, timeoutMs, systemInputProvenance, systemProvenanceReceipt,
+idempotencyKey`. `systemInputProvenance`/`systemProvenanceReceipt` are about *tracking where an
+input message originated* (subagent lineage, cross-session sourcing), not a prompt field. With
+`additionalProperties: false`, any extra field a client sends is rejected outright by the
+server — there is no soft/ignored extension point here.
+
+**`chat.inject` exists but is the wrong tool for this.** `{sessionKey, message, label?}` →
+writes the message into the session's persisted transcript via
+`appendAssistantTranscriptMessage` (so it *does* become context for future turns, despite the
+gateway protocol doc's "transcript-only chat event" phrasing) — but always as an **assistant**
+role message, and it broadcasts a visible `chat` event (`state: "final"`) to every subscribed
+UI/node client for that session. Using it to carry system instructions would make the model
+appear to have said its own steering instructions, and would show up as a visible transcript
+entry — wrong role semantics and wrong visibility for an invisible system-level prompt.
+
+**`sessions.patch` does not support a system-prompt field either.** Confirmed directly against
+its handler (`applySessionsPatchToStore`, `src/gateway/sessions-patch.ts` in the OpenClaw
+source): the only patchable fields are `spawnedBy, spawnedWorkspaceDir, spawnDepth,
+subagentRole, subagentControlScope, label, thinkingLevel, fastMode, verboseLevel, traceLevel,
+reasoningLevel, responseUsage, elevatedLevel, execHost, execSecurity, execAsk, execNode, model,
+sendPolicy, groupActivation`.
+
+**The only real system-prompt mechanisms in OpenClaw, and why neither fits jota-gateway's
+per-client model:**
+
+1. `agents.defaults.systemPromptOverride` / `agents.list[].systemPromptOverride` — static,
+   per-**agent** config (settable via `agents.update`), documented in OpenClaw's own changelog
+   as being for "controlled prompt experiments." Every session sharing that `agent` — i.e.
+   every jota-gateway client using the same `agent` name — would get the same override. Wrong
+   granularity: jota-gateway's `system_prompt_extra` is per-**client**, not per-agent.
+2. The `before_prompt_build` plugin hook (`docs/concepts/agent-loop.md` in the OpenClaw
+   package) can inject `systemPrompt`/`prependSystemContext`/`appendSystemContext` dynamically
+   per turn — but only from **inside an OpenClaw plugin running on the OpenClaw server itself**.
+   Not reachable from a remote WS "backend" client like jota-gateway. Building this would mean
+   writing and installing a custom OpenClaw plugin with its own way of learning each
+   jota-gateway client's `system_prompt_extra` — a separate, cross-repo project, not a
+   same-scope fix.
+
+**Conclusion applied in issue #100:** with no wire-level hook available today, the field was
+removed from jota-gateway entirely (schema, DB, admin API, CLI) rather than faked via
+message-concatenation. Revisit if OpenClaw ever adds a `chat.send` field for this, or if a
+dedicated OpenClaw plugin becomes worth building.
+
+---
+
 ## Change log of this file
 
+- **2026-07-18**: added "No per-session/per-message system-prompt hook exists" — researched
+  while resolving issue #100. Confirmed against OpenClaw's own source (`chat.send`'s strict
+  TypeBox schema, `chat.inject`'s assistant-role transcript-write behavior, `sessions.patch`'s
+  full field list) that there is no wire-level way to set a per-client system prompt today.
 - **2026-07-10**: added the issue #84 mitigation note — `JotaBridge` now collapses multiple
   OpenClaw agent start/end pairs into a single client-facing turn_start/turn_end. Previously
   the bridge was emitting one pair per agent event, causing jota-voice (and any other client)
