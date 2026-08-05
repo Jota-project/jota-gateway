@@ -1,4 +1,5 @@
 """Gateway-owned correlation IDs for inbound ASGI connections."""
+
 from uuid import uuid4
 
 from starlette.types import ASGIApp, Receive, Scope, Send

@@ -1,5 +1,7 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from src.services.pipeline_tracker import PipelineTracker
 
 

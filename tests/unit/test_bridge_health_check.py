@@ -1,8 +1,10 @@
 """Tests for JotaBridge.health_check() — four paths."""
+
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
-from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.pipeline_tracker import PipelineTracker, _NullWS
 
 _CLIENT = Client(id="hab_sito", client_key="test-key", is_active=True)
@@ -15,16 +17,27 @@ def _make_bridge(input_mode="text", output_mode=None):
     ws = AsyncMock()
     registry = MagicMock()
     tracker = PipelineTracker(
-        session_id="test:hc", client_id="hab_sito",
-        input_mode=input_mode, output_mode=output_mode,
-        client_ws=_NullWS(), registry=registry,
+        session_id="test:hc",
+        client_id="hab_sito",
+        input_mode=input_mode,
+        output_mode=output_mode,
+        client_ws=_NullWS(),
+        registry=registry,
     )
     handshake = Handshake(client_key="test-key", input_mode=input_mode, output_mode=output_mode)
     orch = AsyncMock()
     orch.ping = AsyncMock(return_value=True)
-    bridge = JotaBridge(client=_CLIENT, config=_CONFIG, client_ws=ws,
-                        orchestrator=orch, tts=AsyncMock(), tracker=tracker, handshake=handshake,
-                        client_registry=ClientRegistry(), default_agent="main")
+    bridge = JotaBridge(
+        client=_CLIENT,
+        config=_CONFIG,
+        client_ws=ws,
+        orchestrator=orch,
+        tts=AsyncMock(),
+        tracker=tracker,
+        handshake=handshake,
+        client_registry=ClientRegistry(),
+        default_agent="main",
+    )
     return bridge, ws, orch
 
 
@@ -49,6 +62,7 @@ async def test_health_check_returns_false_when_orchestrator_unavailable():
 async def test_health_check_transcriber_unavailable_still_returns_true():
     """Transcriber down no longer closes the session — client decides (issue #46)."""
     from src.services.reconnection import ConnectionState
+
     bridge, ws, orch = _make_bridge(input_mode="audio")
     bridge.transcriber = MagicMock()
     bridge.transcriber.state = ConnectionState.DEGRADED
