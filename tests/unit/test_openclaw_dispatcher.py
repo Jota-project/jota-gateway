@@ -1,10 +1,12 @@
-import pytest
 from unittest.mock import AsyncMock
-from src.services.openclaw.dispatcher import FrameDispatcher
-from src.services.openclaw.registry import TurnRegistry, ClientRegistry
-from src.services.bridge import JotaBridge
-from src.services.reconnection import ConnectionState, ServiceStatus
+
+import pytest
+
 from src.models.schemas import Client, ClientConfig, Handshake
+from src.services.bridge import JotaBridge
+from src.services.openclaw.dispatcher import FrameDispatcher
+from src.services.openclaw.registry import ClientRegistry, TurnRegistry
+from src.services.reconnection import ConnectionState, ServiceStatus
 
 
 def make_dispatcher():
@@ -16,8 +18,11 @@ def make_dispatcher():
 
 def _connected_status() -> ServiceStatus:
     return ServiceStatus(
-        name="tts", state=ConnectionState.CONNECTED,
-        connected_at=None, reconnect_attempts=0, last_error=None,
+        name="tts",
+        state=ConnectionState.CONNECTED,
+        connected_at=None,
+        reconnect_attempts=0,
+        last_error=None,
     )
 
 
@@ -31,13 +36,21 @@ def make_real_bridge(client_id="hab_sito", push_enabled=True, tool_calls_enabled
     orchestrator = AsyncMock()
     orchestrator.ping = AsyncMock(return_value=True)
     tracker = AsyncMock()
-    handshake = Handshake(client_key="key-123", input_mode="text", output_mode=["text"], agent="main")
+    handshake = Handshake(
+        client_key="key-123", input_mode="text", output_mode=["text"], agent="main"
+    )
     tts = AsyncMock()
     tts.connect = AsyncMock(return_value=None)
     bridge = JotaBridge(
-        client=client, config=config, client_ws=ws,
-        orchestrator=orchestrator, tts=tts, tracker=tracker, handshake=handshake,
-        client_registry=ClientRegistry(), default_agent="main",
+        client=client,
+        config=config,
+        client_ws=ws,
+        orchestrator=orchestrator,
+        tts=tts,
+        tracker=tracker,
+        handshake=handshake,
+        client_registry=ClientRegistry(),
+        default_agent="main",
     )
     return bridge, ws
 
@@ -46,7 +59,12 @@ def make_real_bridge(client_id="hab_sito", push_enabled=True, tool_calls_enabled
 async def test_res_started_ignored():
     dispatcher, turn_reg, _ = make_dispatcher()
     q = turn_reg.register("req-1", "agent:main:client-a")
-    frame = {"type": "res", "id": "req-1", "ok": True, "payload": {"status": "started", "runId": "r1"}}
+    frame = {
+        "type": "res",
+        "id": "req-1",
+        "ok": True,
+        "payload": {"status": "started", "runId": "r1"},
+    }
     await dispatcher.dispatch(frame)
     assert q.empty()
 
@@ -75,7 +93,9 @@ async def test_chat_event_routes_to_session_queue():
     q = turn_reg.register("req-1", "agent:main:client-a")
     payload = {
         "sessionKey": "agent:main:client-a",
-        "runId": "r1", "seq": 1, "state": "delta",
+        "runId": "r1",
+        "seq": 1,
+        "state": "delta",
         "deltaText": "Hola",
     }
     frame = {"type": "event", "event": "chat", "payload": payload}
@@ -92,7 +112,9 @@ async def test_chat_event_no_active_turn_routes_to_client_registry():
     client_reg.register("client-a", bridge)
     payload = {
         "sessionKey": "agent:main:client-a",
-        "runId": "r1", "seq": 1, "deltaText": "Push!",
+        "runId": "r1",
+        "seq": 1,
+        "deltaText": "Push!",
     }
     frame = {"type": "event", "event": "chat", "payload": payload}
     await dispatcher.dispatch(frame)
@@ -113,7 +135,8 @@ async def test_agent_lifecycle_start_calls_on_push_turn_start():
     client_reg.register("client-a", bridge)
     payload = {
         "sessionKey": "agent:main:client-a",
-        "runId": "r1", "seq": 1,
+        "runId": "r1",
+        "seq": 1,
         "data": {"phase": "start", "startedAt": 123},
     }
     frame = {"type": "event", "event": "agent", "payload": payload}
@@ -128,7 +151,8 @@ async def test_agent_lifecycle_end_calls_on_push_turn_end():
     client_reg.register("client-a", bridge)
     payload = {
         "sessionKey": "agent:main:client-a",
-        "runId": "r1", "seq": 2,
+        "runId": "r1",
+        "seq": 2,
         "data": {"phase": "end", "stopReason": "stop"},
     }
     frame = {"type": "event", "event": "agent", "payload": payload}
@@ -151,7 +175,12 @@ async def test_session_tool_start_routes_to_turn_queue():
     payload = {
         "sessionKey": "agent:main:client-a",
         "runId": "r1",
-        "data": {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {"command": "ls"}},
+        "data": {
+            "phase": "start",
+            "name": "exec",
+            "toolCallId": "call-1",
+            "args": {"command": "ls"},
+        },
     }
     frame = {"type": "event", "event": "session.tool", "payload": payload}
     await dispatcher.dispatch(frame)
@@ -168,8 +197,11 @@ async def test_session_tool_result_routes_to_turn_queue():
     payload = {
         "sessionKey": "agent:main:client-a",
         "data": {
-            "phase": "result", "name": "exec", "toolCallId": "call-1",
-            "isError": False, "result": {"content": [{"type": "text", "text": "ok"}]},
+            "phase": "result",
+            "name": "exec",
+            "toolCallId": "call-1",
+            "isError": False,
+            "result": {"content": [{"type": "text", "text": "ok"}]},
         },
     }
     frame = {"type": "event", "event": "session.tool", "payload": payload}
@@ -210,7 +242,8 @@ async def test_session_tool_no_active_turn_routes_to_client_registry():
 async def test_session_tool_no_session_key_ignored():
     dispatcher, _, _ = make_dispatcher()
     frame = {
-        "type": "event", "event": "session.tool",
+        "type": "event",
+        "event": "session.tool",
         "payload": {"data": {"phase": "start", "name": "exec", "toolCallId": "call-1"}},
     }
     await dispatcher.dispatch(frame)  # must not raise
@@ -240,7 +273,12 @@ async def test_dispatcher_session_tool_push_disabled_client_receives_nothing():
 
     payload = {
         "sessionKey": "agent:main:hab_sito",
-        "data": {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {"command": "ls"}},
+        "data": {
+            "phase": "start",
+            "name": "exec",
+            "toolCallId": "call-1",
+            "args": {"command": "ls"},
+        },
     }
     frame = {"type": "event", "event": "session.tool", "payload": payload}
     await dispatcher.dispatch(frame)
@@ -261,25 +299,37 @@ async def test_dispatcher_full_push_lifecycle_disabled_client_receives_nothing()
     bridge, ws = make_real_bridge(push_enabled=False, tool_calls_enabled=True)
     client_reg.register("hab_sito", bridge)
 
-    await dispatcher.dispatch({
-        "type": "event", "event": "agent",
-        "payload": {"sessionKey": "agent:main:hab_sito", "data": {"phase": "start"}},
-    })
-    await dispatcher.dispatch({
-        "type": "event", "event": "chat",
-        "payload": {"sessionKey": "agent:main:hab_sito", "deltaText": "Push!"},
-    })
-    await dispatcher.dispatch({
-        "type": "event", "event": "session.tool",
-        "payload": {
-            "sessionKey": "agent:main:hab_sito",
-            "data": {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {}},
-        },
-    })
-    await dispatcher.dispatch({
-        "type": "event", "event": "agent",
-        "payload": {"sessionKey": "agent:main:hab_sito", "data": {"phase": "end"}},
-    })
+    await dispatcher.dispatch(
+        {
+            "type": "event",
+            "event": "agent",
+            "payload": {"sessionKey": "agent:main:hab_sito", "data": {"phase": "start"}},
+        }
+    )
+    await dispatcher.dispatch(
+        {
+            "type": "event",
+            "event": "chat",
+            "payload": {"sessionKey": "agent:main:hab_sito", "deltaText": "Push!"},
+        }
+    )
+    await dispatcher.dispatch(
+        {
+            "type": "event",
+            "event": "session.tool",
+            "payload": {
+                "sessionKey": "agent:main:hab_sito",
+                "data": {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {}},
+            },
+        }
+    )
+    await dispatcher.dispatch(
+        {
+            "type": "event",
+            "event": "agent",
+            "payload": {"sessionKey": "agent:main:hab_sito", "data": {"phase": "end"}},
+        }
+    )
 
     ws.send_json.assert_not_awaited()
     assert bridge._push_turn_open is False

@@ -1,10 +1,10 @@
 """Tests para /admin/clients/* CRUD."""
+
 import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 from src.services.db_client import db_client
-
 
 ADMIN_TOKEN = "test-admin-token"
 HEADERS = {"x-admin-token": ADMIN_TOKEN}
@@ -13,12 +13,14 @@ HEADERS = {"x-admin-token": ADMIN_TOKEN}
 @pytest.fixture(autouse=True)
 def override_admin_token(monkeypatch):
     from src.core import config
+
     monkeypatch.setattr(config.settings, "ADMIN_TOKEN", ADMIN_TOKEN)
 
 
 @pytest.fixture(autouse=True)
 def db_engine(monkeypatch):
     from src import db
+
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -32,12 +34,15 @@ def db_engine(monkeypatch):
 @pytest.fixture()
 def http(db_engine):
     from starlette.testclient import TestClient
+
     from src.main import app
+
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
 
 
 # --- CREATE ---
+
 
 def test_create_client_minimal(http):
     r = http.post("/admin/clients", json={"name": "ESP32"}, headers=HEADERS)
@@ -83,6 +88,7 @@ def test_create_client_with_empty_allowed_agents_denies_all(http):
 
 # --- LIST ---
 
+
 def test_list_clients_empty(http):
     r = http.get("/admin/clients", headers=HEADERS)
     assert r.status_code == 200
@@ -99,6 +105,7 @@ def test_list_clients_after_creates(http):
 
 # --- GET ---
 
+
 def test_get_client(http):
     created = http.post("/admin/clients", json={"name": "X"}, headers=HEADERS).json()
     r = http.get(f"/admin/clients/{created['id']}", headers=HEADERS)
@@ -112,6 +119,7 @@ def test_get_client_not_found(http):
 
 
 # --- PATCH ---
+
 
 def test_patch_client_name(http):
     created = http.post("/admin/clients", json={"name": "Old"}, headers=HEADERS).json()
@@ -140,6 +148,7 @@ def test_patch_deactivate(http):
 
 # --- DELETE ---
 
+
 def test_delete_client(http):
     created = http.post("/admin/clients", json={"name": "Del"}, headers=HEADERS).json()
     r = http.delete(f"/admin/clients/{created['id']}", headers=HEADERS)
@@ -149,6 +158,7 @@ def test_delete_client(http):
 
 
 # --- ROTATE KEY ---
+
 
 def test_rotate_key(http):
     created = http.post("/admin/clients", json={"name": "R"}, headers=HEADERS).json()
@@ -161,6 +171,7 @@ def test_rotate_key(http):
 
 
 # --- INVALIDATE ORDERING (issue #107) ---
+
 
 def test_delete_client_commits_before_invalidating_cache(http, monkeypatch):
     created = http.post("/admin/clients", json={"name": "Del"}, headers=HEADERS).json()
@@ -212,6 +223,7 @@ def test_rotate_key_commits_before_invalidating_cache(http, monkeypatch):
 
 # --- AUTH ---
 
+
 def test_missing_token_returns_422(http):
     r = http.get("/admin/clients")
     assert r.status_code == 422
@@ -223,6 +235,7 @@ def test_wrong_token_returns_401(http):
 
 
 # --- tool_calls_enabled ---
+
 
 def test_create_client_tool_calls_enabled_defaults_false(http):
     r = http.post("/admin/clients", json={"name": "T"}, headers=HEADERS)
@@ -251,6 +264,7 @@ def test_patch_client_tool_calls_enabled(http):
 # `ClientCreate`/`ClientUpdate` have no `model_config` overriding pydantic's
 # default `extra="ignore"` behavior, so an unrecognized field in the request
 # body is silently dropped rather than rejected with 422.
+
 
 def test_create_client_ignores_system_prompt_extra(http):
     r = http.post(

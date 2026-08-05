@@ -1,6 +1,7 @@
 """Verify that db_client.get_session() propagates default_agent and
 allowed_agents (parsed from the JSON-stored field) into ClientConfig.
 """
+
 import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, create_engine
@@ -26,11 +27,17 @@ def db_engine(monkeypatch):
 
 async def _insert(engine, key, default_agent=None, allowed_agents=None):
     from sqlmodel import Session
+
     with Session(engine) as s:
-        s.add(ClientRecord(
-            name="t", client_key=key, is_active=True,
-            default_agent=default_agent, allowed_agents=allowed_agents,
-        ))
+        s.add(
+            ClientRecord(
+                name="t",
+                client_key=key,
+                is_active=True,
+                default_agent=default_agent,
+                allowed_agents=allowed_agents,
+            )
+        )
         s.commit()
 
 

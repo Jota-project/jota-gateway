@@ -1,17 +1,20 @@
 """Tests for OpenClawClient.connect() socket leak on handshake failure (issue #96)."""
+
 import asyncio
 import json
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 from websockets.exceptions import ConnectionClosed
 
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.dispatcher import FrameDispatcher
-from src.services.openclaw.registry import TurnRegistry, ClientRegistry
+from src.services.openclaw.registry import ClientRegistry, TurnRegistry
 
 
 class FakeOCSocket:
     """Fake websocket that simulates OpenClaw handshake failure at a given point."""
+
     def __init__(self, fail_at="challenge", fail_with=None):
         self._to_client = asyncio.Queue()
         self.closed = False
@@ -42,6 +45,7 @@ class FakeOCSocket:
     def __await__(self):
         async def _():
             return self
+
         return _().__await__()
 
 
@@ -60,8 +64,7 @@ async def test_connect_closes_socket_when_challenge_fails():
     with patch("websockets.connect", side_effect=fake_connect):
         with pytest.raises(RuntimeError):
             await OpenClawClient(
-                host="test", port=1, token="x",
-                turn_registry=turn_reg, dispatcher=dispatcher
+                host="test", port=1, token="x", turn_registry=turn_reg, dispatcher=dispatcher
             ).connect()
 
     assert fake_ws.closed, "Socket must be closed when challenge fails"

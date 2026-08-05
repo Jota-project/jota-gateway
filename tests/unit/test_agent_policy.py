@@ -3,15 +3,15 @@
 Pure helper — no DB, WS, or FastAPI. Stubs for ClientConfig and GatewayInfo
 live inline to avoid coupling to other modules' internals.
 """
+
 from dataclasses import dataclass, field
-from typing import List, Optional
 
 import pytest
 
 from src.core.agent_policy import AgentPolicyError, resolve_agent
 
-
 # --- Stubs ----------------------------------------------------------------
+
 
 @dataclass
 class _StubGatewayInfo:
@@ -21,11 +21,12 @@ class _StubGatewayInfo:
 
 @dataclass
 class _StubClientConfig:
-    default_agent: Optional[str] = None
-    allowed_agents: Optional[List[str]] = None
+    default_agent: str | None = None
+    allowed_agents: list[str] | None = None
 
 
 # --- Tests ----------------------------------------------------------------
+
 
 def test_none_allowed_requested_in_roster():
     gi = _StubGatewayInfo(agents={"x": None})

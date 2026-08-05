@@ -1,4 +1,5 @@
 """Safe logging helpers for secrets and credentials."""
+
 import hashlib
 
 

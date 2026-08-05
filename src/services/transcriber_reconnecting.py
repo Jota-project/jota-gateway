@@ -1,8 +1,8 @@
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 
 from src.services.reconnection import ConnectionState, ServiceStatus
 from src.services.transcriber_client import TranscriberClient
@@ -32,18 +32,18 @@ class ReconnectingTranscriberClient:
         self._max_backoff = max_backoff
         self._max_duration = max_duration
         self.state = ConnectionState.DEGRADED
-        self._connected_at: Optional[datetime] = None
+        self._connected_at: datetime | None = None
         self._reconnect_attempts = 0
-        self._last_error: Optional[str] = None
+        self._last_error: str | None = None
         self._closed = False
-        self._run_task: Optional[asyncio.Task] = None
-        self.on_state_change: Optional[Callable[[ConnectionState], None]] = None
+        self._run_task: asyncio.Task | None = None
+        self.on_state_change: Callable[[ConnectionState], None] | None = None
         self._language = "es"
         self._token = ""
         self._vad_thold = 0.0
 
     @property
-    def _last_transcription_at(self) -> Optional[float]:
+    def _last_transcription_at(self) -> float | None:
         return self._client._last_transcription_at
 
     def _set_state(self, state: ConnectionState) -> None:
@@ -58,7 +58,7 @@ class ReconnectingTranscriberClient:
         try:
             await self._client.connect(language=language, token=token, vad_thold=vad_thold)
             self._set_state(ConnectionState.CONNECTED)
-            self._connected_at = datetime.now(timezone.utc)
+            self._connected_at = datetime.now(UTC)
             self._reconnect_attempts = 0
             self._last_error = None
         except Exception as e:
@@ -90,7 +90,7 @@ class ReconnectingTranscriberClient:
     async def run(
         self,
         on_transcription_callback: Callable[[str, bool], Awaitable[None]],
-        on_warning_callback: Optional[Callable[[str, Optional[str]], Awaitable[None]]] = None,
+        on_warning_callback: Callable[[str, str | None], Awaitable[None]] | None = None,
     ) -> None:
         """Supervises the listen loop for the session's lifetime: listens,
         and on an unexpected drop, reconnects with backoff and resumes
@@ -124,7 +124,7 @@ class ReconnectingTranscriberClient:
                     language=self._language, token=self._token, vad_thold=self._vad_thold
                 )
                 self._set_state(ConnectionState.CONNECTED)
-                self._connected_at = datetime.now(timezone.utc)
+                self._connected_at = datetime.now(UTC)
                 self._reconnect_attempts = 0
                 self._last_error = None
                 logger.info("[%s] transcriber reconnected.", self._client_id)
@@ -136,7 +136,9 @@ class ReconnectingTranscriberClient:
                 self._last_error = str(e)
                 logger.warning(
                     "[%s] transcriber reconnect attempt %d failed: %s",
-                    self._client_id, self._reconnect_attempts, e,
+                    self._client_id,
+                    self._reconnect_attempts,
+                    e,
                 )
 
             if time.monotonic() - start >= self._max_duration:

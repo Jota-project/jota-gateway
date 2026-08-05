@@ -4,20 +4,25 @@ def _req(method: str, req_id: str, params: dict) -> dict:
 
 # ── Conexión ──────────────────────────────────────────────────────
 
+
 def connect_backend(req_id: str, token: str, client_id: str = "gateway-client") -> dict:
-    return _req("connect", req_id, {
-        "minProtocol": 3,
-        "maxProtocol": 4,
-        "client": {
-            "id": client_id,
-            "version": "1.0.0",
-            "platform": "linux",
-            "mode": "backend",
+    return _req(
+        "connect",
+        req_id,
+        {
+            "minProtocol": 3,
+            "maxProtocol": 4,
+            "client": {
+                "id": client_id,
+                "version": "1.0.0",
+                "platform": "linux",
+                "mode": "backend",
+            },
+            "role": "operator",
+            "scopes": ["operator.read", "operator.write"],
+            "auth": {"token": token},
         },
-        "role": "operator",
-        "scopes": ["operator.read", "operator.write"],
-        "auth": {"token": token},
-    })
+    )
 
 
 def sessions_subscribe(req_id: str) -> dict:
@@ -30,12 +35,17 @@ def health(req_id: str) -> dict:
 
 # ── Chat ──────────────────────────────────────────────────────────
 
+
 def chat_send(req_id: str, session_key: str, message: str, idempotency_key: str) -> dict:
-    return _req("chat.send", req_id, {
-        "sessionKey": session_key,
-        "message": message,
-        "idempotencyKey": idempotency_key,
-    })
+    return _req(
+        "chat.send",
+        req_id,
+        {
+            "sessionKey": session_key,
+            "message": message,
+            "idempotencyKey": idempotency_key,
+        },
+    )
 
 
 def chat_abort(req_id: str, session_key: str) -> dict:
@@ -43,27 +53,40 @@ def chat_abort(req_id: str, session_key: str) -> dict:
 
 
 def chat_history(req_id: str, session_key: str, limit: int = 50, offset: int = 0) -> dict:
-    return _req("chat.history", req_id, {
-        "sessionKey": session_key,
-        "limit": limit,
-        "offset": offset,
-    })
+    return _req(
+        "chat.history",
+        req_id,
+        {
+            "sessionKey": session_key,
+            "limit": limit,
+            "offset": offset,
+        },
+    )
 
 
 def chat_inject(req_id: str, session_key: str, content: str) -> dict:
-    return _req("chat.inject", req_id, {
-        "sessionKey": session_key,
-        "content": content,
-    })
+    return _req(
+        "chat.inject",
+        req_id,
+        {
+            "sessionKey": session_key,
+            "content": content,
+        },
+    )
 
 
 # ── Sessions ──────────────────────────────────────────────────────
 
+
 def sessions_steer(req_id: str, session_key: str, steer_text: str) -> dict:
-    return _req("sessions.steer", req_id, {
-        "key": session_key,
-        "steerText": steer_text,
-    })
+    return _req(
+        "sessions.steer",
+        req_id,
+        {
+            "key": session_key,
+            "steerText": steer_text,
+        },
+    )
 
 
 def sessions_list(req_id: str) -> dict:
@@ -71,6 +94,7 @@ def sessions_list(req_id: str) -> dict:
 
 
 # ── Agentes y modelos ─────────────────────────────────────────────
+
 
 def agents_list(req_id: str) -> dict:
     return _req("agents.list", req_id, {})

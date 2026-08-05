@@ -1,5 +1,6 @@
 """Proves the ephemeral test-client fixtures actually create and clean up
 ClientRecords against the real, running Admin API."""
+
 import httpx
 
 from tests.e2e.conftest import GATEWAY_HTTP_URL
@@ -16,9 +17,7 @@ def test_single_ephemeral_client_created_and_cleaned_up(test_client_record, admi
 def test_three_ephemeral_clients_created_and_cleaned_up(test_client_records_x3, admin_headers):
     assert len(test_client_records_x3) == 3
     for record in test_client_records_x3:
-        resp = httpx.get(
-            f"{GATEWAY_HTTP_URL}/admin/clients/{record['id']}", headers=admin_headers
-        )
+        resp = httpx.get(f"{GATEWAY_HTTP_URL}/admin/clients/{record['id']}", headers=admin_headers)
         assert resp.status_code == 200
 
 

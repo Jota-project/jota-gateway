@@ -55,13 +55,15 @@ def test_update_agents_from_list():
     """agents.list payload shape differs from snapshot.agents: 'id' not
     'agentId', no per-agent 'isDefault' — derived from top-level 'defaultId'."""
     info = GatewayInfo.from_hello_ok({})  # starts with empty agents, default "main"
-    info.update_agents_from_list({
-        "defaultId": "assistant",
-        "agents": [
-            {"id": "main", "name": "Main Agent"},
-            {"id": "assistant", "name": "Jota Voice"},
-        ],
-    })
+    info.update_agents_from_list(
+        {
+            "defaultId": "assistant",
+            "agents": [
+                {"id": "main", "name": "Main Agent"},
+                {"id": "assistant", "name": "Jota Voice"},
+            ],
+        }
+    )
     assert info.has_agent("main")
     assert info.has_agent("assistant")
     assert info.agents["assistant"].is_default is True
@@ -78,7 +80,9 @@ def test_update_agents_from_list_keeps_prior_default_if_missing():
 
 def test_tool_call_start_parses_name_and_args():
     data = {
-        "phase": "start", "name": "exec", "toolCallId": "call-1",
+        "phase": "start",
+        "name": "exec",
+        "toolCallId": "call-1",
         "args": {"command": "pwd && ls", "workdir": "/tmp"},
     }
     tc = ToolCallEvent.from_session_tool_payload(data)
@@ -92,7 +96,9 @@ def test_tool_call_start_parses_name_and_args():
 
 def test_tool_call_result_flattens_text_content():
     data = {
-        "phase": "result", "name": "exec", "toolCallId": "call-1",
+        "phase": "result",
+        "name": "exec",
+        "toolCallId": "call-1",
         "isError": False,
         "result": {"content": [{"type": "text", "text": "line1\nline2"}]},
     }
@@ -104,7 +110,13 @@ def test_tool_call_result_flattens_text_content():
 
 
 def test_tool_call_result_with_no_content_has_none_result():
-    data = {"phase": "result", "name": "exec", "toolCallId": "call-1", "isError": True, "result": {}}
+    data = {
+        "phase": "result",
+        "name": "exec",
+        "toolCallId": "call-1",
+        "isError": True,
+        "result": {},
+    }
     tc = ToolCallEvent.from_session_tool_payload(data)
     assert tc.result is None
     assert tc.is_error is True
