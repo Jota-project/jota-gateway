@@ -1,5 +1,6 @@
 """Tests for barge-in: _cancel_active_turn, _on_transcription, close_all."""
 import asyncio
+import logging
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from src.services.bridge import JotaBridge
@@ -134,6 +135,46 @@ async def test_final_sends_transcription_to_client(make_bridge):
     )
 
 
+async def test_final_transcription_is_not_logged_at_info(make_bridge, caplog):
+    """#106: the bridge's own final-transcription log moved from INFO to DEBUG.
+
+    Scope is the `src.services.bridge` logger only. The `pipeline_tracker` still
+    records the transcript at INFO (`tracker.record("transcription_final", ...)`)
+    — that separate leak is tracked by #133 and is out of scope for #106.
+    """
+    bridge = make_bridge()
+    text = "0123456789" * 4 + "TOP-SECRET-SUFFIX"
+
+    with caplog.at_level(logging.INFO, logger="src.services.bridge"):
+        await bridge._on_transcription(text, True)
+
+    bridge_info_logs = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "src.services.bridge" and r.levelno >= logging.INFO
+    ]
+    assert not any("Transcripción final" in m for m in bridge_info_logs)
+    assert not any("TOP-SECRET-SUFFIX" in m for m in bridge_info_logs)
+
+
+async def test_final_transcription_is_debug_only_and_truncated(make_bridge, caplog):
+    bridge = make_bridge()
+    text = "0123456789" * 4 + "TOP-SECRET-SUFFIX"
+
+    with caplog.at_level(logging.DEBUG, logger="src.services.bridge"):
+        await bridge._on_transcription(text, True)
+
+    records = [
+        record
+        for record in caplog.records
+        if "Transcripción final:" in record.getMessage()
+    ]
+    assert len(records) == 1
+    assert records[0].levelno == logging.DEBUG
+    assert text[:40] in records[0].getMessage()
+    assert text[40:] not in records[0].getMessage()
+
+
 async def test_final_does_not_start_active_turn(make_bridge):
     """Final transcription no longer auto-dispatches to orchestrator.
     _active_turn stays None — client must send {"type":"send"} explicitly."""
@@ -242,6 +283,34 @@ async def test_barge_in_triggers_when_above_custom_threshold(mock_tracker):
 
     calls = ws.send_json.call_args_list
     assert any(c[0][0].get("type") == "interrupted" for c in calls)
+
+
+async def test_barge_in_disabled_forwards_partial_but_does_not_cancel(mock_tracker):
+    """#108: barge_in_enabled=False → partial still forwarded, but no cancellation
+    and no 'interrupted' message, even when text is above barge_in_min_chars."""
+    from src.models.schemas import ClientConfig
+    ws = AsyncMock()
+    config = ClientConfig(barge_in_enabled=False, barge_in_min_chars=3)
+    bridge = JotaBridge(client=_CLIENT, config=config, client_ws=ws, orchestrator=AsyncMock(), tts=AsyncMock(), tracker=mock_tracker,
+                        handshake=Handshake(client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]),
+                        client_registry=ClientRegistry(), default_agent="main")
+    bridge._active_turn = asyncio.create_task(asyncio.sleep(60))
+    await asyncio.sleep(0)
+
+    # 10 chars >= barge_in_min_chars(3), but barge-in is disabled
+    await bridge._on_transcription("hola mundo", False)
+
+    calls = ws.send_json.call_args_list
+    assert len(calls) == 1  # only the partial, no "interrupted"
+    assert calls[0][0][0] == {"type": "transcription_partial", "text": "hola mundo"}
+    assert bridge._active_turn is not None
+    assert not bridge._active_turn.done()
+
+    bridge._active_turn.cancel()
+    try:
+        await bridge._active_turn
+    except (asyncio.CancelledError, Exception):
+        pass
 
 
 # ── _on_transcriber_warning ──────────────────────────────────────────────────

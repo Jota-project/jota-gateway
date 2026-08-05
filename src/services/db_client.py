@@ -7,8 +7,9 @@ Interfaz pública invariante:
   db_client.get_session(client_key) → (Client, ClientConfig)
   db_client.invalidate(client_key)  → None
 """
+import json
 import logging
-from typing import Optional
+from typing import List, Optional
 
 from sqlmodel import Session, select
 
@@ -19,6 +20,31 @@ from src.db.models import ClientRecord
 from src.models.schemas import Client, ClientConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_allowed_agents(raw: Optional[str]) -> Optional[List[str]]:
+    """Parse the JSON-encoded `allowed_agents` field from ClientRecord.
+
+    - None / "" / "null"  → None   (sin restricción)
+    - "[]"                 → []     (deniega todo)
+    - '["a","b"]'         → ["a", "b"]
+    - malformed JSON       → raises ValueError (fail loud; never silently bypass)
+
+    Returns None for the legacy "empty/null" inputs so that an admin who
+    has not configured the field exercises the no-restriction path.
+    """
+    # The "null" string check below is load-bearing: json.loads("null")
+    # returns Python None, which would slip past the isinstance check and
+    # raise a confusing ValueError. Intercept it explicitly as "no
+    # restriction" instead.
+    if raw is None or raw == "" or raw == "null":
+        return None
+    parsed = json.loads(raw)
+    if not isinstance(parsed, list):
+        raise ValueError(
+            f"allowed_agents must be a JSON list, got {type(parsed).__name__}"
+        )
+    return [str(x) for x in parsed]
 
 
 class DbClient:
@@ -32,6 +58,7 @@ class DbClient:
     def __init__(self, engine=None):
         self._engine = engine
         self._session_cache, self._session_lock = make_cache(maxsize=500, ttl=60)
+        self._generations: dict[str, int] = {}
 
     def _get_engine(self):
         return self._engine if self._engine is not None else get_engine()
@@ -40,13 +67,20 @@ class DbClient:
         """
         Resuelve client_key → (Client, ClientConfig). Resultado cacheado 60 s.
 
+        Usa un contador de generación por-key para evitar repoblar el
+        caché con un valor obsoleto: si invalidate() corre en otro hilo
+        mientras la consulta a BD está en vuelo, la generación capturada
+        antes de la consulta ya no coincide al terminar y el resultado NO
+        se escribe en caché (el siguiente acceso volverá a consultar BD).
+
         Raises:
             ClientNotFound: la key no existe.
             ClientInactive: el cliente está desactivado.
         """
-        async with self._session_lock:
+        with self._session_lock:
             if client_key in self._session_cache:
                 return self._session_cache[client_key]
+            generation_before = self._generations.get(client_key, 0)
 
         with Session(self._get_engine()) as session:
             record: Optional[ClientRecord] = session.exec(
@@ -71,20 +105,30 @@ class DbClient:
             tts_speed=record.tts_speed,
             barge_in_enabled=record.barge_in_enabled,
             barge_in_min_chars=record.barge_in_min_chars,
-            system_prompt_extra=record.system_prompt_extra,
             silence_timeout_s=record.silence_timeout_s,
             max_silence_turns=record.max_silence_turns,
             push_enabled=record.push_enabled,
             tool_calls_enabled=record.tool_calls_enabled,
+            default_agent=record.default_agent,
+            allowed_agents=_parse_allowed_agents(record.allowed_agents),
         )
         result = (client, config)
-        async with self._session_lock:
-            self._session_cache[client_key] = result
+        with self._session_lock:
+            if self._generations.get(client_key, 0) == generation_before:
+                self._session_cache[client_key] = result
         return result
 
     def invalidate(self, client_key: str) -> None:
-        """Elimina la entrada del caché. Llamar tras cualquier mutación en admin."""
-        self._session_cache.pop(client_key, None)
+        """Elimina la entrada del caché y avanza su generación.
+
+        Seguro de llamar desde cualquier hilo (p.ej. handlers `def`
+        síncronos de admin_routes.py, ejecutados en el threadpool de
+        Starlette, distinto del hilo del event loop). Llamar siempre
+        DESPUÉS de session.commit() en el mismo call site.
+        """
+        with self._session_lock:
+            self._session_cache.pop(client_key, None)
+            self._generations[client_key] = self._generations.get(client_key, 0) + 1
 
 
 # Singleton — importar este objeto directamente

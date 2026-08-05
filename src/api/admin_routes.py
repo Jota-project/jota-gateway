@@ -71,19 +71,18 @@ def create_client(
         client_key=body.client_key or secrets.token_urlsafe(32),
         client_type=body.client_type,
         default_agent=body.default_agent,
-        allowed_agents=json.dumps(body.allowed_agents) if body.allowed_agents else None,
+        allowed_agents=json.dumps(body.allowed_agents) if body.allowed_agents is not None else None,
         stt_language=body.stt_language,
         stt_vad_thold=body.stt_vad_thold,
         tts_voice=body.tts_voice,
         tts_speed=body.tts_speed,
         barge_in_enabled=body.barge_in_enabled,
         barge_in_min_chars=body.barge_in_min_chars,
-        output_mode=json.dumps(body.output_mode) if body.output_mode else None,
+        output_mode=json.dumps(body.output_mode) if body.output_mode is not None else None,
         silence_timeout_s=body.silence_timeout_s,
         max_silence_turns=body.max_silence_turns,
         push_enabled=body.push_enabled,
         tool_calls_enabled=body.tool_calls_enabled,
-        system_prompt_extra=body.system_prompt_extra,
     )
     session.add(record)
     session.commit()
@@ -127,9 +126,10 @@ def delete_client(
     session: Session = Depends(get_db_session),
 ) -> None:
     rec = _get_or_404(session, client_id)
-    db_client.invalidate(rec.client_key)
+    client_key = rec.client_key
     session.delete(rec)
     session.commit()
+    db_client.invalidate(client_key)
 
 
 @router.post("/clients/{client_id}/rotate-key", response_model=ClientResponse)
@@ -138,11 +138,12 @@ def rotate_client_key(
     session: Session = Depends(get_db_session),
 ) -> ClientResponse:
     rec = _get_or_404(session, client_id)
-    db_client.invalidate(rec.client_key)
+    old_key = rec.client_key
     rec.client_key = secrets.token_urlsafe(32)
     session.add(rec)
     session.commit()
     session.refresh(rec)
+    db_client.invalidate(old_key)
     return ClientResponse.from_record(rec)
 
 
@@ -263,8 +264,8 @@ async def post_orchestrator_reconnect(name: str, request: Request) -> dict:
     openclaw = request.app.state.openclaw
     if name != openclaw.get_name():
         raise HTTPException(status_code=404, detail=f"Orchestrator '{name}' not registered")
-    await openclaw.connect()
-    return {"accepted": True}
+    job_id = openclaw.trigger_reconnect()
+    return {"accepted": True, "job_id": job_id}
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +275,7 @@ async def post_orchestrator_reconnect(name: str, request: Request) -> dict:
 @router.get("/transcriber/status")
 async def get_transcriber_status() -> dict:
     """Transcriber has no process-level connection (one instance per audio
-    session) — this reports live reachability via /health, wrapped in the
+    session) — this reports live readiness via /ready, wrapped in the
     same shape as the other two status endpoints for consistency."""
     reachable = await TranscriberClient.ping(settings.TRANSCRIBER_WS_URL)
     state = ConnectionState.CONNECTED if reachable else ConnectionState.DEGRADED

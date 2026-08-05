@@ -134,6 +134,21 @@ async def test_close_cancels_in_flight_reconnect_loop():
     w._client.close.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_reconnect_loop_success_clears_last_error():
+    """Issue #104: a successful reconnect via _reconnect_loop() must clear
+    _last_error — otherwise status() keeps reporting a stale error from
+    before the drop even though the transcriber is healthy again right now."""
+    w = _wrap(initial_backoff=0.01, max_backoff=0.01, max_duration=1.0)
+    w._client.connect = AsyncMock(side_effect=[OSError("refused"), None])
+
+    recovered = await w._reconnect_loop()
+
+    assert recovered is True
+    assert w.state == ConnectionState.CONNECTED
+    assert w._last_error is None
+
+
 def test_last_transcription_at_proxies_inner_client():
     w = _wrap()
     w._client._last_transcription_at = 123.45

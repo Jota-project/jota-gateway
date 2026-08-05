@@ -1,3 +1,80 @@
+## [1.14.10](https://github.com/Jota-project/jota-gateway/compare/v1.14.9...v1.14.10) (2026-07-20)
+
+
+### Bug Fixes
+
+* close Fase 2 — Seguridad & auth ([#105](https://github.com/Jota-project/jota-gateway/issues/105), [#106](https://github.com/Jota-project/jota-gateway/issues/106), [#107](https://github.com/Jota-project/jota-gateway/issues/107), [#108](https://github.com/Jota-project/jota-gateway/issues/108), [#109](https://github.com/Jota-project/jota-gateway/issues/109)) ([#160](https://github.com/Jota-project/jota-gateway/issues/160)) ([d143fb5](https://github.com/Jota-project/jota-gateway/commit/d143fb578cffa5afe59400dc2e3b40c4ab57fedc)), closes [#156](https://github.com/Jota-project/jota-gateway/issues/156) [#161](https://github.com/Jota-project/jota-gateway/issues/161) [#162](https://github.com/Jota-project/jota-gateway/issues/162) [#161](https://github.com/Jota-project/jota-gateway/issues/161) [#156](https://github.com/Jota-project/jota-gateway/issues/156) [#156](https://github.com/Jota-project/jota-gateway/issues/156)
+
+## [1.14.9](https://github.com/Jota-project/jota-gateway/compare/v1.14.8...v1.14.9) (2026-07-18)
+
+
+### Bug Fixes
+
+* close 2 correctness gaps found in Phase 1 post-closure review ([#149](https://github.com/Jota-project/jota-gateway/issues/149), [#150](https://github.com/Jota-project/jota-gateway/issues/150)) ([a6a3194](https://github.com/Jota-project/jota-gateway/commit/a6a319490de45fc130198163d7681c859e6cf57a)), closes [102/#104](https://github.com/Jota-project/jota-gateway/issues/104) [99/#147](https://github.com/Jota-project/jota-gateway/issues/147)
+* close final Phase 1 gaps ([#149](https://github.com/Jota-project/jota-gateway/issues/149), [#150](https://github.com/Jota-project/jota-gateway/issues/150)) — Fase 1 (bugs críticos) queda cerrada ([#153](https://github.com/Jota-project/jota-gateway/issues/153)) ([cfad33b](https://github.com/Jota-project/jota-gateway/commit/cfad33bf1fe72ad5d288589e41ae008d2dc4d32d)), closes [#104](https://github.com/Jota-project/jota-gateway/issues/104) [#102](https://github.com/Jota-project/jota-gateway/issues/102) [#104](https://github.com/Jota-project/jota-gateway/issues/104) [102/#104](https://github.com/Jota-project/jota-gateway/issues/104) [#99](https://github.com/Jota-project/jota-gateway/issues/99) [99/#147](https://github.com/Jota-project/jota-gateway/issues/147) [#99](https://github.com/Jota-project/jota-gateway/issues/99)
+
+## [1.14.8](https://github.com/Jota-project/jota-gateway/compare/v1.14.7...v1.14.8) (2026-07-18)
+
+
+### Bug Fixes
+
+* clear last_error on successful background reconnect ([#104](https://github.com/Jota-project/jota-gateway/issues/104)) ([5f259cd](https://github.com/Jota-project/jota-gateway/commit/5f259cde4190edc3bdb280353aa4a69419983db3))
+* clear last_error on successful background reconnect ([#104](https://github.com/Jota-project/jota-gateway/issues/104)) ([#148](https://github.com/Jota-project/jota-gateway/issues/148)) ([7c0f9c7](https://github.com/Jota-project/jota-gateway/commit/7c0f9c77f6c0e137644b8b681948fd91e0dab0ec))
+
+## [1.14.7](https://github.com/Jota-project/jota-gateway/compare/v1.14.6...v1.14.7) (2026-07-18)
+
+
+### Bug Fixes
+
+* CLI misparses client_key positional args starting with '-' ([6eb453d](https://github.com/Jota-project/jota-gateway/commit/6eb453d87042da27b7ea78fb1a840cd37664008a))
+* close 3 correctness gaps found reviewing Phase 1 ([#99](https://github.com/Jota-project/jota-gateway/issues/99), [#101](https://github.com/Jota-project/jota-gateway/issues/101), [#103](https://github.com/Jota-project/jota-gateway/issues/103)) ([b1435ed](https://github.com/Jota-project/jota-gateway/commit/b1435ed3e1734ee61676898a9c7615420cf9bcbe))
+* close 3 correctness gaps found reviewing Phase 1 ([#99](https://github.com/Jota-project/jota-gateway/issues/99), [#101](https://github.com/Jota-project/jota-gateway/issues/101), [#103](https://github.com/Jota-project/jota-gateway/issues/103)) ([#147](https://github.com/Jota-project/jota-gateway/issues/147)) ([0802236](https://github.com/Jota-project/jota-gateway/commit/08022360f3738a4999d6b1ba07a9890b946191c8))
+
+## [1.14.6](https://github.com/Jota-project/jota-gateway/compare/v1.14.5...v1.14.6) (2026-07-18)
+
+
+### Bug Fixes
+
+* add circuit breaker to ReconnectingOpenClawClient (issue [#102](https://github.com/Jota-project/jota-gateway/issues/102)) ([5d9b232](https://github.com/Jota-project/jota-gateway/commit/5d9b2321d5c986545d57738e493ed314a9bf6d0d))
+* circuit breaker for ReconnectingOpenClawClient after DEGRADED ([#146](https://github.com/Jota-project/jota-gateway/issues/146)) ([2bdb422](https://github.com/Jota-project/jota-gateway/commit/2bdb422d0ca76b6c3a7c0781a67135e5e08f6e3e)), closes [#103](https://github.com/Jota-project/jota-gateway/issues/103) [#102](https://github.com/Jota-project/jota-gateway/issues/102)
+
+## [1.14.5](https://github.com/Jota-project/jota-gateway/compare/v1.14.4...v1.14.5) (2026-07-18)
+
+
+### Bug Fixes
+
+* close prior socket/tasks on OpenClawClient reconnect ([#103](https://github.com/Jota-project/jota-gateway/issues/103)) ([#145](https://github.com/Jota-project/jota-gateway/issues/145)) ([6689183](https://github.com/Jota-project/jota-gateway/commit/66891838b91e05b878aa22b3a4c9e7c001f5ed15))
+* close prior socket/tasks on OpenClawClient reconnect (issue [#103](https://github.com/Jota-project/jota-gateway/issues/103)) ([8b4c75c](https://github.com/Jota-project/jota-gateway/commit/8b4c75cfe78f9abc7a7243ffd31f4f585fe8ddd0))
+
+## [1.14.4](https://github.com/Jota-project/jota-gateway/compare/v1.14.3...v1.14.4) (2026-07-18)
+
+
+### Bug Fixes
+
+* close bridge/session cleanly on pre-ready WS setup failures (issue [#101](https://github.com/Jota-project/jota-gateway/issues/101)) ([a5ddbaa](https://github.com/Jota-project/jota-gateway/commit/a5ddbaa637d67c94a15fefebd478a0fcd6bffbbe)), closes [#143](https://github.com/Jota-project/jota-gateway/issues/143)
+* close bridge/session cleanly on pre-ready WS setup failures (issue [#101](https://github.com/Jota-project/jota-gateway/issues/101)) ([#144](https://github.com/Jota-project/jota-gateway/issues/144)) ([fa4dd47](https://github.com/Jota-project/jota-gateway/commit/fa4dd4781f3c798589ac90cf8f64748ca6ff7150)), closes [#143](https://github.com/Jota-project/jota-gateway/issues/143)
+
+## [1.14.3](https://github.com/Jota-project/jota-gateway/compare/v1.14.2...v1.14.3) (2026-07-18)
+
+
+### Bug Fixes
+
+* remove system_prompt_extra entirely (issue [#100](https://github.com/Jota-project/jota-gateway/issues/100)) ([#141](https://github.com/Jota-project/jota-gateway/issues/141)) ([1671c17](https://github.com/Jota-project/jota-gateway/commit/1671c17c6281d826c4a777729a36601050b7b3d9))
+
+## [1.14.2](https://github.com/Jota-project/jota-gateway/compare/v1.14.1...v1.14.2) (2026-07-17)
+
+
+### Bug Fixes
+
+* reject concurrent same-session_key turns (issue [#99](https://github.com/Jota-project/jota-gateway/issues/99)) ([#140](https://github.com/Jota-project/jota-gateway/issues/140)) ([a76cf15](https://github.com/Jota-project/jota-gateway/commit/a76cf154f3dc75f572f91ed84860c5583919e4f3))
+
+## [1.14.1](https://github.com/Jota-project/jota-gateway/compare/v1.14.0...v1.14.1) (2026-07-15)
+
+
+### Bug Fixes
+
+* close socket on handshake failure in all service clients (issue [#96](https://github.com/Jota-project/jota-gateway/issues/96)) ([#97](https://github.com/Jota-project/jota-gateway/issues/97)) ([212966e](https://github.com/Jota-project/jota-gateway/commit/212966e51aef3385de248d93dd8b0309cf64f3c9))
+
 # [1.14.0](https://github.com/Jota-project/jota-gateway/compare/v1.13.0...v1.14.0) (2026-07-12)
 
 

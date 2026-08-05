@@ -21,13 +21,14 @@ class ClientConfig(BaseModel):
     stt_vad_thold: float = 0.0
     tts_voice: str = "af_heart"
     tts_speed: float = 1.0
-    system_prompt_extra: Optional[str] = None
     barge_in_enabled: bool = True
     barge_in_min_chars: int = 5
     silence_timeout_s: float = 2.0
     max_silence_turns: int = 3
     push_enabled: bool = True
     tool_calls_enabled: bool = False
+    default_agent: Optional[str] = None
+    allowed_agents: Optional[List[str]] = None
 
     model_config = ConfigDict(extra="allow")
 
