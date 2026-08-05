@@ -7,9 +7,9 @@ Interfaz pública invariante:
   db_client.get_session(client_key) → (Client, ClientConfig)
   db_client.invalidate(client_key)  → None
 """
+
 import json
 import logging
-from typing import List, Optional
 
 from sqlmodel import Session, select
 
@@ -22,7 +22,7 @@ from src.models.schemas import Client, ClientConfig
 logger = logging.getLogger(__name__)
 
 
-def _parse_allowed_agents(raw: Optional[str]) -> Optional[List[str]]:
+def _parse_allowed_agents(raw: str | None) -> list[str] | None:
     """Parse the JSON-encoded `allowed_agents` field from ClientRecord.
 
     - None / "" / "null"  → None   (sin restricción)
@@ -41,9 +41,7 @@ def _parse_allowed_agents(raw: Optional[str]) -> Optional[List[str]]:
         return None
     parsed = json.loads(raw)
     if not isinstance(parsed, list):
-        raise ValueError(
-            f"allowed_agents must be a JSON list, got {type(parsed).__name__}"
-        )
+        raise ValueError(f"allowed_agents must be a JSON list, got {type(parsed).__name__}")
     return [str(x) for x in parsed]
 
 
@@ -83,7 +81,7 @@ class DbClient:
             generation_before = self._generations.get(client_key, 0)
 
         with Session(self._get_engine()) as session:
-            record: Optional[ClientRecord] = session.exec(
+            record: ClientRecord | None = session.exec(
                 select(ClientRecord).where(ClientRecord.client_key == client_key)
             ).first()
 

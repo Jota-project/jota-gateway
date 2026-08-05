@@ -1,6 +1,6 @@
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Literal, Optional
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from src.services.pipeline_tracker import PipelineEvent, PipelineTracker
@@ -13,7 +13,7 @@ class SessionRecord:
     input_mode: str
     output_mode: list[str]
     started_at: datetime
-    ended_at: Optional[datetime]
+    ended_at: datetime | None
     status: Literal["active", "completed", "error"]
     events: "list[PipelineEvent]"
     tracker: "PipelineTracker"
@@ -32,7 +32,7 @@ class SessionRegistry:
             client_id=tracker.client_id,
             input_mode=tracker.input_mode,
             output_mode=tracker.output_mode,
-            started_at=datetime.now(timezone.utc),
+            started_at=datetime.now(UTC),
             ended_at=None,
             status="active",
             events=tracker.events,
@@ -42,16 +42,18 @@ class SessionRegistry:
         self._evict_if_needed()
         return record
 
-    def close(self, session_id: str, status: Literal["active", "completed", "error"] = "completed") -> None:
+    def close(
+        self, session_id: str, status: Literal["active", "completed", "error"] = "completed"
+    ) -> None:
         record = self._sessions.get(session_id)
         if record:
             record.status = status
-            record.ended_at = datetime.now(timezone.utc)
+            record.ended_at = datetime.now(UTC)
 
     def get_all(self) -> list[SessionRecord]:
         return list(reversed(self._sessions.values()))
 
-    def get(self, session_id: str) -> Optional[SessionRecord]:
+    def get(self, session_id: str) -> SessionRecord | None:
         return self._sessions.get(session_id)
 
     def _evict_if_needed(self) -> None:

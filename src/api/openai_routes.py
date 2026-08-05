@@ -1,16 +1,16 @@
 import asyncio
 import json
-import uuid
 import logging
+import uuid
 from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from src.core.agent_policy import AgentPolicyError, resolve_agent
 from src.core.exceptions import ClientInactive, ClientNotFound
 from src.core.network import is_trusted_origin, resolve_client_ip
-from src.core.agent_policy import AgentPolicyError, resolve_agent
 from src.core.session_key import make_session_key
 from src.models.schemas import Client, ClientConfig
 from src.services.db_client import db_client
@@ -41,6 +41,7 @@ class HACaller:
     client/config son None en el path legacy (origen de red confiable,
     sin Authorization) — preserva el comportamiento histórico fijo "ha".
     """
+
     client: Client | None
     config: ClientConfig | None
 
@@ -57,7 +58,7 @@ async def resolve_ha_caller(request: Request) -> HACaller:
     if auth:
         if not auth.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="authentication required")
-        client_key = auth[len("Bearer "):]
+        client_key = auth[len("Bearer ") :]
         try:
             client, config = await db_client.get_session(client_key)
         except (ClientNotFound, ClientInactive):
@@ -73,10 +74,14 @@ async def resolve_ha_caller(request: Request) -> HACaller:
 
 @router.get("/models")
 async def list_models(request: Request, caller: HACaller = Depends(resolve_ha_caller)):
-    return JSONResponse({
-        "object": "list",
-        "data": [{"id": "jota-gateway", "object": "model", "created": 0, "owned_by": "jota-gateway"}],
-    })
+    return JSONResponse(
+        {
+            "object": "list",
+            "data": [
+                {"id": "jota-gateway", "object": "model", "created": 0, "owned_by": "jota-gateway"}
+            ],
+        }
+    )
 
 
 def _extract_last_user_message(messages: list[_ChatMessage]) -> str:
@@ -140,8 +145,7 @@ async def chat_completions(
     else:
         # Legacy trusted-origin path: no policy checks, use gateway default.
         resolved_agent = (
-            orchestrator.gateway_info.default_agent_id
-            if orchestrator.gateway_info else "main"
+            orchestrator.gateway_info.default_agent_id if orchestrator.gateway_info else "main"
         )
 
     client_id = caller.client.id if caller.client else "ha"
@@ -151,6 +155,7 @@ async def chat_completions(
     session_registry.register(tracker)
 
     if stream:
+
         async def generate():
             queue: asyncio.Queue[str | None] = asyncio.Queue()
 
@@ -165,13 +170,19 @@ async def chat_completions(
             async def _run():
                 try:
                     await call_orchestrator(
-                        orchestrator, text, session_key, client_id,
-                        tracker=tracker, on_token=_on_token,
+                        orchestrator,
+                        text,
+                        session_key,
+                        client_id,
+                        tracker=tracker,
+                        on_token=_on_token,
                     )
                 except RuntimeError as e:
                     logger.error(f"HTTP orchestrator error: {e}")
                 finally:
-                    await queue.put(None)  # sentinel siempre primero — garantiza que el generador puede avanzar
+                    await queue.put(
+                        None
+                    )  # sentinel siempre primero — garantiza que el generador puede avanzar
                     try:
                         await tracker.close()
                     except Exception:
@@ -199,6 +210,7 @@ async def chat_completions(
             }
             yield f"data: {json.dumps(final)}\n\n"
             yield "data: [DONE]\n\n"
+
         return StreamingResponse(generate(), media_type="text/event-stream")
 
     tokens: list[str] = []
@@ -209,8 +221,12 @@ async def chat_completions(
     orchestrator_error: Exception | None = None
     try:
         await call_orchestrator(
-            orchestrator, text, session_key, client_id,
-            tracker=tracker, on_token=_on_token,
+            orchestrator,
+            text,
+            session_key,
+            client_id,
+            tracker=tracker,
+            on_token=_on_token,
         )
     except RuntimeError as e:
         logger.error(f"HTTP orchestrator error: {e}")
@@ -224,10 +240,21 @@ async def chat_completions(
         return JSONResponse({"error": str(orchestrator_error)}, status_code=502)
 
     content = "".join(tokens)
-    return JSONResponse({
-        "id": completion_id,
-        "object": "chat.completion",
-        "choices": [{"message": {"role": "assistant", "content": content},
-                     "index": 0, "finish_reason": "stop"}],
-        "usage": {"prompt_tokens": 0, "completion_tokens": len(tokens), "total_tokens": len(tokens)},
-    })
+    return JSONResponse(
+        {
+            "id": completion_id,
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": content},
+                    "index": 0,
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": len(tokens),
+                "total_tokens": len(tokens),
+            },
+        }
+    )

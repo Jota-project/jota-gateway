@@ -1,7 +1,6 @@
 import logging
 import time
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from src.services.reconnection import ConnectionState, ServiceStatus
 from src.services.tts_client import TTSClient
@@ -32,11 +31,11 @@ class ReconnectingTTSClient:
         self._initial_backoff = initial_backoff
         self._max_backoff = max_backoff
         self._backoff = initial_backoff
-        self._last_failure_at: Optional[float] = None
-        self._last_success_at: Optional[datetime] = None
+        self._last_failure_at: float | None = None
+        self._last_success_at: datetime | None = None
         self.state = ConnectionState.CONNECTED
         self._reconnect_attempts = 0
-        self._last_error: Optional[str] = None
+        self._last_error: str | None = None
 
     def _should_attempt(self) -> bool:
         if self._last_failure_at is None:
@@ -44,8 +43,8 @@ class ReconnectingTTSClient:
         return (time.monotonic() - self._last_failure_at) >= self._backoff
 
     async def connect(
-        self, voice: Optional[str], speed: Optional[float], client_id: str
-    ) -> Optional[TTSClient]:
+        self, voice: str | None, speed: float | None, client_id: str
+    ) -> TTSClient | None:
         """Returns a connected TTSClient, or None if the backoff window
         hasn't elapsed yet or the attempt itself fails."""
         if not self._should_attempt():
@@ -74,7 +73,7 @@ class ReconnectingTTSClient:
         self._backoff = self._initial_backoff
         self._reconnect_attempts = 0
         self._last_error = None
-        self._last_success_at = datetime.now(timezone.utc)
+        self._last_success_at = datetime.now(UTC)
         self.state = ConnectionState.CONNECTED
 
     def status(self) -> ServiceStatus:

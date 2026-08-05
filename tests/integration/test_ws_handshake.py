@@ -1,4 +1,5 @@
 """Tests para WebSocket handshake (/ws/stream)."""
+
 import logging
 import re
 from uuid import UUID
@@ -31,6 +32,7 @@ def test_invalid_client_key_log_is_safe_and_correlatable(client, caplog, monkeyp
 
     # Use a mock to capture the warning call since caplog isn't capturing
     import unittest.mock as mock
+
     warning_calls = []
 
     def mock_warning(msg, *args, **kwargs):
@@ -43,11 +45,13 @@ def test_invalid_client_key_log_is_safe_and_correlatable(client, caplog, monkeyp
         )
         ws.__enter__()
         try:
-            ws.send_json({
-                "client_key": key,
-                "input_mode": "text",
-                "output_mode": ["text"],
-            })
+            ws.send_json(
+                {
+                    "client_key": key,
+                    "input_mode": "text",
+                    "output_mode": ["text"],
+                }
+            )
             ws.receive_text()
         except Exception:
             pass
@@ -77,6 +81,7 @@ def test_missing_required_handshake_field_closes_ws(client):
 def test_valid_text_mode_handshake_connection_stays_open(client, caplog):
     """Handshake válido — gateway responde con ready y la conexión permanece abierta."""
     import unittest.mock as mock
+
     info_calls = []
 
     def mock_info(msg, *args, **kwargs):
@@ -84,11 +89,13 @@ def test_valid_text_mode_handshake_connection_stays_open(client, caplog):
 
     with mock.patch.object(logging.getLogger("src.api.routes"), "info", mock_info):
         with client.websocket_connect("/ws/stream") as ws:
-            ws.send_json({
-                "client_key": VALID_KEY,
-                "input_mode": "text",
-                "output_mode": ["text"],
-            })
+            ws.send_json(
+                {
+                    "client_key": VALID_KEY,
+                    "input_mode": "text",
+                    "output_mode": ["text"],
+                }
+            )
             ready = ws.receive_json()
             assert ready["type"] == "ready"
             assert ready["input_mode"] == "text"

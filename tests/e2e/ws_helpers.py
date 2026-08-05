@@ -1,6 +1,7 @@
 """Real WebSocket client helpers for tests/e2e — talk to the actual
 /ws/stream endpoint of the running production gateway, same wire protocol
 documented in docs/client-protocol.md."""
+
 import asyncio
 import json
 
@@ -9,14 +10,20 @@ import websockets
 from tests.e2e.conftest import GATEWAY_WS_URL
 
 
-async def ws_handshake(client_key: str, agent: str, ws_url: str = GATEWAY_WS_URL, input_mode: str = "text"):
+async def ws_handshake(
+    client_key: str, agent: str, ws_url: str = GATEWAY_WS_URL, input_mode: str = "text"
+):
     ws = await websockets.connect(ws_url, open_timeout=10)
-    await ws.send(json.dumps({
-        "client_key": client_key,
-        "input_mode": input_mode,
-        "output_mode": ["text"],
-        "agent": agent,
-    }))
+    await ws.send(
+        json.dumps(
+            {
+                "client_key": client_key,
+                "input_mode": input_mode,
+                "output_mode": ["text"],
+                "agent": agent,
+            }
+        )
+    )
     raw = await asyncio.wait_for(ws.recv(), timeout=10)
     ready = json.loads(raw)
     if ready.get("type") != "ready":
@@ -47,7 +54,9 @@ async def send_turn(ws, text: str, timeout: float = 60.0) -> dict:
     while True:
         remaining = deadline - loop.time()
         if remaining <= 0:
-            raise AssertionError(f"turn_end no llegó en {timeout}s para turn_id={turn_id}: {frames}")
+            raise AssertionError(
+                f"turn_end no llegó en {timeout}s para turn_id={turn_id}: {frames}"
+            )
         raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
         frame = json.loads(raw)
         frames.append(frame)
@@ -55,9 +64,9 @@ async def send_turn(ws, text: str, timeout: float = 60.0) -> dict:
             turn_id = frame["turn_id"]
         elif frame["type"] == "token" and frame.get("turn_id") == turn_id:
             tokens.append(frame["text"])
-        elif frame["type"] == "turn_end" and frame.get("turn_id") == turn_id:
-            break
-        elif frame["type"] == "error" and (frame.get("turn_id") == turn_id or frame.get("fatal")):
+        elif (frame["type"] == "turn_end" and frame.get("turn_id") == turn_id) or (
+            frame["type"] == "error" and (frame.get("turn_id") == turn_id or frame.get("fatal"))
+        ):
             break
     return {"turn_id": turn_id, "text": "".join(tokens), "frames": frames}
 

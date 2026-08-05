@@ -4,13 +4,13 @@ cli.py
 CLI de gestión de clientes jota-gateway.
 Uso: python src/cli.py <command> [options]
 """
+
 import secrets
 import sys
-from typing import Optional
 
 from sqlmodel import Session, select
 
-from src.db.database import run_migrations, get_engine
+from src.db.database import get_engine, run_migrations
 from src.db.models import ClientRecord
 
 
@@ -27,8 +27,9 @@ def _require(session: Session, client_key: str) -> ClientRecord:
     return rec
 
 
-def cmd_add(name: str, client_type: Optional[str], agent: Optional[str], engine,
-            client_key: Optional[str] = None) -> None:
+def cmd_add(
+    name: str, client_type: str | None, agent: str | None, engine, client_key: str | None = None
+) -> None:
     key = client_key or secrets.token_urlsafe(32)
     with Session(engine) as s:
         rec = ClientRecord(name=name, client_key=key, client_type=client_type, default_agent=agent)
@@ -88,7 +89,9 @@ def run(argv: list[str]) -> None:
 
     a = sub.add_parser("add-client")
     a.add_argument("--name", required=True)
-    a.add_argument("--key", dest="client_key", help="client_key exacto a usar (si se omite, se genera uno)")
+    a.add_argument(
+        "--key", dest="client_key", help="client_key exacto a usar (si se omite, se genera uno)"
+    )
     a.add_argument("--type", dest="client_type")
     a.add_argument("--agent")
 
@@ -103,7 +106,11 @@ def run(argv: list[str]) -> None:
     # unknown option instead of the positional value ("the following
     # arguments are required: client_key"). Force positional parsing for it
     # by inserting `--` right after the subcommand name.
-    if len(argv) >= 2 and argv[0] in ("deactivate-client", "activate-client", "delete-client") and argv[1] != "--":
+    if (
+        len(argv) >= 2
+        and argv[0] in ("deactivate-client", "activate-client", "delete-client")
+        and argv[1] != "--"
+    ):
         argv = [argv[0], "--", *argv[1:]]
 
     args = p.parse_args(argv)
