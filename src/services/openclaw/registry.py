@@ -114,3 +114,36 @@ class ClientRegistry:
                 await bridge.notify_service_status(service, state)
             except Exception:
                 pass  # one dead/misbehaving session must not block the rest
+
+    async def close_all_sessions(self, status: str, timeout: float) -> None:
+        """Drain every registered session concurrently, each bounded by
+        `timeout`. Used by the app lifespan on shutdown (issue #110) so N
+        active sessions each get a full close_all() attempt in parallel
+        instead of the shutdown window being divided — or multiplied —
+        across them serially.
+
+        Mirrors broadcast_status's isolation contract: one session that
+        raises, or never finishes its own teardown, must not block or delay
+        the others, or the shutdown sequence itself. Never raises.
+        """
+        bridges = list(self._clients.items())
+        if not bridges:
+            return
+
+        async def _drain(client_id: str, bridge: Any) -> None:
+            try:
+                await asyncio.wait_for(bridge.close_all(status=status), timeout=timeout)
+            except TimeoutError:
+                logger.warning(
+                    "ClientRegistry.close_all_sessions: client_id=%s did not close "
+                    "within timeout=%.1fs during shutdown",
+                    client_id,
+                    timeout,
+                )
+            except Exception:
+                logger.exception(
+                    "ClientRegistry.close_all_sessions: error closing client_id=%s during shutdown",
+                    client_id,
+                )
+
+        await asyncio.gather(*(_drain(client_id, bridge) for client_id, bridge in bridges))

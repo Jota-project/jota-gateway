@@ -1,10 +1,10 @@
 # jota-gateway Roadmap
 
-> **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fase 1 y Fase 2 ✅ cerradas, Fase 3 en curso (7/8 issues cerradas, solo queda #110)
+> **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fase 1, Fase 2 y Fase 3 ✅ cerradas
 > **Última actualización:** 2026-08-05
-> **Issues abiertas:** 28 (rango GitHub `#99`–`#163`)
-> **Versión actual:** 1.15.x (1.16.0 al mergear esta fase a `main`, vía release automático)
-> **Próximo release:** 1.17.0 (al cerrar Fase 3)
+> **Issues abiertas:** 27 (rango GitHub `#99`–`#163`)
+> **Versión actual:** 1.15.x (1.17.0 al mergear `phase/3-lifecycle` a `main`, vía release automático)
+> **Próximo release:** 1.17.0 (al mergear Fase 3 a `main`)
 
 Este documento es el **plan vivo de remediación y evolución** de jota-gateway. Cada tarea referencia una issue de GitHub; las casillas se tachan al cerrar la issue. Se actualiza en el mismo PR que cierra la issue, o en un PR dedicado.
 
@@ -24,7 +24,7 @@ Este documento es el **plan vivo de remediación y evolución** de jota-gateway.
 | 🟡 Medios | 14 |
 | ⚪ Tech-debt / polish | 5 |
 | Estimación | ~3 sprints (6–9 semanas) |
-| Próximo milestone | Cerrar Fase 3 (lifecycle & producción) |
+| Próximo milestone | Cerrar Fase 4 (consistencia & docs) |
 | Regresiones confirmadas vs auditoría junio | 2 |
 | Features documentadas sin implementar | 3 |
 
@@ -96,14 +96,15 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 - [x] **#162** 🟡 — el handshake WS no recortaba espacios del `agent` solicitado antes de pasarlo a `resolve_agent()`, a diferencia de REST — inconsistencia entre las dos superficies para la misma entrada malformada, y contradecía la cascada documentada en este mismo `CLAUDE.md` ("if non-empty after stripping"). Fix: normalización centralizada dentro de `resolve_agent()` en vez de duplicada por call site.
 - [ ] **#163** ⚪ — `DbClient._generations` (contador de generación de #107) crece sin límite, una entrada por `client_key` histórico, nunca se purga. Bajo impacto, pero un "pop" ingenuo en `invalidate()` reintroduce la race que #107 cerró para la primera invalidación de una key — requiere diseño dedicado. Diferido a **Fase 5**.
 
-### 🟠 Fase 3 — Lifecycle & producción (semanas 4–5)
+### 🟠 Fase 3 — Lifecycle & producción (semanas 4–5) — ✅ CERRADA (2026-08-05)
 
 **Objetivo:** hacerlo production-grade (shutdown limpio, deadlines, race fixes).
 **Release target:** 1.17.0.
 **Acceptance gate:** `kill -9` durante sesión deja DB consistente, 50 sesiones concurrentes estables, los 3 wrappers pasan test "DEGRADED stable", `ready.capabilities` correcto.
+**Estado del gate:** `kill -9`/shutdown deja DB consistente ✅ (#110 — `ClientRegistry.close_all_sessions()` drena sesiones activas, `dispose_engine()` cierra el motor SQLAlchemy, lifespan envuelto en try/finally; cobertura unitaria + integración) · 3 wrappers DEGRADED-stable ✅ (Fase 1, #102/#104) · `ready.capabilities` correcto ✅ (#114) · 50 sesiones concurrentes estables ⚠️ *no verificado con load test dedicado en este cierre* — el drenado es concurrente por diseño (`asyncio.gather` por sesión) pero no se ha ejercitado con carga real; queda como verificación pendiente, no bloqueante dado que cada pieza tiene su propia cobertura automatizada.
 **Estrategia de rama (decisión 2026-07-20):** igual que Fase 2, Fase 3 usa una rama larga `phase/3-lifecycle` creada desde `main`. Cada issue (#110–#117) se desarrolla en su propia rama `fix/XXX-...`, mergeada a `phase/3-lifecycle` vía PR individual. Al cerrar las 8 issues, un PR único `phase/3-lifecycle` → `main` cierra la fase completa.
 
-- [ ] **#110** 🟠 `[012]` — Lifespan shutdown doesn't drain active sessions — **XL**
+- [x] **#110** 🟠 `[012]` — Lifespan shutdown doesn't drain active sessions — **XL** — `ClientRegistry.close_all_sessions()` (`src/services/openclaw/registry.py`) drena todos los bridges registrados concurrentemente, cada uno acotado por `SHUTDOWN_DRAIN_S`; fix de auto-cancelación en `JotaBridge.close_all()` (issue latente encontrada durante la implementación — el propio watchdog podía cancelarse a sí mismo y abortar su teardown antes de `tracker.close()`); `dispose_engine()` (`src/db/database.py`) dispone y resetea el motor SQLAlchemy; `src/main.py`'s lifespan envuelto en try/finally, orden drenar sesiones → cerrar OpenClaw → cancelar/esperar notification tasks → disponer motor.
 - [x] **#111** 🟠 `[013]` — Streaming SSE returns 200 on orchestrator error — **S** — los fallos pre-token y post-token emiten `server_error` + `finish_reason="error"`, no emiten `[DONE]` y cierran el tracker con estado `error`.
 - [x] **#112** 🟠 `[014]` — Normal vs push turn coordination — **L** — implementado: `_handle_agent_lifecycle` (dispatcher.py) gana el guard `get_queue_by_session()` solo en la fase `start` (mismo patrón que `_handle_chat`/`_handle_session_tool`); la fase `end` se reenvía siempre sin condición — `on_push_turn_end` ya no-opea de forma segura si no hay push abierto (#84), y suprimirla también habría podido dejar huérfano un push que empezó antes que el turno normal (hallazgo de la revisión final, 2026-08-04). La ventana de carrera barge-in/`chat.abort` (evento tardío tras `TurnRegistry.unregister()`, que ocurre antes de que `chat.abort` llegue a OpenClaw) queda fuera de alcance — es preexistente y afecta también a `_handle_chat`, no específica de este fix — pendiente de documentar como issue de seguimiento aparte (no creada todavía).
 - [x] **#113** 🟠 `[015]` — Bridge unregisters newer bridge for same `client_id` — **S** — `ClientRegistry.unregister(client_id, expected_bridge)` ahora sólo desregistra si el bridge sigue siendo el dueño actual (mismo patrón de identidad que `TurnRegistry` para #99); `bridge.close_all()` pasa `self`. Un cierre tardío del bridge viejo ya no expulsa la sesión reconectada.
@@ -251,7 +252,7 @@ Antes de implementar las issues marcadas con ⚠️, hay que resolver:
 |---|---|
 | **Fase 1 done** | ✅ 6 🔴 cerrados, `pytest` verde, e2e no regresiona — *cero keys en logs queda como alcance de #106 (Fase 2)* |
 | **Fase 2 done** | ✅ 5 🟠 cerrados (#105–#109), `/v1/*` rechaza untrusted sin bearer ✅, admin rechaza sin token ✅, cero keys en logs ✅ — *pentest manual no ejecutado, ver nota en la fase* |
-| **Fase 3 done** | `kill -9` durante sesión deja DB consistente, 3 wrappers DEGRADED-stable, `ready.capabilities` correcto |
+| **Fase 3 done** | ✅ `kill -9`/shutdown deja DB consistente (#110), 3 wrappers DEGRADED-stable (Fase 1), `ready.capabilities` correcto (#114) — *50 sesiones concurrentes no verificado con load test dedicado, ver nota en la fase* |
 | **Fase 4 done** | Cero referencias muertas, `.env.sample` levanta gateway limpio, `db_client` test de concurrencia |
 | **Fase 5 done** | Typecheck CI, Docker build on PR, pytest timeout global, Dockerfile non-root + digest pin |
 

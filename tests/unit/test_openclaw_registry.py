@@ -198,3 +198,57 @@ async def test_broadcast_status_one_failure_does_not_block_others():
     await reg.broadcast_status("orchestrator", "unavailable")  # must not raise
 
     bridge_b.notify_service_status.assert_awaited_once_with("orchestrator", "unavailable")
+
+
+async def test_close_all_sessions_awaits_each_bridge_with_status():
+    reg = ClientRegistry()
+    bridge_a = AsyncMock()
+    bridge_b = AsyncMock()
+    reg.register("a", bridge_a)
+    reg.register("b", bridge_b)
+
+    await reg.close_all_sessions(status="shutdown", timeout=1.0)
+
+    bridge_a.close_all.assert_awaited_once_with(status="shutdown")
+    bridge_b.close_all.assert_awaited_once_with(status="shutdown")
+
+
+async def test_close_all_sessions_empty_registry_returns_immediately():
+    reg = ClientRegistry()
+    await reg.close_all_sessions(status="shutdown", timeout=1.0)  # must not raise
+
+
+async def test_close_all_sessions_bounds_a_hanging_bridge_and_still_drains_others():
+    import time
+
+    reg = ClientRegistry()
+    gate = asyncio.Event()
+
+    async def _hang(status):
+        await gate.wait()
+
+    hanging_bridge = AsyncMock()
+    hanging_bridge.close_all.side_effect = _hang
+    fast_bridge = AsyncMock()
+    reg.register("hanging", hanging_bridge)
+    reg.register("fast", fast_bridge)
+
+    start = time.monotonic()
+    await asyncio.wait_for(reg.close_all_sessions(status="shutdown", timeout=0.05), timeout=2.0)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 0.5, f"close_all_sessions took {elapsed:.2f}s — timeout not applied per-bridge"
+    fast_bridge.close_all.assert_awaited_once_with(status="shutdown")
+
+
+async def test_close_all_sessions_one_failure_does_not_block_others():
+    reg = ClientRegistry()
+    failing_bridge = AsyncMock()
+    failing_bridge.close_all.side_effect = RuntimeError("boom")
+    ok_bridge = AsyncMock()
+    reg.register("failing", failing_bridge)
+    reg.register("ok", ok_bridge)
+
+    await reg.close_all_sessions(status="shutdown", timeout=1.0)  # must not raise
+
+    ok_bridge.close_all.assert_awaited_once_with(status="shutdown")

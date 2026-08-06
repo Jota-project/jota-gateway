@@ -255,6 +255,42 @@ uniformly to text and audio sessions, not just audio ones.
   resetting the full idle window. Once nothing is in flight anymore, idle-timeout behavior
   resumes normally, measured from `_last_client_activity` as before.
 
+### Lifespan shutdown
+
+`src/main.py`'s `lifespan()` wraps everything after service construction in
+`try: yield / finally: ...` (issue #110) — the app no longer relies solely on
+Uvicorn's external cancellation to clean up. On shutdown, in order:
+
+1. **Drain active sessions** — `ClientRegistry.close_all_sessions(status="shutdown",
+   timeout=settings.SHUTDOWN_DRAIN_S)` snapshots every registered bridge and calls
+   `close_all()` on each concurrently, each individually bounded by
+   `SHUTDOWN_DRAIN_S`. Mirrors `broadcast_status`'s isolation contract — one
+   session that raises or times out never blocks or fails the others. A session
+   closed this way is recorded with `SessionRecord.status = "shutdown"` (a fourth
+   value alongside `"active"/"completed"/"error"`), visible via `GET /admin/sessions`.
+2. **Close OpenClaw** — only after step 1, so any turn still in flight when
+   shutdown began has already been given its `SHUTDOWN_DRAIN_S` window to finish
+   naturally inside `close_all()`'s own `_active_turn` wait (see `JotaBridge.close_all()`
+   above) before the orchestrator connection goes away.
+3. **Cancel and await notification tasks** — the module-level `_notification_tasks`
+   set (holding the orchestrator/TTS `on_state_change` broadcast tasks) is drained
+   *after* closing OpenClaw, not before: `ReconnectingOpenClawClient.close()` cancels
+   the only background loop that could still schedule a new one (`_reconnect_task`),
+   so nothing can add to the set once step 2 completes.
+4. **Dispose the DB engine** — `dispose_engine()` (`src/db/database.py`) disposes
+   the SQLAlchemy engine's connection pool and resets the module-level `_engine`
+   singleton to `None`, run last since nothing above touches the DB.
+
+`JotaBridge.close_all()`'s own task-cancellation loop (issue #110 follow-up)
+excludes `asyncio.current_task()` from the tasks it cancels, and awaits every
+task it does cancel instead of firing `.cancel()` and moving on. Without the
+exclusion, a watchdog (`_idle_watchdog`/`_transcription_watchdog`) that triggers
+its own session's `close_all()` would self-deliver a `CancelledError` at
+`close_all()`'s next real suspension point (e.g. awaiting `transcriber.close()`),
+aborting teardown before `tracker.close()`/`ClientRegistry.unregister()` ever ran
+— masked in practice by `bridge.run()`'s own redundant `close_all()` call in its
+`finally`, but not something the shutdown drain above can rely on.
+
 ### Session key derivation
 
 Each orchestrator turn uses a session key derived from the agent name and the client UUID:
