@@ -88,6 +88,22 @@ def configure_admin_token():
     settings.ADMIN_TOKEN = original
 
 
+@pytest.fixture(autouse=True)
+def _noop_dispose_engine(monkeypatch):
+    """Neutralizes the real dispose_engine() call that now runs on every
+    TestClient(app) shutdown (issue #110) — without this, every integration
+    test's teardown disposes the db_engine fixture's in-memory engine and
+    resets src.db.database._engine to None, so any code that resolves the
+    engine lazily after a test's TestClient exits would silently fall back
+    to the real on-disk DATABASE_URL instead of failing loudly. Tests that
+    specifically want to assert dispose_engine was called
+    (test_lifespan_shutdown.py) override this with their own
+    monkeypatch.setattr call, which wins since it's applied later in the
+    same test.
+    """
+    monkeypatch.setattr("src.main.dispose_engine", lambda: None)
+
+
 @pytest.fixture
 def admin_headers():
     return {"x-admin-token": ADMIN_TOKEN}

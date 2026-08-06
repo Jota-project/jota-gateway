@@ -25,15 +25,25 @@ def test_lifespan_shutdown_drains_bridges_closes_openclaw_and_disposes_engine(
     _configure_app_mocks(mock_registry, monkeypatch)
     dispose_mock = MagicMock()
     monkeypatch.setattr("src.main.dispose_engine", dispose_mock)
+    openclaw_close_count_during_drain = None
+
+    async def _record_openclaw_close_count(*args, **kwargs):
+        nonlocal openclaw_close_count_during_drain
+        openclaw_close_count_during_drain = mock_registry.close.await_count
 
     with TestClient(app, client=("127.0.0.1", 50000)):
         fake_bridge = AsyncMock()
+        fake_bridge.close_all.side_effect = _record_openclaw_close_count
         app.state.client_registry.register("fake-client", fake_bridge)
         # __exit__ below triggers the real ASGI lifespan shutdown sequence.
 
     fake_bridge.close_all.assert_awaited_once_with(status="shutdown")
     mock_registry.close.assert_awaited_once()
     dispose_mock.assert_called_once()
+    assert openclaw_close_count_during_drain == 0, (
+        "OpenClaw was closed before (or during) the bridge drain — "
+        "sessions must finish draining before OpenClaw closes"
+    )
 
 
 def test_lifespan_shutdown_closes_openclaw_even_if_a_bridge_fails_to_drain(

@@ -97,29 +97,39 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        # 1. Drain active sessions first — each bridge's close_all() awaits
-        #    its own in-flight turn (bounded by SHUTDOWN_DRAIN_S already,
-        #    see JotaBridge.close_all), so by the time this returns no
-        #    surviving session still needs the OpenClaw connection.
+        # 1. Drain active sessions first. Each bridge's close_all() has its
+        #    own inner bound on the _active_turn wait (SHUTDOWN_DRAIN_S, see
+        #    JotaBridge.close_all) — but the outer wait_for here uses the
+        #    same duration and starts at roughly the same time, so for a
+        #    genuinely stuck turn THIS bound is the one that actually fires:
+        #    close_all_sessions cancels a bridge's close_all() coroutine
+        #    while it's still suspended inside its own inner wait_for,
+        #    before transcriber.close()/tracker.close()/_closed=True ever
+        #    run for that session. Acceptable here — the process is exiting
+        #    right after regardless — but not something to rely on for a
+        #    mid-lifetime call to close_all_sessions, should one ever exist.
         await client_registry.close_all_sessions(
             status="shutdown", timeout=settings.SHUTDOWN_DRAIN_S
         )
 
-        # 2. Cancel/await the orchestrator/TTS state-change broadcast tasks
-        #    created via on_state_change above — nothing should still be
-        #    scheduling client notifications by the time we tear down the
-        #    services those notifications describe.
+        # 2. Close OpenClaw now that active turns have drained.
+        try:
+            await openclaw.close()
+        except Exception:
+            logger.exception("Error closing OpenClaw client during shutdown")
+
+        # 3. Cancel/await the orchestrator/TTS state-change broadcast tasks
+        #    created via on_state_change above. Done *after* closing
+        #    OpenClaw (not before): closing it cancels the only background
+        #    loop that could still schedule a new one
+        #    (ReconnectingOpenClawClient's own _reconnect_task, via
+        #    _set_state()) — so nothing can add to _notification_tasks
+        #    between here and the gather below.
         for task in list(_notification_tasks):
             if not task.done():
                 task.cancel()
         if _notification_tasks:
             await asyncio.gather(*_notification_tasks, return_exceptions=True)
-
-        # 3. Close OpenClaw only now that active turns have drained.
-        try:
-            await openclaw.close()
-        except Exception:
-            logger.exception("Error closing OpenClaw client during shutdown")
 
         # 4. Dispose the DB engine last — nothing above touches the DB.
         dispose_engine()

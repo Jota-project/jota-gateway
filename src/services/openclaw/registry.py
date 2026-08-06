@@ -126,22 +126,24 @@ class ClientRegistry:
         raises, or never finishes its own teardown, must not block or delay
         the others, or the shutdown sequence itself. Never raises.
         """
-        bridges = list(self._clients.values())
+        bridges = list(self._clients.items())
         if not bridges:
             return
 
-        async def _drain(bridge: Any) -> None:
+        async def _drain(client_id: str, bridge: Any) -> None:
             try:
                 await asyncio.wait_for(bridge.close_all(status=status), timeout=timeout)
             except TimeoutError:
                 logger.warning(
-                    "ClientRegistry.close_all_sessions: a session did not close "
+                    "ClientRegistry.close_all_sessions: client_id=%s did not close "
                     "within timeout=%.1fs during shutdown",
+                    client_id,
                     timeout,
                 )
             except Exception:
                 logger.exception(
-                    "ClientRegistry.close_all_sessions: error closing a session during shutdown"
+                    "ClientRegistry.close_all_sessions: error closing client_id=%s during shutdown",
+                    client_id,
                 )
 
-        await asyncio.gather(*(_drain(b) for b in bridges))
+        await asyncio.gather(*(_drain(client_id, bridge) for client_id, bridge in bridges))

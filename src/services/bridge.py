@@ -192,6 +192,14 @@ class JotaBridge:
             self._push_turn_open = False
             self._push_turn_opened_at = None
 
+            # Exclude the calling task from cancellation: _idle_watchdog and
+            # _transcription_watchdog both call close_all() on themselves
+            # (to end their own session). If close_all() cancelled its own
+            # caller here, the self-delivered CancelledError would land at
+            # the next real suspension point below (the transcriber.close()
+            # gather) and abort teardown before tracker.close()/_closed=True
+            # ever run. Awaiting the tasks we DO cancel guarantees nothing
+            # is left dangling when this method returns.
             current_task = asyncio.current_task()
             tasks_to_cancel = [
                 t for t in self.tasks if t is not current_task and not t.done()
