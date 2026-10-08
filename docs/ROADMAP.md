@@ -3,8 +3,8 @@
 > **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fases 1, 2 y 3 ✅ cerradas (Fase 3: 2026-08-06, mergeada a `main` 2026-10-08)
 > **Última actualización:** 2026-10-08
 > **Issues abiertas:** 25 (rango GitHub `#118`–`#163`)
-> **Versión actual:** v1.14.10 (release 2026-07-20, cierra Fase 2)
-> **Próximo release:** ⚠️ pendiente — Fase 3 mergeada a `main` sin tag; lanzar el release antes de arrancar Fase 4. *(Los targets numéricos de esta versión del roadmap —1.15.x/1.16.0/1.17.0— no se ajustaron a la realidad: el release de Fase 2 salió como v1.14.10; verificar el número que asigna semantic-release al taggear.)*
+> **Versión actual:** v1.14.11 (release 2026-10-08, cierra Fase 3)
+> **Próximo release:** Fase 4 (consistencia & docs). *(Los targets numéricos de esta versión del roadmap —1.15.x/1.16.0/1.17.0— no se ajustaron a la realidad: la Fase 2 salió como v1.14.10 y la Fase 3 como v1.14.11, asignados por semantic-release al taggear; verificar el número que asigna el release automático.)*
 
 Este documento es el **plan vivo de remediación y evolución** de jota-gateway. Cada tarea referencia una issue de GitHub; las casillas se tachan al cerrar la issue. Se actualiza en el mismo PR que cierra la issue, o en un PR dedicado.
 
