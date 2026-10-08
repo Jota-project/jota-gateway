@@ -119,7 +119,7 @@ SQLModel table (`__tablename__ = "clients"`) with the following columns:
 
 ```python
 get_engine()            # lazy-init SQLAlchemy engine from DATABASE_URL
-create_db_and_tables()  # called once at app startup (lifespan)
+run_migrations()        # called once at app startup (lifespan) — applies Alembic migrations
 get_db_session()        # FastAPI dependency — yields a SQLModel Session
 ```
 
@@ -169,7 +169,7 @@ python3 src/cli.py delete-client <client_key>
 
 `--key` lets you import an existing token verbatim (e.g. migrating from jota-db). Omit it to generate a random key.
 
-The CLI calls `create_db_and_tables()` at startup, so it is safe to run against a fresh `data/gateway.db`.
+The CLI calls `run_migrations()` when run as a script, so it is safe to run against a fresh `data/gateway.db`.
 
 Every mutating command (`add-client`, `activate-client`, `deactivate-client`, `delete-client`) calls `db_client.invalidate(key)` after its commit, same as `admin_routes.py` (issue #123). The CLI is a separate process, though, so that only clears *its own* in-process cache — it does **not** evict a running gateway's 60s `_session_cache`. Run the CLI against a stopped gateway, or use the admin REST API for live changes.
 
@@ -405,7 +405,12 @@ Callers that cache the result of an external lookup (e.g. `DbClient._session_cac
 
 `docker-compose.yml` mounts `./data:/app/data`. The SQLite file at `data/gateway.db` lives on the host and survives container rebuilds. `data/` is in `.gitignore`.
 
-On first startup (`create_db_and_tables()` in the lifespan), the schema is created automatically if the file doesn't exist.
+On first startup (`run_migrations()` in the lifespan), the schema is created automatically if the file doesn't exist.
+
+`run_migrations()` (`src/db/database.py`, Alembic) picks one of three modes by inspecting the DB:
+- **Fresh** — no `clients` table and no `alembic_version`: `upgrade head` from scratch.
+- **Versioned** — `alembic_version` exists: `upgrade head` applies only pending migrations.
+- **Legacy stamp** — `clients` exists but `alembic_version` doesn't (schema already patched by hand with `ALTER TABLE`, as in production after the original incident): `stamp head`, no DDL executed.
 
 `get_engine()` also creates the SQLite file's parent directory if missing (`_ensure_sqlite_dir`, issue #124), so `DATABASE_URL=sqlite:///data/gateway.db` works on a clean non-Docker checkout without a manual `mkdir -p data`. In-memory and non-SQLite URLs are left untouched.
 
