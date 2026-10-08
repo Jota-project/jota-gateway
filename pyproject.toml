@@ -63,4 +63,3 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["E501", "SIM105"]
 "src/**" = ["E501"]
-

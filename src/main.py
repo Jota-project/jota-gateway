@@ -10,7 +10,7 @@ from src.api.openai_routes import router as openai_router
 from src.api.routes import router as stream_router
 from src.core.config import settings
 from src.core.request_id import RequestIdMiddleware
-from src.db.database import run_migrations
+from src.db.database import dispose_engine, run_migrations
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
@@ -77,15 +77,62 @@ async def lifespan(app: FastAPI):
         max_backoff=settings.TTS_RECONNECT_MAX_BACKOFF,
     )
 
+    # Unlike openclaw/transcriber, TTS has no lifespan-level initial connect to
+    # wire "after" — ReconnectingTTSClient starts CONNECTED by construction and
+    # only fires on_state_change on an actual transition (issue #117), so
+    # wiring it immediately can't produce a spurious first-time "restored".
+    def _on_tts_state_change(state: ConnectionState) -> None:
+        task = asyncio.create_task(client_registry.broadcast_status("tts", to_wire_state(state)))
+        _notification_tasks.add(task)
+        task.add_done_callback(_notification_tasks.discard)
+
+    tts.on_state_change = _on_tts_state_change
+
     app.state.openclaw = openclaw
     app.state.tts = tts
     app.state.turn_registry = turn_registry
     app.state.client_registry = client_registry
     app.state.session_registry = SessionRegistry()
 
-    yield
+    try:
+        yield
+    finally:
+        # 1. Drain active sessions first. Each bridge's close_all() has its
+        #    own inner bound on the _active_turn wait (SHUTDOWN_DRAIN_S, see
+        #    JotaBridge.close_all) — but the outer wait_for here uses the
+        #    same duration and starts at roughly the same time, so for a
+        #    genuinely stuck turn THIS bound is the one that actually fires:
+        #    close_all_sessions cancels a bridge's close_all() coroutine
+        #    while it's still suspended inside its own inner wait_for,
+        #    before transcriber.close()/tracker.close()/_closed=True ever
+        #    run for that session. Acceptable here — the process is exiting
+        #    right after regardless — but not something to rely on for a
+        #    mid-lifetime call to close_all_sessions, should one ever exist.
+        await client_registry.close_all_sessions(
+            status="shutdown", timeout=settings.SHUTDOWN_DRAIN_S
+        )
 
-    await openclaw.close()
+        # 2. Close OpenClaw now that active turns have drained.
+        try:
+            await openclaw.close()
+        except Exception:
+            logger.exception("Error closing OpenClaw client during shutdown")
+
+        # 3. Cancel/await the orchestrator/TTS state-change broadcast tasks
+        #    created via on_state_change above. Done *after* closing
+        #    OpenClaw (not before): closing it cancels the only background
+        #    loop that could still schedule a new one
+        #    (ReconnectingOpenClawClient's own _reconnect_task, via
+        #    _set_state()) — so nothing can add to _notification_tasks
+        #    between here and the gather below.
+        for task in list(_notification_tasks):
+            if not task.done():
+                task.cancel()
+        if _notification_tasks:
+            await asyncio.gather(*_notification_tasks, return_exceptions=True)
+
+        # 4. Dispose the DB engine last — nothing above touches the DB.
+        dispose_engine()
 
 
 app = FastAPI(

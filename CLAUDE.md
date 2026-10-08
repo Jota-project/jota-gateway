@@ -57,6 +57,7 @@ TRUSTED_PROXIES=127.0.0.1,::1            # CSV of IPs/CIDRs allowed to set X-Rea
 TRANSCRIBER_WS_URL=localhost:9000
 TTS_WS_URL=localhost:8005
 TTS_TOKEN=gateway
+TTS_AUTH_TIMEOUT_S=10.0
 
 OPENCLAW_HOST=127.0.0.1
 OPENCLAW_PORT=18789
@@ -71,6 +72,11 @@ TRANSCRIBER_RECONNECT_MAX_BACKOFF=60.0
 TRANSCRIBER_RECONNECT_MAX_DURATION=300.0
 TTS_RECONNECT_INITIAL_BACKOFF=1.0
 TTS_RECONNECT_MAX_BACKOFF=60.0
+
+HANDSHAKE_TIMEOUT_S=10.0
+TURN_TIMEOUT_S=120.0
+IDLE_TIMEOUT_S=300.0
+SHUTDOWN_DRAIN_S=30.0
 ```
 
 All service addresses are `host:port` **without protocol**. Each client injects the protocol itself (`http://`, `ws://`).
@@ -187,7 +193,9 @@ The singleton `db_client = DbClient()` is imported from this module everywhere. 
 
 ## WebSocket session lifecycle (`routes.py` → `bridge.py`)
 
-1. Client connects and sends a **Handshake** JSON:
+1. Client connects and sends a **Handshake** JSON. The initial `websocket.receive_text()` wait
+   for it is bounded by `HANDSHAKE_TIMEOUT_S` (issue #115) — a client that connects and never
+   sends anything gets closed with code 1008 instead of holding the connection open forever.
    ```json
    {
      "client_key": "...",
@@ -202,7 +210,7 @@ The singleton `db_client = DbClient()` is imported from this module everywhere. 
 4. `JotaBridge` is instantiated with client, config, WebSocket, the singleton `ReconnectingOpenClawClient` (from `app.state.openclaw`), the singleton `ReconnectingTTSClient` (from `app.state.tts`), `app.state.client_registry`, and `default_agent`.
 5. `bridge.connect_internal_services()` — starts a `ReconnectingTranscriberClient` only if `input_mode == "audio"`; registers the bridge in `ClientRegistry`. `ReconnectingTranscriberClient.connect()` never raises — a failed initial connect just leaves it in `RECONNECTING` state for `health_check()`/the background `run()` loop to handle, it no longer aborts session setup.
 6. `bridge.health_check()` — pings each microservice; **only the orchestrator is fatal** (its failure returns `False`, closing the WebSocket with code 1011 before `ready` is ever sent). Transcriber and TTS failures are both non-fatal — the session opens normally and the client is notified via `status` messages (see "Service reconnection" below).
-7. `bridge.run()` — launches concurrent tasks: `_client_input_loop` + `transcriber.run()` (listen + background reconnect) + silence watchdog.
+7. `bridge.run()` — launches concurrent tasks: `_client_input_loop` + idle watchdog + `transcriber.run()` (listen + background reconnect) + silence watchdog.
 
 ### JotaBridge data flow
 
@@ -210,7 +218,7 @@ The singleton `db_client = DbClient()` is imported from this module everywhere. 
 - **`{"type":"end"}`** → `transcriber.send_end()` (signals end of utterance)
 - **`{"type":"send","text":"..."}`** → `_call_orchestrator(text)` — creates a fresh `TTSClient` per turn, runs `pipe_tokens` + `pipe_audio` concurrently via `asyncio.gather`
 - **Barge-in**: partial transcriptions with `len >= config.barge_in_min_chars` cancel the active orchestrator turn via `_cancel_active_turn()`, which cancels the Python task and causes `OpenClawClient` to send `chat.abort` to OpenClaw. Controlled per-client by `barge_in_enabled` and `barge_in_min_chars`.
-- **Agent-initiated push**: OpenClaw sends `agent` events with `phase: "start"/"end"` and interleaved `chat` events. `FrameDispatcher` routes these to the bridge via `ClientRegistry`. `on_push_turn_start` checks `config.push_enabled` — if `False`, the push is silently dropped. Otherwise creates a TTS client, pipes audio, and sends `turn_start`/`turn_end` to the client. **Multiple agent start/end pairs collapse into one client-facing turn** (issue #84): OpenClaw emits N pairs per LLM response when the agent does tool use or multi-step reasoning, and the gateway used to forward them 1:1, flooding the client. `JotaBridge` now tracks `_push_turn_open` — the first `agent` start opens the logical turn; subsequent `agent` starts received while a turn is already open are dropped silently, and `agent` ends received with no open turn are also dropped. The client always sees exactly one `turn_start`/`turn_end` pair per push reply.
+- **Agent-initiated push**: OpenClaw sends `agent` events with `phase: "start"/"end"` and interleaved `chat` events. `FrameDispatcher` routes these to the bridge via `ClientRegistry`. `on_push_turn_start` checks `config.push_enabled` — if `False`, the push is silently dropped. Otherwise creates a TTS client, pipes audio, and sends `turn_start`/`turn_end` to the client. **Multiple agent start/end pairs collapse into one client-facing turn** (issue #84): OpenClaw emits N pairs per LLM response when the agent does tool use or multi-step reasoning, and the gateway used to forward them 1:1, flooding the client. `JotaBridge` now tracks `_push_turn_open` — the first `agent` start opens the logical turn; subsequent `agent` starts received while a turn is already open are dropped silently, and `agent` ends received with no open turn are also dropped. The client always sees exactly one `turn_start`/`turn_end` pair per push reply. **Coordination with normal turns** (issue #112): `_handle_agent_lifecycle` in `FrameDispatcher` (`src/services/openclaw/dispatcher.py`) checks `TurnRegistry.get_queue_by_session(sk)` before calling `on_push_turn_start` — if a normal `chat.send` turn's queue is already registered for that `session_key`, the `agent` start event is dropped silently instead of opening a second, duplicate client-facing turn. This mirrors the same check `_handle_chat` and `_handle_session_tool` already perform. `agent` end events are always forwarded to `on_push_turn_end` unconditionally, never gated on `TurnRegistry` state — `on_push_turn_end` already no-ops safely when no push turn is open (issue #84), and suppressing `end` too would orphan a push turn that opened before the normal turn started.
 - **Tool calls**: when the agent invokes a tool during a turn, OpenClaw emits a `session.tool`
   event (`phase: "start"` with `args`, then `phase: "result"` with `result`/`isError` — the
   intermediate `phase: "update"` streaming partials are dropped). If the client's
@@ -227,6 +235,61 @@ The singleton `db_client = DbClient()` is imported from this module everywhere. 
 - If the counter reaches `config.max_silence_turns` **consecutively** (reset to 0 whenever a transcription arrives), calls `close_all()` to terminate the session.
 - Only exits permanently when `self.transcriber.state == ConnectionState.DEGRADED` (or the transcriber was never constructed). A transient `RECONNECTING` blip — the transcriber's background reconnect loop retrying after an unexpected drop — no longer kills the watchdog; it skips silence-counting for that tick and resumes normally once the transcriber is back to `CONNECTED`. Before this fix, any drop (even a successfully-recovered one) permanently stopped silence monitoring for the rest of the session.
 - **Recovery grace baseline (issue #149):** `TranscriberClient.connect()` never resets `_last_transcription_at` — it only changes inside `listen_loop()` when a real transcription arrives. So the instant the watchdog observes `RECONNECTING → CONNECTED`, that field still holds the pre-outage timestamp; measuring `elapsed` against it would count the whole outage as silence and force-close the session within a couple of ticks of a *successful* recovery. The watchdog tracks its own `recovery_baseline` (reset to `time.monotonic()` the tick it first sees `CONNECTED` again after a drop) and measures `elapsed` against that instead, until a real new transcription supersedes it. Ongoing silence *after* recovery still counts normally — this only removes the outage duration itself from the count.
+
+### Idle watchdog
+
+`_idle_watchdog` runs as a background task for every session, launched by `run()` alongside
+`_client_input_loop` regardless of `input_mode` — unlike the silence watchdog above, it applies
+uniformly to text and audio sessions, not just audio ones.
+
+- Tracks `_last_client_activity`, updated on every inbound message in `_client_input_loop`
+  (audio bytes or text frames alike). If `IDLE_TIMEOUT_S` elapses with no inbound message at
+  all, the session is closed via `close_all()` — **with no warning sent to the client first**,
+  unlike the silence watchdog's progressive `status: degraded` notices.
+- **Gated on activity actually in flight (issue #115 follow-up):** a client can legitimately go
+  quiet while the server is still working — the orchestrator streaming a long response, or a
+  push-only consumer session that never sends anything by design. Before closing, the watchdog
+  checks `self._active_turn` (not done) and `self._push_turn_open`; if either indicates
+  something is in flight, it skips the close for that tick and re-checks again after a short
+  fixed interval (2s, matching the silence watchdog's poll interval) instead of closing or
+  resetting the full idle window. Once nothing is in flight anymore, idle-timeout behavior
+  resumes normally, measured from `_last_client_activity` as before.
+
+### Lifespan shutdown
+
+`src/main.py`'s `lifespan()` wraps everything after service construction in
+`try: yield / finally: ...` (issue #110) — the app no longer relies solely on
+Uvicorn's external cancellation to clean up. On shutdown, in order:
+
+1. **Drain active sessions** — `ClientRegistry.close_all_sessions(status="shutdown",
+   timeout=settings.SHUTDOWN_DRAIN_S)` snapshots every registered bridge and calls
+   `close_all()` on each concurrently, each individually bounded by
+   `SHUTDOWN_DRAIN_S`. Mirrors `broadcast_status`'s isolation contract — one
+   session that raises or times out never blocks or fails the others. A session
+   closed this way is recorded with `SessionRecord.status = "shutdown"` (a fourth
+   value alongside `"active"/"completed"/"error"`), visible via `GET /admin/sessions`.
+2. **Close OpenClaw** — only after step 1, so any turn still in flight when
+   shutdown began has already been given its `SHUTDOWN_DRAIN_S` window to finish
+   naturally inside `close_all()`'s own `_active_turn` wait (see `JotaBridge.close_all()`
+   above) before the orchestrator connection goes away.
+3. **Cancel and await notification tasks** — the module-level `_notification_tasks`
+   set (holding the orchestrator/TTS `on_state_change` broadcast tasks) is drained
+   *after* closing OpenClaw, not before: `ReconnectingOpenClawClient.close()` cancels
+   the only background loop that could still schedule a new one (`_reconnect_task`),
+   so nothing can add to the set once step 2 completes.
+4. **Dispose the DB engine** — `dispose_engine()` (`src/db/database.py`) disposes
+   the SQLAlchemy engine's connection pool and resets the module-level `_engine`
+   singleton to `None`, run last since nothing above touches the DB.
+
+`JotaBridge.close_all()`'s own task-cancellation loop (issue #110 follow-up)
+excludes `asyncio.current_task()` from the tasks it cancels, and awaits every
+task it does cancel instead of firing `.cancel()` and moving on. Without the
+exclusion, a watchdog (`_idle_watchdog`/`_transcription_watchdog`) that triggers
+its own session's `close_all()` would self-deliver a `CancelledError` at
+`close_all()`'s next real suspension point (e.g. awaiting `transcriber.close()`),
+aborting teardown before `tracker.close()`/`ClientRegistry.unregister()` ever ran
+— masked in practice by `bridge.run()`'s own redundant `close_all()` call in its
+`finally`, but not something the shutdown drain above can rely on.
 
 ### Session key derivation
 
@@ -275,7 +338,7 @@ The HA REST endpoint (`/v1/chat/completions`) uses `client_id="ha"` for the trus
 - **Trigger mechanism differs by service lifetime, deliberately**: OpenClaw and Transcriber hold a real socket open continuously, so losing it is an event (`on_disconnect` callback) and recovery is a background task retrying with backoff. TTS has no socket between turns by design (`TTSClient` is reconstructed every turn) — there's nothing to hold open in the background, so `ReconnectingTTSClient.connect()` is a lazy gate: if the last failure was more recent than the current backoff window, it returns `None` immediately without even attempting a socket; otherwise it tries, and records success/failure. No `DEGRADED` terminal state and no max-duration for TTS — every eligible turn always gets a fresh attempt, capped at 60s between attempts.
 - **Client notification** — every state-change path funnels through `JotaBridge.notify_service_status(service, state)`, a thin wrapper around `client_ws.send_json({"type":"status",...})`. Never a separate ad-hoc send call site.
   - **Transcriber**: `ReconnectingTranscriberClient.on_state_change` is wired *after* the session's initial `connect()` call (not before) to avoid a spurious `"restored"` notice on a normal first-time success.
-  - **TTS**: since the singleton is shared, `JotaBridge._maybe_notify_tts_state()` tracks a per-bridge `_tts_degraded_notified` flag and compares it against `app.state.tts.status().state` after each attempted turn, sending `status` only on an actual transition — avoids spamming a message on every turn while the breaker is open.
+  - **TTS** (issue #117): `ReconnectingTTSClient.on_state_change` is wired in `main.py`'s lifespan to `ClientRegistry.broadcast_status`, same pattern as the orchestrator below — no "wire after initial connect" trick needed here, since the wrapper starts `CONNECTED` by construction (no lifespan-level initial connect exists for TTS) and only fires on an actual transition (`_set_state()` no-ops if the new state equals the current one), so a normal healthy turn's `_record_success()` never re-fires a spurious `"restored"`. This replaced the old per-bridge `JotaBridge._maybe_notify_tts_state()`/`_tts_degraded_notified` polling (compared `app.state.tts.status().state` after every attempted turn) — the transition guard now lives once in the wrapper instead of once per bridge. A brand-new session starting mid-outage learns about it via `health_check()`'s pre-existing live `TTSClient.ping()` check (unchanged by #117, see below) — deliberately **not** duplicated with a second, wrapper-state-based check in `connect_internal_services()`: the wrapper's own `status()` can be stale by up to the current backoff window (up to `TTS_RECONNECT_MAX_BACKOFF`), so a second check there could show the client a stale `"reconnecting"` immediately followed by `ready.live_capabilities.tts: true` from the live probe — two conflicting signals for one outage. Same rationale the transcriber block above already documents inline ("`health_check()` already reports the initial-failure case, if any").
   - **Orchestrator**: `ClientRegistry.broadcast_status(service, state)` — wired via `openclaw.on_state_change` in `main.py`'s lifespan, after the initial `connect()` — notifies **every** connected session, not just the one attempting a turn. Closes a gap where an idle-but-connected client only learned about a drop/recovery reactively, on its next turn attempt.
 - **Never force-closes a session**: only the orchestrator remains a fatal dependency (in `health_check()`, at session start). Transcriber/TTS failures — at start or mid-session — degrade the session, they never close the WebSocket.
 - **Settings are dedicated per service** (`TRANSCRIBER_RECONNECT_*`, `TTS_RECONNECT_*`), not shared with `ORCHESTRATOR_RECONNECT_*` — see Environment variables above.
@@ -285,11 +348,11 @@ The HA REST endpoint (`/v1/chat/completions`) uses `client_id="ha"` for the trus
 
 Built once in `main.py` lifespan; stored in `app.state`.
 
-- `OpenClawClient` (`client.py`) — WebSocket v4 handshake (challenge → connect → hello-ok → **agents.list → sessions.subscribe**), persistent `_listen` task, `_keepalive_loop` (pings at 80% of `tickIntervalMs`). All events carry `sessionKey`; `stream_response()` registers a `Queue` in `TurnRegistry` per turn, sends `{"sessionKey": key}` and reads the queue until turn completion or `error` (see turn-completion note below). `connect()` is serialized by a `_connect_lock` and always tears down (`_cancel_and_close()`) the previous `_ws`/`_listener_task`/`_keepalive_task` before opening a new socket — otherwise the old listener could start racing the new handshake for frames, or dispatch stale frames to the shared `TurnRegistry`, once it actually got scheduled to run (issue #103).
+- `OpenClawClient` (`client.py`) — WebSocket v4 handshake (challenge → connect → hello-ok → **agents.list → sessions.subscribe**), persistent `_listen` task, `_keepalive_loop` (pings at 80% of `tickIntervalMs`). All events carry `sessionKey`; `stream_response()` registers a `Queue` in `TurnRegistry` per turn, sends `{"sessionKey": key}` and reads the queue until turn completion or `error` (see turn-completion note below). `connect()` is serialized by a `_connect_lock` and always tears down (`_cancel_and_close()`) the previous `_ws`/`_listener_task`/`_keepalive_task` before opening a new socket — otherwise the old listener could start racing the new handshake for frames, or dispatch stale frames to the shared `TurnRegistry`, once it actually got scheduled to run (issue #103). Each `queue.get()` wait inside that loop is bounded by `TURN_TIMEOUT_S` (issue #115) with idle-reset semantics — the timeout resets on every event received, so a turn making steady progress can run indefinitely; only a genuine gap longer than `TURN_TIMEOUT_S` between events yields a `turn_timeout` error.
 - `ReconnectingOpenClawClient` (`reconnecting.py`) — wraps `OpenClawClient`; on unexpected disconnect calls `on_disconnect` hook, retries with exponential backoff up to `ORCHESTRATOR_RECONNECT_MAX_DURATION` seconds; after that enters DEGRADED state. `stream_response()` returns an `error` event immediately when not CONNECTED. `trigger_reconnect()` is the admin-facing entry point (`POST /admin/orchestrators/{name}/reconnect`) — it coalesces onto any reconnect already in flight via the same `_reconnect_task`/job-id tracking the background loop uses, and returns immediately with a job id rather than blocking on the handshake, so an admin-triggered reconnect can never race the background loop into opening two sockets. **Circuit breaker (issue #102):** `_reconnect_exhausted` is set once `_reconnect_loop()` hits `max_duration` and enters DEGRADED; while set, `_ensure_reconnecting()` (called from `ping()`, `stream_response()`, and `on_disconnect`) returns immediately without spawning a new `_reconnect_task`, so DEGRADED no longer relaunches a full reconnect window on every probe/request. It's cleared only by a successful `connect()` or by `trigger_reconnect()` — so an admin-triggered reconnect always gets a fresh attempt even mid-DEGRADED. **Nested-generator cleanup (issue #150):** `stream_response()` wraps its own iteration of the inner `OpenClawClient.stream_response()` in its own `contextlib.aclosing()`, not just a plain `async for`. In production `orchestrator` (in `call_orchestrator()`) is always this class, so the `aclosing()` PR #147 added to `call_orchestrator()` only closes *this* generator — without this inner `aclosing()`, closing it early (e.g. `call_orchestrator` raising on an `error` event) throws `GeneratorExit` at this generator's own suspended `yield`, which propagates straight out without ever resuming/closing the inner `OpenClawClient` generator, so its `finally: self._turn_registry.unregister(...)` gets deferred to the asyncgen GC finalizer instead of running synchronously — reopening the exact TurnRegistry race #99/#147 closed, one layer removed.
 - `TurnRegistry` (`registry.py`) — dual-index dict (`session_key → Queue`, `req_id → session_key`); `FrameDispatcher` uses it to route response frames to the correct waiting `stream_response()` call.
 - `ClientRegistry` (`registry.py`) — maps `client_id → JotaBridge`; used by `FrameDispatcher` to deliver agent-initiated push events to the right session.
-- `FrameDispatcher` (`dispatcher.py`) — called by `_listen` for every incoming frame; routes `res` frames to `TurnRegistry`, `chat` events to active turn queue or bridge push hooks, `agent` phase events to `on_push_turn_start`/`on_push_turn_end`, `session.tool` events (`phase: "start"`/`"result"`, `"update"` dropped) to the active turn queue or `bridge.deliver_push_tool_call`.
+- `FrameDispatcher` (`dispatcher.py`) — called by `_listen` for every incoming frame; routes `res` frames to `TurnRegistry`, `chat` events to active turn queue or bridge push hooks, `agent` phase events to `on_push_turn_start`/`on_push_turn_end` (`start` suppressed when a normal turn's queue is registered for that `session_key`, #112 — `end` is always forwarded unconditionally, since `on_push_turn_end` already no-ops safely when no push turn is open), `session.tool` events (`phase: "start"`/`"result"`, `"update"` dropped) to the active turn queue or `bridge.deliver_push_tool_call`.
 - `GatewayInfo` / `AgentInfo` (`models.py`) — `default_agent_id`/`tick_interval_ms`/etc. come from the `hello-ok` payload; the **agent roster itself no longer does** (OpenClaw server 2026.6.11+ stopped embedding it in `hello-ok`'s `snapshot`). `OpenClawClient.connect()` fetches it explicitly via `agents.list` right after `hello-ok` and merges it in via `GatewayInfo.update_agents_from_list()`. Without this, `has_agent()` silently rejects every named agent — clients that omit `agent` in the Handshake are unaffected, since the fallback `default_agent_id` still comes from `sessionDefaults`.
 - `ToolCallEvent` (`models.py`) — parsed from a `session.tool` event's `data` sub-object; only `start`/`result` phases are surfaced (`update` streaming-partials are dropped). Forwarded to clients as a `{"type": "tool_call", ...}` WS message only when `ClientConfig.tool_calls_enabled` is `True` (default `False`).
 

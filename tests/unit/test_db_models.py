@@ -36,11 +36,10 @@ def test_defaults():
 
 def test_client_key_unique():
     engine = _mem_engine()
-    with pytest.raises(IntegrityError):
-        with Session(engine) as s:
-            s.add(ClientRecord(name="A", client_key="dup"))
-            s.add(ClientRecord(name="B", client_key="dup"))
-            s.commit()
+    with pytest.raises(IntegrityError), Session(engine) as s:
+        s.add(ClientRecord(name="A", client_key="dup"))
+        s.add(ClientRecord(name="B", client_key="dup"))
+        s.commit()
 
 
 def test_allowed_agents_json():

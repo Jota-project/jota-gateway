@@ -214,6 +214,20 @@ multiple pairs now sees exactly **one** `turn_start`/`turn_end` pair per user me
 the agent does tool-use or multi-step reasoning. The trade-off: the client cannot distinguish
 intermediate reasoning steps from a single response (which it never needed to anyway).
 
+**jota-gateway mitigation extended (fix for issue #112, 2026-08-04)**: the #84 mitigation above
+only collapsed *nested* agent pairs into one push turn — it never asked whether a **normal**
+`chat.send` turn was already active for that `session_key`. `FrameDispatcher._handle_agent_lifecycle`
+was the one event handler (of three: `_handle_chat`, `_handle_session_tool`,
+`_handle_agent_lifecycle`) that didn't check `TurnRegistry.get_queue_by_session()` first, so an
+`agent` start/end pair could open a *second*, fully independent client-facing turn on top of a
+normal one already in flight — reproduced live 2026-08-02 with the simplest possible prompt
+("Responde solo con la palabra: hola"): two `turn_start` events, and the `token`/`turn_end`
+frames arrived with mismatched `turn_id`s. Fixed by adding the same `get_queue_by_session()`
+guard the other two handlers already had: while a normal turn's queue is registered for a
+`session_key`, `agent` lifecycle events are dropped entirely (no push turn opens or closes) —
+that turn's `chat`/`session.tool` content keeps reaching the client normally, only the
+duplicate lifecycle framing is suppressed.
+
 **Consequence for any code that consumes jota-gateway's client WS protocol** (and for anything
 reading OpenClaw's own frames directly): do not assume "one message in → one turn out." Track
 frames by `turn_id`/`sessionKey`, not by "the next `turn_end` I see." `tests/e2e/ws_helpers.py`'s

@@ -14,7 +14,7 @@ class SessionRecord:
     output_mode: list[str]
     started_at: datetime
     ended_at: datetime | None
-    status: Literal["active", "completed", "error"]
+    status: Literal["active", "completed", "error", "shutdown"]
     events: "list[PipelineEvent]"
     tracker: "PipelineTracker"
 
@@ -43,7 +43,9 @@ class SessionRegistry:
         return record
 
     def close(
-        self, session_id: str, status: Literal["active", "completed", "error"] = "completed"
+        self,
+        session_id: str,
+        status: Literal["active", "completed", "error", "shutdown"] = "completed",
     ) -> None:
         record = self._sessions.get(session_id)
         if record:

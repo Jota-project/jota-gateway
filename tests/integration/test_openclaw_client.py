@@ -8,7 +8,11 @@ import pytest
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
-from src.services.openclaw.registry import TURN_IN_PROGRESS_ERROR, ClientRegistry, TurnRegistry
+from src.services.openclaw.registry import (
+    TURN_IN_PROGRESS_ERROR,
+    ClientRegistry,
+    TurnRegistry,
+)
 from src.services.reconnection import ConnectionState
 
 HELLO_OK_PAYLOAD = {
@@ -423,6 +427,64 @@ async def test_stream_response_completes_without_second_res(fake_ws):
     assert len(res_frames_after_started) == 1  # only the request itself was sent by us
     assert events[-1].type == "status"
     assert events[-1].content == "done"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_stream_response_times_out_when_no_events_arrive(monkeypatch):
+    """#115: if OpenClaw acks chat.send but never sends another frame for this
+    turn, queue.get() must not hang forever — TURN_TIMEOUT_S bounds it, and
+    the existing chat.abort-on-anomalous-exit `finally` fires."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.05)
+
+    fake_ws = SmartFakeWS({"agent:main:client-a": []})  # ack only, never a chat event
+    client = await connected_client(fake_ws)
+
+    async def consume():
+        events = []
+        async for event in client.stream_response(
+            "hola", "client-a", session_key="agent:main:client-a"
+        ):
+            events.append(event)
+        return events
+
+    events = await asyncio.wait_for(consume(), timeout=1.0)
+
+    assert events[-1].type == "error"
+    assert events[-1].content == "turn_timeout"
+
+    aborts = [f for f in fake_ws.sent_frames if f.get("method") == "chat.abort"]
+    assert len(aborts) == 1
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_stream_response_idle_reset_survives_slow_but_active_turn(monkeypatch):
+    """A turn with gaps below TURN_TIMEOUT_S between events must complete
+    normally even if its total duration exceeds TURN_TIMEOUT_S — the timeout
+    resets on every event, it is not a hard ceiling from turn start."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.05)
+
+    fake_ws = SmartFakeWS(
+        {"agent:main:client-a": ["Hola ", "que ", "tal ", "mundo"]},
+        chat_response_delay=0.03,  # each gap < TURN_TIMEOUT_S, total > TURN_TIMEOUT_S
+    )
+    client = await connected_client(fake_ws)
+
+    events = []
+    async for event in client.stream_response(
+        "hola", "client-a", session_key="agent:main:client-a"
+    ):
+        events.append(event)
+
+    assert events[-1].type == "status"
+    assert events[-1].content == "done"
+    tokens = [e.content for e in events if e.type == "token"]
+    assert tokens == ["Hola ", "que ", "tal ", "mundo"]
     await client.close()
 
 

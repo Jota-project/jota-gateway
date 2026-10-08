@@ -109,3 +109,21 @@ def test_run_migrations_does_not_disable_existing_loggers(tmp_path, monkeypatch)
     database.run_migrations()
 
     assert probe_logger.disabled is False
+
+
+def test_dispose_engine_disposes_and_resets_to_none(tmp_path, monkeypatch):
+    db_path = tmp_path / "dispose.db"
+    _point_at(monkeypatch, db_path)
+
+    engine = database.get_engine()
+    assert database._engine is engine
+
+    database.dispose_engine()
+
+    assert database._engine is None
+
+
+def test_dispose_engine_is_a_noop_when_never_initialized(monkeypatch):
+    monkeypatch.setattr(database, "_engine", None)
+    database.dispose_engine()  # must not raise
+    assert database._engine is None

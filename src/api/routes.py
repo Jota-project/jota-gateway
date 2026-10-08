@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -6,6 +7,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from src.core.agent_policy import AgentPolicyError, resolve_agent
+from src.core.config import settings
 from src.core.exceptions import ClientInactive, ClientNotFound
 from src.core.logging import fingerprint_key
 from src.core.network import resolve_client_ip
@@ -25,7 +27,9 @@ async def gateway_websocket(websocket: WebSocket):
 
     # 1. FASE DE HANDSHAKE INITIAL
     try:
-        raw_msg = await websocket.receive_text()
+        raw_msg = await asyncio.wait_for(
+            websocket.receive_text(), timeout=settings.HANDSHAKE_TIMEOUT_S
+        )
         msg_data = json.loads(raw_msg)
         handshake = Handshake(**msg_data)
     except (json.JSONDecodeError, ValidationError) as e:
@@ -33,6 +37,10 @@ async def gateway_websocket(websocket: WebSocket):
         await websocket.close(
             code=1008, reason="Handshake invalido. Se esperaba JSON de configuración."
         )
+        return
+    except TimeoutError:
+        logger.warning("Handshake no recibido dentro de HANDSHAKE_TIMEOUT_S.")
+        await websocket.close(code=1008, reason="Handshake timeout")
         return
     except WebSocketDisconnect:
         logger.info("Cliente desconectado antes o durante el handshake.")
@@ -116,7 +124,8 @@ async def gateway_websocket(websocket: WebSocket):
             return
 
         # 3.5 HEALTH CHECK — verifica disponibilidad de servicios antes de abrir la sesión
-        if not await bridge.health_check():
+        live_capabilities = await bridge.health_check()
+        if live_capabilities is None:
             logger.warning(f"[{client.id}] Health check falló. Cerrando sesión.")
             await websocket.close(code=1011, reason="Servicio crítico no disponible.")
             return
@@ -131,11 +140,12 @@ async def gateway_websocket(websocket: WebSocket):
                     "agent": resolved_agent,
                     "input_mode": handshake.input_mode,
                     "output_mode": handshake.output_mode,
-                    "capabilities": {
+                    "requested_capabilities": {
                         "barge_in": config.barge_in_enabled,
                         "tts": "audio" in handshake.output_mode,
                         "transcriber": handshake.input_mode == "audio",
                     },
+                    "live_capabilities": live_capabilities,
                 }
             )
         except Exception as e:

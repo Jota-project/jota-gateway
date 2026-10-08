@@ -8,5 +8,6 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+    stop_grace_period: 45s
     volumes:
       - ./data:/app/data

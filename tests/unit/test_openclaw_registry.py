@@ -127,9 +127,46 @@ def test_client_registry_register_get():
 
 def test_client_registry_unregister():
     reg = ClientRegistry()
-    reg.register("hab_sito", object())
-    reg.unregister("hab_sito")
+    bridge = object()
+    reg.register("hab_sito", bridge)
+    reg.unregister("hab_sito", bridge)
     assert reg.get("hab_sito") is None
+
+
+def test_client_registry_unregister_stale_bridge_keeps_newer():
+    """Regression for #113: a reconnect race registers a new bridge for the
+    same client_id (overwriting the old one). When the OLD bridge later closes
+    and calls unregister(), it must not evict the NEW bridge that now owns that
+    client_id — otherwise the live session stops receiving push events and
+    status broadcasts."""
+    reg = ClientRegistry()
+    bridge_a = object()
+    bridge_b = object()
+    reg.register("client-x", bridge_a)
+    reg.register("client-x", bridge_b)  # new session overwrites the old one
+
+    # Old bridge (A) tears down late and unregisters itself.
+    reg.unregister("client-x", bridge_a)
+
+    # The new bridge (B) must survive.
+    assert reg.get("client-x") is bridge_b
+
+
+def test_client_registry_unregister_is_noop_for_any_superseded_owner():
+    """After multiple reconnects (A→B→C), a late unregister() from ANY former
+    owner (A or B) must be a no-op — only the current owner (C) can evict."""
+    reg = ClientRegistry()
+    bridge_a, bridge_b, bridge_c = object(), object(), object()
+    reg.register("client-x", bridge_a)
+    reg.register("client-x", bridge_b)
+    reg.register("client-x", bridge_c)
+
+    reg.unregister("client-x", bridge_a)  # oldest, long gone
+    reg.unregister("client-x", bridge_b)  # superseded too
+    assert reg.get("client-x") is bridge_c
+
+    reg.unregister("client-x", bridge_c)  # current owner tears down
+    assert reg.get("client-x") is None
 
 
 def test_client_registry_missing_returns_none():
@@ -161,3 +198,57 @@ async def test_broadcast_status_one_failure_does_not_block_others():
     await reg.broadcast_status("orchestrator", "unavailable")  # must not raise
 
     bridge_b.notify_service_status.assert_awaited_once_with("orchestrator", "unavailable")
+
+
+async def test_close_all_sessions_awaits_each_bridge_with_status():
+    reg = ClientRegistry()
+    bridge_a = AsyncMock()
+    bridge_b = AsyncMock()
+    reg.register("a", bridge_a)
+    reg.register("b", bridge_b)
+
+    await reg.close_all_sessions(status="shutdown", timeout=1.0)
+
+    bridge_a.close_all.assert_awaited_once_with(status="shutdown")
+    bridge_b.close_all.assert_awaited_once_with(status="shutdown")
+
+
+async def test_close_all_sessions_empty_registry_returns_immediately():
+    reg = ClientRegistry()
+    await reg.close_all_sessions(status="shutdown", timeout=1.0)  # must not raise
+
+
+async def test_close_all_sessions_bounds_a_hanging_bridge_and_still_drains_others():
+    import time
+
+    reg = ClientRegistry()
+    gate = asyncio.Event()
+
+    async def _hang(status):
+        await gate.wait()
+
+    hanging_bridge = AsyncMock()
+    hanging_bridge.close_all.side_effect = _hang
+    fast_bridge = AsyncMock()
+    reg.register("hanging", hanging_bridge)
+    reg.register("fast", fast_bridge)
+
+    start = time.monotonic()
+    await asyncio.wait_for(reg.close_all_sessions(status="shutdown", timeout=0.05), timeout=2.0)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 0.5, f"close_all_sessions took {elapsed:.2f}s — timeout not applied per-bridge"
+    fast_bridge.close_all.assert_awaited_once_with(status="shutdown")
+
+
+async def test_close_all_sessions_one_failure_does_not_block_others():
+    reg = ClientRegistry()
+    failing_bridge = AsyncMock()
+    failing_bridge.close_all.side_effect = RuntimeError("boom")
+    ok_bridge = AsyncMock()
+    reg.register("failing", failing_bridge)
+    reg.register("ok", ok_bridge)
+
+    await reg.close_all_sessions(status="shutdown", timeout=1.0)  # must not raise
+
+    ok_bridge.close_all.assert_awaited_once_with(status="shutdown")

@@ -1,7 +1,9 @@
 """Tests para WebSocket handshake (/ws/stream)."""
 
 import logging
+import queue
 import re
+import threading
 from uuid import UUID
 
 import pytest
@@ -19,10 +21,52 @@ def _assert_request_id(message: str) -> None:
 
 def test_malformed_json_closes_ws(client):
     """JSON malformado como primer mensaje → WS se cierra (código 1008)."""
-    with pytest.raises(Exception):
-        with client.websocket_connect("/ws/stream") as ws:
-            ws.send_text("not-json{{")
-            ws.receive_text()  # debe lanzar excepción al recibir close frame
+    with pytest.raises(Exception), client.websocket_connect("/ws/stream") as ws:
+        ws.send_text("not-json{{")
+        ws.receive_text()  # debe lanzar excepción al recibir close frame
+
+
+def test_handshake_timeout_closes_ws(client, monkeypatch):
+    """Cliente conecta pero nunca manda el JSON de handshake → cierre 1008
+    tras HANDSHAKE_TIMEOUT_S (issue #115).
+
+    Bounded via a daemon worker thread + queue.get(timeout=...), not
+    pytest-timeout (not a dependency of this project — flagging rather than
+    adding one). TestClient's websocket helpers are synchronous, so
+    ws.receive_text() can't be wrapped in asyncio.wait_for the way the other
+    three bounded-deadline mechanisms' tests are. If the HANDSHAKE_TIMEOUT_S
+    enforcement in routes.py were ever reverted, the server would never close
+    this idle connection and a plain `ws.receive_text()` call would block
+    forever, hanging the whole test run instead of failing. Running it on a
+    daemon thread means an actual regression still fails fast here (5s,
+    generous relative to HANDSHAKE_TIMEOUT_S=0.05s below) — the abandoned
+    thread doesn't block interpreter exit since it's a daemon.
+    """
+    monkeypatch.setattr(settings, "HANDSHAKE_TIMEOUT_S", 0.05)
+    with client.websocket_connect("/ws/stream") as ws:
+        result: queue.Queue = queue.Queue(maxsize=1)
+
+        def _receive():
+            try:
+                ws.receive_text()  # nunca mandamos nada — debe llegar el close frame
+                result.put(("ok", None))
+            except Exception as exc:
+                result.put(("exc", exc))
+
+        threading.Thread(target=_receive, daemon=True).start()
+        try:
+            kind, _exc = result.get(timeout=5.0)
+        except queue.Empty:
+            pytest.fail(
+                "ws.receive_text() did not return within 5s — HANDSHAKE_TIMEOUT_S "
+                "enforcement in routes.py appears to have regressed (the server "
+                "never closed a connection that never sent a handshake)."
+            )
+        if kind == "ok":
+            pytest.fail(
+                "expected ws.receive_text() to raise once the server closes the "
+                "connection on handshake timeout, but it returned normally"
+            )
 
 
 def test_invalid_client_key_log_is_safe_and_correlatable(client, caplog, monkeypatch):
@@ -31,7 +75,7 @@ def test_invalid_client_key_log_is_safe_and_correlatable(client, caplog, monkeyp
     monkeypatch.setattr(settings, "TRUSTED_PROXIES", "127.0.0.1,::1")
 
     # Use a mock to capture the warning call since caplog isn't capturing
-    import unittest.mock as mock
+    from unittest import mock
 
     warning_calls = []
 
@@ -72,15 +116,14 @@ def test_invalid_client_key_log_is_safe_and_correlatable(client, caplog, monkeyp
 
 def test_missing_required_handshake_field_closes_ws(client):
     """Handshake sin campo requerido (input_mode) → WS se cierra."""
-    with pytest.raises(Exception):
-        with client.websocket_connect("/ws/stream") as ws:
-            ws.send_json({"client_key": VALID_KEY, "output_mode": ["text"]})
-            ws.receive_text()
+    with pytest.raises(Exception), client.websocket_connect("/ws/stream") as ws:
+        ws.send_json({"client_key": VALID_KEY, "output_mode": ["text"]})
+        ws.receive_text()
 
 
 def test_valid_text_mode_handshake_connection_stays_open(client, caplog):
     """Handshake válido — gateway responde con ready y la conexión permanece abierta."""
-    import unittest.mock as mock
+    from unittest import mock
 
     info_calls = []
 
@@ -102,7 +145,7 @@ def test_valid_text_mode_handshake_connection_stays_open(client, caplog):
             assert ready["output_mode"] == ["text"]
             assert "session_id" in ready
             assert "agent" in ready
-            assert "capabilities" in ready
+            assert "requested_capabilities" in ready
             ws.send_text('{"type":"end"}')
 
     handshake_msgs = [m for m in info_calls if "Handshake verificado" in m]
@@ -115,3 +158,96 @@ def test_valid_text_mode_handshake_connection_stays_open(client, caplog):
 
     # Also verify the full caplog text doesn't contain the key
     assert VALID_KEY not in caplog.text
+
+
+def test_ready_carries_requested_and_live_capabilities_when_audio(client, monkeypatch):
+    """#114 — `ready` divide capabilities en requested/live."""
+    from unittest.mock import AsyncMock
+
+    from src.services.reconnection import ConnectionState
+
+    # TTS ping returns False (degraded), transcriber state is CONNECTED
+    monkeypatch.setattr(
+        "src.services.bridge.TTSClient.ping",
+        AsyncMock(return_value=False),
+    )
+
+    # Mock transcriber state directly on the bridge after it's created
+    # by patching the ReconnectingTranscriberClient class to report CONNECTED
+    class FakeTranscriber:
+        state = ConnectionState.CONNECTED
+
+        async def connect(self, *, language: str, vad_thold: float, **kw):
+            pass
+
+        async def run(self):
+            pass
+
+        async def close(self):
+            pass
+
+    def fake_transcriber_factory(*a, **kw):
+        return FakeTranscriber()
+
+    monkeypatch.setattr(
+        "src.services.bridge.ReconnectingTranscriberClient",
+        fake_transcriber_factory,
+    )
+
+    with client.websocket_connect("/ws/stream") as ws:
+        ws.send_json(
+            {
+                "client_key": VALID_KEY,
+                "input_mode": "audio",
+                "output_mode": ["audio", "text"],
+            }
+        )
+        frames = []
+        for _ in range(10):
+            try:
+                frames.append(ws.receive_json())
+            except Exception:
+                break
+            if any(f.get("type") == "ready" for f in frames):
+                break
+        ready = next(f for f in frames if f.get("type") == "ready")
+
+    assert "capabilities" not in ready
+    assert ready["requested_capabilities"] == {
+        "barge_in": True,
+        "tts": True,
+        "transcriber": True,
+    }
+    assert ready["live_capabilities"] == {
+        "barge_in": True,
+        "tts": False,
+        "transcriber": True,
+    }
+    status_before_ready = [
+        f for f in frames if f.get("type") == "status" and f.get("service") == "tts"
+    ]
+    assert status_before_ready, "Debe haber un status tts unavailable antes de ready"
+
+
+def test_ready_uses_both_sections_for_text_only_handshake(client):
+    with client.websocket_connect("/ws/stream") as ws:
+        ws.send_json(
+            {
+                "client_key": VALID_KEY,
+                "input_mode": "text",
+                "output_mode": ["text"],
+            }
+        )
+        ready = ws.receive_json()
+
+    assert ready["type"] == "ready"
+    assert ready["requested_capabilities"] == {
+        "barge_in": True,
+        "tts": False,
+        "transcriber": False,
+    }
+    assert ready["live_capabilities"] == {
+        "barge_in": False,
+        "tts": False,
+        "transcriber": False,
+    }

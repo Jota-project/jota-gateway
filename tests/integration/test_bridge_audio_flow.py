@@ -132,25 +132,24 @@ def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(
     mock_reg.connect = _AM()
     mock_reg.close = _AM()
 
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws/stream") as ws:
-            ws.send_json(HANDSHAKE_AUDIO)
-            ws.send_bytes(b"\x00" * 512)  # PCM fake
-            # Esperar transcripción final (nuevo protocolo: gateway no auto-despacha)
-            for _ in range(10):
-                msg = ws.receive_json()
-                if msg.get("type") == "transcription":
-                    break
-            assert msg["type"] == "transcription"
-            assert msg["text"] == "hola desde audio"
-            # Cliente confirma y envía al orquestador
-            ws.send_json({"type": "send", "text": msg["text"]})
-            # Esperar token del orquestador
-            for _ in range(10):
-                msg = ws.receive_json()
-                if msg.get("type") == "token":
-                    break
-            assert msg["type"] == "token"
+    with TestClient(app) as client, client.websocket_connect("/ws/stream") as ws:
+        ws.send_json(HANDSHAKE_AUDIO)
+        ws.send_bytes(b"\x00" * 512)  # PCM fake
+        # Esperar transcripción final (nuevo protocolo: gateway no auto-despacha)
+        for _ in range(10):
+            msg = ws.receive_json()
+            if msg.get("type") == "transcription":
+                break
+        assert msg["type"] == "transcription"
+        assert msg["text"] == "hola desde audio"
+        # Cliente confirma y envía al orquestador
+        ws.send_json({"type": "send", "text": msg["text"]})
+        # Esperar token del orquestador
+        for _ in range(10):
+            msg = ws.receive_json()
+            if msg.get("type") == "token":
+                break
+        assert msg["type"] == "token"
 
     assert called_with_text.get("text") == "hola desde audio"
 

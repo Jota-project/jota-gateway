@@ -9,6 +9,7 @@ first call's status must win.
 """
 
 import asyncio
+import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -104,4 +105,188 @@ async def test_close_all_completes_teardown_after_earlier_call_is_interrupted(br
     bridge._push_tts = None
     await bridge.close_all()
 
+    bridge.tracker._registry.close.assert_called_once()
+
+
+async def test_late_close_of_old_bridge_keeps_reconnected_session(mock_tracker):
+    """Issue #113 reconnect race, end to end through JotaBridge.close_all().
+
+    A client disconnects and reconnects: the new session registers a second
+    bridge under the SAME client_id, overwriting the old one in ClientRegistry.
+    When the old bridge finally tears down (close_all → unregister) it must not
+    evict the live new bridge — otherwise the reconnected client silently stops
+    receiving push events and status broadcasts.
+    """
+    registry = ClientRegistry()
+
+    def _make_bridge():
+        return JotaBridge(
+            client=_CLIENT,
+            config=_CONFIG,
+            client_ws=AsyncMock(),
+            orchestrator=AsyncMock(),
+            tts=AsyncMock(),
+            tracker=mock_tracker,
+            handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text"]),
+            client_registry=registry,
+            default_agent="main",
+        )
+
+    old_bridge = _make_bridge()
+    new_bridge = _make_bridge()
+    registry.register(old_bridge.client_id, old_bridge)
+    registry.register(new_bridge.client_id, new_bridge)  # reconnect overwrites
+
+    # Old bridge tears down late.
+    await old_bridge.close_all()
+
+    # The reconnected session survives...
+    assert registry.get(new_bridge.client_id) is new_bridge
+
+    # ...and still receives status broadcasts (old bridge's ws must not).
+    await registry.broadcast_status("orchestrator", "restored")
+    new_bridge.client_ws.send_json.assert_awaited_once_with(
+        {"type": "status", "service": "orchestrator", "state": "restored"}
+    )
+    old_bridge.client_ws.send_json.assert_not_awaited()
+
+
+async def test_close_all_bounds_wait_on_hanging_active_turn(bridge, monkeypatch):
+    """#115: si _active_turn nunca termina, close_all() no debe colgarse —
+    lo cancela tras SHUTDOWN_DRAIN_S en vez de esperar para siempre.
+
+    This test discriminates fixed vs unfixed code by measuring elapsed time:
+    - With the fix (asyncio.wait_for bound): completes in ~0.05s
+    - Without the fix (unbounded await): would hang until outer safety net times out
+    Assertion: elapsed time proves the bound was applied, not just that the
+    task was cancelled eventually by something else."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "SHUTDOWN_DRAIN_S", 0.05)
+
+    gate = asyncio.Event()
+
+    async def _blocking():
+        await gate.wait()
+
+    hanging_turn = asyncio.create_task(_blocking())
+    bridge._active_turn = hanging_turn
+
+    start = time.monotonic()
+    # Outer safety net (generous limit to prevent test from hanging forever,
+    # but not the thing that should bound close_all()).
+    await asyncio.wait_for(bridge.close_all(), timeout=2.0)
+    elapsed = time.monotonic() - start
+
+    # With the fix, close_all() respects SHUTDOWN_DRAIN_S=0.05s and returns quickly.
+    # Without the fix, it would await forever, and this assertion would fail.
+    assert elapsed < 0.5, f"close_all() took {elapsed:.2f}s — likely unbounded"
+    assert hanging_turn.cancelled()
+
+
+async def test_close_all_does_not_cancel_turn_that_finishes_before_drain(bridge, monkeypatch):
+    """Caso de control: un turno que termina por sí solo antes del drain no
+    se ve afectado por el cambio."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "SHUTDOWN_DRAIN_S", 1.0)
+
+    async def _quick():
+        return "done"
+
+    quick_turn = asyncio.create_task(_quick())
+    bridge._active_turn = quick_turn
+
+    await asyncio.wait_for(bridge.close_all(), timeout=1.0)
+
+    assert quick_turn.done()
+    assert not quick_turn.cancelled()
+
+
+async def test_close_all_completes_when_called_from_its_own_tracked_task(bridge):
+    """A watchdog task (_idle_watchdog/_transcription_watchdog) that triggers
+    its own session's close_all() must not be cancelled by close_all()'s own
+    task-cancellation loop — self-cancellation delivers a CancelledError into
+    close_all() at its next real suspension point (awaiting the transcriber's
+    close(), here), aborting teardown before tracker.close()/registry.close()
+    ever run."""
+
+    class _SlowTranscriber:
+        async def close(self):
+            await asyncio.sleep(0)  # forces a genuine event-loop checkpoint
+
+    bridge.transcriber = _SlowTranscriber()
+
+    async def _self_closing_watchdog():
+        await bridge.close_all()
+
+    watchdog_task = asyncio.create_task(_self_closing_watchdog())
+    bridge.tasks.append(watchdog_task)
+
+    await asyncio.wait_for(watchdog_task, timeout=1.0)  # must not raise CancelledError
+
+    assert bridge._closed is True
+    bridge.tracker._registry.close.assert_called_once()
+
+
+async def test_close_all_cancels_and_awaits_other_tracked_tasks(bridge):
+    """close_all() must not just call .cancel() and move on — it must await
+    the cancelled tasks so none are left dangling when it returns."""
+    finished = False
+
+    async def _long_task():
+        nonlocal finished
+        try:
+            await asyncio.sleep(10)
+        finally:
+            finished = True
+
+    task = asyncio.create_task(_long_task())
+    bridge.tasks.append(task)
+
+    # Let the task start running before we call close_all()
+    await asyncio.sleep(0)
+
+    await bridge.close_all()
+
+    assert task.done()
+    assert finished is True
+
+
+async def test_close_all_absorbs_external_cancellation_at_tasks_gather(bridge):
+    """A cancellation delivered to the CALLER while close_all() is awaiting the
+    asyncio.gather(...) of its cancelled watcher tasks must not escape.
+
+    asyncio.gather(return_exceptions=True) still re-raises CancelledError if
+    the awaiting task itself is cancelled at that moment. This is exactly what
+    happens when starlette's TestClient/uvicorn cancel the WebSocket endpoint
+    task right after ws.close() — the exit-stack cancellation lands while
+    close_all() is suspended on this gather (issue #115's _idle_watchdog added
+    a long-lived cancellable task that makes the window real), and the
+    CancelledError propagates out through run()'s finally, aborting teardown.
+    close_all() must absorb it so tracker.close()/_closed=True still run, and
+    the error must not reach the caller."""
+    parent = asyncio.current_task()
+    cancelled = False
+
+    async def _long_watchdog():
+        nonlocal cancelled
+        try:
+            await asyncio.sleep(3600)
+        finally:
+            cancelled = True
+            # The child's cancellation completes while the caller is already
+            # suspended awaiting the gather — cancelling the caller here lands
+            # the CancelledError at that exact await, mirroring an external
+            # task.cancel() from the server/test framework.
+            parent.cancel()
+
+    task = asyncio.create_task(_long_watchdog())
+    bridge.tasks.append(task)
+    await asyncio.sleep(0)  # let the watchdog reach its await
+
+    await bridge.close_all()  # must not raise CancelledError
+
+    assert cancelled is True
+    assert bridge._closed is True
     bridge.tracker._registry.close.assert_called_once()

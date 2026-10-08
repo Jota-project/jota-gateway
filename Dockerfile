@@ -21,4 +21,4 @@ COPY migrations/ /app/migrations/
 EXPOSE 8004
 
 # Comando de inicio usando uvicorn. Levantamos en el host general para que Docker pueda mapearlo.
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8004"]
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8004", "--timeout-graceful-shutdown", "35"]

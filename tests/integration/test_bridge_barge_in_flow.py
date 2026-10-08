@@ -154,43 +154,42 @@ def test_disabled_barge_in_does_not_interrupt_in_flight_response(
 
     received_types = []
 
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws/stream") as ws:
-            ws.send_json(HANDSHAKE_AUDIO)
-            ws.send_bytes(b"\x00" * 512)  # chunk 1 -> final transcription
+    with TestClient(app) as client, client.websocket_connect("/ws/stream") as ws:
+        ws.send_json(HANDSHAKE_AUDIO)
+        ws.send_bytes(b"\x00" * 512)  # chunk 1 -> final transcription
 
-            msg = None
-            for _ in range(10):
-                msg = ws.receive_json()
-                if msg.get("type") == "transcription":
-                    break
-            assert msg["type"] == "transcription"
-            assert msg["text"] == "hola audio"
+        msg = None
+        for _ in range(10):
+            msg = ws.receive_json()
+            if msg.get("type") == "transcription":
+                break
+        assert msg["type"] == "transcription"
+        assert msg["text"] == "hola audio"
 
-            ws.send_json({"type": "send", "text": msg["text"]})  # starts the turn
+        ws.send_json({"type": "send", "text": msg["text"]})  # starts the turn
 
-            msg = ws.receive_json()  # turn_start
-            assert msg["type"] == "turn_start"
+        msg = ws.receive_json()  # turn_start
+        assert msg["type"] == "turn_start"
 
-            msg = ws.receive_json()  # first token
-            assert msg["type"] == "token"
-            assert msg["text"] == "respuesta "
+        msg = ws.receive_json()  # first token
+        assert msg["type"] == "token"
+        assert msg["text"] == "respuesta "
 
-            ws.send_bytes(b"\x00" * 512)  # chunk 2 -> partial while turn is active
+        ws.send_bytes(b"\x00" * 512)  # chunk 2 -> partial while turn is active
 
-            # The turn completes with a {"type": "turn_end"} wire frame (see
-            # bridge.py's pipe_tokens()) — the mock orchestrator's internal
-            # OrchestratorEvent(type="status", content="done") is consumed by
-            # call_orchestrator() and never reaches the client verbatim. Also
-            # break on "interrupted": if barge-in wrongly fires, the active
-            # turn is cancelled and turn_end never arrives, so waiting only
-            # for turn_end would hang until the silence watchdog force-closes
-            # the connection instead of failing the assertion below cleanly.
-            for _ in range(10):
-                msg = ws.receive_json()
-                received_types.append(msg.get("type"))
-                if msg.get("type") in ("turn_end", "interrupted"):
-                    break
+        # The turn completes with a {"type": "turn_end"} wire frame (see
+        # bridge.py's pipe_tokens()) — the mock orchestrator's internal
+        # OrchestratorEvent(type="status", content="done") is consumed by
+        # call_orchestrator() and never reaches the client verbatim. Also
+        # break on "interrupted": if barge-in wrongly fires, the active
+        # turn is cancelled and turn_end never arrives, so waiting only
+        # for turn_end would hang until the silence watchdog force-closes
+        # the connection instead of failing the assertion below cleanly.
+        for _ in range(10):
+            msg = ws.receive_json()
+            received_types.append(msg.get("type"))
+            if msg.get("type") in ("turn_end", "interrupted"):
+                break
 
     assert "interrupted" not in received_types
     assert "transcription_partial" in received_types

@@ -72,6 +72,7 @@ class JotaBridge:
         self._notification_tasks: set[asyncio.Task] = set()
         self._active_turn: asyncio.Task | None = None
         self._session_start: float = 0.0
+        self._last_client_activity: float = 0.0
         self._first_audio_at: float | None = None
         self._last_final_text: str | None = None
         self._turn_seq: int = 0
@@ -82,7 +83,13 @@ class JotaBridge:
         # is already open so we emit exactly one turn_start/turn_end to the client
         # for the whole multi-step reply, not one per agent event.
         self._push_turn_open: bool = False
-        self._tts_degraded_notified: bool = False
+        # Bounds how long an open push turn can gate _idle_watchdog() (issue #115
+        # follow-up): a push has no timeout of its own the way _active_turn does
+        # via stream_response()'s TURN_TIMEOUT_S, so an orphaned push (agent
+        # start with no matching agent end — OpenClaw crash, reconnect mid-push)
+        # combined with a silent client would otherwise block the idle watchdog
+        # from ever calling close_all() and leak the session indefinitely.
+        self._push_turn_opened_at: float | None = None
         # Guards close_all() so it's safe to call more than once (issue #101):
         # routes.py's outer try/finally always calls it on the way out, even
         # when bridge.run() already called it from its own internal finally.
@@ -136,16 +143,32 @@ class JotaBridge:
             if self._closed:
                 return
 
-            self._client_registry.unregister(self.client_id)
-            # Await (don't cancel) the active turn so the orchestrator response is
-            # delivered before we tear down microservice clients.  Explicit cancellation
-            # only happens via _cancel_active_turn() (barge-in) or task cancellation
-            # from outside; close_all() itself should let the turn finish naturally.
+            self._client_registry.unregister(self.client_id, self)
+            # Await (don't cancel outright) the active turn so the orchestrator
+            # response is delivered before we tear down microservice clients.
+            # The wait is bounded by SHUTDOWN_DRAIN_S (default 30s), not truly
+            # unbounded/natural — it's a safety net, primarily relevant when a
+            # turn is genuinely stuck rather than merely slow. TURN_TIMEOUT_S's
+            # idle-reset semantics mean a turn making steady progress (events
+            # keep arriving within TURN_TIMEOUT_S of each other) can still be
+            # running when close_all() is called for an unrelated reason (e.g.
+            # client disconnect) — SHUTDOWN_DRAIN_S gives it room to finish
+            # naturally without holding up shutdown forever if it never does.
+            # Explicit cancellation otherwise only happens via
+            # _cancel_active_turn() (barge-in) or task cancellation from outside.
             if self._active_turn and not self._active_turn.done():
                 try:
-                    await self._active_turn
+                    await asyncio.wait_for(self._active_turn, timeout=settings.SHUTDOWN_DRAIN_S)
                 except asyncio.CancelledError:
                     pass
+                except TimeoutError:
+                    # asyncio.wait_for() already cancelled _active_turn and
+                    # awaited that cancellation before raising — nothing left
+                    # to do here but log. No orphaned task.
+                    logger.warning(
+                        f"[{self.client_id}] _active_turn no terminó dentro de "
+                        f"SHUTDOWN_DRAIN_S={settings.SHUTDOWN_DRAIN_S}s — forzando cierre."
+                    )
                 except Exception as e:
                     logger.error(f"[{self.client_id}] _active_turn falló: {e}")
 
@@ -167,29 +190,72 @@ class JotaBridge:
             # the flag would otherwise stay set forever, causing the next agent start
             # received on this bridge instance to be silently dropped.
             self._push_turn_open = False
+            self._push_turn_opened_at = None
 
-            for task in self.tasks:
-                if not task.done():
-                    task.cancel()
+            # Exclude the calling task from cancellation: _idle_watchdog and
+            # _transcription_watchdog both call close_all() on themselves
+            # (to end their own session). If close_all() cancelled its own
+            # caller here, the self-delivered CancelledError would land at
+            # the next real suspension point below (the transcriber.close()
+            # gather) and abort teardown before tracker.close()/_closed=True
+            # ever run. Awaiting the tasks we DO cancel guarantees nothing
+            # is left dangling when this method returns.
+            current_task = asyncio.current_task()
+            tasks_to_cancel = [
+                t for t in self.tasks if t is not current_task and not t.done()
+            ]
+            for task in tasks_to_cancel:
+                task.cancel()
+            if tasks_to_cancel:
+                try:
+                    await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+                except asyncio.CancelledError:
+                    # asyncio.gather(return_exceptions=True) still re-raises
+                    # CancelledError when the *awaiting* task itself is cancelled
+                    # at that moment (e.g. server or test-framework task.cancel()
+                    # landing right after ws.close()). The caller cannot honor the
+                    # cancellation mid-teardown — the session is already closing —
+                    # so absorb it and finish teardown instead of letting it abort
+                    # tracker.close()/_closed=True below.
+                    logger.debug(
+                        f"[{self.client_id}] close_all: cancelación externa absorbida "
+                        f"durante el drenado de tareas."
+                    )
 
             close_aws = []
             if self.transcriber:
                 close_aws.append(self.transcriber.close())
 
             if close_aws:
-                await asyncio.gather(*close_aws, return_exceptions=True)
+                try:
+                    await asyncio.gather(*close_aws, return_exceptions=True)
+                except asyncio.CancelledError:
+                    logger.debug(
+                        f"[{self.client_id}] close_all: cancelación externa absorbida "
+                        f"durante el cierre de microservicios."
+                    )
 
-            await self.tracker.close(status=status)
+            try:
+                await self.tracker.close(status=status)
+            except asyncio.CancelledError:
+                # Same reasoning as above — the session must still be marked
+                # closed so the routes.py outer-finally safety net (issue #101)
+                # does not see a half-torn-down session and retry forever.
+                logger.debug(
+                    f"[{self.client_id}] close_all: cancelación externa absorbida "
+                    f"durante el cierre del tracker."
+                )
             self._closed = True
 
-    async def health_check(self) -> bool:
-        """Ping each microservice and notify the client of any issues.
+    async def health_check(self) -> dict[str, bool] | None:
+        """Ping each microservice and return a snapshot of live capabilities.
 
-        Returns True if the session can proceed, False if a critical service
-        is unavailable (caller should close the WebSocket) — the orchestrator
-        is the only service that can make this return False.
+        Returns None if the orchestrator is unavailable — the caller must close
+        the WebSocket and skip sending `ready`. For non-fatal services the
+        snapshot records their current availability, and the same `status`
+        warnings sent today are still emitted so the client sees both the
+        pre-ready notification and the authoritative capabilities block.
         """
-        # Orchestrator — always critical
         if not await self.orchestrator.ping():
             await self.client_ws.send_json(
                 {
@@ -198,12 +264,16 @@ class JotaBridge:
                     "state": "unavailable",
                 }
             )
-            return False
+            return None
 
-        # Transcriber — non-critical (session continues degraded if unavailable;
-        # the client decides whether to keep going text-only)
-        if self.handshake.input_mode == "audio":
-            if not self.transcriber or self.transcriber.state != ConnectionState.CONNECTED:
+        transcriber_requested = self.handshake.input_mode == "audio"
+        tts_requested = "audio" in self.handshake.output_mode
+
+        if transcriber_requested:
+            transcriber_live = bool(
+                self.transcriber and self.transcriber.state == ConnectionState.CONNECTED
+            )
+            if not transcriber_live:
                 await self.client_ws.send_json(
                     {
                         "type": "status",
@@ -211,10 +281,12 @@ class JotaBridge:
                         "state": "unavailable",
                     }
                 )
+        else:
+            transcriber_live = False
 
-        # TTS — non-critical; session continues in degraded mode
-        if "audio" in self.handshake.output_mode:
-            if not await TTSClient.ping(settings.TTS_WS_URL):
+        if tts_requested:
+            tts_live = await TTSClient.ping(settings.TTS_WS_URL)
+            if not tts_live:
                 await self.client_ws.send_json(
                     {
                         "type": "status",
@@ -222,8 +294,14 @@ class JotaBridge:
                         "state": "unavailable",
                     }
                 )
+        else:
+            tts_live = False
 
-        return True
+        return {
+            "barge_in": bool(self.config.barge_in_enabled) and transcriber_live,
+            "tts": tts_live,
+            "transcriber": transcriber_live,
+        }
 
     async def _cancel_active_turn(self) -> bool:
         """Cancel the active orchestrator turn if one is running. Returns True if cancelled."""
@@ -296,8 +374,56 @@ class JotaBridge:
                     await self.close_all()
                     return
 
+    async def _idle_watchdog(self):
+        """Cierra la sesión si el cliente no manda ningún mensaje (audio o
+        texto) durante IDLE_TIMEOUT_S (issue #115). Sin aviso previo al
+        cliente — a diferencia del silence watchdog, que sí notifica
+        degradación progresiva de la transcripción.
+
+        Gated on activity actually in flight (issue #115 follow-up): a client
+        that goes quiet while the orchestrator is mid-turn, or a push-only
+        session that never sends anything by design, must not be cut off just
+        because IDLE_TIMEOUT_S has elapsed since the client's *last inbound
+        message*. When the idle window has expired but `_active_turn` or
+        `_push_turn_open` shows something is actively in flight, this skips
+        the close for this tick and re-checks shortly after — it does not
+        reset the idle window, it just defers the decision until nothing is
+        in flight anymore.
+
+        `_active_turn` is safe to trust indefinitely because it's implicitly
+        bounded — the orchestrator call underneath it is capped by
+        TURN_TIMEOUT_S inside stream_response(). `_push_turn_open` has no
+        such bound of its own (it's just a flag toggled by on_push_turn_start/
+        on_push_turn_end), so an orphaned push — OpenClaw crashes or a
+        reconnect happens between an agent start and its matching agent end —
+        would otherwise gate this watchdog forever, leaking the session. A
+        push only counts as "in flight" here while it's within its own
+        TURN_TIMEOUT_S grace period since it opened (`_push_turn_opened_at`);
+        past that, close_all()'s existing defensive reset handles clearing
+        the stale flag.
+        """
+        while True:
+            remaining = settings.IDLE_TIMEOUT_S - (
+                time.monotonic() - self._last_client_activity
+            )
+            if remaining <= 0:
+                push_in_flight = self._push_turn_open and (
+                    self._push_turn_opened_at is None
+                    or time.monotonic() - self._push_turn_opened_at < settings.TURN_TIMEOUT_S
+                )
+                if (self._active_turn and not self._active_turn.done()) or push_in_flight:
+                    # Not idle — a turn/push is actively in flight. Re-check
+                    # shortly rather than closing or resetting the full window.
+                    await asyncio.sleep(2)
+                    continue
+                logger.info(f"[{self.client_id}] Idle timeout — cerrando sesión.")
+                await self.close_all()
+                return
+            await asyncio.sleep(remaining)
+
     async def run(self):
         self._session_start = time.monotonic()
+        self._last_client_activity = time.monotonic()
         await self.tracker.record(
             "session_start",
             input_mode=self.handshake.input_mode,
@@ -306,6 +432,8 @@ class JotaBridge:
 
         # Loop principal de lectura del cliente
         self.tasks.append(asyncio.create_task(self._client_input_loop()))
+        # Idle watchdog: cierra la sesión si el cliente no manda nada (issue #115).
+        self.tasks.append(asyncio.create_task(self._idle_watchdog()))
 
         # Loop del Transcriptor (solo si hay audio de entrada)
         if self.transcriber:
@@ -329,13 +457,25 @@ class JotaBridge:
         except Exception as e:
             logger.error(f"[{self.client_id}] client_input_loop crasheó: {e}")
         finally:
-            await self.close_all()
+            try:
+                await self.close_all()
+            except asyncio.CancelledError:
+                # close_all() absorbs external cancellations at its own
+                # suspension points, but if one still leaks out (e.g. a future
+                # teardown step without a guard), run()'s finally must not let
+                # it propagate into the WebSocket endpoint — the session is
+                # already ending either way.
+                logger.debug(
+                    f"[{self.client_id}] run(): cancelación externa absorbida "
+                    f"durante el teardown."
+                )
 
     async def _client_input_loop(self):
         """Atrapa entradas del cliente (Micrófono o Texto)."""
         try:
             while True:
                 message = await self.client_ws.receive()
+                self._last_client_activity = time.monotonic()
 
                 if message.get("type") == "websocket.disconnect":
                     logger.info(f"[{self.client_id}] Cliente físico desconectado.")
@@ -403,17 +543,6 @@ class JotaBridge:
             await self.client_ws.send_json({"type": "status", "service": service, "state": state})
         except Exception:
             pass  # cliente desconectado
-
-    async def _maybe_notify_tts_state(self) -> None:
-        current = self.tts.status().state
-        if current == ConnectionState.CONNECTED:
-            if self._tts_degraded_notified:
-                self._tts_degraded_notified = False
-                await self.notify_service_status("tts", to_wire_state(ConnectionState.CONNECTED))
-        else:
-            if not self._tts_degraded_notified:
-                self._tts_degraded_notified = True
-                await self.notify_service_status("tts", to_wire_state(current))
 
     def _on_transcriber_state_change(self, state: ConnectionState) -> None:
         task = asyncio.create_task(self.notify_service_status("transcriber", to_wire_state(state)))
@@ -500,7 +629,6 @@ class JotaBridge:
             )
             if tts:
                 await self.tracker.record("tts_start", voice=self.config.tts_voice or "")
-            await self._maybe_notify_tts_state()
 
         agent = self.handshake.agent or self._default_agent
         session_key = make_session_key(agent, self.client_id)
@@ -610,6 +738,7 @@ class JotaBridge:
         self._push_turn_seq = self._turn_seq
         self._push_turn_id = f"t-{self._turn_seq}"
         self._push_turn_open = True
+        self._push_turn_opened_at = time.monotonic()
 
         try:
             await self.client_ws.send_json(
@@ -627,7 +756,6 @@ class JotaBridge:
         tts = await self.tts.connect(
             voice=self.config.tts_voice, speed=self.config.tts_speed, client_id=self.client_id
         )
-        await self._maybe_notify_tts_state()
         if tts is None:
             return
         self._push_tts = tts
@@ -704,3 +832,4 @@ class JotaBridge:
         except Exception:
             pass
         self._push_turn_open = False
+        self._push_turn_opened_at = None

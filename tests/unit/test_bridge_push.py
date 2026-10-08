@@ -5,21 +5,6 @@ import pytest
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
-from src.services.reconnection import ConnectionState, ServiceStatus
-
-
-def _connected_status() -> ServiceStatus:
-    """A ReconnectingTTSClient.status() is synchronous, unlike AsyncMock's
-    auto-mocked attributes — tests that stub tts.connect() to succeed must
-    also stub tts.status() as a plain callable, or _maybe_notify_tts_state()
-    receives an unawaited coroutine instead of a ServiceStatus."""
-    return ServiceStatus(
-        name="tts",
-        state=ConnectionState.CONNECTED,
-        connected_at=None,
-        reconnect_attempts=0,
-        last_error=None,
-    )
 
 
 def make_bridge(output_mode=("text",), client_id="hab_sito", tts=None):
@@ -125,7 +110,6 @@ async def test_on_push_turn_start_audio_creates_tts_and_pipe():
     mock_tts_client.get_audio_stream = lambda: aiter([])
     tts_wrapper = AsyncMock()
     tts_wrapper.connect = AsyncMock(return_value=mock_tts_client)
-    tts_wrapper.status = lambda: _connected_status()
 
     bridge, _ = make_bridge(output_mode=("audio", "text"), tts=tts_wrapper)
     await bridge.on_push_turn_start("agent:main:hab_sito")
@@ -145,7 +129,6 @@ async def test_push_audio_pipe_forwards_chunks_with_header():
     mock_tts_client.get_audio_stream = lambda: aiter(chunks)
     tts_wrapper = AsyncMock()
     tts_wrapper.connect = AsyncMock(return_value=mock_tts_client)
-    tts_wrapper.status = lambda: _connected_status()
 
     bridge, _ = make_bridge(output_mode=("audio", "text"), tts=tts_wrapper)
     await bridge.on_push_turn_start("agent:main:hab_sito")

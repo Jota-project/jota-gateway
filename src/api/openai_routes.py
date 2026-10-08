@@ -158,6 +158,7 @@ async def chat_completions(
 
         async def generate():
             queue: asyncio.Queue[str | None] = asyncio.Queue()
+            orchestrator_error: RuntimeError | None = None
 
             async def _on_token(t: str):
                 chunk = {
@@ -168,6 +169,7 @@ async def chat_completions(
                 await queue.put(f"data: {json.dumps(chunk)}\n\n")
 
             async def _run():
+                nonlocal orchestrator_error
                 try:
                     await call_orchestrator(
                         orchestrator,
@@ -179,12 +181,15 @@ async def chat_completions(
                     )
                 except RuntimeError as e:
                     logger.error(f"HTTP orchestrator error: {e}")
+                    orchestrator_error = e
                 finally:
                     await queue.put(
                         None
                     )  # sentinel siempre primero — garantiza que el generador puede avanzar
                     try:
-                        await tracker.close()
+                        await tracker.close(
+                            status="error" if orchestrator_error is not None else "completed"
+                        )
                     except Exception:
                         pass
 
@@ -202,6 +207,22 @@ async def chat_completions(
                         await task
                     except (asyncio.CancelledError, Exception):
                         pass
+
+            if orchestrator_error is not None:
+                error = {
+                    "error": {
+                        "message": str(orchestrator_error),
+                        "type": "server_error",
+                    },
+                }
+                yield f"data: {json.dumps(error)}\n\n"
+                final = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "choices": [{"delta": {}, "index": 0, "finish_reason": "error"}],
+                }
+                yield f"data: {json.dumps(final)}\n\n"
+                return
 
             final = {
                 "id": completion_id,
