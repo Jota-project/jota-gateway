@@ -99,7 +99,7 @@ SQLModel table (`__tablename__ = "clients"`) with the following columns:
 | `name` | `str` | — | Human label |
 | `client_key` | `str` (unique, indexed) | — | Auth token the client sends in the handshake |
 | `is_active` | `bool` | `True` | Deactivated clients are rejected at handshake |
-| `client_type` | `str?` | `None` | Free label (e.g. `ha`, `esp32`) — not used in routing logic |
+| `client_type` | `str?` | `None` | Label, one of `ha`/`esp32`/`web`/`app` on input (see "Input validation" below) — not used in routing logic |
 | `default_agent` | `str?` | `None` | Override OpenClaw agent for this client |
 | `allowed_agents` | `str?` | `None` | JSON list of permitted agent names |
 | `created_at` | `datetime` | `now(UTC)` | |
@@ -109,7 +109,7 @@ SQLModel table (`__tablename__ = "clients"`) with the following columns:
 | `tts_speed` | `float` | `1.0` | Passed to `TTSClient.connect()` |
 | `barge_in_enabled` | `bool` | `True` | Whether partial transcriptions can cancel active turn |
 | `barge_in_min_chars` | `int` | `5` | Minimum chars in partial before barge-in fires |
-| `output_mode` | `str?` | `None` | JSON list — stored default, informational only |
+| `output_mode` | `str?` | `None` | JSON list of `audio`/`text`/`status` — stored default, informational only (the handshake's `output_mode` is what actually drives a session) |
 | `silence_timeout_s` | `float` | `2.0` | Seconds of no transcription before a silence event |
 | `max_silence_turns` | `int` | `3` | Consecutive silence events before session is closed |
 | `push_enabled` | `bool` | `True` | Whether agent-initiated push turns are accepted |
@@ -156,6 +156,8 @@ All routes require `X-Admin-Token: <ADMIN_TOKEN>`.
 After any mutation, `db_client.invalidate(client_key)` is called to evict the 60s session cache.
 
 Schemas: `src/models/admin_schemas.py` — `ClientCreate`, `ClientUpdate`, `ClientResponse`.
+
+**Input validation (issue #122, decision 2026-10-08):** `client_type` is validated on input as `Literal["ha","esp32","web","app"]` (`ClientType` in `admin_schemas.py`) and `output_mode` as `list[OutputMode]` (`OutputMode = Literal["audio","text","status"]` in `src/models/schemas.py`, the same type the WS handshake uses). Anything else → `422` on `POST`/`PATCH /admin/clients`, and the CLI's `--type` uses `choices=`. **Only the input side is validated**: `ClientResponse` keeps `client_type: str | None` and `output_mode: list[str] | None`, so legacy rows written before this check (any free-text `client_type`) still read fine — no migration, no data rewrite. Adding a new client type means extending `ClientType`. The field was kept rather than dropped: dropping it would need an Alembic drop-column migration and break any caller still sending it.
 
 ### CLI (`src/cli.py`)
 

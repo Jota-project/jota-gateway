@@ -7,11 +7,13 @@ Uso: python src/cli.py <command> [options]
 
 import secrets
 import sys
+from typing import get_args
 
 from sqlmodel import Session, select
 
 from src.db.database import get_engine, run_migrations
 from src.db.models import ClientRecord
+from src.models.admin_schemas import ClientType
 from src.services.db_client import db_client
 
 # Nota (#123): el CLI es un proceso distinto del servidor, así que `invalidate()`
@@ -102,7 +104,7 @@ def run(argv: list[str]) -> None:
     a.add_argument(
         "--key", dest="client_key", help="client_key exacto a usar (si se omite, se genera uno)"
     )
-    a.add_argument("--type", dest="client_type")
+    a.add_argument("--type", dest="client_type", choices=get_args(ClientType))
     a.add_argument("--agent")
 
     sub.add_parser("list-clients")

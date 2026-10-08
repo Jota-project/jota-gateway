@@ -286,3 +286,55 @@ def test_patch_client_ignores_system_prompt_extra(http):
     )
     assert r.status_code == 200
     assert "system_prompt_extra" not in r.json()
+
+
+@pytest.mark.parametrize("client_type", ["ha", "esp32", "web", "app"])
+def test_create_client_accepts_known_client_types(http, client_type):
+    r = http.post("/admin/clients", json={"name": "X", "client_type": client_type}, headers=HEADERS)
+    assert r.status_code == 201
+    assert r.json()["client_type"] == client_type
+
+
+def test_create_client_rejects_unknown_client_type(http):
+    r = http.post("/admin/clients", json={"name": "X", "client_type": "esp23"}, headers=HEADERS)
+    assert r.status_code == 422
+
+
+def test_create_client_rejects_unknown_output_mode(http):
+    r = http.post(
+        "/admin/clients", json={"name": "X", "output_mode": ["audio", "video"]}, headers=HEADERS
+    )
+    assert r.status_code == 422
+
+
+def test_create_client_accepts_known_output_modes(http):
+    r = http.post(
+        "/admin/clients",
+        json={"name": "X", "output_mode": ["audio", "text", "status"]},
+        headers=HEADERS,
+    )
+    assert r.status_code == 201
+    assert r.json()["output_mode"] == ["audio", "text", "status"]
+
+
+def test_patch_client_rejects_unknown_client_type_and_output_mode(http):
+    created = http.post("/admin/clients", json={"name": "X"}, headers=HEADERS).json()
+    url = f"/admin/clients/{created['id']}"
+    assert http.patch(url, json={"client_type": "toaster"}, headers=HEADERS).status_code == 422
+    assert http.patch(url, json={"output_mode": ["smell"]}, headers=HEADERS).status_code == 422
+    # El rechazo no debe haber mutado nada.
+    assert http.get(url, headers=HEADERS).json()["client_type"] is None
+
+
+def test_legacy_row_with_unknown_client_type_is_still_readable(http, db_engine):
+    """Filas antiguas con una etiqueta libre no deben romper GET (solo se valida la entrada)."""
+    from src.db.models import ClientRecord
+
+    with Session(db_engine) as s:
+        rec = ClientRecord(name="Old", client_key="legacy-key", client_type="e2e-test")
+        s.add(rec)
+        s.commit()
+        client_id = rec.id
+    r = http.get(f"/admin/clients/{client_id}", headers=HEADERS)
+    assert r.status_code == 200
+    assert r.json()["client_type"] == "e2e-test"
