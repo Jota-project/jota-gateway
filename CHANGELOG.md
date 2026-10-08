@@ -1,3 +1,10 @@
+## [1.14.12](https://github.com/Jota-project/jota-gateway/compare/v1.14.11...v1.14.12) (2026-10-08)
+
+
+### Bug Fixes
+
+* close Fase 4 — Consistencia & docs ([#118](https://github.com/Jota-project/jota-gateway/issues/118), [#119](https://github.com/Jota-project/jota-gateway/issues/119), [#120](https://github.com/Jota-project/jota-gateway/issues/120), [#121](https://github.com/Jota-project/jota-gateway/issues/121), [#122](https://github.com/Jota-project/jota-gateway/issues/122), [#123](https://github.com/Jota-project/jota-gateway/issues/123), [#124](https://github.com/Jota-project/jota-gateway/issues/124), [#125](https://github.com/Jota-project/jota-gateway/issues/125)) ([#181](https://github.com/Jota-project/jota-gateway/issues/181)) ([5935b03](https://github.com/Jota-project/jota-gateway/commit/5935b0331ea7e2715a1eb099b828805cc145b02d)), closes [#178](https://github.com/Jota-project/jota-gateway/issues/178) [#179](https://github.com/Jota-project/jota-gateway/issues/179) [#180](https://github.com/Jota-project/jota-gateway/issues/180) [#107](https://github.com/Jota-project/jota-gateway/issues/107) [#143](https://github.com/Jota-project/jota-gateway/issues/143) [#151](https://github.com/Jota-project/jota-gateway/issues/151) [#152](https://github.com/Jota-project/jota-gateway/issues/152)
+
 ## [1.14.11](https://github.com/Jota-project/jota-gateway/compare/v1.14.10...v1.14.11) (2026-10-08)
 
 
