@@ -171,6 +171,8 @@ python3 src/cli.py delete-client <client_key>
 
 The CLI calls `create_db_and_tables()` at startup, so it is safe to run against a fresh `data/gateway.db`.
 
+Every mutating command (`add-client`, `activate-client`, `deactivate-client`, `delete-client`) calls `db_client.invalidate(key)` after its commit, same as `admin_routes.py` (issue #123). The CLI is a separate process, though, so that only clears *its own* in-process cache — it does **not** evict a running gateway's 60s `_session_cache`. Run the CLI against a stopped gateway, or use the admin REST API for live changes.
+
 ---
 
 ## DbClient (`src/services/db_client.py`)
@@ -404,6 +406,8 @@ Callers that cache the result of an external lookup (e.g. `DbClient._session_cac
 `docker-compose.yml` mounts `./data:/app/data`. The SQLite file at `data/gateway.db` lives on the host and survives container rebuilds. `data/` is in `.gitignore`.
 
 On first startup (`create_db_and_tables()` in the lifespan), the schema is created automatically if the file doesn't exist.
+
+`get_engine()` also creates the SQLite file's parent directory if missing (`_ensure_sqlite_dir`, issue #124), so `DATABASE_URL=sqlite:///data/gateway.db` works on a clean non-Docker checkout without a manual `mkdir -p data`. In-memory and non-SQLite URLs are left untouched.
 
 ---
 

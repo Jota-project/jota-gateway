@@ -126,9 +126,9 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 - [ ] **#120** 🟡 `[022]` — `docs/skills/openclaw/references/` describe incompatible protocol — **S**
 - [ ] **#121** 🟡 `[023]` — `create_db_and_tables()` referenced in docs but doesn't exist (renamed v1.12.0) — **XS**
 - [ ] **#122** 🟡 `[024]` — ClientConfig/ClientRecord field drift (4 fields) — **S** — *bloqueado por #105*
-- [ ] **#123** 🟡 `[025]` — CLI doesn't invalidate `db_client` cache — **XS**
-- [ ] **#124** 🟡 `[026]` — Fresh deploy fails: `data/` not auto-created — **XS**
-- [ ] **#125** 🟡 `[027]` — Stale `"tags"` reference in `admin_routes.py:112` — **XS**
+- [x] **#123** 🟡 `[025]` — CLI doesn't invalidate `db_client` cache — **XS** — cerrado por PR (rama `fix/123-124-125-small-fixes`)
+- [x] **#124** 🟡 `[026]` — Fresh deploy fails: `data/` not auto-created — **XS** — cerrado por PR (rama `fix/123-124-125-small-fixes`)
+- [x] **#125** 🟡 `[027]` — Stale `"tags"` reference in `admin_routes.py:112` — **XS** — cerrado por PR (rama `fix/123-124-125-small-fixes`)
 - [ ] **#126** 🟡 `[028]` — Three reconnecting wrappers duplicated without shared base — **L** — *bloqueado por #102, #103, #104*
 
 ### 🟡⚪ Fase 5 — Polish batch (semana 7)

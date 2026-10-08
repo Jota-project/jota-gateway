@@ -111,7 +111,7 @@ def update_client(
     old_key = rec.client_key
     patch = body.model_dump(exclude_unset=True)
     # Serializar listas a JSON antes de escribir en la BD
-    for list_field in ("allowed_agents", "output_mode", "tags"):
+    for list_field in ("allowed_agents", "output_mode"):
         if list_field in patch:
             patch[list_field] = (
                 json.dumps(patch[list_field]) if patch[list_field] is not None else None
