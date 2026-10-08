@@ -2,7 +2,7 @@
 
 > **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fases 1, 2, 3 y 4 ✅ cerradas (Fase 3: 2026-08-06, mergeada a `main` 2026-10-08; Fase 4: 2026-10-08, mergeada a `main` en #181 y publicada como v1.14.12; 8 de 9 issues — #126 pasa a Fase 5)
 > **Última actualización:** 2026-10-08
-> **Issues abiertas:** 17 (rango GitHub `#118`–`#163`)
+> **Issues abiertas:** 16 (rango GitHub `#118`–`#163`)
 > **Versión actual:** v1.14.12 (release 2026-10-08, cierra Fase 4)
 > **Próximo release:** Fase 5 (polish batch, incluye #126). *(Los targets numéricos de esta versión del roadmap —1.15.x/1.16.0/1.17.0— no se ajustaron a la realidad: la Fase 2 salió como v1.14.10, la Fase 3 como v1.14.11 y la Fase 4 como v1.14.12, asignados por semantic-release al taggear; verificar el número que asigna el release automático.)*
 
@@ -18,7 +18,7 @@ Este documento es el **plan vivo de remediación y evolución** de jota-gateway.
 
 | Métrica | Valor |
 |---|---|
-| Issues totales | **80** (17 abiertas) |
+| Issues totales | **80** (16 abiertas) |
 | 🔴 Críticos | 6 |
 | 🟠 Altos | 15 |
 | 🟡 Medios | 14 |
@@ -135,6 +135,8 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 
 ### 🟡⚪ Fase 5 — Polish batch (semana 7)
 
+**Triage (2026-10-08):** verificado contra el código en `main` (`4bd1877`). #132 ya estaba resuelta (#115); #129 y #134 se reducen de alcance; #127, #128, #133, #135, #136, #137 y #138 siguen vigentes; #130, #131, #143 y #163 pendientes de análisis. Orden propuesto: (1) #137+#138, (2) bugs pequeños #127/#128/#135/#136, (3) #133, (4) #131/#130/#143/#163, (5) #126 con #151/#152 en spec propio.
+
 **Objetivo:** pulir detalles restantes.
 **Release target:** 1.19.0.
 **Acceptance gate:** typecheck (mypy/pyright) en CI, Docker build on PR, pytest timeout global, Dockerfile non-root + digest pin, coverage delta visible.
@@ -142,15 +144,15 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 - [ ] **#126** 🟡 `[028]` — Three reconnecting wrappers duplicated without shared base — **L** — *movida desde Fase 4 (2026-10-08); bloqueantes #102, #103, #104 ya cerrados; requiere spec + plan propios. Candidata natural para absorber #152 (lock del singleton TTS) y relacionada con #151*
 - [ ] **#127** 🟡 `[029]` — `PipelineTracker.close()` not idempotent — **S**
 - [ ] **#128** 🟡 `[030]` — Session-wide final-text dedup drops legitimate repeated utterances — **S**
-- [ ] **#129** 🟡 `[031]` — Watchdog timing semantics tied to poll ticks; re-entrant shutdown — **M** — *bloqueado por #101*
+- [ ] **#129** 🟡 `[031]` — Watchdog timing semantics tied to poll ticks; re-entrant shutdown — **M→S** — *triage 2026-10-08: la idempotencia de `close_all()` ya está resuelta (#101/#110); queda decidir/documentar la semántica de `max_silence_turns` (ticks de 2s vs ventanas de `silence_timeout_s`) y testearla con tiempo real*
 - [ ] **#130** 🟡 `[032]` — Client output is neither serialized nor backpressured — **L**
 - [ ] **#131** 🟡 `[033]` — Transcriber task failures not supervised or retrieved — **M**
-- [ ] **#132** ⚪ `[034]` — No idle timeout for clients that never send input — **S**
-- [ ] **#133** ⚪ `[035]` — Logs and session events contain credentials and transcripts — **S** — *bloqueado por #106*
-- [ ] **#134** ⚪ `[036]` — `connect()` calls without timeout — half-open sockets hang forever — **S**
+- [x] **#132** ⚪ `[034]` — No idle timeout for clients that never send input — **S** — *triage 2026-10-08: ya resuelta por #115 (`_idle_watchdog` aplica a toda sesión, cobertura en `test_bridge_watchdog.py`); cerrada sin cambios de código*
+- [ ] **#133** ⚪ `[035]` — Logs and session events contain credentials and transcripts — **S** — *triage 2026-10-08: sigue vigente tras #106 — transcripts a INFO en `bridge.py` (send, barge-in) y `PipelineTracker.record()`, y `transcription_final` persiste `text[:60]` en `SessionRecord`*
+- [ ] **#134** ⚪ `[036]` — `connect()` calls without timeout — half-open sockets hang forever — **S→XS** — *triage 2026-10-08: mitigada, `websockets` 16 aplica `open_timeout=10` por defecto y los `recv()` del handshake de OpenClaw tienen timeout; queda como mucho hacerlo explícito/configurable — candidata a cerrar como won't-fix*
 - [ ] **#135** ⚪ `[037]` — `_keepalive_loop` interval not clamped; `tickIntervalMs=0` causes ping flood — **XS**
 - [ ] **#136** ⚪ `[038]` — Dispatcher silently drops unknown event types — **XS**
-- [ ] **#137** ⚪ `[039]` — CI gaps: typecheck, Docker build, pytest timeout — **M**
+- [ ] **#137** ⚪ `[039]` — CI gaps: typecheck, Docker build, pytest timeout — **M** — *triage 2026-10-08: además, CI corre Python 3.12 y el Dockerfile 3.14; alinear dentro de esta issue. "Coverage delta visible" (gate de la fase) también cae aquí*
 - [ ] **#138** ⚪ `[040]` — Dockerfile + dependency manifests hardening — **M**
 - [ ] **#143** 🟡 — `TranscriberClient` does not consume the transcriber's capacity-status protocol (`type:status` push, `complete`/`reason` fields) — **M** — *abierta durante el trabajo de Fase 3 (spec: jota-transcriber `2026-07-09-transcriber-status-capacity-design.md`); labels: `type:observability`, `domain:microservice-clients`*
 - [ ] **#163** ⚪ — `DbClient._generations` (contador de generación de #107) crece sin límite, nunca se purga — **S** — encontrada en la revisión de cierre de Fase 2 (PR #160); requiere diseño dedicado para no reabrir la race de #107
