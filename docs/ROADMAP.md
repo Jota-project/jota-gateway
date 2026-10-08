@@ -2,7 +2,7 @@
 
 > **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fases 1, 2 y 3 ✅ cerradas (Fase 3: 2026-08-06, mergeada a `main` 2026-10-08)
 > **Última actualización:** 2026-10-08
-> **Issues abiertas:** 22 (rango GitHub `#118`–`#163`)
+> **Issues abiertas:** 19 (rango GitHub `#118`–`#163`)
 > **Versión actual:** v1.14.11 (release 2026-10-08, cierra Fase 3)
 > **Próximo release:** Fase 4 (consistencia & docs). *(Los targets numéricos de esta versión del roadmap —1.15.x/1.16.0/1.17.0— no se ajustaron a la realidad: la Fase 2 salió como v1.14.10 y la Fase 3 como v1.14.11, asignados por semantic-release al taggear; verificar el número que asigna el release automático.)*
 
@@ -18,7 +18,7 @@ Este documento es el **plan vivo de remediación y evolución** de jota-gateway.
 
 | Métrica | Valor |
 |---|---|
-| Issues totales | **80** (22 abiertas) |
+| Issues totales | **80** (19 abiertas) |
 | 🔴 Críticos | 6 |
 | 🟠 Altos | 15 |
 | 🟡 Medios | 14 |
@@ -122,9 +122,9 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 **Acceptance gate:** `grep` no encuentra funciones referenciadas pero inexistentes, `.env.sample` levanta un gateway limpio, `db_client.get_session` tiene test de concurrencia.
 
 - [ ] **#118** 🟠 `[020]` — `.env.sample` documents pre-SQLite architecture — **S**
-- [ ] **#119** 🟠 `[021]` — Docs incorrectly describe `/v1/*` as unauthenticated — **S**
-- [ ] **#120** 🟡 `[022]` — `docs/skills/openclaw/references/` describe incompatible protocol — **S**
-- [ ] **#121** 🟡 `[023]` — `create_db_and_tables()` referenced in docs but doesn't exist (renamed v1.12.0) — **XS**
+- [x] **#119** 🟠 `[021]` — Docs incorrectly describe `/v1/*` as unauthenticated — **S** — cerrado por #179 (rama `fix/119-120-121-docs-consistency`, mergeado a `phase/4-consistency`)
+- [x] **#120** 🟡 `[022]` — `docs/skills/openclaw/references/` describe incompatible protocol — **S** — cerrado por #179 (rama `fix/119-120-121-docs-consistency`, mergeado a `phase/4-consistency`)
+- [x] **#121** 🟡 `[023]` — `create_db_and_tables()` referenced in docs but doesn't exist (renamed v1.12.0) — **XS** — cerrado por #179 (rama `fix/119-120-121-docs-consistency`, mergeado a `phase/4-consistency`)
 - [ ] **#122** 🟡 `[024]` — ClientConfig/ClientRecord field drift (4 fields) — **S** — *bloqueado por #105*
 - [x] **#123** 🟡 `[025]` — CLI doesn't invalidate `db_client` cache — **XS** — cerrado por #178 (rama `fix/123-124-125-small-fixes`, mergeado a `phase/4-consistency`)
 - [x] **#124** 🟡 `[026]` — Fresh deploy fails: `data/` not auto-created — **XS** — cerrado por #178 (rama `fix/123-124-125-small-fixes`, mergeado a `phase/4-consistency`)
@@ -230,7 +230,7 @@ Antes de implementar las issues marcadas con ⚠️, hay que resolver:
 4. ~~**`ready.capabilities` (#114)**~~ — **Decidido:** dividir en `requested_capabilities` (lo que pidió el cliente) + `live_capabilities` (disponibilidad real) — implementado en PR #166 (Fase 3).
 5. ~~**Push durante normal turn (#112)**~~ — **Decidido:** suprimir `agent.start` durante un normal turn ya registrado para el mismo `session_key` (más simple que concurrencia con IDs distintos) — implementado en PR #170 (Fase 3).
 6. **Multi-worker** — ¿previsto? Si sí, `SessionRegistry` y `ClientRegistry` deben ser stores compartidos — afecta al alcance de #110 *(ya cerrado: verificar que el drenado de shutdown es correcto también con `--workers N` si se activa multi-worker)*.
-7. **`docs/skills/openclaw/`** — ¿eliminar (recomendado) o etiquetar como histórico? — *bloquea la semántica de #120 (Fase 4)*.
+7. ~~**`docs/skills/openclaw/`**~~ — resuelto (2026-10-08, #179): se borran solo `references/protocol.md` y `ha-bridge.md` (los erróneos); el resto de `references/` es genérico y se conserva; `SKILL.md` apunta a `docs/openclaw-protocol.md`.
 8. ~~**`connect()` para sockets previos (#103)**~~ — resuelto al cerrar #103 (Fase 1).
 
 ---
