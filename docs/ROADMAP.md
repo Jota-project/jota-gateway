@@ -1,10 +1,10 @@
 # jota-gateway Roadmap
 
-> **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fase 1, Fase 2 y Fase 3 ✅ cerradas
-> **Última actualización:** 2026-08-05
-> **Issues abiertas:** 27 (rango GitHub `#99`–`#163`)
-> **Versión actual:** 1.15.x (1.17.0 al mergear `phase/3-lifecycle` a `main`, vía release automático)
-> **Próximo release:** 1.17.0 (al mergear Fase 3 a `main`)
+> **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fases 1, 2 y 3 ✅ cerradas (Fase 3: 2026-08-06, mergeada a `main` 2026-10-08)
+> **Última actualización:** 2026-10-08
+> **Issues abiertas:** 25 (rango GitHub `#118`–`#163`)
+> **Versión actual:** v1.14.10 (release 2026-07-20, cierra Fase 2)
+> **Próximo release:** ⚠️ pendiente — Fase 3 mergeada a `main` sin tag; lanzar el release antes de arrancar Fase 4. *(Los targets numéricos de esta versión del roadmap —1.15.x/1.16.0/1.17.0— no se ajustaron a la realidad: el release de Fase 2 salió como v1.14.10; verificar el número que asigna semantic-release al taggear.)*
 
 Este documento es el **plan vivo de remediación y evolución** de jota-gateway. Cada tarea referencia una issue de GitHub; las casillas se tachan al cerrar la issue. Se actualiza en el mismo PR que cierra la issue, o en un PR dedicado.
 
@@ -18,7 +18,7 @@ Este documento es el **plan vivo de remediación y evolución** de jota-gateway.
 
 | Métrica | Valor |
 |---|---|
-| Issues totales | **40** |
+| Issues totales | **80** (25 abiertas) |
 | 🔴 Críticos | 6 |
 | 🟠 Altos | 15 |
 | 🟡 Medios | 14 |
@@ -79,7 +79,7 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 ### 🟠 Fase 2 — Seguridad & auth (semana 3) — ✅ CERRADA (2026-07-20)
 
 **Objetivo:** cerrar los huecos de seguridad y autorización.
-**Release target:** 1.16.0.
+**Release target:** 1.16.0 → *publicado como **v1.14.10** (2026-07-20) — el número planificado no se usó.*
 **Acceptance gate:** pentest manual pasa, `/v1/*` rechaza untrusted sin bearer, `/admin/*` rechaza sin token, cero secrets en logs (verificado con grep sobre la salida de una sesión).
 **Estado del gate:** `/v1/*` rechaza untrusted sin bearer ✅ (`test_get_models_from_untrusted_origin_without_auth_returns_401`, `test_chat_completions_from_untrusted_origin_without_auth_returns_401`) · `/admin/*` rechaza sin token ✅ (`test_admin_missing_token_returns_422`, `test_admin_wrong_token_returns_401`) · cero secrets en logs ✅ (#106: fingerprint SHA-256 de 8 hex, cubierto por `test_logging.py` + `test_ws_handshake.py::test_invalid_client_key_log_is_safe_and_correlatable` + `test_bridge_barge_in.py::test_final_transcription_is_debug_only_and_truncated` — y desde la revisión de cierre, con la garantía adicional de que esos logs efectivamente *salen* en producción, ver #156 abajo) · pentest manual ⚠️ *no ejecutado en este cierre* — las 5 issues de la fase (#105–#109) están cerradas y la suite (438 tests) verde; el pentest manual queda como verificación pendiente, no bloqueante para mergear dado que cada issue de la fase tiene su propia cobertura automatizada específica.
 **Estrategia de rama (decisión 2026-07-18):** a diferencia de Fase 1 (cada issue directa a `main`), Fase 2 usa una rama larga `phase/2-security` creada desde `main` (una vez mergeado PR #153). Cada issue (#105–#109) se desarrolla en su propia rama `fix/XXX-...`, mergeada a `phase/2-security` vía PR individual. Al cerrar las 5 issues, un PR único `phase/2-security` → `main` cierra la fase completa.
@@ -96,22 +96,24 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 - [x] **#162** 🟡 — el handshake WS no recortaba espacios del `agent` solicitado antes de pasarlo a `resolve_agent()`, a diferencia de REST — inconsistencia entre las dos superficies para la misma entrada malformada, y contradecía la cascada documentada en este mismo `CLAUDE.md` ("if non-empty after stripping"). Fix: normalización centralizada dentro de `resolve_agent()` en vez de duplicada por call site.
 - [ ] **#163** ⚪ — `DbClient._generations` (contador de generación de #107) crece sin límite, una entrada por `client_key` histórico, nunca se purga. Bajo impacto, pero un "pop" ingenuo en `invalidate()` reintroduce la race que #107 cerró para la primera invalidación de una key — requiere diseño dedicado. Diferido a **Fase 5**.
 
-### 🟠 Fase 3 — Lifecycle & producción (semanas 4–5) — ✅ CERRADA (2026-08-05)
+### 🟠 Fase 3 — Lifecycle & producción (semanas 4–5) — ✅ CERRADA (2026-08-06)
 
 **Objetivo:** hacerlo production-grade (shutdown limpio, deadlines, race fixes).
-**Release target:** 1.17.0.
+**Release target:** 1.17.0 → *pendiente de lanzar: los fixes están en `main` sin tag (ver header)*.
 **Acceptance gate:** `kill -9` durante sesión deja DB consistente, 50 sesiones concurrentes estables, los 3 wrappers pasan test "DEGRADED stable", `ready.capabilities` correcto.
-**Estado del gate:** `kill -9`/shutdown deja DB consistente ✅ (#110 — `ClientRegistry.close_all_sessions()` drena sesiones activas, `dispose_engine()` cierra el motor SQLAlchemy, lifespan envuelto en try/finally; cobertura unitaria + integración) · 3 wrappers DEGRADED-stable ✅ (Fase 1, #102/#104) · `ready.capabilities` correcto ✅ (#114) · 50 sesiones concurrentes estables ⚠️ *no verificado con load test dedicado en este cierre* — el drenado es concurrente por diseño (`asyncio.gather` por sesión) pero no se ha ejercitado con carga real; queda como verificación pendiente, no bloqueante dado que cada pieza tiene su propia cobertura automatizada.
+**Estado del gate:** `kill -9`/shutdown deja DB consistente ✅ (#110 — `ClientRegistry.close_all_sessions()` (`src/services/openclaw/registry.py`) drena todos los bridges registrados concurrentemente, cada uno acotado por `SHUTDOWN_DRAIN_S`; `dispose_engine()` cierra el motor SQLAlchemy; lifespan envuelto en try/finally — cobertura unitaria + integración) · 3 wrappers DEGRADED-stable ✅ (Fase 1, #102/#104) · `ready.capabilities` correcto ✅ (#114, separa `requested_capabilities`/`live_capabilities`) · suite completa verde al mergear a `main` ✅ (480 tests, 2026-10-08) · 50 sesiones concurrentes estables ⚠️ *no verificado con load test dedicado* — el drenado es concurrente por diseño (`asyncio.gather` por sesión) pero no se ha ejercitado con carga real; queda como verificación pendiente, no bloqueante dado que cada pieza tiene su propia cobertura automatizada.
 **Estrategia de rama (decisión 2026-07-20):** igual que Fase 2, Fase 3 usa una rama larga `phase/3-lifecycle` creada desde `main`. Cada issue (#110–#117) se desarrolla en su propia rama `fix/XXX-...`, mergeada a `phase/3-lifecycle` vía PR individual. Al cerrar las 8 issues, un PR único `phase/3-lifecycle` → `main` cierra la fase completa.
 
-- [x] **#110** 🟠 `[012]` — Lifespan shutdown doesn't drain active sessions — **XL** — `ClientRegistry.close_all_sessions()` (`src/services/openclaw/registry.py`) drena todos los bridges registrados concurrentemente, cada uno acotado por `SHUTDOWN_DRAIN_S`; fix de auto-cancelación en `JotaBridge.close_all()` (issue latente encontrada durante la implementación — el propio watchdog podía cancelarse a sí mismo y abortar su teardown antes de `tracker.close()`); `dispose_engine()` (`src/db/database.py`) dispone y resetea el motor SQLAlchemy; `src/main.py`'s lifespan envuelto en try/finally, orden drenar sesiones → cerrar OpenClaw → cancelar/esperar notification tasks → disponer motor.
-- [x] **#111** 🟠 `[013]` — Streaming SSE returns 200 on orchestrator error — **S** — los fallos pre-token y post-token emiten `server_error` + `finish_reason="error"`, no emiten `[DONE]` y cierran el tracker con estado `error`.
-- [x] **#112** 🟠 `[014]` — Normal vs push turn coordination — **L** — implementado: `_handle_agent_lifecycle` (dispatcher.py) gana el guard `get_queue_by_session()` solo en la fase `start` (mismo patrón que `_handle_chat`/`_handle_session_tool`); la fase `end` se reenvía siempre sin condición — `on_push_turn_end` ya no-opea de forma segura si no hay push abierto (#84), y suprimirla también habría podido dejar huérfano un push que empezó antes que el turno normal (hallazgo de la revisión final, 2026-08-04). La ventana de carrera barge-in/`chat.abort` (evento tardío tras `TurnRegistry.unregister()`, que ocurre antes de que `chat.abort` llegue a OpenClaw) queda fuera de alcance — es preexistente y afecta también a `_handle_chat`, no específica de este fix — pendiente de documentar como issue de seguimiento aparte (no creada todavía).
-- [x] **#113** 🟠 `[015]` — Bridge unregisters newer bridge for same `client_id` — **S** — `ClientRegistry.unregister(client_id, expected_bridge)` ahora sólo desregistra si el bridge sigue siendo el dueño actual (mismo patrón de identidad que `TurnRegistry` para #99); `bridge.close_all()` pasa `self`. Un cierre tardío del bridge viejo ya no expulsa la sesión reconectada.
-- [x] **#114** 🟠 `[016]` — `ready.capabilities` contradicts actual service availability — **S** — `ready` separa `requested_capabilities` y `live_capabilities` (instantánea de health check).
-- [x] **#115** 🟠 `[017]` — No bounded deadlines (handshake/turn/idle/shutdown drain) — **M** — 4 settings nuevas (`HANDSHAKE_TIMEOUT_S`, `TURN_TIMEOUT_S` con reset por evento (idle-reset), `IDLE_TIMEOUT_S`, `SHUTDOWN_DRAIN_S`); turn timeout implementado en `OpenClawClient.stream_response()` reutilizando el `chat.abort`/`TURN_ERROR` ya existente de #99/#111/#150 — el turn timeout no toca `bridge.py` ni `openai_routes.py`. Fix wave de revisión final: el idle watchdog de `bridge.py` ahora comprueba `_active_turn`/`_push_turn_open` antes de cerrar, para no cortar turnos en curso ni limitar sesiones push-only a `IDLE_TIMEOUT_S`.
-- [x] **#116** 🟠 `[018]` — `TTSClient.connect()` leaks WebSocket on `CancelledError` — **S** — cleanup gobernado por `_authenticated`, cancellation relanzada y auth `recv()` acotado por `TTS_AUTH_TIMEOUT_S=10.0`.
-- [x] **#117** 🟠 `[019]` — `ReconnectingTTSClient` missing `on_state_change` hook — **M** — `on_state_change` fires from `_record_failure`/`_record_success` only on an actual transition (`_set_state()` guard); wired in `main.py`'s lifespan to `ClientRegistry.broadcast_status`, same pattern as the orchestrator; old per-bridge `_maybe_notify_tts_state`/`_tts_degraded_notified` polling removed. Session-start notification for a brand-new session mid-outage was already covered by `health_check()`'s pre-existing live TTS ping (not duplicated — a review pass caught that a second, wrapper-state-based check in `connect_internal_services()` could show a stale `"reconnecting"` alongside an already-recovered `live_capabilities.tts: true`).
+- [x] **#110** 🟠 `[012]` — Lifespan shutdown doesn't drain active sessions — **XL** — cerrado por PR #174 (2026-08-06): `ClientRegistry.close_all_sessions()` drena todos los bridges registrados concurrentemente acotado por `SHUTDOWN_DRAIN_S`; fix de auto-cancelación en `JotaBridge.close_all()` (issue latente encontrada durante la implementación — el propio watchdog podía cancelarse a sí mismo y abortar su teardown antes de `tracker.close()`); `dispose_engine()` (`src/db/database.py`) dispone y resetea el motor SQLAlchemy; `src/main.py`'s lifespan envuelto en try/finally, orden drenar sesiones → cerrar OpenClaw → cancelar/esperar notification tasks → disponer motor. *(Fix en el merge a `main`, 2026-10-08: `close_all()` absorbe la cancelación externa que llegaba al `asyncio.gather` del drenado de tareas justo después de `ws.close()` y abortaba el teardown antes de `tracker.close()` — el `except CancelledError` de `run()` solo protegía `await client_task`, no su `finally`.)*
+- [x] **#111** 🟠 `[013]` — Streaming SSE returns 200 on orchestrator error — **S** — cerrado por PR #165 (2026-07-20): los fallos pre-token y post-token emiten `server_error` + `finish_reason="error"`, no emiten `[DONE]` y cierran el tracker con estado `error`.
+- [x] **#112** 🟠 `[014]` — Normal vs push turn coordination — **L** — *decisión: suprimir* (ver Decisiones #5) — cerrado por PR #170 (2026-08-05): `_handle_agent_lifecycle` (dispatcher.py) comprueba `TurnRegistry.get_queue_by_session()` y suprime solo la fase `start` si ya hay un normal turn registrado para ese `session_key` (bug reproducido en vivo 2026-08-02); la fase `end` se reenvía siempre sin condición — `on_push_turn_end` ya no-opea de forma segura si no hay push abierto (#84), y suprimirla también habría podido dejar huérfano un push que empezó antes que el turno normal (hallazgo de la revisión final, 2026-08-04). La ventana de carrera barge-in/`chat.abort` (evento tardío tras `TurnRegistry.unregister()`) queda fuera de alcance — es preexistente y afecta también a `_handle_chat` — pendiente de documentar como issue de seguimiento aparte (no creada todavía).
+- [x] **#113** 🟠 `[015]` — Bridge unregisters newer bridge for same `client_id` — **S** — cerrado por PR #164 (2026-07-20): `ClientRegistry.unregister(client_id, expected_bridge)` solo desregistra si el bridge sigue siendo el dueño actual (mismo patrón de identidad que `TurnRegistry` para #99); `bridge.close_all()` pasa `self`. Un cierre tardío del bridge viejo ya no expulsa la sesión reconectada.
+- [x] **#114** 🟠 `[016]` — `ready.capabilities` contradicts actual service availability — **S** — cerrado por PR #166 (2026-07-26): `ready` separa `requested_capabilities` (lo que pidió el cliente) y `live_capabilities` (instantánea real del health check) — doc: `client-protocol.md`.
+- [x] **#115** 🟠 `[017]` — No bounded deadlines (handshake/turn/idle/shutdown drain) — **M** — cerrado por PR #169 (2026-08-02): 4 settings nuevas (`HANDSHAKE_TIMEOUT_S`=10s, `TURN_TIMEOUT_S`=120s con reset por evento (idle-reset), `IDLE_TIMEOUT_S`=300s, `SHUTDOWN_DRAIN_S`); turn timeout implementado en `OpenClawClient.stream_response()` reutilizando el `chat.abort`/`TURN_ERROR` ya existente de #99/#111/#150 — el turn timeout no toca `bridge.py` ni `openai_routes.py`. Fix wave de revisión final: el idle watchdog de `bridge.py` difiere el cierre si `_active_turn`/`_push_turn_open` indica trabajo en vuelo, para no cortar turnos en curso ni limitar sesiones push-only a `IDLE_TIMEOUT_S` — doc: `client-protocol.md` §13.
+- [x] **#116** 🟠 `[018]` — `TTSClient.connect()` leaks WebSocket on `CancelledError` — **S** — cerrado por PR #165 (2026-07-20): cleanup gobernado por `_authenticated`, cancellation relanzada y auth `recv()` acotado por `TTS_AUTH_TIMEOUT_S=10.0`.
+- [x] **#117** 🟠 `[019]` — `ReconnectingTTSClient` missing `on_state_change` hook — **M** — cerrado por PR #173 (2026-08-05): `on_state_change` fires from `_record_failure`/`_record_success` only on an actual transition (`_set_state()` guard); wired in `main.py`'s lifespan to `ClientRegistry.broadcast_status`, same pattern as the orchestrator; old per-bridge `_maybe_notify_tts_state`/`_tts_degraded_notified` polling removed. Session-start notification for a brand-new session mid-outage was already covered by `health_check()`'s pre-existing live TTS ping (not duplicated — a review pass caught that a second, wrapper-state-based check could show a stale `"reconnecting"` alongside an already-recovered `live_capabilities.tts: true`).
+
+**Cierre de fase:** último PR de la fase #174 (2026-08-06); el merge único `phase/3-lifecycle` → `main` se completó el 2026-10-08.
 
 ### 🟠🟡 Fase 4 — Consistencia & docs (semana 6)
 
@@ -147,6 +149,7 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 - [ ] **#136** ⚪ `[038]` — Dispatcher silently drops unknown event types — **XS**
 - [ ] **#137** ⚪ `[039]` — CI gaps: typecheck, Docker build, pytest timeout — **M**
 - [ ] **#138** ⚪ `[040]` — Dockerfile + dependency manifests hardening — **M**
+- [ ] **#143** 🟡 — `TranscriberClient` does not consume the transcriber's capacity-status protocol (`type:status` push, `complete`/`reason` fields) — **M** — *abierta durante el trabajo de Fase 3 (spec: jota-transcriber `2026-07-09-transcriber-status-capacity-design.md`); labels: `type:observability`, `domain:microservice-clients`*
 - [ ] **#163** ⚪ — `DbClient._generations` (contador de generación de #107) crece sin límite, nunca se purga — **S** — encontrada en la revisión de cierre de Fase 2 (PR #160); requiere diseño dedicado para no reabrir la race de #107
 
 ---
@@ -221,14 +224,14 @@ Estos son enhancements identificados durante la auditoría y operación. **No es
 
 Antes de implementar las issues marcadas con ⚠️, hay que resolver:
 
-1. **`system_prompt_extra` (#100)** — ¿concatenar al mensaje con delimitador (`\n\n[Contexto del cliente]: {extra}`), extender `chat.send` con `systemPrompt`, o **eliminar** el campo? *Rec:* eliminar + migración.
+1. ~~**`system_prompt_extra` (#100)**~~ — **Decidido:** eliminar el campo (sin hook viable en el protocolo de OpenClaw) — cerrado por #141 (Fase 1).
 2. ~~**`allowed_agents` semántica (#105)**~~ — **Decidido (2026-07-18):** `None` = sin restricción, `[]` = denegado, `["x"]` = solo `x`.
-3. **Concurrencia por `session_key` (#99)** — ¿`409 Conflict` en el segundo, o serialización con espera? *Rec:* 409 (casa con el contrato per-session de OpenClaw).
-4. ~~**`ready.capabilities` (#114)**~~ — **Decidido (2026-07-20):** Opción A — renombrar `capabilities` → `requested_capabilities` en el mensaje `ready` y añadir `live_capabilities` reflejando la disponibilidad real de servicios.
-5. ~~**Push durante normal turn (#112)**~~ — **Decidido (2026-07-20):** Opción A — suprimir los eventos `agent` start/end mientras hay un turno normal activo para ese `session_key` (el cliente ve un solo `turn_start`/`turn_end` por `chat.send`).
-6. **Multi-worker** — ¿previsto? Si sí, `SessionRegistry` y `ClientRegistry` deben ser stores compartidos — cambia el alcance de #110.
-7. **`docs/skills/openclaw/`** — ¿eliminar (recomendado) o etiquetar como histórico?
-8. **`connect()` para sockets previos (#103)** — ¿cancelar antes de iniciar o lock central que coalesce todas las llamadas? *Rec:* cancelar + lock.
+3. ~~**Concurrencia por `session_key` (#99)**~~ — **Decidido:** rechazar el segundo turno concurrente (no serializar con espera) — implementado en PR #140 (Fase 1).
+4. ~~**`ready.capabilities` (#114)**~~ — **Decidido:** dividir en `requested_capabilities` (lo que pidió el cliente) + `live_capabilities` (disponibilidad real) — implementado en PR #166 (Fase 3).
+5. ~~**Push durante normal turn (#112)**~~ — **Decidido:** suprimir `agent.start` durante un normal turn ya registrado para el mismo `session_key` (más simple que concurrencia con IDs distintos) — implementado en PR #170 (Fase 3).
+6. **Multi-worker** — ¿previsto? Si sí, `SessionRegistry` y `ClientRegistry` deben ser stores compartidos — afecta al alcance de #110 *(ya cerrado: verificar que el drenado de shutdown es correcto también con `--workers N` si se activa multi-worker)*.
+7. **`docs/skills/openclaw/`** — ¿eliminar (recomendado) o etiquetar como histórico? — *bloquea la semántica de #120 (Fase 4)*.
+8. ~~**`connect()` para sockets previos (#103)**~~ — resuelto al cerrar #103 (Fase 1).
 
 ---
 
@@ -252,7 +255,7 @@ Antes de implementar las issues marcadas con ⚠️, hay que resolver:
 |---|---|
 | **Fase 1 done** | ✅ 6 🔴 cerrados, `pytest` verde, e2e no regresiona — *cero keys en logs queda como alcance de #106 (Fase 2)* |
 | **Fase 2 done** | ✅ 5 🟠 cerrados (#105–#109), `/v1/*` rechaza untrusted sin bearer ✅, admin rechaza sin token ✅, cero keys en logs ✅ — *pentest manual no ejecutado, ver nota en la fase* |
-| **Fase 3 done** | ✅ `kill -9`/shutdown deja DB consistente (#110), 3 wrappers DEGRADED-stable (Fase 1), `ready.capabilities` correcto (#114) — *50 sesiones concurrentes no verificado con load test dedicado, ver nota en la fase* |
+| **Fase 3 done** | ✅ 8 🟠 cerrados (#110–#117) por PRs #164–#174 (2026-08-06), mergeado a `main` 2026-10-08 — `kill -9`/shutdown ✅ (#110), 3 wrappers DEGRADED-stable ✅ (Fase 1), `ready.capabilities` ✅ (#166) — *50 sesiones concurrentes ⚠️ pendiente de load test dedicado* |
 | **Fase 4 done** | Cero referencias muertas, `.env.sample` levanta gateway limpio, `db_client` test de concurrencia |
 | **Fase 5 done** | Typecheck CI, Docker build on PR, pytest timeout global, Dockerfile non-root + digest pin |
 
