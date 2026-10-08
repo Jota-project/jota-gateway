@@ -2,7 +2,7 @@
 
 > **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fases 1, 2 y 3 ✅ cerradas (Fase 3: 2026-08-06, mergeada a `main` 2026-10-08)
 > **Última actualización:** 2026-10-08
-> **Issues abiertas:** 19 (rango GitHub `#118`–`#163`)
+> **Issues abiertas:** 17 (rango GitHub `#118`–`#163`)
 > **Versión actual:** v1.14.11 (release 2026-10-08, cierra Fase 3)
 > **Próximo release:** Fase 4 (consistencia & docs). *(Los targets numéricos de esta versión del roadmap —1.15.x/1.16.0/1.17.0— no se ajustaron a la realidad: la Fase 2 salió como v1.14.10 y la Fase 3 como v1.14.11, asignados por semantic-release al taggear; verificar el número que asigna el release automático.)*
 
@@ -18,7 +18,7 @@ Este documento es el **plan vivo de remediación y evolución** de jota-gateway.
 
 | Métrica | Valor |
 |---|---|
-| Issues totales | **80** (19 abiertas) |
+| Issues totales | **80** (17 abiertas) |
 | 🔴 Críticos | 6 |
 | 🟠 Altos | 15 |
 | 🟡 Medios | 14 |
@@ -120,16 +120,18 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 **Objetivo:** limpiar inconsistencias y referencias muertas.
 **Release target:** 1.18.0.
 **Acceptance gate:** `grep` no encuentra funciones referenciadas pero inexistentes, `.env.sample` levanta un gateway limpio, `db_client.get_session` tiene test de concurrencia.
+**Estado del gate (2026-10-08, bloque A cerrado):** `grep` sin referencias muertas ✅ (`tests/unit/test_docs_accuracy.py`: `create_db_and_tables`, `sin auth`/`LAN-only`, `openclaw_routes`) · `.env.sample` levanta un gateway limpio ✅ (verificado con arranque real en directorio vacío, #180; `tests/unit/test_env_sample.py` lo mantiene sincronizado con `Settings`) · test de concurrencia de `db_client.get_session` ✅ (ya existía desde #107: `tests/unit/test_db_client_local.py`). Queda **#126** (refactor L), que se aborda aparte con spec y plan propios.
+**Estrategia de rama (decisión 2026-10-08):** como en Fase 2, rama larga `phase/4-consistency`; un PR por grupo de issues (#178, #179, #180). Al mergear a una rama que no es `main` GitHub no cierra issues: el PR final `phase/4-consistency` → `main` debe listarlos con `Closes`.
 
-- [ ] **#118** 🟠 `[020]` — `.env.sample` documents pre-SQLite architecture — **S**
+- [x] **#118** 🟠 `[020]` — `.env.sample` documents pre-SQLite architecture — **S** — cerrado por #180 (rama `fix/118-122-env-sample-and-validation`, mergeado a `phase/4-consistency`)
 - [x] **#119** 🟠 `[021]` — Docs incorrectly describe `/v1/*` as unauthenticated — **S** — cerrado por #179 (rama `fix/119-120-121-docs-consistency`, mergeado a `phase/4-consistency`)
 - [x] **#120** 🟡 `[022]` — `docs/skills/openclaw/references/` describe incompatible protocol — **S** — cerrado por #179 (rama `fix/119-120-121-docs-consistency`, mergeado a `phase/4-consistency`)
 - [x] **#121** 🟡 `[023]` — `create_db_and_tables()` referenced in docs but doesn't exist (renamed v1.12.0) — **XS** — cerrado por #179 (rama `fix/119-120-121-docs-consistency`, mergeado a `phase/4-consistency`)
-- [ ] **#122** 🟡 `[024]` — ClientConfig/ClientRecord field drift (4 fields) — **S** — *bloqueado por #105*
+- [x] **#122** 🟡 `[024]` — ClientConfig/ClientRecord field drift (4 fields) — **S** — cerrado por #180 (rama `fix/118-122-env-sample-and-validation`, mergeado a `phase/4-consistency`): `client_type` = `Literal` de entrada (`ha`/`esp32`/`web`/`app`), `output_mode` reutiliza `OutputMode`; respuesta sigue `str` (filas antiguas legibles, sin migración)
 - [x] **#123** 🟡 `[025]` — CLI doesn't invalidate `db_client` cache — **XS** — cerrado por #178 (rama `fix/123-124-125-small-fixes`, mergeado a `phase/4-consistency`)
 - [x] **#124** 🟡 `[026]` — Fresh deploy fails: `data/` not auto-created — **XS** — cerrado por #178 (rama `fix/123-124-125-small-fixes`, mergeado a `phase/4-consistency`)
 - [x] **#125** 🟡 `[027]` — Stale `"tags"` reference in `admin_routes.py:112` — **XS** — cerrado por #178 (rama `fix/123-124-125-small-fixes`, mergeado a `phase/4-consistency`)
-- [ ] **#126** 🟡 `[028]` — Three reconnecting wrappers duplicated without shared base — **L** — *bloqueado por #102, #103, #104*
+- [ ] **#126** 🟡 `[028]` — Three reconnecting wrappers duplicated without shared base — **L** — *bloqueantes #102, #103, #104 ya cerrados; pendiente de spec + plan*
 
 ### 🟡⚪ Fase 5 — Polish batch (semana 7)
 

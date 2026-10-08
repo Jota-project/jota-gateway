@@ -51,7 +51,7 @@ def _create_test_client(admin_headers: dict, suffix: str, tool_calls_enabled: bo
         f"{GATEWAY_HTTP_URL}/admin/clients",
         json={
             "name": f"e2e-smoke-{suffix}",
-            "client_type": "e2e-test",
+            "client_type": "app",
             "output_mode": ["text"],
             "tool_calls_enabled": tool_calls_enabled,
         },

@@ -114,3 +114,14 @@ def test_mutating_commands_invalidate_db_client_cache():
 
     _run(["delete-client", "cli-inval-key"], e)
     assert _generation("cli-inval-key") > after_activate
+
+
+def test_add_client_rejects_unknown_type():
+    import pytest
+
+    e = _engine()
+    with pytest.raises(SystemExit) as exc:
+        _run(["add-client", "--name", "X", "--type", "toaster"], e)
+    assert exc.value.code == 2
+    with Session(e) as s:
+        assert s.exec(select(ClientRecord)).all() == []

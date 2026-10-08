@@ -2,6 +2,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+# Modos de salida conocidos. Compartido por el handshake WS y la API admin (#122).
+OutputMode = Literal["audio", "text", "status"]
+
 # =====================================================================
 # jota-db — modelos que el gateway recibe de GET /auth/session
 # =====================================================================
@@ -57,7 +60,7 @@ class Handshake(BaseModel):
 
     client_key: str
     input_mode: Literal["audio", "text"]
-    output_mode: list[Literal["audio", "text", "status"]]
+    output_mode: list[OutputMode]
     agent: str | None = None  # OpenClaw agent name; None → gateway default
 
     model_config = ConfigDict(extra="allow")
