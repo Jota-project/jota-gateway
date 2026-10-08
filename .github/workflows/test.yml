@@ -6,17 +6,26 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 = minimum declared in pyproject.toml; 3.14 = the Dockerfile's runtime.
+        python-version: ["3.12", "3.14"]
 
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Python 3.12
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: "pip"
 
       - name: Install dependencies
@@ -27,12 +36,30 @@ jobs:
         env:
           PYTHONPATH: .
 
+      - name: Typecheck (mypy)
+        run: mypy
+
       - name: Unit tests
-        run: pytest tests/unit/ -v
+        run: pytest tests/unit/ -v --cov=src --cov-report=
         env:
           PYTHONPATH: .
 
       - name: Integration tests
-        run: pytest tests/integration/ -v
+        run: pytest tests/integration/ -v --cov=src --cov-append --cov-report=term-missing
         env:
           PYTHONPATH: .
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
