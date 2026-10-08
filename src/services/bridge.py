@@ -207,16 +207,44 @@ class JotaBridge:
             for task in tasks_to_cancel:
                 task.cancel()
             if tasks_to_cancel:
-                await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+                try:
+                    await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+                except asyncio.CancelledError:
+                    # asyncio.gather(return_exceptions=True) still re-raises
+                    # CancelledError when the *awaiting* task itself is cancelled
+                    # at that moment (e.g. server or test-framework task.cancel()
+                    # landing right after ws.close()). The caller cannot honor the
+                    # cancellation mid-teardown — the session is already closing —
+                    # so absorb it and finish teardown instead of letting it abort
+                    # tracker.close()/_closed=True below.
+                    logger.debug(
+                        f"[{self.client_id}] close_all: cancelación externa absorbida "
+                        f"durante el drenado de tareas."
+                    )
 
             close_aws = []
             if self.transcriber:
                 close_aws.append(self.transcriber.close())
 
             if close_aws:
-                await asyncio.gather(*close_aws, return_exceptions=True)
+                try:
+                    await asyncio.gather(*close_aws, return_exceptions=True)
+                except asyncio.CancelledError:
+                    logger.debug(
+                        f"[{self.client_id}] close_all: cancelación externa absorbida "
+                        f"durante el cierre de microservicios."
+                    )
 
-            await self.tracker.close(status=status)
+            try:
+                await self.tracker.close(status=status)
+            except asyncio.CancelledError:
+                # Same reasoning as above — the session must still be marked
+                # closed so the routes.py outer-finally safety net (issue #101)
+                # does not see a half-torn-down session and retry forever.
+                logger.debug(
+                    f"[{self.client_id}] close_all: cancelación externa absorbida "
+                    f"durante el cierre del tracker."
+                )
             self._closed = True
 
     async def health_check(self) -> dict[str, bool] | None:
@@ -429,7 +457,18 @@ class JotaBridge:
         except Exception as e:
             logger.error(f"[{self.client_id}] client_input_loop crasheó: {e}")
         finally:
-            await self.close_all()
+            try:
+                await self.close_all()
+            except asyncio.CancelledError:
+                # close_all() absorbs external cancellations at its own
+                # suspension points, but if one still leaks out (e.g. a future
+                # teardown step without a guard), run()'s finally must not let
+                # it propagate into the WebSocket endpoint — the session is
+                # already ending either way.
+                logger.debug(
+                    f"[{self.client_id}] run(): cancelación externa absorbida "
+                    f"durante el teardown."
+                )
 
     async def _client_input_loop(self):
         """Atrapa entradas del cliente (Micrófono o Texto)."""

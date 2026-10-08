@@ -251,3 +251,42 @@ async def test_close_all_cancels_and_awaits_other_tracked_tasks(bridge):
 
     assert task.done()
     assert finished is True
+
+
+async def test_close_all_absorbs_external_cancellation_at_tasks_gather(bridge):
+    """A cancellation delivered to the CALLER while close_all() is awaiting the
+    asyncio.gather(...) of its cancelled watcher tasks must not escape.
+
+    asyncio.gather(return_exceptions=True) still re-raises CancelledError if
+    the awaiting task itself is cancelled at that moment. This is exactly what
+    happens when starlette's TestClient/uvicorn cancel the WebSocket endpoint
+    task right after ws.close() — the exit-stack cancellation lands while
+    close_all() is suspended on this gather (issue #115's _idle_watchdog added
+    a long-lived cancellable task that makes the window real), and the
+    CancelledError propagates out through run()'s finally, aborting teardown.
+    close_all() must absorb it so tracker.close()/_closed=True still run, and
+    the error must not reach the caller."""
+    parent = asyncio.current_task()
+    cancelled = False
+
+    async def _long_watchdog():
+        nonlocal cancelled
+        try:
+            await asyncio.sleep(3600)
+        finally:
+            cancelled = True
+            # The child's cancellation completes while the caller is already
+            # suspended awaiting the gather — cancelling the caller here lands
+            # the CancelledError at that exact await, mirroring an external
+            # task.cancel() from the server/test framework.
+            parent.cancel()
+
+    task = asyncio.create_task(_long_watchdog())
+    bridge.tasks.append(task)
+    await asyncio.sleep(0)  # let the watchdog reach its await
+
+    await bridge.close_all()  # must not raise CancelledError
+
+    assert cancelled is True
+    assert bridge._closed is True
+    bridge.tracker._registry.close.assert_called_once()
