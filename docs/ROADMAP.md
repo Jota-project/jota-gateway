@@ -1,6 +1,6 @@
 # jota-gateway Roadmap
 
-> **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fases 1, 2 y 3 ✅ cerradas (Fase 3: 2026-08-06, mergeada a `main` 2026-10-08)
+> **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fases 1, 2, 3 y 4 ✅ cerradas (Fase 3: 2026-08-06, mergeada a `main` 2026-10-08; Fase 4: 2026-10-08, 8 de 9 issues — #126 pasa a Fase 5)
 > **Última actualización:** 2026-10-08
 > **Issues abiertas:** 17 (rango GitHub `#118`–`#163`)
 > **Versión actual:** v1.14.11 (release 2026-10-08, cierra Fase 3)
@@ -24,7 +24,7 @@ Este documento es el **plan vivo de remediación y evolución** de jota-gateway.
 | 🟡 Medios | 14 |
 | ⚪ Tech-debt / polish | 5 |
 | Estimación | ~3 sprints (6–9 semanas) |
-| Próximo milestone | Cerrar Fase 4 (consistencia & docs) |
+| Próximo milestone | Fase 5 (polish batch) — incluye #126 (refactor de wrappers de reconexión, movida desde Fase 4) |
 | Regresiones confirmadas vs auditoría junio | 2 |
 | Features documentadas sin implementar | 3 |
 
@@ -115,12 +115,12 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 
 **Cierre de fase:** último PR de la fase #174 (2026-08-06); el merge único `phase/3-lifecycle` → `main` se completó el 2026-10-08.
 
-### 🟠🟡 Fase 4 — Consistencia & docs (semana 6)
+### 🟠🟡 Fase 4 — Consistencia & docs (semana 6) — ✅ CERRADA (2026-10-08)
 
 **Objetivo:** limpiar inconsistencias y referencias muertas.
 **Release target:** 1.18.0.
 **Acceptance gate:** `grep` no encuentra funciones referenciadas pero inexistentes, `.env.sample` levanta un gateway limpio, `db_client.get_session` tiene test de concurrencia.
-**Estado del gate (2026-10-08, bloque A cerrado):** `grep` sin referencias muertas ✅ (`tests/unit/test_docs_accuracy.py`: `create_db_and_tables`, `sin auth`/`LAN-only`, `openclaw_routes`) · `.env.sample` levanta un gateway limpio ✅ (verificado con arranque real en directorio vacío, #180; `tests/unit/test_env_sample.py` lo mantiene sincronizado con `Settings`) · test de concurrencia de `db_client.get_session` ✅ (ya existía desde #107: `tests/unit/test_db_client_local.py`). Queda **#126** (refactor L), que se aborda aparte con spec y plan propios.
+**Estado del gate (2026-10-08, bloque A cerrado):** `grep` sin referencias muertas ✅ (`tests/unit/test_docs_accuracy.py`: `create_db_and_tables`, `sin auth`/`LAN-only`, `openclaw_routes`) · `.env.sample` levanta un gateway limpio ✅ (verificado con arranque real en directorio vacío, #180; `tests/unit/test_env_sample.py` lo mantiene sincronizado con `Settings`) · test de concurrencia de `db_client.get_session` ✅ (ya existía desde #107: `tests/unit/test_db_client_local.py`). **#126** (refactor L) se descartó del alcance de esta fase y pasó a Fase 5 (decisión 2026-10-08): se aborda aparte con spec y plan propios, así que la fase se cierra con 8 de sus 9 issues.
 **Estrategia de rama (decisión 2026-10-08):** como en Fase 2, rama larga `phase/4-consistency`; un PR por grupo de issues (#178, #179, #180). Al mergear a una rama que no es `main` GitHub no cierra issues: el PR final `phase/4-consistency` → `main` debe listarlos con `Closes`.
 
 - [x] **#118** 🟠 `[020]` — `.env.sample` documents pre-SQLite architecture — **S** — cerrado por #180 (rama `fix/118-122-env-sample-and-validation`, mergeado a `phase/4-consistency`)
@@ -131,7 +131,7 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 - [x] **#123** 🟡 `[025]` — CLI doesn't invalidate `db_client` cache — **XS** — cerrado por #178 (rama `fix/123-124-125-small-fixes`, mergeado a `phase/4-consistency`)
 - [x] **#124** 🟡 `[026]` — Fresh deploy fails: `data/` not auto-created — **XS** — cerrado por #178 (rama `fix/123-124-125-small-fixes`, mergeado a `phase/4-consistency`)
 - [x] **#125** 🟡 `[027]` — Stale `"tags"` reference in `admin_routes.py:112` — **XS** — cerrado por #178 (rama `fix/123-124-125-small-fixes`, mergeado a `phase/4-consistency`)
-- [ ] **#126** 🟡 `[028]` — Three reconnecting wrappers duplicated without shared base — **L** — *bloqueantes #102, #103, #104 ya cerrados; pendiente de spec + plan*
+- [→] **#126** — *movida a Fase 5 el 2026-10-08 (ver abajo)*
 
 ### 🟡⚪ Fase 5 — Polish batch (semana 7)
 
@@ -139,6 +139,7 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 **Release target:** 1.19.0.
 **Acceptance gate:** typecheck (mypy/pyright) en CI, Docker build on PR, pytest timeout global, Dockerfile non-root + digest pin, coverage delta visible.
 
+- [ ] **#126** 🟡 `[028]` — Three reconnecting wrappers duplicated without shared base — **L** — *movida desde Fase 4 (2026-10-08); bloqueantes #102, #103, #104 ya cerrados; requiere spec + plan propios. Candidata natural para absorber #152 (lock del singleton TTS) y relacionada con #151*
 - [ ] **#127** 🟡 `[029]` — `PipelineTracker.close()` not idempotent — **S**
 - [ ] **#128** 🟡 `[030]` — Session-wide final-text dedup drops legitimate repeated utterances — **S**
 - [ ] **#129** 🟡 `[031]` — Watchdog timing semantics tied to poll ticks; re-entrant shutdown — **M** — *bloqueado por #101*
