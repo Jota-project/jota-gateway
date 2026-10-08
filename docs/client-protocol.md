@@ -2,6 +2,8 @@
 
 Guía completa para implementar clientes que se conecten a jota-gateway. Cubre el ciclo de vida de la sesión WebSocket, todos los mensajes posibles en ambas direcciones y el formato de audio binario.
 
+> **¿Integras Home Assistant u otro cliente OpenAI-compatible?** Eso va por REST (`/v1/*`), no por este protocolo WebSocket. Su modelo de autenticación (origen de confianza o `Authorization: Bearer <client_key>`) está en el [README](../README.md#openai-compatible-v1-para-home-assistant).
+
 ---
 
 ## Índice
