@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 
@@ -18,10 +18,10 @@ class OrchestratorProtocol(Protocol):
     async def close(self) -> None: ...
     async def ping(self) -> bool: ...
 
-    async def stream_response(
+    def stream_response(
         self,
         text: str,
         user_id: str,
         model_id: str | None = None,
         session_key: str | None = None,
-    ) -> AsyncIterator[OrchestratorEvent]: ...
+    ) -> AsyncGenerator[OrchestratorEvent, None]: ...

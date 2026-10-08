@@ -6,6 +6,9 @@ if TYPE_CHECKING:
     from src.services.pipeline_tracker import PipelineEvent, PipelineTracker
 
 
+SessionStatus = Literal["active", "completed", "error", "shutdown"]
+
+
 @dataclass
 class SessionRecord:
     session_id: str
@@ -14,7 +17,7 @@ class SessionRecord:
     output_mode: list[str]
     started_at: datetime
     ended_at: datetime | None
-    status: Literal["active", "completed", "error", "shutdown"]
+    status: SessionStatus
     events: "list[PipelineEvent]"
     tracker: "PipelineTracker"
 
@@ -45,7 +48,7 @@ class SessionRegistry:
     def close(
         self,
         session_id: str,
-        status: Literal["active", "completed", "error", "shutdown"] = "completed",
+        status: SessionStatus = "completed",
     ) -> None:
         record = self._sessions.get(session_id)
         if record:

@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
 
 import websockets
 from websockets.asyncio.client import ClientConnection
@@ -108,13 +108,16 @@ class OpenClawClient:
         """Read frames until the res matching req_id arrives, ignoring any
         unrelated event frames that may interleave before it (only used
         during connect(), before _listen() starts routing frames)."""
+        ws = self._ws
+        if ws is None:
+            raise ConnectionError("not connected")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
                 raise TimeoutError(f"No response for req_id={req_id} within {timeout}s")
-            raw = await asyncio.wait_for(self._ws.recv(), timeout=remaining)
+            raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
             frame = json.loads(raw)
             if frame.get("id") == req_id:
                 return frame
@@ -185,7 +188,7 @@ class OpenClawClient:
         user_id: str,
         model_id: str | None = None,
         session_key: str | None = None,
-    ) -> AsyncIterator[OrchestratorEvent]:
+    ) -> AsyncGenerator[OrchestratorEvent, None]:
         if not self._ws:
             yield OrchestratorEvent(type="error", content="not connected")
             return
@@ -266,6 +269,8 @@ class OpenClawClient:
 
     async def _listen(self) -> None:
         try:
+            if self._ws is None:
+                raise ConnectionError("not connected")
             async for raw in self._ws:
                 frame = json.loads(raw)
                 fid = frame.get("id", "")

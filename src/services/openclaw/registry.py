@@ -2,6 +2,8 @@ import asyncio
 import logging
 from typing import Any
 
+from src.services.session_registry import SessionStatus
+
 logger = logging.getLogger(__name__)
 
 
@@ -115,7 +117,7 @@ class ClientRegistry:
             except Exception:
                 pass  # one dead/misbehaving session must not block the rest
 
-    async def close_all_sessions(self, status: str, timeout: float) -> None:
+    async def close_all_sessions(self, status: SessionStatus, timeout: float) -> None:
         """Drain every registered session concurrently, each bounded by
         `timeout`. Used by the app lifespan on shutdown (issue #110) so N
         active sessions each get a full close_all() attempt in parallel

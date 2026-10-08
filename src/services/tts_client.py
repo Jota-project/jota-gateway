@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator
 
 import httpx
 import websockets
+from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
 from src.core.config import settings
@@ -24,7 +25,7 @@ class TTSClient:
         self.url = url
         self.token = token
         self.client_id = client_id
-        self.ws = None
+        self.ws: ClientConnection | None = None
 
     async def connect(
         self,
@@ -35,16 +36,17 @@ class TTSClient:
         ws_url = f"ws://{self.url}/ws"
         _authenticated = False
         try:
-            self.ws = await websockets.connect(ws_url)
+            ws = await websockets.connect(ws_url)
+            self.ws = ws
             auth_msg: dict = {"type": "auth", "token": self.token}
             if voice is not None:
                 auth_msg["voice"] = voice
             if speed is not None:
                 auth_msg["speed"] = speed
-            await self.ws.send(json.dumps(auth_msg))
+            await ws.send(json.dumps(auth_msg))
             try:
                 raw = await asyncio.wait_for(
-                    self.ws.recv(),
+                    ws.recv(),
                     timeout=settings.TTS_AUTH_TIMEOUT_S,
                 )
             except ConnectionClosed as exc:

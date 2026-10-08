@@ -3,7 +3,7 @@ import contextlib
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, Callable
 from datetime import UTC, datetime
 
 from src.services.openclaw.client import OpenClawClient
@@ -40,9 +40,9 @@ class ReconnectingOpenClawClient:
         self._reconnect_attempts: int = 0
         self._last_error: str | None = None
         self._reconnect_task: asyncio.Task | None = None
-        self._reconnect_job_id: str | None = None
+        self._reconnect_job_id: str = ""
         self._reconnect_exhausted: bool = False
-        self.on_state_change = None
+        self.on_state_change: Callable[[ConnectionState], None] | None = None
         # Register disconnect callback so the inner client notifies us on unexpected drops.
         self._client.on_disconnect = self._handle_disconnect
 
@@ -84,7 +84,7 @@ class ReconnectingOpenClawClient:
         user_id: str,
         model_id: str | None = None,
         session_key: str | None = None,
-    ) -> AsyncIterator[OrchestratorEvent]:
+    ) -> AsyncGenerator[OrchestratorEvent, None]:
         if self.state != ConnectionState.CONNECTED:
             if self.state == ConnectionState.DEGRADED:
                 self._ensure_reconnecting()
@@ -140,9 +140,10 @@ class ReconnectingOpenClawClient:
         return self._ensure_reconnecting()
 
     def _ensure_reconnecting(self) -> str:
-        # Always non-None here: _reconnect_exhausted only ever becomes True
-        # inside _reconnect_loop(), which _ensure_reconnecting() itself only
-        # ever starts after assigning a fresh _reconnect_job_id below.
+        # _reconnect_job_id is never "" when _reconnect_exhausted is True:
+        # that flag only ever becomes True inside _reconnect_loop(), which
+        # _ensure_reconnecting() itself only starts after assigning a fresh
+        # _reconnect_job_id below.
         if self._reconnect_exhausted:
             return self._reconnect_job_id
         if not self._reconnect_task or self._reconnect_task.done():
