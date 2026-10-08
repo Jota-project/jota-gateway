@@ -9,16 +9,22 @@ contratos internos con la interfaz HTTP de administración.
 
 import json
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
 from src.db.models import ClientRecord
+from src.models.schemas import OutputMode
+
+# Etiqueta de cliente. Solo se valida la ENTRADA (create/update/CLI); la respuesta
+# sigue siendo `str` para no romper la lectura de filas antiguas con valores libres (#122).
+ClientType = Literal["ha", "esp32", "web", "app"]
 
 
 class ClientCreate(BaseModel):
     name: str
     client_key: str | None = None  # si se omite, se genera uno aleatorio
-    client_type: str | None = None
+    client_type: ClientType | None = None
     default_agent: str | None = None
     allowed_agents: list[str] | None = None
     # Pipeline config
@@ -28,7 +34,7 @@ class ClientCreate(BaseModel):
     tts_speed: float = 1.0
     barge_in_enabled: bool = True
     barge_in_min_chars: int = 5
-    output_mode: list[str] | None = None
+    output_mode: list[OutputMode] | None = None
     silence_timeout_s: float = 2.0
     max_silence_turns: int = 3
     push_enabled: bool = True
@@ -40,7 +46,7 @@ class ClientUpdate(BaseModel):
 
     name: str | None = None
     is_active: bool | None = None
-    client_type: str | None = None
+    client_type: ClientType | None = None
     default_agent: str | None = None
     allowed_agents: list[str] | None = None
     stt_language: str | None = None
@@ -49,7 +55,7 @@ class ClientUpdate(BaseModel):
     tts_speed: float | None = None
     barge_in_enabled: bool | None = None
     barge_in_min_chars: int | None = None
-    output_mode: list[str] | None = None
+    output_mode: list[OutputMode] | None = None
     silence_timeout_s: float | None = None
     max_silence_turns: int | None = None
     push_enabled: bool | None = None

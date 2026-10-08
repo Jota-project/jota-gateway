@@ -8,7 +8,7 @@ from tests.e2e.conftest import GATEWAY_HTTP_URL
 
 def test_single_ephemeral_client_created_and_cleaned_up(test_client_record, admin_headers):
     client_id = test_client_record["id"]
-    assert test_client_record["client_type"] == "e2e-test"
+    assert test_client_record["client_type"] == "app"
 
     resp = httpx.get(f"{GATEWAY_HTTP_URL}/admin/clients/{client_id}", headers=admin_headers)
     assert resp.status_code == 200, "el cliente efímero debería existir mientras el test corre"

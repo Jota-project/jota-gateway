@@ -99,7 +99,7 @@ SQLModel table (`__tablename__ = "clients"`) with the following columns:
 | `name` | `str` | — | Human label |
 | `client_key` | `str` (unique, indexed) | — | Auth token the client sends in the handshake |
 | `is_active` | `bool` | `True` | Deactivated clients are rejected at handshake |
-| `client_type` | `str?` | `None` | Free label (e.g. `ha`, `esp32`) — not used in routing logic |
+| `client_type` | `str?` | `None` | Label, one of `ha`/`esp32`/`web`/`app` on input (see "Input validation" below) — not used in routing logic |
 | `default_agent` | `str?` | `None` | Override OpenClaw agent for this client |
 | `allowed_agents` | `str?` | `None` | JSON list of permitted agent names |
 | `created_at` | `datetime` | `now(UTC)` | |
@@ -109,7 +109,7 @@ SQLModel table (`__tablename__ = "clients"`) with the following columns:
 | `tts_speed` | `float` | `1.0` | Passed to `TTSClient.connect()` |
 | `barge_in_enabled` | `bool` | `True` | Whether partial transcriptions can cancel active turn |
 | `barge_in_min_chars` | `int` | `5` | Minimum chars in partial before barge-in fires |
-| `output_mode` | `str?` | `None` | JSON list — stored default, informational only |
+| `output_mode` | `str?` | `None` | JSON list of `audio`/`text`/`status` — stored default, informational only (the handshake's `output_mode` is what actually drives a session) |
 | `silence_timeout_s` | `float` | `2.0` | Seconds of no transcription before a silence event |
 | `max_silence_turns` | `int` | `3` | Consecutive silence events before session is closed |
 | `push_enabled` | `bool` | `True` | Whether agent-initiated push turns are accepted |
@@ -119,7 +119,7 @@ SQLModel table (`__tablename__ = "clients"`) with the following columns:
 
 ```python
 get_engine()            # lazy-init SQLAlchemy engine from DATABASE_URL
-create_db_and_tables()  # called once at app startup (lifespan)
+run_migrations()        # called once at app startup (lifespan) — applies Alembic migrations
 get_db_session()        # FastAPI dependency — yields a SQLModel Session
 ```
 
@@ -157,6 +157,8 @@ After any mutation, `db_client.invalidate(client_key)` is called to evict the 60
 
 Schemas: `src/models/admin_schemas.py` — `ClientCreate`, `ClientUpdate`, `ClientResponse`.
 
+**Input validation (issue #122, decision 2026-10-08):** `client_type` is validated on input as `Literal["ha","esp32","web","app"]` (`ClientType` in `admin_schemas.py`) and `output_mode` as `list[OutputMode]` (`OutputMode = Literal["audio","text","status"]` in `src/models/schemas.py`, the same type the WS handshake uses). Anything else → `422` on `POST`/`PATCH /admin/clients`, and the CLI's `--type` uses `choices=`. **Only the input side is validated**: `ClientResponse` keeps `client_type: str | None` and `output_mode: list[str] | None`, so legacy rows written before this check (any free-text `client_type`) still read fine — no migration, no data rewrite. Adding a new client type means extending `ClientType`. The field was kept rather than dropped: dropping it would need an Alembic drop-column migration and break any caller still sending it.
+
 ### CLI (`src/cli.py`)
 
 ```bash
@@ -169,7 +171,9 @@ python3 src/cli.py delete-client <client_key>
 
 `--key` lets you import an existing token verbatim (e.g. migrating from jota-db). Omit it to generate a random key.
 
-The CLI calls `create_db_and_tables()` at startup, so it is safe to run against a fresh `data/gateway.db`.
+The CLI calls `run_migrations()` when run as a script, so it is safe to run against a fresh `data/gateway.db`.
+
+Every mutating command (`add-client`, `activate-client`, `deactivate-client`, `delete-client`) calls `db_client.invalidate(key)` after its commit, same as `admin_routes.py` (issue #123). The CLI is a separate process, though, so that only clears *its own* in-process cache — it does **not** evict a running gateway's 60s `_session_cache`. Run the CLI against a stopped gateway, or use the admin REST API for live changes.
 
 ---
 
@@ -403,7 +407,14 @@ Callers that cache the result of an external lookup (e.g. `DbClient._session_cac
 
 `docker-compose.yml` mounts `./data:/app/data`. The SQLite file at `data/gateway.db` lives on the host and survives container rebuilds. `data/` is in `.gitignore`.
 
-On first startup (`create_db_and_tables()` in the lifespan), the schema is created automatically if the file doesn't exist.
+On first startup (`run_migrations()` in the lifespan), the schema is created automatically if the file doesn't exist.
+
+`run_migrations()` (`src/db/database.py`, Alembic) picks one of three modes by inspecting the DB:
+- **Fresh** — no `clients` table and no `alembic_version`: `upgrade head` from scratch.
+- **Versioned** — `alembic_version` exists: `upgrade head` applies only pending migrations.
+- **Legacy stamp** — `clients` exists but `alembic_version` doesn't (schema already patched by hand with `ALTER TABLE`, as in production after the original incident): `stamp head`, no DDL executed.
+
+`get_engine()` also creates the SQLite file's parent directory if missing (`_ensure_sqlite_dir`, issue #124), so `DATABASE_URL=sqlite:///data/gateway.db` works on a clean non-Docker checkout without a manual `mkdir -p data`. In-memory and non-SQLite URLs are left untouched.
 
 ---
 

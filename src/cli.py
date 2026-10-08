@@ -7,11 +7,19 @@ Uso: python src/cli.py <command> [options]
 
 import secrets
 import sys
+from typing import get_args
 
 from sqlmodel import Session, select
 
 from src.db.database import get_engine, run_migrations
 from src.db.models import ClientRecord
+from src.models.admin_schemas import ClientType
+from src.services.db_client import db_client
+
+# Nota (#123): el CLI es un proceso distinto del servidor, así que `invalidate()`
+# solo limpia la caché de *este* proceso. Mantiene la semántica alineada con
+# admin_routes.py y es correcto si se usa in-process, pero NO evicta la caché
+# de un gateway en marcha (TTL de 60s). Ver CLAUDE.md, sección "CLI".
 
 
 def _get_engine():
@@ -36,6 +44,7 @@ def cmd_add(
         s.add(rec)
         s.commit()
         s.refresh(rec)
+    db_client.invalidate(key)
     print("Cliente creado:")
     print(f"  name:       {rec.name}")
     print(f"  id:         {rec.id}")
@@ -61,6 +70,7 @@ def cmd_deactivate(client_key: str, engine) -> None:
         rec.is_active = False
         s.add(rec)
         s.commit()
+    db_client.invalidate(client_key)
     print("Cliente desactivado.")
 
 
@@ -70,6 +80,7 @@ def cmd_activate(client_key: str, engine) -> None:
         rec.is_active = True
         s.add(rec)
         s.commit()
+    db_client.invalidate(client_key)
     print("Cliente activado.")
 
 
@@ -78,6 +89,7 @@ def cmd_delete(client_key: str, engine) -> None:
         rec = _require(s, client_key)
         s.delete(rec)
         s.commit()
+    db_client.invalidate(client_key)
     print("Cliente eliminado.")
 
 
@@ -92,7 +104,7 @@ def run(argv: list[str]) -> None:
     a.add_argument(
         "--key", dest="client_key", help="client_key exacto a usar (si se omite, se genera uno)"
     )
-    a.add_argument("--type", dest="client_type")
+    a.add_argument("--type", dest="client_type", choices=get_args(ClientType))
     a.add_argument("--agent")
 
     sub.add_parser("list-clients")

@@ -76,7 +76,16 @@ Los tres endpoints `*/status` devuelven la misma forma: `{"name", "state", "conn
 
 Auth: header `X-Admin-Token`. Sin header → 422. Token incorrecto → 401. `ADMIN_TOKEN` vacío → 503.
 
-### OpenAI-compatible (sin auth, LAN-only vía nginx)
+### OpenAI-compatible (`/v1/*`, para Home Assistant)
+
+**Autenticación** (`src/core/network.py`, `resolve_ha_caller` en `src/api/openai_routes.py`):
+
+- Origen **de confianza** (loopback si `TRUST_LOOPBACK=true`, y/o las CIDR de `TRUSTED_NETWORKS`): no necesita credenciales.
+- Cualquier otro origen debe enviar `Authorization: Bearer <client_key>`, validado contra la tabla `clients` (la misma que usa el handshake WebSocket). Sin él, o con una key inválida/inactiva → `401`.
+- Si se envía un Bearer, siempre se valida, también desde un origen de confianza.
+- Detrás de un proxy (nginx), la IP real solo se toma de `X-Real-IP` si el peer está en `TRUSTED_PROXIES`.
+- `TRUSTED_NETWORKS` vacío = fail-closed: solo loopback queda exento.
+- Con Bearer válido, `model` selecciona el agente y se aplican `default_agent`/`allowed_agents` del cliente (violación → `403`).
 
 | Endpoint | Método | Descripción |
 |----------|--------|-------------|
@@ -218,7 +227,7 @@ src/
 │   └── session_key.py       make_session_key() — formato canónico de session key
 ├── db/
 │   ├── models.py            ClientRecord (SQLModel) — identidad y config por cliente
-│   └── database.py          get_engine() / create_db_and_tables() / get_db_session()
+│   └── database.py          get_engine() / run_migrations() / get_db_session()
 ├── cli.py                   CLI — add-client / list-clients / (de)activate-client / delete-client
 └── services/
     ├── bridge.py            JotaBridge — coordinador de sesión WS

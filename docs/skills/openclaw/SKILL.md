@@ -73,7 +73,7 @@ Key facts:
 - Server: `green-house` (192.168.1.106 dynamic, local DNS resolves `green-house`)
 - Process: `node openclaw/dist/index.js gateway --port 18789`
 - LAN proxy: `http://green-house/api/openclaw/` → nginx → :18789
-- HA bridge: `http://green-house/api/gateway/v1/` → jota-gateway → OpenClaw REST
+- HA bridge: `http://green-house/api/gateway/v1/` → jota-gateway (`/v1/*`, trusted origin or `Bearer <client_key>`; see the repo `README.md`)
 
 ---
 
@@ -83,13 +83,13 @@ Load these when you need depth on a specific topic:
 
 | File | When to load |
 |------|-------------|
-| `references/protocol.md` | Implementing WebSocket clients, debugging connections |
+| `docs/openclaw-protocol.md` (repo root) | **Authoritative** wire protocol as observed against the real server — implementing WS clients, debugging connections |
 | `references/config-schema.md` | Editing `openclaw.json`, adding channels/models/tools |
 | `references/skills-system.md` | Creating or debugging skills |
 | `references/tools.md` | Tool configuration, groups, permissions |
 | `references/channels.md` | Setting up Telegram, WhatsApp, Discord, etc. |
 | `references/green-house.md` | This specific server deployment |
-| `references/ha-bridge.md` | Home Assistant integration via jota-gateway |
+| `README.md` § OpenAI-compatible (repo root) | Home Assistant integration via jota-gateway's `/v1/*` (auth model included) |
 
 ---
 

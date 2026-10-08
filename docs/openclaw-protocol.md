@@ -295,8 +295,28 @@ dedicated OpenClaw plugin becomes worth building.
 
 ---
 
+## Session key carries the per-client identity (jota-gateway convention)
+
+Every turn jota-gateway sends over `chat.send` uses `sessionKey = "agent:{agent}:{client.id}"`,
+where `client.id` is the `ClientRecord` UUID of the authenticated caller (WS handshake or REST
+`/v1/*` with a Bearer key), not a shared global key. This is a jota-gateway convention layered on
+OpenClaw's opaque `sessionKey` string, not something the OpenClaw server enforces or validates.
+Consequences observable on the wire:
+
+- Two clients talking to the same agent get independent OpenClaw sessions (separate history).
+- Events come back tagged with that same `sessionKey`; the gateway recovers the client with
+  `sk.rsplit(":", 1)[-1]` (safe for agent names or keys containing extra colons).
+- The REST trusted-origin legacy path (no Bearer) has no client row, so it uses the fixed id `ha`.
+
+How the `agent` segment is resolved and validated lives in `CLAUDE.md` ("Session key derivation").
+
+---
+
 ## Change log of this file
 
+- **2026-10-08**: added "Session key carries the per-client identity" — documents the
+  `agent:{agent}:{client.id}` convention introduced by #52/#105 (issue #119). No server-side
+  protocol change; this records how the gateway uses `sessionKey`.
 - **2026-07-18**: added "No per-session/per-message system-prompt hook exists" — researched
   while resolving issue #100. Confirmed against OpenClaw's own source (`chat.send`'s strict
   TypeBox schema, `chat.inject`'s assistant-role transcript-write behavior, `sessions.patch`'s
