@@ -2,7 +2,7 @@
 
 > **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fases 1, 2 y 3 ✅ cerradas (Fase 3: 2026-08-06, mergeada a `main` 2026-10-08)
 > **Última actualización:** 2026-10-08
-> **Issues abiertas:** 25 (rango GitHub `#118`–`#163`)
+> **Issues abiertas:** 22 (rango GitHub `#118`–`#163`)
 > **Versión actual:** v1.14.11 (release 2026-10-08, cierra Fase 3)
 > **Próximo release:** Fase 4 (consistencia & docs). *(Los targets numéricos de esta versión del roadmap —1.15.x/1.16.0/1.17.0— no se ajustaron a la realidad: la Fase 2 salió como v1.14.10 y la Fase 3 como v1.14.11, asignados por semantic-release al taggear; verificar el número que asigna el release automático.)*
 
@@ -18,7 +18,7 @@ Este documento es el **plan vivo de remediación y evolución** de jota-gateway.
 
 | Métrica | Valor |
 |---|---|
-| Issues totales | **80** (25 abiertas) |
+| Issues totales | **80** (22 abiertas) |
 | 🔴 Críticos | 6 |
 | 🟠 Altos | 15 |
 | 🟡 Medios | 14 |
@@ -126,9 +126,9 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 - [ ] **#120** 🟡 `[022]` — `docs/skills/openclaw/references/` describe incompatible protocol — **S**
 - [ ] **#121** 🟡 `[023]` — `create_db_and_tables()` referenced in docs but doesn't exist (renamed v1.12.0) — **XS**
 - [ ] **#122** 🟡 `[024]` — ClientConfig/ClientRecord field drift (4 fields) — **S** — *bloqueado por #105*
-- [ ] **#123** 🟡 `[025]` — CLI doesn't invalidate `db_client` cache — **XS**
-- [ ] **#124** 🟡 `[026]` — Fresh deploy fails: `data/` not auto-created — **XS**
-- [ ] **#125** 🟡 `[027]` — Stale `"tags"` reference in `admin_routes.py:112` — **XS**
+- [x] **#123** 🟡 `[025]` — CLI doesn't invalidate `db_client` cache — **XS** — cerrado por #178 (rama `fix/123-124-125-small-fixes`, mergeado a `phase/4-consistency`)
+- [x] **#124** 🟡 `[026]` — Fresh deploy fails: `data/` not auto-created — **XS** — cerrado por #178 (rama `fix/123-124-125-small-fixes`, mergeado a `phase/4-consistency`)
+- [x] **#125** 🟡 `[027]` — Stale `"tags"` reference in `admin_routes.py:112` — **XS** — cerrado por #178 (rama `fix/123-124-125-small-fixes`, mergeado a `phase/4-consistency`)
 - [ ] **#126** 🟡 `[028]` — Three reconnecting wrappers duplicated without shared base — **L** — *bloqueado por #102, #103, #104*
 
 ### 🟡⚪ Fase 5 — Polish batch (semana 7)

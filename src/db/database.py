@@ -4,6 +4,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import inspect
+from sqlalchemy.engine import make_url
 from sqlmodel import Session, create_engine
 
 from src.core.config import settings
@@ -12,9 +13,23 @@ _engine = None
 _ALEMBIC_INI = Path(__file__).resolve().parent.parent.parent / "alembic.ini"
 
 
+def _ensure_sqlite_dir(database_url: str) -> None:
+    """Crea el directorio padre del fichero SQLite si no existe (issue #124).
+
+    Idempotente. Docker lo enmascaraba con el bind mount de `./data`; en un
+    checkout limpio, `sqlite:///data/gateway.db` fallaba con OperationalError.
+    No-op para bases en memoria y para URLs que no son SQLite.
+    """
+    url = make_url(database_url)
+    if url.get_backend_name() != "sqlite" or not url.database or url.database == ":memory:":
+        return
+    Path(url.database).parent.mkdir(parents=True, exist_ok=True)
+
+
 def get_engine():
     global _engine
     if _engine is None:
+        _ensure_sqlite_dir(settings.DATABASE_URL)
         _engine = create_engine(
             settings.DATABASE_URL,
             connect_args={"check_same_thread": False},
