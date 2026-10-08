@@ -1,3 +1,10 @@
+## [1.14.11](https://github.com/Jota-project/jota-gateway/compare/v1.14.10...v1.14.11) (2026-10-08)
+
+
+### Bug Fixes
+
+* close Fase 3 — Lifecycle & producción ([#110](https://github.com/Jota-project/jota-gateway/issues/110), [#111](https://github.com/Jota-project/jota-gateway/issues/111), [#112](https://github.com/Jota-project/jota-gateway/issues/112), [#113](https://github.com/Jota-project/jota-gateway/issues/113), [#114](https://github.com/Jota-project/jota-gateway/issues/114), [#115](https://github.com/Jota-project/jota-gateway/issues/115), [#116](https://github.com/Jota-project/jota-gateway/issues/116), [#117](https://github.com/Jota-project/jota-gateway/issues/117)) ([#176](https://github.com/Jota-project/jota-gateway/issues/176)) ([d938771](https://github.com/Jota-project/jota-gateway/commit/d938771e4ede6f5aad3b1c4d3d9bebce579c0c08)), closes [#160](https://github.com/Jota-project/jota-gateway/issues/160) [#174](https://github.com/Jota-project/jota-gateway/issues/174) [#171](https://github.com/Jota-project/jota-gateway/issues/171) [102/#104](https://github.com/Jota-project/jota-gateway/issues/104)
+
 ## [1.14.10](https://github.com/Jota-project/jota-gateway/compare/v1.14.9...v1.14.10) (2026-07-20)
 
 
