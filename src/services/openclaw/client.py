@@ -20,6 +20,9 @@ from src.services.protocol import OrchestratorEvent
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_KEEPALIVE_S = 12.0
+_MIN_KEEPALIVE_S = 1.0
+
 
 class OpenClawClient:
     """Single persistent WebSocket to OpenClaw, multiplexed across all sessions.
@@ -296,8 +299,15 @@ class OpenClawClient:
         if self.on_disconnect:
             self.on_disconnect()
 
+    def _keepalive_interval(self) -> float:
+        """Seconds between keepalive pings: 80% of the server's tick, never below
+        _MIN_KEEPALIVE_S (issue #135 — tickIntervalMs=0 used to spin the loop)."""
+        if not self.gateway_info:
+            return _DEFAULT_KEEPALIVE_S
+        return max(self.gateway_info.tick_interval_ms * 0.8 / 1000, _MIN_KEEPALIVE_S)
+
     async def _keepalive_loop(self) -> None:
-        interval = self.gateway_info.tick_interval_ms * 0.8 / 1000 if self.gateway_info else 12.0
+        interval = self._keepalive_interval()
         try:
             while True:
                 await asyncio.sleep(interval)
