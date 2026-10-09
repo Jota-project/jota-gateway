@@ -113,11 +113,17 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la referencia comp
 ## Quick start
 
 ```bash
-pip install -r requirements.txt
+pip install .[dev]
 uvicorn src.main:app --host 0.0.0.0 --port 8004 --reload
 # o con Docker:
 docker compose up
 ```
+
+> **Docker:** el contenedor corre como no-root. Antes del primer `docker compose up`
+> define `GATEWAY_UID`/`GATEWAY_GID` en `.env` con el dueño de `./data`
+> (`echo "GATEWAY_UID=$(id -u)" >> .env && echo "GATEWAY_GID=$(id -g)" >> .env`).
+> Si `./data` viene de un despliegue anterior como root: `sudo chown -R "$(id -u):$(id -g)" data`.
+> Detalles en `docker-compose.yml`.
 
 ---
 

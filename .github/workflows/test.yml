@@ -30,7 +30,7 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install .[dev]
 
       - name: Lint (ruff)
         run: ruff check src/ tests/
@@ -76,5 +76,37 @@ jobs:
         with:
           context: .
           push: false
+          load: true
+          tags: jota-gateway:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Smoke - starts as non-root and HEALTHCHECK turns healthy
+        run: |
+          docker run -d --name gw -e ADMIN_TOKEN=ci -e OPENCLAW_TOKEN=ci jota-gateway:ci
+          for i in $(seq 1 40); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' gw)
+            [ "$status" = "healthy" ] && break
+            sleep 3
+          done
+          echo "health=$status"
+          [ "$status" = "healthy" ] || { docker logs gw; exit 1; }
+          uid=$(docker exec gw id -u)
+          echo "uid=$uid"
+          [ "$uid" != "0" ]
+          docker rm -f gw
+
+      - name: Smoke - writes gateway.db to a bind mount owned by an arbitrary host UID
+        run: |
+          mkdir data
+          docker run -d --name gw2 --user "$(id -u):$(id -g)" -v "$PWD/data:/app/data" \
+            -e ADMIN_TOKEN=ci -e OPENCLAW_TOKEN=ci jota-gateway:ci
+          for i in $(seq 1 40); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' gw2)
+            [ "$status" = "healthy" ] && break
+            sleep 3
+          done
+          echo "health=$status"
+          [ "$status" = "healthy" ] || { docker logs gw2; exit 1; }
+          ls -l data/gateway.db
+          docker rm -f gw2
