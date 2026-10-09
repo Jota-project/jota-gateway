@@ -1,3 +1,10 @@
+# [1.15.0](https://github.com/Jota-project/jota-gateway/compare/v1.14.16...v1.15.0) (2026-10-09)
+
+
+### Features
+
+* **transcriber:** consumir el protocolo de capacidad status/complete ([#193](https://github.com/Jota-project/jota-gateway/issues/193)) ([4ac7153](https://github.com/Jota-project/jota-gateway/commit/4ac71530d85706e2a1863191f66233eaefbf1663)), closes [#143](https://github.com/Jota-project/jota-gateway/issues/143) [#149](https://github.com/Jota-project/jota-gateway/issues/149) [#143](https://github.com/Jota-project/jota-gateway/issues/143)
+
 ## [1.14.16](https://github.com/Jota-project/jota-gateway/compare/v1.14.15...v1.14.16) (2026-10-09)
 
 
