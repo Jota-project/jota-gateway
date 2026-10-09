@@ -86,17 +86,17 @@ async def test_invalidate_clears_cache():
 
 
 @pytest.mark.asyncio
-async def test_invalidate_advances_generation_counter():
+async def test_invalidate_advances_epoch():
     engine = _engine_with(ClientRecord(name="Gen", client_key="gen-key"))
     client = DbClient(engine=engine)
     await client.get_session("gen-key")
-    assert client._generations.get("gen-key", 0) == 0
+    assert client._epoch == 0
 
     client.invalidate("gen-key")
-    assert client._generations["gen-key"] == 1
+    assert client._epoch == 1
 
     client.invalidate("gen-key")
-    assert client._generations["gen-key"] == 2
+    assert client._epoch == 2
 
 
 def test_generation_guard_prevents_stale_repopulation_after_concurrent_invalidate(
@@ -277,3 +277,81 @@ def test_rotated_key_does_not_poison_cache_when_read_races_the_commit(monkeypatc
     # Cualquier lectura posterior debe reflejar la rotación ya asentada.
     with pytest.raises(ClientNotFound):
         asyncio.run(client.get_session("old-key"))
+
+
+# ── #163: época global en vez de contador por key ───────────────────────────
+
+
+def _inflight_reader(monkeypatch, tmp_path, key):
+    """Arranca get_session(key) en un hilo y lo deja bloqueado dentro de la
+    consulta a BD. Devuelve (client, release, join)."""
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/epoch.db", connect_args={"check_same_thread": False}
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as s:
+        s.add(ClientRecord(name="Before", client_key=key))
+        s.commit()
+    client = DbClient(engine=engine)
+
+    query_started, release_query = threading.Event(), threading.Event()
+    original_exec = Session.exec
+
+    def slow_exec(self, *args, **kwargs):
+        query_started.set()
+        release_query.wait(timeout=5)
+        return original_exec(self, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "exec", slow_exec)
+    reader = threading.Thread(target=lambda: asyncio.run(client.get_session(key)))
+    reader.start()
+    assert query_started.wait(timeout=5), "el lector nunca llegó a la consulta de BD"
+
+    def finish():
+        release_query.set()
+        reader.join(timeout=5)
+
+    return client, finish
+
+
+def test_first_invalidation_of_never_invalidated_key_blocks_stale_write(monkeypatch, tmp_path):
+    """El caso que rompía un `pop` ingenuo de la generación (#163): key sin
+    invalidaciones previas, lectura en vuelo, invalidate() → no se cachea."""
+    client, finish = _inflight_reader(monkeypatch, tmp_path, "fresh-key")
+
+    client.invalidate("fresh-key")
+    finish()
+
+    assert "fresh-key" not in client._session_cache
+
+
+def test_invalidating_another_key_during_inflight_read_skips_cache_write(monkeypatch, tmp_path):
+    """La época es global: es conservadora a propósito. Una invalidación de
+    OTRA key durante la lectura solo cuesta una consulta extra, nunca deja un
+    valor obsoleto."""
+    client, finish = _inflight_reader(monkeypatch, tmp_path, "reader-key")
+
+    client.invalidate("some-other-key")
+    finish()
+
+    assert "reader-key" not in client._session_cache
+
+
+@pytest.mark.asyncio
+async def test_read_without_concurrent_invalidation_is_cached():
+    engine = _engine_with(ClientRecord(name="Ok", client_key="cached-key"))
+    client = DbClient(engine=engine)
+
+    await client.get_session("cached-key")
+
+    assert "cached-key" in client._session_cache
+
+
+def test_invalidate_keeps_no_per_key_state():
+    client = DbClient(engine=create_engine("sqlite://"))
+
+    for i in range(1000):
+        client.invalidate(f"key-{i}")
+
+    assert not hasattr(client, "_generations")
+    assert client._epoch == 1000
