@@ -19,6 +19,10 @@ from src.services.tts_reconnecting import ReconnectingTTSClient
 
 logger = logging.getLogger(__name__)
 
+# Window in which an identical repeated final transcription is treated as the
+# transcriber's duplicate emission rather than a new utterance (issue #128).
+_FINAL_DEDUP_WINDOW_S = 1.0
+
 
 def _tool_call_message(turn_id: str | None, tool_call: ToolCallEvent) -> dict:
     return {
@@ -76,6 +80,7 @@ class JotaBridge:
         self._last_client_activity: float = 0.0
         self._first_audio_at: float | None = None
         self._last_final_text: str | None = None
+        self._last_final_at: float = 0.0
         self._turn_seq: int = 0
         self._push_turn_seq: int = 0
         self._push_turn_id: str | None = None
@@ -578,13 +583,22 @@ class JotaBridge:
                         pass
             return  # partials never reach the orchestrator
 
-        # Final: deduplicate — transcriber may emit the same text more than once
-        if text == self._last_final_text:
+        # Final: deduplicate — the transcriber used to emit the same final twice within
+        # milliseconds (jota-transcriber#27, fixed upstream in #28). Only a repeat inside
+        # _FINAL_DEDUP_WINDOW_S counts as that duplicate; the same words said again later
+        # are a genuine new utterance (issue #128). The window is measured from the last
+        # *delivered* final, so dropped repeats never extend it.
+        now = time.monotonic()
+        if (
+            text == self._last_final_text
+            and now - self._last_final_at < _FINAL_DEDUP_WINDOW_S
+        ):
             logger.debug(
                 f"[{self.client_id}] Transcripción final duplicada descartada: '{text[:40]}'"
             )
             return
         self._last_final_text = text
+        self._last_final_at = now
         await self.tracker.record("transcription_final", text=text[:60])
 
         # Final: cancel any running turn, notify client.
