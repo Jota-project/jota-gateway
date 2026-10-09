@@ -515,7 +515,7 @@ class JotaBridge:
                         # Cliente confirma/edita la transcripción y la envía al orquestador
                         text = json_msg.get("text", "").strip()
                         if text and self.orchestrator:
-                            logger.info(f"[{self.client_id}] send recibido: '{text[:60]}'")
+                            logger.info(f"[{self.client_id}] send recibido: len={len(text)}")
                             await self._cancel_active_turn()
                             self._active_turn = asyncio.create_task(self._call_orchestrator(text))
 
@@ -574,7 +574,7 @@ class JotaBridge:
             if self.config.barge_in_enabled and len(text) >= self.config.barge_in_min_chars:
                 if await self._cancel_active_turn():
                     logger.info(
-                        f"[{self.client_id}] Barge-in: turno cancelado por parcial '{text[:30]}'"
+                        f"[{self.client_id}] Barge-in: turno cancelado por parcial len={len(text)}"
                     )
                     await self.tracker.record("barge_in")
                     try:
@@ -599,7 +599,7 @@ class JotaBridge:
             return
         self._last_final_text = text
         self._last_final_at = now
-        await self.tracker.record("transcription_final", text=text[:60])
+        await self.tracker.record("transcription_final", text_len=len(text))
 
         # Final: cancel any running turn, notify client.
         # El orquestador se llama cuando el cliente envíe {"type": "send", "text": "..."}.
