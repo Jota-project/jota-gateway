@@ -1,3 +1,10 @@
+## [1.15.1](https://github.com/Jota-project/jota-gateway/compare/v1.15.0...v1.15.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* **db_client:** época global de invalidación en vez de contador por key ([#194](https://github.com/Jota-project/jota-gateway/issues/194)) ([04d9978](https://github.com/Jota-project/jota-gateway/commit/04d9978021482fc935721768eb0b460b9931d516)), closes [#163](https://github.com/Jota-project/jota-gateway/issues/163) [#163](https://github.com/Jota-project/jota-gateway/issues/163)
+
 # [1.15.0](https://github.com/Jota-project/jota-gateway/compare/v1.14.16...v1.15.0) (2026-10-09)
 
 
