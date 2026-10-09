@@ -1,3 +1,10 @@
+## [1.15.2](https://github.com/Jota-project/jota-gateway/compare/v1.15.1...v1.15.2) (2026-10-09)
+
+
+### Bug Fixes
+
+* timeout del ready del transcriber y semántica documentada del watchdog ([#195](https://github.com/Jota-project/jota-gateway/issues/195)) ([7c5d349](https://github.com/Jota-project/jota-gateway/commit/7c5d349b3903ff3633611cf4eebf6838c7980b96)), closes [#129](https://github.com/Jota-project/jota-gateway/issues/129) [#134](https://github.com/Jota-project/jota-gateway/issues/134) [#134](https://github.com/Jota-project/jota-gateway/issues/134) [#129](https://github.com/Jota-project/jota-gateway/issues/129) [#129](https://github.com/Jota-project/jota-gateway/issues/129)
+
 ## [1.15.1](https://github.com/Jota-project/jota-gateway/compare/v1.15.0...v1.15.1) (2026-10-09)
 
 
