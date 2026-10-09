@@ -135,3 +135,82 @@ async def test_listen_loop_malformed_frame_log_has_no_payload(client, caplog):
         await client.listen_loop(on_transcription_callback=lambda *_: None)
 
     assert not any(secret in r.getMessage() for r in caplog.records)
+
+
+# ── Capacity-status protocol (issue #143) ───────────────────────────────────
+
+
+async def test_listen_loop_status_frame_invokes_status_callback(client):
+    client.ws = make_ws(
+        json.dumps({"type": "status", "state": "busy", "reason": "gpu_saturated"}),
+        json.dumps({"type": "status", "state": "ok", "future_field": 1}),
+    )
+    seen = []
+
+    async def on_status(state, reason):
+        seen.append((state, reason))
+
+    await client.listen_loop(on_transcription_callback=lambda *_: None, on_status_callback=on_status)
+
+    assert seen == [("busy", "gpu_saturated"), ("ok", None)]
+
+
+async def test_listen_loop_status_frame_without_callback_does_not_raise(client):
+    client.ws = make_ws(json.dumps({"type": "status", "state": "busy"}))
+
+    await client.listen_loop(on_transcription_callback=lambda *_: None)
+
+
+async def test_incomplete_final_is_logged_with_reason_and_still_delivered(client, caplog):
+    text = "TOP-SECRET-PHRASE"
+    client.ws = make_ws(
+        json.dumps(
+            {
+                "type": "transcription",
+                "text": text,
+                "is_final": True,
+                "complete": False,
+                "reason": "gpu_saturated_timeout",
+            }
+        )
+    )
+    received, incomplete = [], []
+
+    async def on_final(t, is_final):
+        received.append((t, is_final))
+
+    async def on_incomplete(reason):
+        incomplete.append(reason)
+
+    with caplog.at_level("INFO"):
+        await client.listen_loop(
+            on_transcription_callback=on_final, on_incomplete_callback=on_incomplete
+        )
+
+    assert received == [(text, True)]
+    assert incomplete == ["gpu_saturated_timeout"]
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("gpu_saturated_timeout" in m for m in warnings)
+    assert not any(text in r.getMessage() for r in caplog.records)
+
+
+async def test_complete_final_and_partials_do_not_report_incomplete(client):
+    client.ws = make_ws(
+        json.dumps({"type": "transcription", "text": "a", "is_final": True, "complete": True}),
+        json.dumps({"type": "transcription", "text": "b", "is_final": True}),
+        json.dumps({"type": "transcription", "text": "c", "is_final": False, "complete": False}),
+    )
+    incomplete = []
+
+    async def on_incomplete(reason):
+        incomplete.append(reason)
+
+    await client.listen_loop(
+        on_transcription_callback=lambda *_: _noop(), on_incomplete_callback=on_incomplete
+    )
+
+    assert incomplete == []
+
+
+async def _noop():
+    return None

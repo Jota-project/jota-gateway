@@ -77,6 +77,8 @@ class JotaBridge:
         # loop's weak reference doesn't let them get GC'd mid-flight.
         self._notification_tasks: set[asyncio.Task] = set()
         self._active_turn: asyncio.Task | None = None
+        # True while the transcriber reports `status busy` (GPU saturated, #143).
+        self._transcriber_busy: bool = False
         self._session_start: float = 0.0
         self._last_client_activity: float = 0.0
         self._first_audio_at: float | None = None
@@ -342,6 +344,12 @@ class JotaBridge:
             if self.transcriber.state != ConnectionState.CONNECTED:
                 was_connected = False
                 continue  # RECONNECTING: skip silence-counting this tick, don't exit
+            if self._transcriber_busy:
+                # GPU saturated (#143): no transcriptions are expected. Skip counting
+                # and reuse the recovery-baseline path so the busy period isn't
+                # blamed on the client once it clears.
+                was_connected = False
+                continue
 
             current_transcription_at = self.transcriber._last_transcription_at
             if current_transcription_at != last_seen_transcription_at:
@@ -479,6 +487,8 @@ class JotaBridge:
                 self.transcriber.run(
                     on_transcription_callback=self._on_transcription,
                     on_warning_callback=self._on_transcriber_warning,
+                    on_status_callback=self._on_transcriber_status,
+                    on_incomplete_callback=self._on_transcriber_incomplete,
                 ),
                 "transcriber_run",
             )
@@ -562,22 +572,44 @@ class JotaBridge:
 
     async def _on_transcriber_warning(self, code: str, message: str | None):
         """Reenvía warnings del transcriber al cliente (e.g. buffer_full)."""
-        try:
-            await self.client_ws.send_json(
-                {
-                    "type": "status",
-                    "service": "transcriber",
-                    "state": "degraded",
-                    "code": code,
-                    "message": message or code,
-                }
-            )
-        except Exception:
-            pass  # cliente desconectado
+        await self.notify_service_status(
+            "transcriber", "degraded", code=code, message=message or code
+        )
 
-    async def notify_service_status(self, service: str, state: str) -> None:
+    async def _on_transcriber_status(self, state: str, reason: str | None) -> None:
+        """Transcriber capacity signal (#143): `busy` → degraded, `ok` → restored.
+
+        Transition-only: a repeated `busy`, or an `ok` that was never preceded by
+        a `busy` (the transcriber's initial status), notifies nothing.
+        """
+        if state == "busy" and not self._transcriber_busy:
+            self._transcriber_busy = True
+            code = reason or "busy"
+            await self.notify_service_status("transcriber", "degraded", code=code, message=code)
+        elif state == "ok" and self._transcriber_busy:
+            self._transcriber_busy = False
+            await self.notify_service_status("transcriber", "restored")
+        elif state not in ("busy", "ok"):
+            logger.debug(f"[{self.client_id}] Transcriber status desconocido ignorado: {state!r}")
+
+    async def _on_transcriber_incomplete(self, reason: str | None) -> None:
+        """A final transcription was truncated by the transcriber (complete=false, #143)."""
+        await self.tracker.record("transcription_incomplete", reason=reason)
+
+    async def notify_service_status(
+        self,
+        service: str,
+        state: str,
+        code: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        payload: dict[str, str] = {"type": "status", "service": service, "state": state}
+        if code is not None:
+            payload["code"] = code
+        if message is not None:
+            payload["message"] = message
         try:
-            await self.client_ws.send_json({"type": "status", "service": service, "state": state})
+            await self.client_ws.send_json(payload)
         except Exception:
             pass  # cliente desconectado
 

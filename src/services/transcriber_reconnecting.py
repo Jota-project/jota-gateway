@@ -91,6 +91,8 @@ class ReconnectingTranscriberClient:
         self,
         on_transcription_callback: Callable[[str, bool], Awaitable[None]],
         on_warning_callback: Callable[[str, str | None], Awaitable[None]] | None = None,
+        on_status_callback: Callable[[str, str | None], Awaitable[None]] | None = None,
+        on_incomplete_callback: Callable[[str | None], Awaitable[None]] | None = None,
     ) -> None:
         """Supervises the listen loop for the session's lifetime: listens,
         and on an unexpected drop, reconnects with backoff and resumes
@@ -106,7 +108,12 @@ class ReconnectingTranscriberClient:
 
             self._client._dropped_unexpectedly = False
             try:
-                await self._client.listen_loop(on_transcription_callback, on_warning_callback)
+                await self._client.listen_loop(
+                    on_transcription_callback,
+                    on_warning_callback,
+                    on_status_callback,
+                    on_incomplete_callback,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as e:

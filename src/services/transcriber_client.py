@@ -80,6 +80,8 @@ class TranscriberClient:
         self,
         on_transcription_callback: Callable[[str, bool], Awaitable[None]],
         on_warning_callback: Callable[[str, str | None], Awaitable[None]] | None = None,
+        on_status_callback: Callable[[str, str | None], Awaitable[None]] | None = None,
+        on_incomplete_callback: Callable[[str | None], Awaitable[None]] | None = None,
     ):
         """
         Bucle que escucha mensajes del transcriber.
@@ -88,6 +90,10 @@ class TranscriberClient:
             on_transcription_callback: llamado con (text, is_final) en cada transcripción.
             on_warning_callback: llamado con (code, message) cuando llega un warning.
                                  Si es None, los warnings solo se loguean.
+            on_status_callback: llamado con (state, reason) en cada frame type="status"
+                                (capacidad del transcriber: busy/ok, #143).
+            on_incomplete_callback: llamado con (reason) antes de entregar un final con
+                                    complete=false (truncado por saturación, #143).
         """
         if not self.ws:
             return
@@ -114,7 +120,18 @@ class TranscriberClient:
                     logger.debug(
                         f"[{self.client_id}] Transcripción: is_final={t_msg.is_final!r} text='{t_msg.text[:40]}'"
                     )
+                    if t_msg.is_final and t_msg.complete is False:
+                        logger.warning(
+                            f"[{self.client_id}] Transcripción final incompleta "
+                            f"(reason={t_msg.reason!r})"
+                        )
+                        if on_incomplete_callback:
+                            await on_incomplete_callback(t_msg.reason)
                     await on_transcription_callback(t_msg.text, bool(t_msg.is_final))
+
+                elif t_msg.type == "status":
+                    if on_status_callback and t_msg.state:
+                        await on_status_callback(t_msg.state, t_msg.reason)
 
                 elif t_msg.type == "warning":
                     logger.warning(
