@@ -1,3 +1,10 @@
+## [1.14.15](https://github.com/Jota-project/jota-gateway/compare/v1.14.14...v1.14.15) (2026-10-09)
+
+
+### Bug Fixes
+
+* **privacy:** no loguear ni persistir transcripts en INFO/SessionRecord ([#191](https://github.com/Jota-project/jota-gateway/issues/191)) ([465595d](https://github.com/Jota-project/jota-gateway/commit/465595d8d7cd1d20075a477b9607641caa808c64)), closes [#133](https://github.com/Jota-project/jota-gateway/issues/133)
+
 ## [1.14.14](https://github.com/Jota-project/jota-gateway/compare/v1.14.13...v1.14.14) (2026-10-09)
 
 
