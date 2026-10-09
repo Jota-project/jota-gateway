@@ -86,7 +86,7 @@ class TranscriberConfig(BaseModel):
 class TranscriberMessage(BaseModel):
     """
     Formato de salida proveniente del Transcriptor C++.
-    Tipos posibles: "transcription", "ready", "warning", "error".
+    Tipos posibles: "transcription", "ready", "warning", "error", "status".
     """
 
     type: str
@@ -95,3 +95,6 @@ class TranscriberMessage(BaseModel):
     message: str | None = None  # descripción legible en warning/error
     code: str | None = None  # código de error/warning: AUTH_FAILED, buffer_full, etc.
     session_id: str | None = None  # presente en el mensaje "ready"
+    state: str | None = None  # "busy"/"ok" en mensajes type="status" (capacidad, #143)
+    reason: str | None = None  # motivo en status busy / final con complete=false
+    complete: bool | None = None  # False en un final truncado por saturación de GPU

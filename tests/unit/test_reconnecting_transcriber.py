@@ -45,7 +45,7 @@ async def test_run_clean_close_does_not_reconnect():
     w = _wrap()
     w.state = ConnectionState.CONNECTED
 
-    async def fake_listen_loop(on_transcription_callback, on_warning_callback=None):
+    async def fake_listen_loop(on_transcription_callback, on_warning_callback=None, *_):
         w._client._dropped_unexpectedly = False  # simulate a clean 1000 close
 
     w._client.listen_loop = fake_listen_loop
@@ -64,7 +64,7 @@ async def test_run_unexpected_drop_reconnects_and_resumes_listening():
 
     calls = {"listen": 0}
 
-    async def fake_listen_loop(on_transcription_callback, on_warning_callback=None):
+    async def fake_listen_loop(on_transcription_callback, on_warning_callback=None, *_):
         calls["listen"] += 1
         if calls["listen"] == 1:
             w._client._dropped_unexpectedly = True  # first cycle: unexpected drop
@@ -175,7 +175,7 @@ async def test_run_unexpected_exception_degrades_and_notifies():
     seen = []
     w.on_state_change = seen.append
 
-    async def boom(on_transcription_callback, on_warning_callback=None):
+    async def boom(on_transcription_callback, on_warning_callback=None, *_):
         raise RuntimeError("callback bug")
 
     w._client.listen_loop = boom
@@ -197,7 +197,7 @@ async def test_run_clean_close_keeps_state_connected():
     seen = []
     w.on_state_change = seen.append
 
-    async def clean(on_transcription_callback, on_warning_callback=None):
+    async def clean(on_transcription_callback, on_warning_callback=None, *_):
         w._client._dropped_unexpectedly = False
 
     w._client.listen_loop = clean
@@ -205,3 +205,30 @@ async def test_run_clean_close_keeps_state_connected():
 
     assert w.state == ConnectionState.CONNECTED
     assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_run_forwards_status_and_incomplete_callbacks_to_listen_loop():
+    """#143: run() must plumb the new optional callbacks through to listen_loop."""
+    w = _wrap()
+    w.state = ConnectionState.CONNECTED
+    received = {}
+
+    async def fake_listen_loop(
+        on_transcription_callback, on_warning_callback=None,
+        on_status_callback=None, on_incomplete_callback=None,
+    ):
+        received["status"] = on_status_callback
+        received["incomplete"] = on_incomplete_callback
+        w._client._dropped_unexpectedly = False
+
+    w._client.listen_loop = fake_listen_loop
+    on_status, on_incomplete = AsyncMock(), AsyncMock()
+
+    await w.run(
+        on_transcription_callback=AsyncMock(),
+        on_status_callback=on_status,
+        on_incomplete_callback=on_incomplete,
+    )
+
+    assert received == {"status": on_status, "incomplete": on_incomplete}

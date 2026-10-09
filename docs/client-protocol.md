@@ -391,7 +391,7 @@ Los tres microservicios downstream (orquestador, Transcriber, TTS) tienen recone
 | `unavailable` | El servicio está caído. Puede o no estar reintentando activamente en segundo plano (ver tabla siguiente). |
 | `reconnecting` | Reintentando activamente ahora mismo. |
 | `restored` | Volvió a la normalidad tras haber estado `unavailable`/`reconnecting`. |
-| `degraded` | Solo para `transcriber` — señal de **calidad**, no de conectividad (silencio prolongado, buffer lleno). No forma parte del ciclo unavailable→reconnecting→restored. |
+| `degraded` | Solo para `transcriber` — señal de **calidad**, no de conectividad (silencio prolongado, buffer lleno, GPU saturada con `code: "gpu_saturated"`). No forma parte del ciclo unavailable→reconnecting→restored. Cuando la causa es saturación del transcriber, el aviso de recuperación es `restored`; el resto de causas de `degraded` no tienen aviso de recuperación. |
 
 Por servicio:
 
