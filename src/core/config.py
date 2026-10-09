@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     TTS_RECONNECT_INITIAL_BACKOFF: float = 1.0
     TTS_RECONNECT_MAX_BACKOFF: float = 60.0
     TTS_AUTH_TIMEOUT_S: float = 10.0
+    TRANSCRIBER_READY_TIMEOUT_S: float = 10.0
 
     # Deadlines acotados (issue #115)
     HANDSHAKE_TIMEOUT_S: float = 10.0

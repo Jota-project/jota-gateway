@@ -55,3 +55,36 @@ async def test_connect_closes_socket_when_handshake_fails():
 
     assert "auth_failed" in str(exc_info.value)
     assert fake_ws.closed, "Socket must be closed when handshake fails"
+
+
+@pytest.mark.asyncio
+async def test_connect_times_out_and_closes_socket_when_ready_never_arrives(monkeypatch):
+    """#134: a transcriber that accepts the upgrade but never sends `ready` must not
+    wedge connect() forever (it would block _reconnect_loop past its max_duration)."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "TRANSCRIBER_READY_TIMEOUT_S", 0.05)
+    fake_ws = FakeSocket()  # recv() blocks forever
+
+    with patch("websockets.connect", side_effect=lambda url: fake_ws):
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                TranscriberClient(url="test:1", client_id="c1").connect(), timeout=2.0
+            )
+
+    assert fake_ws.closed, "Socket must be closed when the ready wait times out"
+
+
+@pytest.mark.asyncio
+async def test_connect_succeeds_when_ready_arrives_in_time(monkeypatch):
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "TRANSCRIBER_READY_TIMEOUT_S", 1.0)
+    fake_ws = FakeSocket(recv_payloads=[json.dumps({"type": "ready", "session_id": "s1"})])
+
+    with patch("websockets.connect", side_effect=lambda url: fake_ws):
+        client = TranscriberClient(url="test:1", client_id="c1")
+        await client.connect()
+
+    assert client._is_ready
+    assert not fake_ws.closed

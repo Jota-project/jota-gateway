@@ -482,3 +482,29 @@ async def test_run_launches_idle_watchdog_that_closes_the_session(monkeypatch, m
         f"run() took {elapsed:.2f}s — the idle watchdog likely wasn't launched "
         "and this only completed via the outer wait_for's own timeout"
     )
+
+
+@pytest.mark.asyncio
+async def test_watchdog_counts_one_strike_per_poll_tick_not_per_timeout_window(monkeypatch):
+    """#129: pins the documented semantics with REAL time (sleep is not patched).
+
+    Each poll tick with elapsed > silence_timeout_s is one strike, and each strike
+    sends one `degraded` notice — max_silence_turns counts ticks, not full
+    silence_timeout_s windows. Here the timeout (0.05s) is shorter than the tick
+    (0.1s), so a "window" model would still wait 3 × 0.05s; the tick model closes
+    after exactly 3 ticks.
+    """
+    import src.services.bridge as bridge_module
+
+    monkeypatch.setattr(bridge_module, "_WATCHDOG_POLL_S", 0.1)
+    config = ClientConfig(silence_timeout_s=0.05, max_silence_turns=3)
+    bridge, ws, transcriber = _make_bridge(config=config)
+    bridge._first_audio_at = time.monotonic() - 1
+    transcriber._last_transcription_at = None
+    bridge.close_all = AsyncMock()
+
+    await asyncio.wait_for(bridge._transcription_watchdog(), timeout=3.0)
+
+    degraded = [c for c in ws.send_json.call_args_list if c[0][0].get("state") == "degraded"]
+    assert len(degraded) == 3
+    bridge.close_all.assert_awaited_once()

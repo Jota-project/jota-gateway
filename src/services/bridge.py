@@ -19,6 +19,11 @@ from src.services.tts_reconnecting import ReconnectingTTSClient
 
 logger = logging.getLogger(__name__)
 
+# Silence-watchdog poll interval (issue #129). Each tick with no transcription for
+# longer than `silence_timeout_s` is one strike (and one `degraded` notice), so
+# `max_silence_turns` counts ticks, not whole `silence_timeout_s` windows.
+_WATCHDOG_POLL_S = 2
+
 # Window in which an identical repeated final transcription is treated as the
 # transcriber's duplicate emission rather than a new utterance (issue #128).
 _FINAL_DEDUP_WINDOW_S = 1.0
@@ -338,7 +343,7 @@ class JotaBridge:
         recovery_baseline: float | None = None
 
         while True:
-            await asyncio.sleep(2)
+            await asyncio.sleep(_WATCHDOG_POLL_S)
             if not self.transcriber or self.transcriber.state == ConnectionState.DEGRADED:
                 return
             if self.transcriber.state != ConnectionState.CONNECTED:
