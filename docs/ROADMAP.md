@@ -2,7 +2,7 @@
 
 > **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fases 1, 2, 3 y 4 ✅ cerradas (Fase 3: 2026-08-06, mergeada a `main` 2026-10-08; Fase 4: 2026-10-08, mergeada a `main` en #181 y publicada como v1.14.12; 8 de 9 issues — #126 pasa a Fase 5)
 > **Última actualización:** 2026-10-08
-> **Issues abiertas:** 16 (rango GitHub `#118`–`#163`)
+> **Issues abiertas:** 15 (rango GitHub `#118`–`#163`)
 > **Versión actual:** v1.14.12 (release 2026-10-08, cierra Fase 4)
 > **Próximo release:** Fase 5 (polish batch, incluye #126). *(Los targets numéricos de esta versión del roadmap —1.15.x/1.16.0/1.17.0— no se ajustaron a la realidad: la Fase 2 salió como v1.14.10, la Fase 3 como v1.14.11 y la Fase 4 como v1.14.12, asignados por semantic-release al taggear; verificar el número que asigna el release automático.)*
 
@@ -18,7 +18,7 @@ Este documento es el **plan vivo de remediación y evolución** de jota-gateway.
 
 | Métrica | Valor |
 |---|---|
-| Issues totales | **80** (16 abiertas) |
+| Issues totales | **80** (15 abiertas) |
 | 🔴 Críticos | 6 |
 | 🟠 Altos | 15 |
 | 🟡 Medios | 14 |
@@ -152,7 +152,7 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 - [ ] **#134** ⚪ `[036]` — `connect()` calls without timeout — half-open sockets hang forever — **S→XS** — *triage 2026-10-08: mitigada, `websockets` 16 aplica `open_timeout=10` por defecto y los `recv()` del handshake de OpenClaw tienen timeout; queda como mucho hacerlo explícito/configurable — candidata a cerrar como won't-fix*
 - [ ] **#135** ⚪ `[037]` — `_keepalive_loop` interval not clamped; `tickIntervalMs=0` causes ping flood — **XS**
 - [ ] **#136** ⚪ `[038]` — Dispatcher silently drops unknown event types — **XS**
-- [ ] **#137** ⚪ `[039]` — CI gaps: typecheck, Docker build, pytest timeout — **M** — *triage 2026-10-08: además, CI corre Python 3.12 y el Dockerfile 3.14; alinear dentro de esta issue. "Coverage delta visible" (gate de la fase) también cae aquí*
+- [x] **#137** ⚪ `[039]` — CI gaps: typecheck, Docker build, pytest timeout — **M** — cerrado por #184 (2026-10-09): mypy (15 errores de `src/` arreglados), job `docker-build` en PR, `pytest-timeout` 60s, `concurrency`, cobertura visible (92%) y matriz Python 3.12/3.14 (3.14 verificado en CI). Job agregador `test` para el check requerido del ruleset `production`
 - [ ] **#138** ⚪ `[040]` — Dockerfile + dependency manifests hardening — **M**
 - [ ] **#143** 🟡 — `TranscriberClient` does not consume the transcriber's capacity-status protocol (`type:status` push, `complete`/`reason` fields) — **M** — *abierta durante el trabajo de Fase 3 (spec: jota-transcriber `2026-07-09-transcriber-status-capacity-design.md`); labels: `type:observability`, `domain:microservice-clients`*
 - [ ] **#163** ⚪ — `DbClient._generations` (contador de generación de #107) crece sin límite, nunca se purga — **S** — encontrada en la revisión de cierre de Fase 2 (PR #160); requiere diseño dedicado para no reabrir la race de #107
