@@ -160,9 +160,8 @@ async def test_final_sends_transcription_to_client(make_bridge):
 async def test_final_transcription_is_not_logged_at_info(make_bridge, caplog):
     """#106: the bridge's own final-transcription log moved from INFO to DEBUG.
 
-    Scope is the `src.services.bridge` logger only. The `pipeline_tracker` still
-    records the transcript at INFO (`tracker.record("transcription_final", ...)`)
-    — that separate leak is tracked by #133 and is out of scope for #106.
+    Scope is the `src.services.bridge` logger only; the `pipeline_tracker` side
+    (#133) is covered in `test_transcript_privacy.py`.
     """
     bridge = make_bridge()
     text = "0123456789" * 4 + "TOP-SECRET-SUFFIX"

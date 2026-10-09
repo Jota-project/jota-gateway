@@ -425,7 +425,7 @@ On first startup (`run_migrations()` in the lifespan), the schema is created aut
 
 Inbound HTTP requests and WebSocket connections receive a gateway-owned UUID4 in `scope["state"]["request_id"]` via `RequestIdMiddleware`. This identifier is local to the gateway and unrelated to OpenClaw `req_id`, `turn_id`, or `session_key`. Source IP resolution for HTTP and WebSocket must go through `resolve_client_ip()` so `X-Real-IP` is trusted only from `TRUSTED_PROXIES`.
 
-User transcripts must not be logged at INFO or above. DEBUG transcript logs must be deliberately truncated; the current maximum for final transcriptions is 40 characters.
+User transcripts must not be logged at INFO or above. DEBUG transcript logs must be deliberately truncated; the current maximum for final transcriptions is 40 characters. This also covers `PipelineTracker.record()`: it logs `meta` at INFO and the events are persisted in `SessionRecord` (visible in `/admin/sessions`), so callers must never put user text in `meta` — record `text_len=len(text)` instead, as `transcription_partial` and `transcription_final` do (issue #133). INFO logs of `send` and barge-in likewise carry only the length.
 
 ---
 
