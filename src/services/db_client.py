@@ -56,7 +56,11 @@ class DbClient:
     def __init__(self, engine=None):
         self._engine = engine
         self._session_cache, self._session_lock = make_cache(maxsize=500, ttl=60)
-        self._generations: dict[str, int] = {}
+        # Global invalidation epoch (issue #163). One int instead of a per-key
+        # dict: a per-key counter can't be purged safely (an in-flight read of a
+        # deleted/rotated key could still repopulate the cache once its entry is
+        # gone), and keeping every historical key grows without bound.
+        self._epoch: int = 0
 
     def _get_engine(self):
         return self._engine if self._engine is not None else get_engine()
@@ -65,11 +69,13 @@ class DbClient:
         """
         Resuelve client_key → (Client, ClientConfig). Resultado cacheado 60 s.
 
-        Usa un contador de generación por-key para evitar repoblar el
-        caché con un valor obsoleto: si invalidate() corre en otro hilo
-        mientras la consulta a BD está en vuelo, la generación capturada
-        antes de la consulta ya no coincide al terminar y el resultado NO
-        se escribe en caché (el siguiente acceso volverá a consultar BD).
+        Usa una época global de invalidación para evitar repoblar el caché
+        con un valor obsoleto: si invalidate() (de CUALQUIER key) corre en
+        otro hilo mientras la consulta a BD está en vuelo, la época capturada
+        antes de la consulta ya no coincide al terminar y el resultado NO se
+        escribe en caché (el siguiente acceso volverá a consultar BD). Es más
+        conservadora que un contador por key — a lo sumo cuesta una consulta
+        extra — pero nunca deja un valor obsoleto y usa memoria O(1).
 
         Raises:
             ClientNotFound: la key no existe.
@@ -78,7 +84,7 @@ class DbClient:
         with self._session_lock:
             if client_key in self._session_cache:
                 return self._session_cache[client_key]
-            generation_before = self._generations.get(client_key, 0)
+            epoch_before = self._epoch
 
         with Session(self._get_engine()) as session:
             record: ClientRecord | None = session.exec(
@@ -112,12 +118,12 @@ class DbClient:
         )
         result = (client, config)
         with self._session_lock:
-            if self._generations.get(client_key, 0) == generation_before:
+            if self._epoch == epoch_before:
                 self._session_cache[client_key] = result
         return result
 
     def invalidate(self, client_key: str) -> None:
-        """Elimina la entrada del caché y avanza su generación.
+        """Elimina la entrada del caché y avanza la época global.
 
         Seguro de llamar desde cualquier hilo (p.ej. handlers `def`
         síncronos de admin_routes.py, ejecutados en el threadpool de
@@ -126,7 +132,7 @@ class DbClient:
         """
         with self._session_lock:
             self._session_cache.pop(client_key, None)
-            self._generations[client_key] = self._generations.get(client_key, 0) + 1
+            self._epoch += 1
 
 
 # Singleton — importar este objeto directamente

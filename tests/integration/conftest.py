@@ -71,12 +71,12 @@ def seed_client(db_engine):
 
 @pytest.fixture(autouse=True)
 def clear_db_cache():
-    """Limpia el caché y el contador de generaciones de db_client antes y después de cada test."""
+    """Limpia el caché y la época de invalidación de db_client antes y después de cada test."""
     db_client._session_cache.clear()
-    db_client._generations.clear()
+    db_client._epoch = 0
     yield
     db_client._session_cache.clear()
-    db_client._generations.clear()
+    db_client._epoch = 0
 
 
 @pytest.fixture(autouse=True)
