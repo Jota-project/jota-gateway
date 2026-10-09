@@ -1,3 +1,10 @@
+## [1.14.16](https://github.com/Jota-project/jota-gateway/compare/v1.14.15...v1.14.16) (2026-10-09)
+
+
+### Bug Fixes
+
+* **transcriber:** supervisar tareas de sesión y degradar ante fallos inesperados ([#192](https://github.com/Jota-project/jota-gateway/issues/192)) ([446a111](https://github.com/Jota-project/jota-gateway/commit/446a111a03ad1e7c26740e31890c516adf158c4c)), closes [#131](https://github.com/Jota-project/jota-gateway/issues/131) [#131](https://github.com/Jota-project/jota-gateway/issues/131) [#133](https://github.com/Jota-project/jota-gateway/issues/133) [#133](https://github.com/Jota-project/jota-gateway/issues/133) [#191](https://github.com/Jota-project/jota-gateway/issues/191)
+
 ## [1.14.15](https://github.com/Jota-project/jota-gateway/compare/v1.14.14...v1.14.15) (2026-10-09)
 
 
