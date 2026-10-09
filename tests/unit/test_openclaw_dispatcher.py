@@ -490,3 +490,51 @@ async def test_agent_lifecycle_end_closes_push_turn_opened_before_normal_turn():
 
     assert bridge._push_turn_open is False
     ws.send_json.assert_any_call({"type": "turn_end", "turn_id": push_turn_id})
+
+
+# --- Issue #136: unknown frames/events must not vanish silently -------------
+
+
+async def test_unknown_event_type_is_logged_once_at_info(caplog):
+    import logging
+
+    dispatcher, _, _ = make_dispatcher()
+    frame = {"type": "event", "event": "brand.new.event", "payload": {"secret": "x"}}
+
+    with caplog.at_level(logging.DEBUG, logger="src.services.openclaw.dispatcher"):
+        await dispatcher.dispatch(frame)
+        await dispatcher.dispatch(frame)
+
+    infos = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(infos) == 1
+    assert "brand.new.event" in infos[0].getMessage()
+    # payload content must never reach the logs
+    assert "secret" not in caplog.text
+
+
+async def test_unknown_frame_type_is_logged_once_at_info(caplog):
+    import logging
+
+    dispatcher, _, _ = make_dispatcher()
+
+    with caplog.at_level(logging.DEBUG, logger="src.services.openclaw.dispatcher"):
+        await dispatcher.dispatch({"type": "weird"})
+        await dispatcher.dispatch({"type": "weird"})
+
+    infos = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(infos) == 1
+    assert "weird" in infos[0].getMessage()
+
+
+async def test_known_events_are_not_reported_as_unknown(caplog):
+    import logging
+
+    dispatcher, _, _ = make_dispatcher()
+
+    with caplog.at_level(logging.DEBUG, logger="src.services.openclaw.dispatcher"):
+        await dispatcher.dispatch({"type": "event", "event": "chat", "payload": {}})
+        await dispatcher.dispatch({"type": "event", "event": "agent", "payload": {}})
+        await dispatcher.dispatch({"type": "event", "event": "session.tool", "payload": {}})
+        await dispatcher.dispatch({"type": "res", "id": "x", "payload": {}})
+
+    assert [r for r in caplog.records if r.levelno >= logging.INFO] == []

@@ -38,6 +38,10 @@ class PipelineTracker:
         self._registry = registry
         self._started_at: float = time.monotonic()
         self._last_event_at: float = self._started_at
+        # Two independent flags rather than one: if the first close() is cancelled
+        # inside record(), a retry must still reach registry.close() (issue #127).
+        self._session_end_recorded = False
+        self._registry_closed = False
         self._turn: int = 0
 
     def start_turn(self) -> int:
@@ -84,9 +88,13 @@ class PipelineTracker:
         return event
 
     async def close(self, status: "SessionStatus" = "completed") -> None:
-        duration_s = round(time.monotonic() - self._started_at, 2)
-        await self.record("session_end", turn_count=self._turn, duration_s=duration_s)
-        self._registry.close(self.session_id, status)
+        if not self._session_end_recorded:
+            self._session_end_recorded = True
+            duration_s = round(time.monotonic() - self._started_at, 2)
+            await self.record("session_end", turn_count=self._turn, duration_s=duration_s)
+        if not self._registry_closed:
+            self._registry_closed = True
+            self._registry.close(self.session_id, status)
 
     def _find_last(self, stage: str, turn: int | None = None) -> PipelineEvent | None:
         for e in reversed(self.events):
