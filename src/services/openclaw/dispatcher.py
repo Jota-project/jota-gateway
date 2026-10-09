@@ -18,6 +18,9 @@ class FrameDispatcher:
     def __init__(self, turn_registry: TurnRegistry, client_registry: ClientRegistry) -> None:
         self._turns = turn_registry
         self._clients = client_registry
+        # Frame/event kinds already reported as unhandled — each is logged at INFO
+        # once (issue #136), so protocol drift is visible without a per-frame flood.
+        self._unknown_seen: set[str] = set()
 
     async def dispatch(self, frame: dict) -> None:
         ftype = frame.get("type")
@@ -25,6 +28,21 @@ class FrameDispatcher:
             await self._handle_res(frame)
         elif ftype == "event":
             await self._handle_event(frame)
+        else:
+            self._note_unhandled(f"frame type {ftype!r}")
+
+    def _note_unhandled(self, what: str) -> None:
+        """Log an unhandled frame/event kind once at INFO, then at DEBUG. Only the
+        kind is logged, never the payload (it may carry user content)."""
+        if what in self._unknown_seen:
+            logger.debug("unhandled OpenClaw %s", what)
+            return
+        self._unknown_seen.add(what)
+        logger.info(
+            "unhandled OpenClaw %s (first occurrence; further ones are logged at DEBUG) — "
+            "possible protocol drift, see docs/openclaw-protocol.md",
+            what,
+        )
 
     async def _handle_res(self, frame: dict) -> None:
         payload = frame.get("payload", {})
@@ -43,6 +61,8 @@ class FrameDispatcher:
             await self._handle_agent_lifecycle(payload)
         elif event == "session.tool":
             await self._handle_session_tool(payload)
+        else:
+            self._note_unhandled(f"event {event!r}")
 
     async def _handle_chat(self, payload: dict) -> None:
         sk = payload.get("sessionKey")

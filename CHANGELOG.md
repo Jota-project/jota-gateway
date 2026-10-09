@@ -1,3 +1,10 @@
+## [1.14.13](https://github.com/Jota-project/jota-gateway/compare/v1.14.12...v1.14.13) (2026-10-09)
+
+
+### Bug Fixes
+
+* close idempotente, clamp de keepalive y log de eventos desconocidos ([#127](https://github.com/Jota-project/jota-gateway/issues/127), [#135](https://github.com/Jota-project/jota-gateway/issues/135), [#136](https://github.com/Jota-project/jota-gateway/issues/136)) ([#188](https://github.com/Jota-project/jota-gateway/issues/188)) ([300d5bc](https://github.com/Jota-project/jota-gateway/commit/300d5bcf84053f1be6a11a129e571b392b72b517)), closes [#128](https://github.com/Jota-project/jota-gateway/issues/128) [#101](https://github.com/Jota-project/jota-gateway/issues/101)
+
 ## [1.14.12](https://github.com/Jota-project/jota-gateway/compare/v1.14.11...v1.14.12) (2026-10-08)
 
 
