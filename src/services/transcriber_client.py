@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 import websockets
+from pydantic import ValidationError
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
@@ -96,28 +97,36 @@ class TranscriberClient:
                 try:
                     data = json.loads(message)
                     t_msg = TranscriberMessage(**data)
-
-                    if t_msg.type == "transcription" and t_msg.text:
-                        self._last_transcription_at = time.monotonic()
-                        logger.debug(
-                            f"[{self.client_id}] Transcripción: is_final={t_msg.is_final!r} text='{t_msg.text[:40]}'"
-                        )
-                        await on_transcription_callback(t_msg.text, bool(t_msg.is_final))
-
-                    elif t_msg.type == "warning":
-                        logger.warning(
-                            f"[{self.client_id}] Transcriber warning [{t_msg.code}]: {t_msg.message}"
-                        )
-                        if on_warning_callback:
-                            await on_warning_callback(t_msg.code or "unknown", t_msg.message)
-
-                    elif t_msg.type == "error":
-                        logger.error(
-                            f"[{self.client_id}] Transcriber error [{t_msg.code}]: {t_msg.message}"
-                        )
-
                 except json.JSONDecodeError:
                     logger.warning(f"[{self.client_id}] Transcriber mandó un non-JSON: {message!r}")
+                    continue
+                except (ValidationError, TypeError) as e:
+                    # Valid JSON with an unexpected shape (#131): skip the frame, keep
+                    # listening. Never log the payload (may carry transcript text).
+                    logger.warning(
+                        f"[{self.client_id}] Transcriber frame con esquema inválido descartado "
+                        f"({type(e).__name__})"
+                    )
+                    continue
+
+                if t_msg.type == "transcription" and t_msg.text:
+                    self._last_transcription_at = time.monotonic()
+                    logger.debug(
+                        f"[{self.client_id}] Transcripción: is_final={t_msg.is_final!r} text='{t_msg.text[:40]}'"
+                    )
+                    await on_transcription_callback(t_msg.text, bool(t_msg.is_final))
+
+                elif t_msg.type == "warning":
+                    logger.warning(
+                        f"[{self.client_id}] Transcriber warning [{t_msg.code}]: {t_msg.message}"
+                    )
+                    if on_warning_callback:
+                        await on_warning_callback(t_msg.code or "unknown", t_msg.message)
+
+                elif t_msg.type == "error":
+                    logger.error(
+                        f"[{self.client_id}] Transcriber error [{t_msg.code}]: {t_msg.message}"
+                    )
         except ConnectionClosed as e:
             clean_close = e.rcvd is not None and e.rcvd.code == 1000
             if self._is_ready and not clean_close:

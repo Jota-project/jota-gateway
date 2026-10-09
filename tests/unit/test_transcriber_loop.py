@@ -108,3 +108,30 @@ async def test_listen_loop_returns_immediately_when_ws_is_none(client):
     await client.listen_loop(on_transcription_callback=callback)
 
     assert called == []
+
+
+async def test_listen_loop_survives_malformed_frames(client):
+    """#131: un frame JSON válido pero con esquema inesperado no mata el bucle."""
+    bad_type = json.dumps({"type": 123})
+    not_an_object = json.dumps([1, 2, 3])
+    good = json.dumps({"type": "transcription", "text": "hola", "is_final": True})
+    client.ws = make_ws(bad_type, not_an_object, good)
+
+    received = []
+
+    async def callback(text: str, is_final: bool):
+        received.append((text, is_final))
+
+    await client.listen_loop(on_transcription_callback=callback)
+
+    assert received == [("hola", True)]
+
+
+async def test_listen_loop_malformed_frame_log_has_no_payload(client, caplog):
+    secret = "TOP-SECRET-PHRASE"
+    client.ws = make_ws(json.dumps({"type": 123, "text": secret}))
+
+    with caplog.at_level("DEBUG"):
+        await client.listen_loop(on_transcription_callback=lambda *_: None)
+
+    assert not any(secret in r.getMessage() for r in caplog.records)

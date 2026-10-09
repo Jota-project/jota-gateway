@@ -164,3 +164,44 @@ def test_status_shape():
     assert s.state == ConnectionState.DEGRADED
     assert s.reconnect_attempts == 0
     assert s.last_error is None
+
+
+@pytest.mark.asyncio
+async def test_run_unexpected_exception_degrades_and_notifies():
+    """#131: una excepción inesperada en listen_loop no muere en silencio:
+    state pasa a DEGRADED y on_state_change lo notifica; run() no propaga."""
+    w = _wrap()
+    w.state = ConnectionState.CONNECTED
+    seen = []
+    w.on_state_change = seen.append
+
+    async def boom(on_transcription_callback, on_warning_callback=None):
+        raise RuntimeError("callback bug")
+
+    w._client.listen_loop = boom
+    connect_spy = AsyncMock()
+    w._client.connect = connect_spy
+
+    await w.run(on_transcription_callback=AsyncMock())
+
+    assert w.state == ConnectionState.DEGRADED
+    assert seen == [ConnectionState.DEGRADED]
+    assert "callback bug" in (w.status().last_error or "")
+    connect_spy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_clean_close_keeps_state_connected():
+    w = _wrap()
+    w.state = ConnectionState.CONNECTED
+    seen = []
+    w.on_state_change = seen.append
+
+    async def clean(on_transcription_callback, on_warning_callback=None):
+        w._client._dropped_unexpectedly = False
+
+    w._client.listen_loop = clean
+    await w.run(on_transcription_callback=AsyncMock())
+
+    assert w.state == ConnectionState.CONNECTED
+    assert seen == []

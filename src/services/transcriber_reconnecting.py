@@ -105,7 +105,22 @@ class ReconnectingTranscriberClient:
                     return
 
             self._client._dropped_unexpectedly = False
-            await self._client.listen_loop(on_transcription_callback, on_warning_callback)
+            try:
+                await self._client.listen_loop(on_transcription_callback, on_warning_callback)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # Unexpected failure (e.g. a bug in the transcription callback), not a
+                # connection drop: don't reconnect, don't close the session — degrade
+                # so the client gets `status unavailable` via on_state_change (#131).
+                self._last_error = str(e)
+                logger.error(
+                    "[%s] transcriber listen loop crashed — DEGRADED.",
+                    self._client_id,
+                    exc_info=True,
+                )
+                self._set_state(ConnectionState.DEGRADED)
+                return
 
             if self._closed:
                 return
