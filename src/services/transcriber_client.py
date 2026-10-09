@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -9,6 +10,7 @@ from pydantic import ValidationError
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
+from src.core.config import settings
 from src.models.schemas import TranscriberConfig, TranscriberMessage
 
 logger = logging.getLogger(__name__)
@@ -40,7 +42,11 @@ class TranscriberClient:
             )
             await self.ws.send(config.model_dump_json())
 
-            response = await self.ws.recv()
+            # Bounded (#134): a transcriber that accepts the upgrade but never sends
+            # `ready` would otherwise wedge connect() — and _reconnect_loop with it.
+            response = await asyncio.wait_for(
+                self.ws.recv(), timeout=settings.TRANSCRIBER_READY_TIMEOUT_S
+            )
             data = json.loads(response)
             msg = TranscriberMessage(**data)
 
