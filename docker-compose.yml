@@ -1,3 +1,14 @@
+# Despliegue de referencia de un solo host (Linux).
+#
+# - network_mode: host es intencional: OpenClaw, el transcriber y el TTS escuchan en
+#   localhost del servidor (OPENCLAW_HOST=127.0.0.1, TRANSCRIBER_WS_URL=localhost:9000...).
+#   En Docker Desktop (macOS/Windows) el modo host no expone puertos: ahí usa
+#   `uvicorn` en local o define `ports:` y apunta los servicios con host.docker.internal.
+# - El contenedor corre como no-root. Para que pueda escribir en ./data (gateway.db),
+#   GATEWAY_UID/GATEWAY_GID deben coincidir con el dueño de ./data en el host:
+#       echo "GATEWAY_UID=$(id -u)" >> .env && echo "GATEWAY_GID=$(id -g)" >> .env
+#   (UID/GID de la shell no se exportan, por eso variables propias). Si ./data ya existía
+#   de un despliegue anterior como root:  sudo chown -R "$(id -u):$(id -g)" data
 services:
   jota-gateway:
     build:
@@ -5,6 +16,7 @@ services:
       dockerfile: Dockerfile
     container_name: jota_gateway
     network_mode: "host"
+    user: "${GATEWAY_UID:-1000}:${GATEWAY_GID:-1000}"
     env_file:
       - .env
     restart: unless-stopped
