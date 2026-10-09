@@ -70,6 +70,7 @@ class JotaBridge:
         self._push_audio_task: asyncio.Task | None = None
 
         self.tasks: list[asyncio.Task] = []
+        self._supervision_tasks: set[asyncio.Task] = set()
         # Fire-and-forget notification tasks (e.g. _on_transcriber_state_change)
         # are not part of the session lifecycle managed by `tasks`/close_all() —
         # they're short-lived and self-cleaning. Kept here only so the event
@@ -427,6 +428,37 @@ class JotaBridge:
                 return
             await asyncio.sleep(remaining)
 
+    def _spawn(self, coro, name: str) -> asyncio.Task:
+        """Create a supervised session task and track it in self.tasks."""
+        task = asyncio.create_task(coro, name=name)
+        self.tasks.append(task)
+        self._supervise(task)
+        return task
+
+    def _supervise(self, task: asyncio.Task) -> None:
+        """Log a session task's crash instead of leaving it unobserved (issue #131).
+
+        A dead idle watchdog leaves the session without an idle timeout, so that
+        one additionally closes the session.
+        """
+
+        def _on_done(t: asyncio.Task) -> None:
+            if t.cancelled():
+                return
+            exc = t.exception()  # always retrieved: no "never retrieved" warning
+            if exc is None:
+                return
+            logger.error(
+                f"[{self.client_id}] Tarea de sesión '{t.get_name()}' falló: {exc!r}",
+                exc_info=exc,
+            )
+            if t.get_name() == "idle_watchdog":
+                closer = asyncio.create_task(self.close_all(), name="idle_watchdog_close")
+                self._supervision_tasks.add(closer)
+                closer.add_done_callback(self._supervision_tasks.discard)
+
+        task.add_done_callback(_on_done)
+
     async def run(self):
         self._session_start = time.monotonic()
         self._last_client_activity = time.monotonic()
@@ -437,21 +469,20 @@ class JotaBridge:
         )
 
         # Loop principal de lectura del cliente
-        self.tasks.append(asyncio.create_task(self._client_input_loop()))
+        self._spawn(self._client_input_loop(), "client_input_loop")
         # Idle watchdog: cierra la sesión si el cliente no manda nada (issue #115).
-        self.tasks.append(asyncio.create_task(self._idle_watchdog()))
+        self._spawn(self._idle_watchdog(), "idle_watchdog")
 
         # Loop del Transcriptor (solo si hay audio de entrada)
         if self.transcriber:
-            self.tasks.append(
-                asyncio.create_task(
-                    self.transcriber.run(
-                        on_transcription_callback=self._on_transcription,
-                        on_warning_callback=self._on_transcriber_warning,
-                    )
-                )
+            self._spawn(
+                self.transcriber.run(
+                    on_transcription_callback=self._on_transcription,
+                    on_warning_callback=self._on_transcriber_warning,
+                ),
+                "transcriber_run",
             )
-            self.tasks.append(asyncio.create_task(self._transcription_watchdog()))
+            self._spawn(self._transcription_watchdog(), "transcription_watchdog")
 
         # El ciclo de vida de la sesión lo marca _client_input_loop.
         # listen_loop y watchdog corren en background y terminan solos sin cerrar la sesión.
