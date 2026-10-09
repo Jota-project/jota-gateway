@@ -1,10 +1,11 @@
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from src.services.session_registry import SessionRegistry
+    from src.services.session_registry import SessionRegistry, SessionStatus
 
 logger = logging.getLogger(__name__)
 
@@ -24,14 +25,14 @@ class PipelineTracker:
         session_id: str,
         client_id: str,
         input_mode: str,
-        output_mode: list[str],
+        output_mode: Sequence[str],
         client_ws,
         registry: "SessionRegistry",
     ):
         self.session_id = session_id
         self.client_id = client_id
         self.input_mode = input_mode
-        self.output_mode = output_mode
+        self.output_mode = list(output_mode)
         self.events: list[PipelineEvent] = []
         self._ws = client_ws
         self._registry = registry
@@ -82,7 +83,7 @@ class PipelineTracker:
 
         return event
 
-    async def close(self, status: str = "completed") -> None:
+    async def close(self, status: "SessionStatus" = "completed") -> None:
         duration_s = round(time.monotonic() - self._started_at, 2)
         await self.record("session_end", turn_count=self._turn, duration_s=duration_s)
         self._registry.close(self.session_id, status)

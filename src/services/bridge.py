@@ -12,6 +12,7 @@ from src.services.openclaw.registry import ClientRegistry
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.protocol import OrchestratorProtocol
 from src.services.reconnection import ConnectionState, to_wire_state
+from src.services.session_registry import SessionStatus
 from src.services.transcriber_reconnecting import ReconnectingTranscriberClient
 from src.services.tts_client import TTSClient
 from src.services.tts_reconnecting import ReconnectingTTSClient
@@ -61,7 +62,7 @@ class JotaBridge:
         self._client_registry = client_registry
         self._default_agent = default_agent
         self.transcriber: ReconnectingTranscriberClient | None = None
-        self._push_tts = None
+        self._push_tts: TTSClient | None = None
         self._push_audio_task: asyncio.Task | None = None
 
         self.tasks: list[asyncio.Task] = []
@@ -123,7 +124,7 @@ class JotaBridge:
 
         self._client_registry.register(self.client_id, self)
 
-    async def close_all(self, status: str = "completed"):
+    async def close_all(self, status: SessionStatus = "completed"):
         """Tear down every microservice client and mark the session closed.
 
         Idempotent — the second call in a row is a no-op, and the *first

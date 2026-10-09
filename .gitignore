@@ -9,3 +9,6 @@ docs/superpowers/specs/
 *.egg-info/
 .DS_Store
 *.vsix
+
+# coverage
+.coverage

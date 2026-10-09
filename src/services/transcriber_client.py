@@ -117,7 +117,7 @@ class TranscriberClient:
                         )
 
                 except json.JSONDecodeError:
-                    logger.warning(f"[{self.client_id}] Transcriber mandó un non-JSON: {message}")
+                    logger.warning(f"[{self.client_id}] Transcriber mandó un non-JSON: {message!r}")
         except ConnectionClosed as e:
             clean_close = e.rcvd is not None and e.rcvd.code == 1000
             if self._is_ready and not clean_close:
