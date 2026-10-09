@@ -1,3 +1,10 @@
+## [1.14.14](https://github.com/Jota-project/jota-gateway/compare/v1.14.13...v1.14.14) (2026-10-09)
+
+
+### Bug Fixes
+
+* **bridge:** dedup de finales con ventana de tiempo ([#128](https://github.com/Jota-project/jota-gateway/issues/128)) ([#189](https://github.com/Jota-project/jota-gateway/issues/189)) ([e792c8b](https://github.com/Jota-project/jota-gateway/commit/e792c8bca014887514bb4608e18d6630764ee519)), closes [jota-transcriber#27](https://github.com/jota-transcriber/issues/27) [#28](https://github.com/Jota-project/jota-gateway/issues/28)
+
 ## [1.14.13](https://github.com/Jota-project/jota-gateway/compare/v1.14.12...v1.14.13) (2026-10-09)
 
 
