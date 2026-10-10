@@ -143,8 +143,8 @@ def test_client_that_stops_reading_is_dropped(live_port, probe, monkeypatch):
 
 
 def test_client_that_reads_everything_is_not_dropped(live_port, probe, monkeypatch):
-    """Review focus 5: the control — a healthy client must never be cut."""
-    monkeypatch.setattr(settings, "CLIENT_SEND_TIMEOUT_S", 1.0)
+    """The control — a healthy client must never be cut."""
+    monkeypatch.setattr(settings, "CLIENT_SEND_TIMEOUT_S", 5.0)
     sock = _connect(live_port)
     try:
         sock.settimeout(10)

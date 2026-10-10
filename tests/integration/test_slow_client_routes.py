@@ -72,7 +72,7 @@ def test_slow_client_without_transport_is_closed_with_1013(client, monkeypatch):
             for _ in range(60):
                 ws.receive_json()
     assert exc.value.code == 1013
-    # Review focus 8: the real session tears down after the drop (nothing hangs and
+    # The real session tears down after the drop (nothing hangs and
     # the bridge leaves the registry), not just the client-visible close code.
     from src.main import app
 

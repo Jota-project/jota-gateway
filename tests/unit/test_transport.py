@@ -49,7 +49,7 @@ async def test_middleware_captures_transport_from_a_bound_send():
 
 
 async def test_middleware_stores_none_when_send_is_not_bound_to_a_protocol():
-    """Review focus 4: TestClient / other servers."""
+    """TestClient / other ASGI servers: no protocol behind send, so no transport."""
     seen: dict = {}
 
     async def app(scope, receive, send):
@@ -84,7 +84,7 @@ def test_abort_client_transport_without_transport_returns_false(scope):
 
 
 def test_abort_client_transport_that_raises_returns_false_and_does_not_propagate(caplog):
-    """Review focus 7: drop_slow_client promises never to raise Exception."""
+    """A failing abort must not propagate: drop_slow_client never raises Exception."""
 
     class _Broken:
         def abort(self):
@@ -135,7 +135,7 @@ async def _gone():
     raise WebSocketDisconnect(1006)
 
 
-async def test_drop_slow_client_closes_1013_then_aborts(monkeypatch):
+async def test_drop_slow_client_closes_1013_then_aborts():
     t = _Transport()
     ws = _WS(t, _ok)
     await drop_slow_client(ws)
@@ -173,7 +173,7 @@ async def test_drop_slow_client_records_the_event_first_and_survives_a_failing_r
 
 async def test_drop_slow_client_still_aborts_when_it_is_cancelled_midway():
     """If aclose()'s timeout cancels the writer while on_slow is running, the callback
-    must still abort the transport (task-2 review, minor 2)."""
+    must still abort the transport."""
     t = _Transport()
     ws = _WS(t, _hang)  # close(1013) never returns
     task = asyncio.create_task(drop_slow_client(ws))
@@ -185,7 +185,7 @@ async def test_drop_slow_client_still_aborts_when_it_is_cancelled_midway():
 
 
 async def test_drop_slow_client_without_transport_does_not_raise(caplog):
-    """Review focus 4."""
+    """Without a captured transport the drop only logs a WARNING and never raises."""
     ws = _WS(None, _ok)
     with caplog.at_level("WARNING", logger="src.core.transport"):
         await drop_slow_client(ws)

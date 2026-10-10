@@ -312,7 +312,7 @@ async def test_queued_fast_sends_are_unaffected_by_the_timeout(monkeypatch):
 
 
 async def test_queued_timeout_is_per_send_not_cumulative(monkeypatch):
-    """Review focus 1: a slow-but-progressing client must not be cut."""
+    """A slow-but-progressing client must not be cut."""
     monkeypatch.setattr(settings, "CLIENT_SEND_TIMEOUT_S", 0.2)
     ws = DelayedWS(delay=0.02)  # each send << timeout; 15 sends total > timeout
     called: list[int] = []
@@ -332,7 +332,7 @@ async def test_queued_timeout_is_per_send_not_cumulative(monkeypatch):
 
 
 async def test_queued_send_raising_timeouterror_itself_is_not_a_slow_client():
-    """Review focus 2: TimeoutError is an OSError subclass; only the writer's own
+    """TimeoutError is an OSError subclass; only the writer's own
     asyncio.timeout expiring means 'slow client'."""
     called: list[int] = []
 
@@ -348,23 +348,25 @@ async def test_queued_send_raising_timeouterror_itself_is_not_a_slow_client():
     assert called == []
 
 
-async def test_queued_on_slow_raising_does_not_break_teardown(monkeypatch):
-    """Review focus 3."""
+async def test_queued_on_slow_raising_does_not_break_teardown(monkeypatch, caplog):
+    """A raising on_slow callback is logged and does not break teardown."""
     monkeypatch.setattr(settings, "CLIENT_SEND_TIMEOUT_S", 0.05)
 
     async def on_slow():
         raise RuntimeError("callback roto")
 
     s = QueuedSender(FakeWS(hang=True), on_slow=on_slow)
-    await s.send_json({"a": 1})
-    await asyncio.wait_for(s._writer, timeout=1.0)  # writer ends, no exception escapes
+    with caplog.at_level("WARNING", logger="src.services.outbound"):
+        await s.send_json({"a": 1})
+        await asyncio.wait_for(s._writer, timeout=1.0)  # writer ends, no exception escapes
 
     assert isinstance(s._failure, ClientSlow)
+    assert any("on_slow falló" in r.getMessage() for r in caplog.records)
     await asyncio.wait_for(s.aclose(1.0), timeout=2.0)
 
 
 async def test_queued_on_slow_hanging_does_not_wedge_aclose(monkeypatch):
-    """Review focus 3: a hanging callback is cancelled by aclose's own bound."""
+    """A hanging callback is cancelled by aclose's own bound."""
     monkeypatch.setattr(settings, "CLIENT_SEND_TIMEOUT_S", 0.05)
     started = asyncio.Event()
 

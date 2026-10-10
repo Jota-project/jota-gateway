@@ -85,6 +85,6 @@ async def drop_slow_client(
             )
         else:
             logger.warning(
-                "Cliente lento: no hay transporte que abortar (request_id=%s); solo se cerró.",
+                "Cliente lento: no hay transporte que abortar (request_id=%s); la conexión no se puede abortar y puede seguir abierta hasta que el cliente se vaya o venza IDLE_TIMEOUT_S.",
                 request_id,
             )

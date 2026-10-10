@@ -71,8 +71,11 @@ class QueuedSender:
     order. Each write runs under `asyncio.timeout(CLIENT_SEND_TIMEOUT_S)`: uvicorn's
     write flow control makes a client that stopped reading block `send`, so a send
     that stays blocked that long marks the client slow (`ClientSlow`), drops what is
-    pending and calls `on_slow` once. The queue itself stays unbounded: growth is
-    limited by the timeout, not by size.
+    pending and calls `on_slow` once. This is a drain-rate threshold, not a stall
+    detector: a client draining far below the rate the gateway writes is cut too, one
+    reading at a reasonable rate is not. The queue itself stays unbounded, so for a
+    client above the threshold it keeps growing for as long as production lasts: the
+    timeout bounds memory only for clients below the threshold.
     """
 
     def __init__(self, ws, on_slow: Callable[[], Awaitable[None]] | None = None):
@@ -115,7 +118,7 @@ class QueuedSender:
                     await asyncio.wait_for(self._writer, timeout=timeout)
                 except TimeoutError:
                     # wait_for already cancelled and awaited the writer.
-                    logger.warning("Outbound: drenado agotó %.1fs — descartando lo pendiente.", timeout)
+                    logger.warning("Outbound: drenado agotó %gs — descartando lo pendiente.", timeout)
         finally:
             self._discard_pending()
 
@@ -153,7 +156,7 @@ class QueuedSender:
         limit = settings.CLIENT_SEND_TIMEOUT_S
         self._failure = ClientSlow(f"send bloqueado más de {limit}s")
         logger.warning(
-            "Outbound: cliente lento (send bloqueado > %.1fs) — descartando lo pendiente.", limit
+            "Outbound: cliente lento (send bloqueado > %gs) — descartando lo pendiente.", limit
         )
         self._discard_pending()
         if self._on_slow is not None:

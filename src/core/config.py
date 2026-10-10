@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -46,7 +47,7 @@ class Settings(BaseSettings):
 
     # Un envío al cliente bloqueado más de esto lo marca como lento y cierra la
     # conexión (issue #130 S2). Es por envío, no acumulado.
-    CLIENT_SEND_TIMEOUT_S: float = 10.0
+    CLIENT_SEND_TIMEOUT_S: float = Field(default=10.0, gt=0)
 
 
 settings = Settings()
