@@ -73,7 +73,7 @@ El agente efectivo de la sesión no es simplemente "el que pediste o el global":
 
 ## 2. Mensaje ready
 
-Si el handshake es válido y todos los servicios críticos responden, el gateway envía `ready` como **primer mensaje** antes de cualquier otro:
+Si el handshake es válido y todos los servicios críticos responden, el gateway envía `ready` como el mensaje que confirma la sesión; pueden llegar `status` antes (ver nota en §1 y §5):
 
 ```json
 {
@@ -289,6 +289,10 @@ async for msg in ws:
     elif isinstance(msg, bytes):
         play_audio_frame(msg)
 ```
+
+### Orden total de mensajes
+
+El gateway entrega todos los mensajes de una sesión en un único **orden total** — el mismo orden en que el gateway los encola internamente (issue #130 S1). Esto garantiza que nunca hay interleaving de mensajes parciales: un `token` completo llega antes del siguiente, un `turn_end` no se mezcla con el `token` anterior. Sin embargo, **`ready` no está garantizado que sea el primer mensaje**: tanto los `status` del health check como un `status` difundido a todas las sesiones por `ClientRegistry` mientras la sesión ya está registrada pero `ready` aún no se ha enviado, pueden preceder a `ready`. Los clientes deben estar preparados para recibir `status` antes de `ready`.
 
 ---
 
@@ -545,7 +549,7 @@ El cliente escribe; el gateway sintetiza audio con el texto de la respuesta.
 
 | Tipo | Formato | Cuándo |
 |------|---------|--------|
-| `ready` | `{"type":"ready","session_id":"...","agent":"...","input_mode":"...","output_mode":[...],"requested_capabilities":{...},"live_capabilities":{...}}` | Tras handshake exitoso, antes de cualquier otro mensaje |
+| `ready` | `{"type":"ready","session_id":"...","agent":"...","input_mode":"...","output_mode":[...],"requested_capabilities":{...},"live_capabilities":{...}}` | Tras handshake exitoso; puede ir precedido de `status` |
 | `turn_start` | `{"type":"turn_start","turn_id":"t-N","turn_seq":N}` | Inicio de cada turno |
 | `token` | `{"type":"token","turn_id":"t-N","text":"..."}` | `"text"` en `output_mode` — tokens en streaming |
 | `turn_end` | `{"type":"turn_end","turn_id":"t-N"}` | Fin de cada turno |

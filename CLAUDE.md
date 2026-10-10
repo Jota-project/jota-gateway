@@ -212,9 +212,9 @@ The singleton `db_client = DbClient()` is imported from this module everywhere. 
 2. Gateway resolves identity via `db_client.get_session(client_key)` → `(Client, ClientConfig)`.
    - `ClientNotFound` or `ClientInactive` → close 1008.
 3. If `agent` is specified, `routes.py` validates it against `openclaw.gateway_info.has_agent(agent)` — unknown agents close with code 1008.
-4. `JotaBridge` is instantiated with client, config, WebSocket, the singleton `ReconnectingOpenClawClient` (from `app.state.openclaw`), the singleton `ReconnectingTTSClient` (from `app.state.tts`), `app.state.client_registry`, and `default_agent`.
+4. `routes.py` constructs a `QueuedSender(websocket)` for this session's outbound path (issue #130 S1), then passes it to `PipelineTracker` and `JotaBridge` (order: sender → tracker → bridge). `JotaBridge` is instantiated with client, config, WebSocket, the singleton `ReconnectingOpenClawClient` (from `app.state.openclaw`), the singleton `ReconnectingTTSClient` (from `app.state.tts`), `app.state.client_registry`, and `default_agent`.
 5. `bridge.connect_internal_services()` — starts a `ReconnectingTranscriberClient` only if `input_mode == "audio"`; registers the bridge in `ClientRegistry`. `ReconnectingTranscriberClient.connect()` never raises — a failed initial connect just leaves it in `RECONNECTING` state for `health_check()`/the background `run()` loop to handle, it no longer aborts session setup.
-6. `bridge.health_check()` — pings each microservice; **only the orchestrator is fatal** (its failure returns `False`, closing the WebSocket with code 1011 before `ready` is ever sent). Transcriber and TTS failures are both non-fatal — the session opens normally and the client is notified via `status` messages (see "Service reconnection" below).
+6. `bridge.health_check()` — pings each microservice; **only the orchestrator is fatal** (its failure returns `False`, closing the WebSocket with code 1011 before `ready` is ever sent). Transcriber and TTS failures are both non-fatal — the session opens normally and the client is notified via `status` messages (see "Service reconnection" below). `routes.py` calls `sender.flush()` before closing with 1011 to deliver any queued `status` messages.
 7. `bridge.run()` — launches concurrent tasks: `_client_input_loop` + idle watchdog + `transcriber.run()` (listen + background reconnect) + silence watchdog.
 
 ### JotaBridge data flow
@@ -398,6 +398,20 @@ in a future session.
 All `/admin/*` routes use `Depends(get_admin_auth)` (`src/api/deps.py`), which reads the `X-Admin-Token` header and compares it against `settings.ADMIN_TOKEN`. Returns 422 if the header is missing, 401 if wrong, 503 if `ADMIN_TOKEN` is not configured.
 
 The `/v1/*` routes use `Depends(resolve_ha_caller)` (`src/api/openai_routes.py`) instead — see `src/core/network.py` and the trusted-origin bullet under Architecture above (issue #52).
+
+---
+
+## Client output — serialized outbound path (`src/services/outbound.py`, issue #130 S1)
+
+Every message the gateway sends to a client flows through one `OutboundSender` per session so message order = enqueue order, never interleaved. `routes.py` constructs `QueuedSender(websocket)` after agent policy validation and passes it to `PipelineTracker` and `JotaBridge` (order: sender → tracker → bridge). Los 1008 del handshake ocurren antes de que exista; los cierres posteriores los cubre el `aclose` del `finally`.
+
+**`QueuedSender`:** unbounded FIFO queue + `_writer` task per session (not in `bridge.tasks` — `close_all()` must not cancel it). `send_json()`/`send_bytes()` enqueue and return; writer drains in order. On first socket failure: subsequent sends raise `ClientGone` y el writer descarta mensajes pendientes (solo flush() esperando recibe ClientGone). Un fallo por desconexión rutinaria del cliente (`WebSocketDisconnect`, o el `RuntimeError` de starlette al enviar tras el cierre) se registra en INFO; cualquier otro fallo de escritura, en WARNING (una línea, solo el nombre del tipo, nunca el payload). Garantía: total order = enqueue order; sin interleaving, sin duplicados.
+
+**Lifecycle:** (1) Enqueue: el `turn_start` de un turno normal, `pipe_audio` y `_pipe_push_audio` hacen return; el resto lo traga (algunos con warning). (2) `ready` en `routes.py`: `await sender.flush()` tras enviar — si falla, log y return. (3) `status` messages (`bridge.notify_service_status`, el único punto de envío): un envío fallido se traga salvo con `propagate=True`, que solo usa `health_check()` para que el error llegue a `routes.py`. (4) Shutdown: `routes.py finally` llama `await sender.aclose(SHUTDOWN_DRAIN_S)` tras `bridge.close_all()` — nunca lanza `Exception` (una cancelación sí puede propagarse; el descarte de pendientes corre igualmente).
+
+**Out of scope (S2, S3):** S2 — detección y política de cliente lento. La cola es ilimitada a propósito: con `sansio` el `send` no aplica backpressure y el writer la vacía al instante; el crecimiento sin límite está en el buffer del transporte. S2 debe elegir mecanismo (`--ws wsproto`, leer el buffer del transporte, o ack/crédito). S3 — `TurnRegistry` con cola acotada por sesión (`put_nowait` + abort del turno lento) y handlers de push fuera de `_listen`. No hecho en S1.
+
+**Riesgo conocido:** `connect_internal_services()` registra el bridge en `ClientRegistry` antes de que `routes.py` envíe `ready`, así que un `broadcast_status` de otra tarea puede llegar al cliente antes que `ready`. S1 no cambia esto: el orden total garantiza coherencia, no que `ready` sea primero (deducido del código, no reproducido por test).
 
 ---
 
