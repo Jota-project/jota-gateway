@@ -56,6 +56,19 @@ ni acumular memoria sin límite.
 - La terminación reutiliza el teardown existente; no hay un camino de cierre nuevo.
 - Sesiones sin cliente lento: comportamiento idéntico al actual.
 
+**Alcance real de la señal.** El timeout es un umbral de caudal de drenado, no un detector de
+"solo clientes parados". Con el write flow control de uvicorn un `send` espera desde el
+high-water mark (~64 KiB) hasta el low-water (~16 KiB): ~48 KiB por ciclo, tiempo ≈ 48 KiB /
+caudal de lectura del cliente. Teoría con `CLIENT_SEND_TIMEOUT_S=10`: se corta a quien drena por
+debajo de ~5 KB/s. Medido en macOS loopback contra uvicorn real, con el gateway produciendo más
+rápido de lo que lee el cliente: T=1s cortó a 10, 30, 60 y 100 KB/s (400 KB/s no); T=10s cortó
+a 3 KB/s (a los 10.0 s), 8 KB/s (12.8 s) y 20 KB/s (11.2 s). La ventana TCP del kernel sube el
+umbral real: del orden de unos pocos KB/s (teoría) a unas pocas decenas de KB/s (medidas), según
+kernel y tasa de producción. Para escala, TTS PCM16 a 24 kHz son 48 KB/s. Los clientes por encima
+del umbral no se cortan y la cola ilimitada sigue creciendo para ellos mientras dure la
+producción: el criterio "ni acumular memoria sin límite" se cumple solo para clientes por debajo
+del umbral. No es un limitador de caudal.
+
 ## 4. Diseño
 
 ### 4.1 Señal y política en `QueuedSender` (`src/services/outbound.py`)
@@ -78,14 +91,17 @@ ni acumular memoria sin límite.
 
 1. Registrar un evento `client_slow` en el tracker (solo `timeout_s`, nunca texto de usuario).
 2. Intentar `websocket.close(code=1013, reason=...)` acotado a 2 s (`_SLOW_CLOSE_GRACE_S`,
-   constante, no setting): si el cliente reanuda la lectura en ese margen, ve 1013.
+   constante, no setting): si el cliente reanuda la lectura en ese margen, ve 1013 (mejor esfuerzo: `abort()` corre justo tras un close correcto y descarta el buffer
+   de escritura en espacio de usuario, así que un close frame encolado detrás de datos pendientes
+   puede perderse; quien reanuda la lectura dentro del margen suele, no siempre, ver 1013).
 3. `abort()` del transporte, esté o no entregado el close.
 
 Tras el `abort()`, el `receive()` del bucle de entrada devuelve `websocket.disconnect`,
 `run()` termina y el teardown de siempre sigue sin cambios (`close_all`, desregistro,
-`sender.aclose`, que vuelve de inmediato porque el writer ya terminó). Starlette marca el
-estado de la aplicación como desconectado al enviar el close, de modo que el `websocket.close()`
-del `finally` de `routes.py` se omite.
+`sender.aclose`, que vuelve de inmediato porque el writer ya terminó). El `finally` de
+`routes.py` solo llama a `websocket.close()` si `"DISCONNECTED" not in websocket.client_state.name`;
+se omite porque el `receive()` del bridge vio la desconexión, y donde `client_state` siga en
+CONNECTED, `close()` lanza un `RuntimeError` que el `except Exception: pass` existente traga.
 
 Lo que ve el cliente: **1013** ("Try Again Later") si se recupera dentro de los 2 s; **1006**
 (cierre anómalo) si no lee.
