@@ -95,6 +95,7 @@ def live_port(probe):
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+    assert not thread.is_alive(), "uvicorn no se detuvo"
 
 
 def _connect(port: int) -> socket.socket:
@@ -131,7 +132,9 @@ def test_client_that_stops_reading_is_dropped(live_port, probe, monkeypatch):
         while True:  # the connection really ends for the client
             try:
                 data = sock.recv(65536)
-            except (ConnectionResetError, OSError):
+            except TimeoutError:
+                pytest.fail("el servidor no cerró la conexión del cliente lento tras el abort")
+            except ConnectionResetError:
                 break  # RST after abort(): also an end of connection
             if not data:
                 break
