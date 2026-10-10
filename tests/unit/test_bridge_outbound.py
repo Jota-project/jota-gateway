@@ -181,3 +181,31 @@ async def test_health_check_still_propagates_send_failure():
     bridge.orchestrator.ping = AsyncMock(return_value=False)
     with pytest.raises(ClientGone):
         await bridge.health_check()
+
+
+async def test_broken_sender_stops_push_audio_and_push_turn_end_completes():
+    ws = RecordingWS(fail_on_bytes=True)
+    total = 50
+    pulled = 0
+
+    async def audio():
+        nonlocal pulled
+        for i in range(total):
+            await asyncio.sleep(0)
+            pulled += 1
+            yield bytes([i])
+
+    tts_client = AsyncMock()
+    tts_client.get_audio_stream = audio
+    tts = AsyncMock()
+    tts.connect = AsyncMock(return_value=tts_client)
+    bridge, sender = _make(ws, output_mode=("text", "audio"), tts=tts)
+
+    await bridge.on_push_turn_start("agent:main:test-uuid")
+    await asyncio.wait_for(bridge._push_audio_task, timeout=2.0)
+
+    assert pulled >= 1  # _pipe_push_audio really ran
+    assert pulled < total  # ...and stopped once the sender broke
+    assert not any(k == "bytes" for k, _ in ws.sent)
+    await asyncio.wait_for(bridge.on_push_turn_end("agent:main:test-uuid"), timeout=2.0)
+    await sender.aclose(1.0)

@@ -3,6 +3,7 @@
 import asyncio
 
 import pytest
+from starlette.websockets import WebSocketDisconnect
 
 from src.services.outbound import ClientGone, DirectSender, QueuedSender
 
@@ -189,3 +190,67 @@ async def test_queued_aclose_timeout_fails_pending_flush():
     await s.aclose(0.05)
     with pytest.raises(ClientGone):
         await flusher
+
+
+class RaisingWS:
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    async def send_json(self, payload):
+        raise self._exc
+
+    async def send_bytes(self, data):
+        raise self._exc
+
+
+async def _fail_once(exc, caplog):
+    s = QueuedSender(RaisingWS(exc))
+    with caplog.at_level("INFO", logger="src.services.outbound"):
+        await s.send_json({"type": "transcription", "text": "SECRETO"})
+        await s._writer
+    return [r for r in caplog.records if r.name == "src.services.outbound"]
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        WebSocketDisconnect(code=1006),
+        RuntimeError('Cannot call "send" once a close message has been sent.'),
+    ],
+)
+async def test_queued_routine_disconnect_logs_info_not_warning(caplog, exc):
+    records = await _fail_once(exc, caplog)
+    assert [r.levelname for r in records] == ["INFO"]
+    assert "SECRETO" not in records[0].getMessage()
+    assert type(exc).__name__ in records[0].getMessage()
+
+
+async def test_queued_unexpected_error_logs_warning(caplog):
+    records = await _fail_once(RuntimeError("boom SECRETO"), caplog)
+    assert [r.levelname for r in records] == ["WARNING"]
+    assert "SECRETO" not in records[0].getMessage()
+
+
+async def test_queued_cancelled_writer_counts_as_closed():
+    s = QueuedSender(FakeWS())
+    s._writer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await s._writer
+    with pytest.raises(ClientGone):
+        await s.send_json({"a": 1})
+    with pytest.raises(ClientGone):
+        await s.flush()
+
+
+async def test_queued_cancelled_aclose_still_fails_pending_flush():
+    s = QueuedSender(FakeWS(hang=True))
+    await s.send_json({"a": 1})
+    flusher = asyncio.create_task(s.flush())
+    await asyncio.sleep(0)
+    closer = asyncio.create_task(s.aclose(30.0))
+    await asyncio.sleep(0.01)
+    closer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closer
+    with pytest.raises(ClientGone):
+        await asyncio.wait_for(flusher, timeout=1.0)

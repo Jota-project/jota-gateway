@@ -9,7 +9,19 @@ import asyncio
 import logging
 from typing import Protocol
 
+from starlette.websockets import WebSocketDisconnect
+
 logger = logging.getLogger(__name__)
+
+
+def _is_routine_disconnect(e: Exception) -> bool:
+    """A send on a client that already left (starlette 1.0.0, websockets.py `send`):
+    CONNECTED + OSError -> WebSocketDisconnect(1006); DISCONNECTED -> RuntimeError
+    'Cannot call "send" once a close message has been sent.' Any other RuntimeError
+    (e.g. send before accept) is a gateway bug and stays a WARNING."""
+    return isinstance(e, WebSocketDisconnect) or (
+        isinstance(e, RuntimeError) and "once a close message has been sent" in str(e)
+    )
 
 
 class ClientGone(ConnectionError):
@@ -64,7 +76,7 @@ class QueuedSender:
         self._writer = asyncio.create_task(self._run(), name="outbound_writer")
 
     def _check_open(self) -> None:
-        if self._failure is not None or self._closing:
+        if self._failure is not None or self._closing or self._writer.done():
             raise ClientGone("cliente no disponible") from self._failure
 
     async def send_json(self, payload: dict) -> None:
@@ -83,16 +95,19 @@ class QueuedSender:
         await fut
 
     async def aclose(self, timeout: float) -> None:
-        """Stop accepting messages, drain within `timeout`, stop the writer. Never raises."""
+        """Stop accepting messages, drain within `timeout`, stop the writer. Never raises `Exception` (cancellation can propagate)."""
+        # Concurrent callers share one writer; routes.py is the only caller.
         self._closing = True
-        if not self._writer.done():
-            self._queue.put_nowait(("stop", None))
-            try:
-                await asyncio.wait_for(self._writer, timeout=timeout)
-            except TimeoutError:
-                # wait_for already cancelled and awaited the writer.
-                logger.warning("Outbound: drenado agotó %.1fs — descartando lo pendiente.", timeout)
-        self._discard_pending()
+        try:
+            if not self._writer.done():
+                self._queue.put_nowait(("stop", None))
+                try:
+                    await asyncio.wait_for(self._writer, timeout=timeout)
+                except TimeoutError:
+                    # wait_for already cancelled and awaited the writer.
+                    logger.warning("Outbound: drenado agotó %.1fs — descartando lo pendiente.", timeout)
+        finally:
+            self._discard_pending()
 
     async def _run(self) -> None:
         while True:
@@ -111,8 +126,9 @@ class QueuedSender:
             except Exception as e:
                 self._failure = e
                 # One line, never the payload (it may hold user text).
-                logger.warning("Outbound: fallo de socket (%s) — descartando lo pendiente.",
-                               type(e).__name__)
+                level = logging.INFO if _is_routine_disconnect(e) else logging.WARNING
+                logger.log(level, "Outbound: fallo de socket (%s) — descartando lo pendiente.",
+                           type(e).__name__)
                 self._discard_pending()
                 return
 
