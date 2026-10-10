@@ -880,11 +880,26 @@ class JotaBridge:
                 await self._push_tts.end()
             except Exception:
                 pass
-            if self._push_audio_task and not self._push_audio_task.done():
-                try:
-                    await self._push_audio_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+            audio_task = self._push_audio_task
+            if audio_task is not None:
+                if not audio_task.done():
+                    # asyncio.wait (not wait_for) on purpose: it never re-raises the
+                    # task's own outcome, so an *external* cancellation of this
+                    # coroutine (close_all() cancelling the push worker, #130 S3a)
+                    # propagates instead of being mistaken for the audio task's.
+                    done, _ = await asyncio.wait(
+                        {audio_task}, timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
+                    )
+                    if not done:
+                        logger.warning(
+                            f"[{self.client_id}] push audio no terminó dentro de "
+                            f"PUSH_TTS_DRAIN_TIMEOUT_S={settings.PUSH_TTS_DRAIN_TIMEOUT_S}s "
+                            f"— cancelando."
+                        )
+                        audio_task.cancel()
+                # Retrieves the outcome (incl. cancellation/exception) so nothing is
+                # reported as "never retrieved".
+                await asyncio.gather(audio_task, return_exceptions=True)
             self._push_audio_task = None
             try:
                 await self._push_tts.close()
