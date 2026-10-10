@@ -150,3 +150,34 @@ async def test_bridge_defaults_to_direct_sender_forwarding_to_client_ws():
     ws.send_json.assert_awaited_once_with(
         {"type": "status", "service": "tts", "state": "restored"}
     )
+
+
+async def _broken(ws):
+    bridge, sender = _make(ws)
+    await sender.send_bytes(b"x")  # first bytes write fails -> sender broken
+    await sender._writer
+    return bridge, sender
+
+
+async def test_notify_service_status_propagates_when_asked():
+    bridge, _sender = await _broken(RecordingWS(fail_on_bytes=True))
+    with pytest.raises(ClientGone):
+        await bridge.notify_service_status("tts", "unavailable", propagate=True)
+    # default: swallowed, as before
+    await bridge.notify_service_status("tts", "unavailable")
+
+
+async def test_health_check_orchestrator_down_sends_status_via_sender_and_returns_none():
+    ws = RecordingWS()
+    bridge, sender = _make(ws)
+    bridge.orchestrator.ping = AsyncMock(return_value=False)
+    assert await bridge.health_check() is None
+    await sender.aclose(1.0)
+    assert ws.sent == [("json", {"type": "status", "service": "orchestrator", "state": "unavailable"})]
+
+
+async def test_health_check_still_propagates_send_failure():
+    bridge, _sender = await _broken(RecordingWS(fail_on_bytes=True))
+    bridge.orchestrator.ping = AsyncMock(return_value=False)
+    with pytest.raises(ClientGone):
+        await bridge.health_check()

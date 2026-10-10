@@ -276,13 +276,7 @@ class JotaBridge:
         pre-ready notification and the authoritative capabilities block.
         """
         if not await self.orchestrator.ping():
-            await self._sender.send_json(
-                {
-                    "type": "status",
-                    "service": "orchestrator",
-                    "state": "unavailable",
-                }
-            )
+            await self.notify_service_status("orchestrator", "unavailable", propagate=True)
             return None
 
         transcriber_requested = self.handshake.input_mode == "audio"
@@ -293,26 +287,14 @@ class JotaBridge:
                 self.transcriber and self.transcriber.state == ConnectionState.CONNECTED
             )
             if not transcriber_live:
-                await self._sender.send_json(
-                    {
-                        "type": "status",
-                        "service": "transcriber",
-                        "state": "unavailable",
-                    }
-                )
+                await self.notify_service_status("transcriber", "unavailable", propagate=True)
         else:
             transcriber_live = False
 
         if tts_requested:
             tts_live = await TTSClient.ping(settings.TTS_WS_URL)
             if not tts_live:
-                await self._sender.send_json(
-                    {
-                        "type": "status",
-                        "service": "tts",
-                        "state": "unavailable",
-                    }
-                )
+                await self.notify_service_status("tts", "unavailable", propagate=True)
         else:
             tts_live = False
 
@@ -385,16 +367,7 @@ class JotaBridge:
                     f"[{self.client_id}] Watchdog: {elapsed:.1f}s sin transcripción "
                     f"({silence_count}/{self.config.max_silence_turns})"
                 )
-                try:
-                    await self._sender.send_json(
-                        {
-                            "type": "status",
-                            "service": "transcriber",
-                            "state": "degraded",
-                        }
-                    )
-                except Exception:
-                    pass
+                await self.notify_service_status("transcriber", "degraded")
                 if silence_count >= self.config.max_silence_turns:
                     await self.close_all()
                     return
@@ -612,6 +585,8 @@ class JotaBridge:
         state: str,
         code: str | None = None,
         message: str | None = None,
+        *,
+        propagate: bool = False,
     ) -> None:
         payload: dict[str, str] = {"type": "status", "service": service, "state": state}
         if code is not None:
@@ -621,7 +596,9 @@ class JotaBridge:
         try:
             await self._sender.send_json(payload)
         except Exception:
-            pass  # cliente desconectado
+            if propagate:
+                raise
+            # cliente desconectado
 
     def _on_transcriber_state_change(self, state: ConnectionState) -> None:
         task = asyncio.create_task(self.notify_service_status("transcriber", to_wire_state(state)))
