@@ -290,6 +290,10 @@ async for msg in ws:
         play_audio_frame(msg)
 ```
 
+### Orden total de mensajes
+
+El gateway entrega todos los mensajes de una sesión en un único **orden total** — el mismo orden en que el gateway los encola internamente (issue #130 S1). Esto garantiza que nunca hay interleaving de mensajes parciales: un `token` completo llega antes del siguiente, un `turn_end` no se mezcla con el `token` anterior. Sin embargo, **`ready` no está garantizado que sea el primer mensaje**: un `status` de un servicio que falla durante el health check puede preceder a `ready` (ver comentario en §1 sobre errores de handshake). Los clientes deben estar preparados para recibir `status` antes de `ready`.
+
 ---
 
 ## 6. Recibir audio TTS

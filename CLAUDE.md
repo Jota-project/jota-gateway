@@ -212,9 +212,9 @@ The singleton `db_client = DbClient()` is imported from this module everywhere. 
 2. Gateway resolves identity via `db_client.get_session(client_key)` → `(Client, ClientConfig)`.
    - `ClientNotFound` or `ClientInactive` → close 1008.
 3. If `agent` is specified, `routes.py` validates it against `openclaw.gateway_info.has_agent(agent)` — unknown agents close with code 1008.
-4. `JotaBridge` is instantiated with client, config, WebSocket, the singleton `ReconnectingOpenClawClient` (from `app.state.openclaw`), the singleton `ReconnectingTTSClient` (from `app.state.tts`), `app.state.client_registry`, and `default_agent`.
+4. `routes.py` constructs a `QueuedSender(websocket)` for this session's outbound path (issue #130 S1), then passes it to `PipelineTracker` and `JotaBridge` (order: sender → tracker → bridge). `JotaBridge` is instantiated with client, config, WebSocket, the singleton `ReconnectingOpenClawClient` (from `app.state.openclaw`), the singleton `ReconnectingTTSClient` (from `app.state.tts`), `app.state.client_registry`, and `default_agent`.
 5. `bridge.connect_internal_services()` — starts a `ReconnectingTranscriberClient` only if `input_mode == "audio"`; registers the bridge in `ClientRegistry`. `ReconnectingTranscriberClient.connect()` never raises — a failed initial connect just leaves it in `RECONNECTING` state for `health_check()`/the background `run()` loop to handle, it no longer aborts session setup.
-6. `bridge.health_check()` — pings each microservice; **only the orchestrator is fatal** (its failure returns `False`, closing the WebSocket with code 1011 before `ready` is ever sent). Transcriber and TTS failures are both non-fatal — the session opens normally and the client is notified via `status` messages (see "Service reconnection" below).
+6. `bridge.health_check()` — pings each microservice; **only the orchestrator is fatal** (its failure returns `False`, closing the WebSocket with code 1011 before `ready` is ever sent). Transcriber and TTS failures are both non-fatal — the session opens normally and the client is notified via `status` messages (see "Service reconnection" below). `routes.py` calls `sender.flush()` before closing with 1011 to deliver any queued `status` messages.
 7. `bridge.run()` — launches concurrent tasks: `_client_input_loop` + idle watchdog + `transcriber.run()` (listen + background reconnect) + silence watchdog.
 
 ### JotaBridge data flow
@@ -398,6 +398,39 @@ in a future session.
 All `/admin/*` routes use `Depends(get_admin_auth)` (`src/api/deps.py`), which reads the `X-Admin-Token` header and compares it against `settings.ADMIN_TOKEN`. Returns 422 if the header is missing, 401 if wrong, 503 if `ADMIN_TOKEN` is not configured.
 
 The `/v1/*` routes use `Depends(resolve_ha_caller)` (`src/api/openai_routes.py`) instead — see `src/core/network.py` and the trusted-origin bullet under Architecture above (issue #52).
+
+---
+
+## Client output — serialized outbound path (`src/services/outbound.py`, issue #130 S1)
+
+Every message the gateway sends to a client (tokens, audio, status, transcription, errors) flows through a single `OutboundSender` instance per session so the order across producer tasks is the enqueue order and a message is never interleaved with another.
+
+### Architecture
+
+`routes.py` constructs the sender immediately after resolving client identity:
+
+1. **Construction order**: `QueuedSender(websocket)` → `PipelineTracker(..., sender=sender)` → `JotaBridge(..., sender=sender)`. The sender is created *only after* handshake validation completes, so no writer task leaks on early rejection (1008/1011 closes).
+2. **Sender instances**:
+   - **`DirectSender`** (default for direct testing, fallback if no sender provided): passthrough to the WebSocket. `send_json`/`send_bytes` write straight to the socket; `flush()` and `aclose()` are no-ops.
+   - **`QueuedSender`** (used in production, issue #130 S1): unbounded FIFO queue + one `_writer` task *per session*, launched in `__init__` and **not part of `bridge.tasks`** on purpose — `close_all()` must not cancel it before final messages (`session_end`, `turn_end`) are delivered. Order guarantee: `send_json()` and `send_bytes()` enqueue and return immediately; a background writer drains the queue in order, never blocking or reordering.
+3. **Failure semantics**: the first socket write failure sets `_failure` and causes all subsequent `send_*` calls to raise `ClientGone("cliente no disponible")`; the writer then drains remaining queued messages silently (calling any waiting `flush()` with a `ClientGone` exception). No partial message corruption — every message is either fully written or fully dropped.
+4. **Guarantee**: total order across all messages for a session = enqueue order. A message is never split, never reordered, never appears twice, even when producer tasks (transcriber, orchestrator, barge-in, watchdogs) run concurrently.
+
+### Lifecycle
+
+1. **Enqueue**: every client-facing send (`_sender.send_json(...)`/`_sender.send_bytes(...)`) is guarded by the caller — if it raises `ClientGone`, the caller logs and returns gracefully.
+2. **`ready` handshake** (in `routes.py` step 3.6): after `sender.send_json(ready_msg)`, always call `sender.flush()` to wait for the message to actually write before proceeding. If `flush()` raises `ClientGone`, the session setup has already failed, abort and close.
+3. **Mid-session `status` messages** (in `bridge.py`, `notify_service_status(..., propagate=False)` — the default): wrapped in `try: await self._sender.send_json(...) except Exception: return`. `propagate=True` is used only in `health_check()` at handshake time (step 2 above) when early errors must surface to `routes.py`.
+4. **Shutdown drain** (in `routes.py` `finally` block, after `bridge.close_all()`): call `await sender.aclose(settings.SHUTDOWN_DRAIN_S)`. `aclose()` stops accepting new messages (raises `ClientGone` for any late send), gives the writer up to `SHUTDOWN_DRAIN_S` seconds to drain the queue (including any `session_end` message `close_all()` queued), then abandons the writer task. Never raises — defensive try/except in `finally`.
+
+### What this does NOT solve (S2, S3)
+
+- **S2** — Slow client backpressure (issue #130 S2): the queue is unbounded by design. Detection of a client that reads slower than the gateway writes falls to a future phase. Currently, the writer holds `QueuedSender._queue` in RAM indefinitely if the socket write stalls (TCP/Uvicorn `sansio` never yields backpressure with `send`/`send_bytes`). This is a known gap, not a production blocker for typical clients, but a loaded gateway feeding many concurrent video streams would need bounds or dropping logic (S2).
+- **S3** — Bounding the `TurnRegistry` queue (issue #130 S3): the gateway can still buffer unlimited frames inside `TurnRegistry`'s per-session queue while a turn is in flight. `aclose(timeout)` in `finally` waits for the turn to finish naturally before closing; if it times out, frames already queued are lost silently. A future phase may bound that queue and implement a drop policy (S3).
+
+### Known risk
+
+**`broadcast_status` window (issue #130, known risk):** `ClientRegistry.broadcast_status(service, state)` fires all-sessions notifications in the lifespan *before* `ready` is sent to each client. A client that connects mid-outage receives a `status unavailable` message *before* `ready`, violating the historical "ready is first" protocol contract documented in `docs/client-protocol.md` — only now it's an acceptable trade-off (clients must be prepared for status before ready anyway, as documented now). The window is not eliminated (doing so would require per-session callbacks instead of broadcast), only acknowledged.
 
 ---
 
