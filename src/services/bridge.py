@@ -205,6 +205,36 @@ class JotaBridge:
                 except Exception as e:
                     logger.error(f"[{self.client_id}] _active_turn falló: {e}")
 
+            # Stop push intake and the worker *before* touching _push_tts / the audio
+            # task it may be driving (issue #130 S3a). The worker is also in
+            # self.tasks (via _spawn), but cancelling it there would happen after
+            # _push_tts is closed. asyncio.wait + timeout (not a bare await) so a
+            # handler that failed to honour the cancellation can't hang teardown.
+            self._push_accepting = False
+            worker = self._push_worker
+            if (
+                worker is not None
+                and worker is not asyncio.current_task()
+                and not worker.done()
+            ):
+                worker.cancel()
+                try:
+                    await asyncio.wait({worker}, timeout=settings.SHUTDOWN_DRAIN_S)
+                except asyncio.CancelledError:
+                    logger.debug(
+                        f"[{self.client_id}] close_all: cancelación externa absorbida "
+                        f"durante el cierre del push worker."
+                    )
+                if not worker.done():
+                    logger.warning(
+                        f"[{self.client_id}] push worker no terminó dentro de "
+                        f"SHUTDOWN_DRAIN_S={settings.SHUTDOWN_DRAIN_S}s."
+                    )
+            while not self._push_queue.empty():
+                self._push_queue.get_nowait()
+                self._push_queue.task_done()
+            self._push_pending = 0
+            self._push_pending_since = None
             if self._push_audio_task and not self._push_audio_task.done():
                 self._push_audio_task.cancel()
                 try:
@@ -423,7 +453,18 @@ class JotaBridge:
                     self._push_turn_opened_at is None
                     or time.monotonic() - self._push_turn_opened_at < settings.TURN_TIMEOUT_S
                 )
-                if (self._active_turn and not self._active_turn.done()) or push_in_flight:
+                # Issue #130 S3a: queued-but-unprocessed push events are in flight too,
+                # bounded the same way as an open push turn so a wedged worker can't
+                # gate this watchdog forever.
+                push_backlog_in_flight = self._push_pending > 0 and (
+                    self._push_pending_since is None
+                    or time.monotonic() - self._push_pending_since < settings.TURN_TIMEOUT_S
+                )
+                if (
+                    (self._active_turn and not self._active_turn.done())
+                    or push_in_flight
+                    or push_backlog_in_flight
+                ):
                     # Not idle — a turn/push is actively in flight. Re-check
                     # shortly rather than closing or resetting the full window.
                     await asyncio.sleep(2)

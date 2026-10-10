@@ -149,3 +149,90 @@ async def test_burst_of_events_keeps_order_and_drains_pending():
     assert order == [("chat", str(i)) for i in range(500)]
     assert bridge._push_pending == 0
     await bridge.close_all()
+
+
+@pytest.mark.asyncio
+async def test_close_all_cancels_worker_before_closing_push_tts():
+    bridge = make_bridge()
+    order: list = []
+    mock_tts = AsyncMock()
+
+    async def tts_close():
+        order.append("tts_close")
+
+    mock_tts.close = tts_close
+    bridge._push_tts = mock_tts
+    blocked = asyncio.Event()
+
+    async def blocked_end(sk):
+        blocked.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            order.append("worker_cancelled")
+            raise
+
+    bridge.on_push_turn_end = blocked_end
+    bridge.enqueue_push("turn_end", "sk")
+    await blocked.wait()
+
+    await asyncio.wait_for(bridge.close_all(), timeout=2.0)
+
+    assert order == ["worker_cancelled", "tts_close"]
+    assert bridge._push_worker.done()
+
+
+@pytest.mark.asyncio
+async def test_close_all_completes_while_worker_waits_for_audio_drain():
+    """Review focus 1: the real on_push_turn_end is parked on the audio task when
+    close_all() cancels the worker — that cancellation must not be swallowed."""
+    bridge = make_bridge()
+    bridge._push_turn_open = True
+    bridge._push_turn_id = "t-1"
+    bridge._push_tts = AsyncMock()
+    stuck = asyncio.create_task(asyncio.sleep(3600))
+    bridge._push_audio_task = stuck
+
+    bridge.enqueue_push("turn_end", "sk")
+    await asyncio.sleep(0.05)  # worker is now inside the real on_push_turn_end
+
+    await asyncio.wait_for(bridge.close_all(), timeout=2.0)
+
+    assert bridge._push_worker.done()
+    assert stuck.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_push_after_close_is_a_noop():
+    """Review focus 2: a late frame for an already closed/unregistered bridge."""
+    bridge = make_bridge()
+    await bridge.close_all()
+
+    bridge.enqueue_push("chat", {"deltaText": "late"})
+
+    assert bridge._push_worker is None
+    assert bridge._push_pending == 0
+    assert bridge._push_queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_close_all_discards_backlog():
+    bridge = make_bridge()
+    order: list = []
+    _record_executors(bridge, order)
+    gate = asyncio.Event()
+
+    async def slow_start(sk):
+        await gate.wait()
+
+    bridge.on_push_turn_start = slow_start
+    bridge.enqueue_push("turn_start", "sk")
+    bridge.enqueue_push("chat", {"deltaText": "never"})
+    await asyncio.sleep(0)
+
+    await asyncio.wait_for(bridge.close_all(), timeout=2.0)
+
+    assert order == []
+    assert bridge._push_pending == 0
+    assert bridge._push_queue.empty()
+    await asyncio.wait_for(bridge.push_idle(), timeout=1.0)  # nothing left unfinished
