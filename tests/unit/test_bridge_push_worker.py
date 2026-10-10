@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.core.config import settings
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
@@ -183,9 +184,14 @@ async def test_close_all_cancels_worker_before_closing_push_tts():
 
 
 @pytest.mark.asyncio
-async def test_close_all_completes_while_worker_waits_for_audio_drain():
+async def test_close_all_completes_while_worker_waits_for_audio_drain(monkeypatch):
     """Review focus 1: the real on_push_turn_end is parked on the audio task when
-    close_all() cancels the worker — that cancellation must not be swallowed."""
+    close_all() cancels the worker — that cancellation must not be swallowed.
+
+    Proof: close_all() finishes within 2s although the worker's audio drain and
+    close_all's own worker wait are both capped at 30s (pinned below)."""
+    monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 30)
+    monkeypatch.setattr(settings, "SHUTDOWN_DRAIN_S", 30)
     bridge = make_bridge()
     bridge._push_turn_open = True
     bridge._push_turn_id = "t-1"
@@ -194,7 +200,13 @@ async def test_close_all_completes_while_worker_waits_for_audio_drain():
     bridge._push_audio_task = stuck
 
     bridge.enqueue_push("turn_end", "sk")
-    await asyncio.sleep(0.05)  # worker is now inside the real on_push_turn_end
+    # Wait (bounded) until the worker dequeued the event and is inside the real
+    # on_push_turn_end; the queue being empty means it was picked up.
+    for _ in range(100):
+        if bridge._push_queue.empty():
+            break
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0)
 
     await asyncio.wait_for(bridge.close_all(), timeout=2.0)
 
@@ -236,3 +248,21 @@ async def test_close_all_discards_backlog():
     assert bridge._push_pending == 0
     assert bridge._push_queue.empty()
     await asyncio.wait_for(bridge.push_idle(), timeout=1.0)  # nothing left unfinished
+
+
+@pytest.mark.asyncio
+async def test_run_ends_when_client_disconnects_even_if_push_worker_spawned_first():
+    """F1: a push arriving between connect_internal_services() and run() spawns the
+    worker into self.tasks[0]; run() must still await the client input loop."""
+    bridge = make_bridge()
+    bridge.client_ws.receive = AsyncMock(return_value={"type": "websocket.disconnect"})
+    bridge.enqueue_push("chat", {"deltaText": "x"})
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    # run() swallows the CancelledError wait_for injects on timeout (it then closes
+    # and returns), so a hang would not raise TimeoutError: assert on elapsed time.
+    await asyncio.wait_for(bridge.run(), timeout=2.0)
+
+    assert loop.time() - started < 1.0
+    assert bridge._closed is True

@@ -225,11 +225,12 @@ class JotaBridge:
                         f"[{self.client_id}] close_all: cancelación externa absorbida "
                         f"durante el cierre del push worker."
                     )
-                if not worker.done():
-                    logger.warning(
-                        f"[{self.client_id}] push worker no terminó dentro de "
-                        f"SHUTDOWN_DRAIN_S={settings.SHUTDOWN_DRAIN_S}s."
-                    )
+                else:
+                    if not worker.done():
+                        logger.warning(
+                            f"[{self.client_id}] push worker no terminó dentro de "
+                            f"SHUTDOWN_DRAIN_S={settings.SHUTDOWN_DRAIN_S}s."
+                        )
             while not self._push_queue.empty():
                 self._push_queue.get_nowait()
                 self._push_queue.task_done()
@@ -430,7 +431,11 @@ class JotaBridge:
         `_push_turn_open` shows something is actively in flight, this skips
         the close for this tick and re-checks shortly after — it does not
         reset the idle window, it just defers the decision until nothing is
-        in flight anymore.
+        in flight anymore. A third signal is a non-empty push backlog
+        (`_push_pending > 0`, issue #130 S3a: queued push events the worker
+        has not processed yet); like `_push_turn_open` it only counts for
+        TURN_TIMEOUT_S from `_push_pending_since`, so a wedged worker cannot
+        gate this watchdog forever.
 
         `_active_turn` is safe to trust indefinitely because it's implicitly
         bounded — the orchestrator call underneath it is capped by
@@ -515,7 +520,9 @@ class JotaBridge:
         )
 
         # Loop principal de lectura del cliente
-        self._spawn(self._client_input_loop(), "client_input_loop")
+        # Handle kept directly: the push worker may already sit in self.tasks[0]
+        # (enqueue_push can run between connect_internal_services() and run()).
+        client_task = self._spawn(self._client_input_loop(), "client_input_loop")
         # Idle watchdog: cierra la sesión si el cliente no manda nada (issue #115).
         self._spawn(self._idle_watchdog(), "idle_watchdog")
 
@@ -534,7 +541,6 @@ class JotaBridge:
 
         # El ciclo de vida de la sesión lo marca _client_input_loop.
         # listen_loop y watchdog corren en background y terminan solos sin cerrar la sesión.
-        client_task = self.tasks[0]  # siempre el primero (ver arriba)
         try:
             await client_task
         except asyncio.CancelledError:

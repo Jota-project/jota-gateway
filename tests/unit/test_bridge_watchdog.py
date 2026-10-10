@@ -419,6 +419,8 @@ async def test_idle_watchdog_closes_when_push_exceeds_grace_period(monkeypatch):
     await asyncio.wait_for(bridge._idle_watchdog(), timeout=2.0)
 
     assert close_called, "watchdog must close once the orphaned push exceeds TURN_TIMEOUT_S"
+
+
 @pytest.mark.asyncio
 async def test_idle_watchdog_does_not_close_while_push_backlog_within_grace(monkeypatch):
     """#130 S3a: a push event queued but not yet processed is activity in flight."""

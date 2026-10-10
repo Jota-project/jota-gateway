@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.core.config import settings
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.dispatcher import FrameDispatcher
@@ -506,10 +507,12 @@ async def test_agent_lifecycle_end_closes_push_turn_opened_before_normal_turn():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_agent_end_does_not_wait_for_slow_tts_drain():
+async def test_dispatch_agent_end_does_not_wait_for_slow_tts_drain(monkeypatch):
     """#130 S3a — el motivo de todo el cambio: un push cuyo audio TTS tarda en
     drenar no debe retener a dispatch() (y por tanto a _listen y al resto de
     sesiones multiplexadas)."""
+    # Pinned so the proof does not depend on the default drain timeout.
+    monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 30)
     dispatcher, _, client_reg = make_dispatcher()
     bridge, ws = make_real_bridge(push_enabled=True)
     client_reg.register("hab_sito", bridge)
@@ -529,11 +532,12 @@ async def test_dispatch_agent_end_does_not_wait_for_slow_tts_drain():
         ),
         timeout=0.5,
     )
-    await asyncio.sleep(0)  # let the worker enter on_push_turn_end
-    # The worker is mid-handler (event dequeued, drain still running) although
-    # dispatch() already returned: dispatch did not wait for it.
+    # What is proven: dispatch() returned within the 0.5s wait_for although the
+    # drain it enqueued would take PUSH_TTS_DRAIN_TIMEOUT_S (30s) — dispatch did
+    # not wait for the handler. (_push_pending == 1 only shows the event is queued.)
     assert bridge._push_pending == 1
 
+    # Cleanup: close_all() must not hang on the stuck audio task.
     await asyncio.wait_for(bridge.close_all(), timeout=2.0)
     assert stuck.cancelled()
 
