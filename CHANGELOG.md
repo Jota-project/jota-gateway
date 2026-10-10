@@ -1,3 +1,10 @@
+# [1.16.0](https://github.com/Jota-project/jota-gateway/compare/v1.15.2...v1.16.0) (2026-10-10)
+
+
+### Features
+
+* salida serializada al cliente con OutboundSender ([#130](https://github.com/Jota-project/jota-gateway/issues/130) S1) ([#197](https://github.com/Jota-project/jota-gateway/issues/197)) ([4de373f](https://github.com/Jota-project/jota-gateway/commit/4de373fed6b4879d0084ea691b615f76bd82727a)), closes [#196](https://github.com/Jota-project/jota-gateway/issues/196)
+
 ## [1.15.2](https://github.com/Jota-project/jota-gateway/compare/v1.15.1...v1.15.2) (2026-10-09)
 
 
