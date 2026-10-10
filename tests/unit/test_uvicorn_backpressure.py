@@ -23,7 +23,7 @@ def test_sansio_protocol_applies_write_backpressure():
 
 def test_pyproject_requires_a_uvicorn_with_write_backpressure():
     deps = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]["dependencies"]
-    spec = next(d for d in deps if d.lower().startswith("uvicorn"))
+    spec = next(d for d in deps if Requirement(d).name == "uvicorn")
     floors = [
         Version(s.version) for s in Requirement(spec).specifier if s.operator in (">=", "==", "~=")
     ]
