@@ -16,15 +16,13 @@ _CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
 
 
 class RecordingWS:
-    def __init__(self, fail_on: int | None = None):
+    def __init__(self, fail_on_bytes: bool = False):
         self.sent: list[tuple[str, object]] = []
-        self._fail_on = fail_on
-        self._calls = 0
+        self._fail_on_bytes = fail_on_bytes
 
     async def _send(self, kind, payload):
-        self._calls += 1
         await asyncio.sleep(0)
-        if self._fail_on is not None and self._calls >= self._fail_on:
+        if self._fail_on_bytes and kind == "bytes":
             raise RuntimeError("socket roto")
         self.sent.append((kind, payload))
 
@@ -86,6 +84,7 @@ async def test_turn_messages_leave_through_sender_in_order():
     assert types[0] == "turn_start"
     assert types[-1] == "turn_end"
     assert types.count("token") == 2
+    assert "pipeline_event" in types
     # pipeline_event never jumps ahead of the turn_start that opened the turn
     assert all(i > types.index("turn_start") for i, t in enumerate(types) if t == "pipeline_event")
 
@@ -106,14 +105,17 @@ async def test_turn_end_queued_before_close_is_delivered():
 
 
 async def test_broken_sender_stops_pipe_audio_and_turn_still_finishes():
-    ws = RecordingWS(fail_on=1)  # first write fails: client is gone
+    ws = RecordingWS(fail_on_bytes=True)  # text writes work; first audio write fails
     tts = AsyncMock()
-    chunks = [b"1", b"2", b"3"]
+    total = 50
+    pulled = 0
 
     async def audio():
-        for c in chunks:
+        nonlocal pulled
+        for i in range(total):
             await asyncio.sleep(0)
-            yield c
+            pulled += 1
+            yield bytes([i])
 
     tts_client = AsyncMock()
     tts_client.get_audio_stream = audio
@@ -123,7 +125,10 @@ async def test_broken_sender_stops_pipe_audio_and_turn_still_finishes():
 
     await asyncio.wait_for(bridge._call_orchestrator("hola"), timeout=2.0)
 
-    assert ws.sent == []  # nothing got through
+    assert pulled >= 1  # pipe_audio really ran
+    assert pulled < total  # ...and stopped once the sender broke
+    assert not any(k == "bytes" for k, _ in ws.sent)  # no audio got through
+    tts_client.close.assert_awaited()
     with pytest.raises(ClientGone):
         await sender.send_json({"type": "x"})
     await sender.aclose(1.0)
