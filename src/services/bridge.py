@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import time
+from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -109,6 +110,19 @@ class JotaBridge:
         # combined with a silent client would otherwise block the idle watchdog
         # from ever calling close_all() and leak the session indefinitely.
         self._push_turn_opened_at: float | None = None
+        # Push worker (issue #130 S3a): the dispatcher no longer awaits push handlers
+        # inside OpenClaw's _listen loop. It calls enqueue_push(); a single worker per
+        # bridge runs the handlers, so one session's slow TTS can't stall every other
+        # session multiplexed on the same connection, and the total order
+        # start -> deltas -> tool -> end the _push_turn_open logic relies on is kept.
+        # Unbounded on purpose in S3a (bounding it is S3b).
+        self._push_queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+        self._push_worker: asyncio.Task | None = None
+        self._push_accepting: bool = True
+        # Events enqueued and not yet finished, and since when the backlog is
+        # non-empty: _idle_watchdog() counts a bounded pending backlog as in flight.
+        self._push_pending: int = 0
+        self._push_pending_since: float | None = None
         # Guards close_all() so it's safe to call more than once (issue #101):
         # routes.py's outer try/finally always calls it on the way out, even
         # when bridge.run() already called it from its own internal finally.
@@ -913,3 +927,47 @@ class JotaBridge:
             pass
         self._push_turn_open = False
         self._push_turn_opened_at = None
+
+    def enqueue_push(self, kind: str, arg: Any) -> None:
+        """Queue a push event for this bridge's worker (issue #130 S3a).
+
+        Synchronous and never blocks: it is called from OpenClaw's _listen loop via
+        FrameDispatcher. `kind` is "turn_start" | "chat" | "tool" | "turn_end" and
+        `arg` is what the matching handler takes (session_key for turn_*, the frame
+        payload for chat/tool). No-op once the bridge is closing.
+        """
+        if not self._push_accepting:
+            return
+        if self._push_worker is None:
+            self._push_worker = self._spawn(self._push_worker_loop(), "push_worker")
+        if self._push_pending == 0:
+            self._push_pending_since = time.monotonic()
+        self._push_pending += 1
+        self._push_queue.put_nowait((kind, arg))
+
+    async def push_idle(self) -> None:
+        """Wait until the worker has finished every queued push event (for tests)."""
+        await self._push_queue.join()
+
+    async def _push_worker_loop(self) -> None:
+        while True:
+            kind, arg = await self._push_queue.get()
+            try:
+                if kind == "turn_start":
+                    await self.on_push_turn_start(arg)
+                elif kind == "chat":
+                    await self.deliver_push(arg)
+                elif kind == "tool":
+                    await self.deliver_push_tool_call(arg)
+                elif kind == "turn_end":
+                    await self.on_push_turn_end(arg)
+                else:
+                    logger.warning(f"[{self.client_id}] push event desconocido: {kind!r}")
+            except Exception as e:
+                # Type name only: the payload may carry user text.
+                logger.warning(f"[{self.client_id}] push {kind} falló: {type(e).__name__}")
+            finally:
+                self._push_pending = max(0, self._push_pending - 1)
+                if self._push_pending == 0:
+                    self._push_pending_since = None
+                self._push_queue.task_done()
