@@ -257,11 +257,14 @@ uniformly to text and audio sessions, not just audio ones.
 - **Gated on activity actually in flight (issue #115 follow-up):** a client can legitimately go
   quiet while the server is still working — the orchestrator streaming a long response, or a
   push-only consumer session that never sends anything by design. Before closing, the watchdog
-  checks `self._active_turn` (not done) and `self._push_turn_open`; if either indicates
+  checks three signals — `self._active_turn` (not done), `self._push_turn_open`, and a
+  non-empty push backlog (`self._push_pending`, issue #130 S3a); if any indicates
   something is in flight, it skips the close for that tick and re-checks again after a short
   fixed interval (2s, matching the silence watchdog's poll interval) instead of closing or
-  resetting the full idle window. Un backlog de push encolado y aún sin procesar (`_push_pending`) cuenta como en vuelo, acotado por `TURN_TIMEOUT_S` desde que el backlog dejó de estar vacío (`_push_pending_since`), igual que `_push_turn_open`. Once nothing is in flight anymore, idle-timeout behavior
-  resumes normally, measured from `_last_client_activity` as before.
+  resetting the full idle window. Once nothing is in flight anymore, idle-timeout behavior
+  resumes normally, measured from `_last_client_activity` as before. The push backlog and
+  `_push_turn_open` are each bounded by `TURN_TIMEOUT_S` (from `_push_pending_since` /
+  `_push_turn_opened_at`), so a wedged worker or an orphaned push can't gate the watchdog forever.
 
 ### Lifespan shutdown
 
@@ -272,7 +275,10 @@ Uvicorn's external cancellation to clean up. On shutdown, in order:
 1. **Drain active sessions** — `ClientRegistry.close_all_sessions(status="shutdown",
    timeout=settings.SHUTDOWN_DRAIN_S)` snapshots every registered bridge and calls
    `close_all()` on each concurrently, each individually bounded by
-   `SHUTDOWN_DRAIN_S`. Mirrors `broadcast_status`'s isolation contract — one
+   `SHUTDOWN_DRAIN_S`. `close_all()` waits for the push worker (#130 S3a) with
+   `SHUTDOWN_DRAIN_S` as a cap; if a push handler ignored cancellation, the generic
+   task-cancel loop would cancel it once more, so teardown could take up to two drain
+   windows in that unlikely case (no current handler ignores cancellation). Mirrors `broadcast_status`'s isolation contract — one
    session that raises or times out never blocks or fails the others. A session
    closed this way is recorded with `SessionRecord.status = "shutdown"` (a fourth
    value alongside `"active"/"completed"/"error"`), visible via `GET /admin/sessions`.
@@ -412,7 +418,7 @@ Every message the gateway sends to a client flows through one `OutboundSender` p
 
 **Lifecycle:** (1) Enqueue: el `turn_start` de un turno normal, `pipe_audio` y `_pipe_push_audio` hacen return; el resto lo traga (algunos con warning). (2) `ready` en `routes.py`: `await sender.flush()` tras enviar — si falla, log y return. (3) `status` messages (`bridge.notify_service_status`, el único punto de envío): un envío fallido se traga salvo con `propagate=True`, que solo usa `health_check()` para que el error llegue a `routes.py`. (4) Shutdown: `routes.py finally` llama `await sender.aclose(SHUTDOWN_DRAIN_S)` tras `bridge.close_all()` — nunca lanza `Exception` (una cancelación sí puede propagarse; el descarte de pendientes corre igualmente).
 
-**Out of scope (S2, S3):** S2 — detección y política de cliente lento. La cola es ilimitada a propósito: con `sansio` el `send` no aplica backpressure y el writer la vacía al instante; el crecimiento sin límite está en el buffer del transporte. S2 debe elegir mecanismo (`--ws wsproto`, leer el buffer del transporte, o ack/crédito). S3 — `TurnRegistry` con cola acotada por sesión (`put_nowait` + abort del turno lento) y handlers de push fuera de `_listen`. No hecho en S1.
+**Out of scope (S2, S3):** S2 — detección y política de cliente lento. La cola es ilimitada a propósito: con `sansio` el `send` no aplica backpressure y el writer la vacía al instante; el crecimiento sin límite está en el buffer del transporte. S2 debe elegir mecanismo (`--ws wsproto`, leer el buffer del transporte, o ack/crédito). S3 — se divide: S3a (handlers de push fuera de `_listen`, worker FIFO por bridge) está hecho en la rama de #130 S3a; solo quedan S2 y S3b (`TurnRegistry` con cola acotada por sesión: `put_nowait` + abort del turno lento).
 
 **Riesgo conocido:** `connect_internal_services()` registra el bridge en `ClientRegistry` antes de que `routes.py` envíe `ready`, así que un `broadcast_status` de otra tarea puede llegar al cliente antes que `ready`. S1 no cambia esto: el orden total garantiza coherencia, no que `ready` sea primero (deducido del código, no reproducido por test).
 
