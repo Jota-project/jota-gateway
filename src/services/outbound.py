@@ -2,14 +2,17 @@
 
 Every message the gateway sends to a client goes through an `OutboundSender`,
 so the order across producer tasks is the enqueue order and a message is never
-interleaved with another. Slow-client detection/policy is S2, not here.
+interleaved with another. A client that stops reading is cut by a per-send timeout (issue #130 S2).
 """
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from starlette.websockets import WebSocketDisconnect
+
+from src.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,10 @@ def _is_routine_disconnect(e: Exception) -> bool:
 
 class ClientGone(ConnectionError):
     """The client socket failed (or the sender was closed); nothing more will be sent."""
+
+
+class ClientSlow(ClientGone):
+    """One send stayed blocked longer than CLIENT_SEND_TIMEOUT_S (issue #130 S2)."""
 
 
 class OutboundSender(Protocol):
@@ -61,13 +68,19 @@ class QueuedSender:
     """FIFO sender: one unbounded queue and one writer task per session.
 
     `send_*` enqueue and return; the writer performs the real socket write in
-    order. The queue is unbounded on purpose — with Uvicorn's `sansio` protocol
-    the writer empties it instantly (`send` applies no backpressure), so bounding
-    it would detect nothing. That is S2's job.
+    order. Each write runs under `asyncio.timeout(CLIENT_SEND_TIMEOUT_S)`: uvicorn's
+    write flow control makes a client that stopped reading block `send`, so a send
+    that stays blocked that long marks the client slow (`ClientSlow`), drops what is
+    pending and calls `on_slow` once. This is a drain-rate threshold, not a stall
+    detector: a client draining far below the rate the gateway writes is cut too, one
+    reading at a reasonable rate is not. The queue itself stays unbounded, so for a
+    client above the threshold it keeps growing for as long as production lasts: the
+    timeout bounds memory only for clients below the threshold.
     """
 
-    def __init__(self, ws):
+    def __init__(self, ws, on_slow: Callable[[], Awaitable[None]] | None = None):
         self._ws = ws
+        self._on_slow = on_slow
         self._queue: asyncio.Queue = asyncio.Queue()
         self._failure: Exception | None = None
         self._closing = False
@@ -105,7 +118,7 @@ class QueuedSender:
                     await asyncio.wait_for(self._writer, timeout=timeout)
                 except TimeoutError:
                     # wait_for already cancelled and awaited the writer.
-                    logger.warning("Outbound: drenado agotó %.1fs — descartando lo pendiente.", timeout)
+                    logger.warning("Outbound: drenado agotó %gs — descartando lo pendiente.", timeout)
         finally:
             self._discard_pending()
 
@@ -118,12 +131,19 @@ class QueuedSender:
                 if not item.done():
                     item.set_result(None)
                 continue
+            timeout = asyncio.timeout(settings.CLIENT_SEND_TIMEOUT_S)
             try:
-                if kind == "json":
-                    await self._ws.send_json(item)
-                else:
-                    await self._ws.send_bytes(item)
+                async with timeout:
+                    if kind == "json":
+                        await self._ws.send_json(item)
+                    else:
+                        await self._ws.send_bytes(item)
             except Exception as e:
+                # TimeoutError is an OSError: only OUR timeout expiring means "slow
+                # client"; a send that raises TimeoutError itself is an ordinary failure.
+                if timeout.expired():
+                    await self._fail_slow()
+                    return
                 self._failure = e
                 # One line, never the payload (it may hold user text).
                 level = logging.INFO if _is_routine_disconnect(e) else logging.WARNING
@@ -131,6 +151,19 @@ class QueuedSender:
                            type(e).__name__)
                 self._discard_pending()
                 return
+
+    async def _fail_slow(self) -> None:
+        limit = settings.CLIENT_SEND_TIMEOUT_S
+        self._failure = ClientSlow(f"send bloqueado más de {limit}s")
+        logger.warning(
+            "Outbound: cliente lento (send bloqueado > %gs) — descartando lo pendiente.", limit
+        )
+        self._discard_pending()
+        if self._on_slow is not None:
+            try:
+                await self._on_slow()
+            except Exception as e:
+                logger.warning("Outbound: on_slow falló (%s).", type(e).__name__)
 
     def _discard_pending(self) -> None:
         """Drop queued messages; fail any flush() still waiting on them."""
