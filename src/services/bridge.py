@@ -9,6 +9,7 @@ from src.core.config import settings
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.openclaw.models import ToolCallEvent
 from src.services.openclaw.registry import ClientRegistry
+from src.services.outbound import DirectSender, OutboundSender
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.protocol import OrchestratorProtocol
 from src.services.reconnection import ConnectionState, to_wire_state
@@ -59,11 +60,15 @@ class JotaBridge:
         handshake: Handshake,
         client_registry: ClientRegistry,
         default_agent: str,
+        sender: OutboundSender | None = None,
     ):
         self.client = client
         self.config = config
         self.client_id = client.id  # nombre legible del cliente (hab_sito, jota_desktop…)
         self.client_ws = client_ws
+        # All client-bound writes go through the sender so their order across tasks
+        # is the enqueue order (issue #130 S1). client_ws stays for receive()/close.
+        self._sender: OutboundSender = sender or DirectSender(client_ws)
         self.handshake: Handshake = handshake
         self.orchestrator: OrchestratorProtocol = orchestrator  # injected, not created here
         self.tts = tts
@@ -271,7 +276,7 @@ class JotaBridge:
         pre-ready notification and the authoritative capabilities block.
         """
         if not await self.orchestrator.ping():
-            await self.client_ws.send_json(
+            await self._sender.send_json(
                 {
                     "type": "status",
                     "service": "orchestrator",
@@ -288,7 +293,7 @@ class JotaBridge:
                 self.transcriber and self.transcriber.state == ConnectionState.CONNECTED
             )
             if not transcriber_live:
-                await self.client_ws.send_json(
+                await self._sender.send_json(
                     {
                         "type": "status",
                         "service": "transcriber",
@@ -301,7 +306,7 @@ class JotaBridge:
         if tts_requested:
             tts_live = await TTSClient.ping(settings.TTS_WS_URL)
             if not tts_live:
-                await self.client_ws.send_json(
+                await self._sender.send_json(
                     {
                         "type": "status",
                         "service": "tts",
@@ -381,7 +386,7 @@ class JotaBridge:
                     f"({silence_count}/{self.config.max_silence_turns})"
                 )
                 try:
-                    await self.client_ws.send_json(
+                    await self._sender.send_json(
                         {
                             "type": "status",
                             "service": "transcriber",
@@ -614,7 +619,7 @@ class JotaBridge:
         if message is not None:
             payload["message"] = message
         try:
-            await self.client_ws.send_json(payload)
+            await self._sender.send_json(payload)
         except Exception:
             pass  # cliente desconectado
 
@@ -633,7 +638,7 @@ class JotaBridge:
         if not is_final:
             # Forward partial to client for live display
             try:
-                await self.client_ws.send_json({"type": "transcription_partial", "text": text})
+                await self._sender.send_json({"type": "transcription_partial", "text": text})
             except Exception:
                 return  # client disconnected
             await self.tracker.record("transcription_partial", text_len=len(text))
@@ -646,7 +651,7 @@ class JotaBridge:
                     )
                     await self.tracker.record("barge_in")
                     try:
-                        await self.client_ws.send_json({"type": "interrupted"})
+                        await self._sender.send_json({"type": "interrupted"})
                     except Exception:
                         pass
             return  # partials never reach the orchestrator
@@ -674,7 +679,7 @@ class JotaBridge:
         await self._cancel_active_turn()
         logger.debug(f"[{self.client_id}] Transcripción final: '{text[:40]}'")
         try:
-            await self.client_ws.send_json({"type": "transcription", "text": text})
+            await self._sender.send_json({"type": "transcription", "text": text})
         except Exception as e:
             logger.warning(f"[{self.client_id}] send_json(transcription) falló: {e}")
 
@@ -695,7 +700,7 @@ class JotaBridge:
         self.tracker.start_turn()
 
         try:
-            await self.client_ws.send_json(
+            await self._sender.send_json(
                 {"type": "turn_start", "turn_id": turn_id, "turn_seq": turn_seq}
             )
         except Exception:
@@ -719,7 +724,7 @@ class JotaBridge:
         async def _on_token(token_text: str):
             try:
                 if "text" in self.handshake.output_mode:
-                    await self.client_ws.send_json(
+                    await self._sender.send_json(
                         {"type": "token", "turn_id": turn_id, "text": token_text}
                     )
             except Exception:
@@ -731,7 +736,7 @@ class JotaBridge:
             if not self.config.tool_calls_enabled:
                 return
             try:
-                await self.client_ws.send_json(_tool_call_message(turn_id, tool_call))
+                await self._sender.send_json(_tool_call_message(turn_id, tool_call))
             except Exception:
                 pass
 
@@ -749,7 +754,7 @@ class JotaBridge:
             except RuntimeError as e:
                 logger.error(f"[{self.client_id}] Orchestrator error: {e}")
                 try:
-                    await self.client_ws.send_json(
+                    await self._sender.send_json(
                         {
                             "type": "error",
                             "code": "TURN_ERROR",
@@ -772,7 +777,7 @@ class JotaBridge:
                     await self.tracker.record("tts_first_chunk")
                     _first_chunk = False
                 try:
-                    await self.client_ws.send_bytes(header + chunk)
+                    await self._sender.send_bytes(header + chunk)
                 except Exception:
                     return
             await self.tracker.record("tts_done")
@@ -786,7 +791,7 @@ class JotaBridge:
             await pipe_tokens()
 
         try:
-            await self.client_ws.send_json({"type": "turn_end", "turn_id": turn_id})
+            await self._sender.send_json({"type": "turn_end", "turn_id": turn_id})
         except Exception:
             pass
 
@@ -824,7 +829,7 @@ class JotaBridge:
         self._push_turn_opened_at = time.monotonic()
 
         try:
-            await self.client_ws.send_json(
+            await self._sender.send_json(
                 {
                     "type": "turn_start",
                     "turn_id": self._push_turn_id,
@@ -847,7 +852,7 @@ class JotaBridge:
             header = bytes([0xA1]) + self._push_turn_seq.to_bytes(2, "big")
             async for chunk in tts.get_audio_stream():
                 try:
-                    await self.client_ws.send_bytes(header + chunk)
+                    await self._sender.send_bytes(header + chunk)
                 except Exception:
                     return
 
@@ -861,7 +866,7 @@ class JotaBridge:
             return
         if "text" in self.handshake.output_mode:
             try:
-                await self.client_ws.send_json(
+                await self._sender.send_json(
                     {
                         "type": "token",
                         "turn_id": self._push_turn_id,
@@ -882,7 +887,7 @@ class JotaBridge:
         if tool_call is None:
             return
         try:
-            await self.client_ws.send_json(_tool_call_message(self._push_turn_id, tool_call))
+            await self._sender.send_json(_tool_call_message(self._push_turn_id, tool_call))
         except Exception:
             pass
 
@@ -911,7 +916,7 @@ class JotaBridge:
             self._push_tts = None
 
         try:
-            await self.client_ws.send_json({"type": "turn_end", "turn_id": self._push_turn_id})
+            await self._sender.send_json({"type": "turn_end", "turn_id": self._push_turn_id})
         except Exception:
             pass
         self._push_turn_open = False

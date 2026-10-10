@@ -4,6 +4,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from src.services.outbound import DirectSender, OutboundSender
+
 if TYPE_CHECKING:
     from src.services.session_registry import SessionRegistry, SessionStatus
 
@@ -28,13 +30,14 @@ class PipelineTracker:
         output_mode: Sequence[str],
         client_ws,
         registry: "SessionRegistry",
+        sender: OutboundSender | None = None,
     ):
         self.session_id = session_id
         self.client_id = client_id
         self.input_mode = input_mode
         self.output_mode = list(output_mode)
         self.events: list[PipelineEvent] = []
-        self._ws = client_ws
+        self._sender: OutboundSender = sender or DirectSender(client_ws)
         self._registry = registry
         self._started_at: float = time.monotonic()
         self._last_event_at: float = self._started_at
@@ -74,7 +77,7 @@ class PipelineTracker:
 
         if "status" in self.output_mode:
             try:
-                await self._ws.send_json(
+                await self._sender.send_json(
                     {
                         "type": "pipeline_event",
                         "stage": stage,
