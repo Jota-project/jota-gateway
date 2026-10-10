@@ -122,3 +122,30 @@ async def test_connect_internal_services_failure_leaves_no_zombie_session(monkey
     assert sessions[0].status == "error"
     assert sessions[0].ended_at is not None
     assert ws.closed_with == (1011, "Problema estableciendo microservicios internos del hub.")
+
+
+async def test_session_end_reaches_client_before_socket_close():
+    """close_all() queues session_end; the endpoint must drain it (sender.aclose)
+    before websocket.close(), so the client sees it. Observed on a fake socket
+    with a single ordered event log."""
+    app_state, _ = _make_app_state(orchestrator_ping_result=True)
+    ws = FakeWebSocket({**HANDSHAKE_TEXT, "output_mode": ["text", "status"]}, app_state)
+    log: list[str] = []
+    orig_send, orig_close = ws.send_json, ws.close
+
+    async def send_json(data):
+        await orig_send(data)
+        log.append(f"send:{data.get('type')}:{data.get('stage', '')}")
+
+    async def close(code=1000, reason=""):
+        log.append("close")
+        await orig_close(code, reason)
+
+    ws.send_json, ws.close = send_json, close
+
+    await routes.gateway_websocket(ws)
+
+    assert "close" in log
+    end_idx = [i for i, e in enumerate(log) if "session_end" in e]
+    assert end_idx, log
+    assert end_idx[-1] < log.index("close")

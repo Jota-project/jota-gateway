@@ -14,6 +14,7 @@ from src.core.network import resolve_client_ip
 from src.models.schemas import Handshake
 from src.services.bridge import JotaBridge
 from src.services.db_client import db_client
+from src.services.outbound import ClientGone, QueuedSender
 from src.services.pipeline_tracker import PipelineTracker
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,9 @@ async def gateway_websocket(websocket: WebSocket):
 
     session_id = f"{client.id}:{int(time.time() * 1000)}"
     session_registry = app_state.session_registry
+    # One outbound path per session: sender -> tracker -> bridge (issue #130 S1).
+    # Created only after every handshake rejection above, so no writer task leaks.
+    sender = QueuedSender(websocket)
     tracker = PipelineTracker(
         session_id=session_id,
         client_id=client.id,
@@ -91,6 +95,7 @@ async def gateway_websocket(websocket: WebSocket):
         output_mode=handshake.output_mode,
         client_ws=websocket,
         registry=session_registry,
+        sender=sender,
     )
     session_registry.register(tracker)
     bridge = JotaBridge(
@@ -103,6 +108,7 @@ async def gateway_websocket(websocket: WebSocket):
         handshake=handshake,
         client_registry=app_state.client_registry,
         default_agent=resolved_agent,
+        sender=sender,
     )
 
     # One single try/finally covers setup (connect_internal_services, health
@@ -127,13 +133,17 @@ async def gateway_websocket(websocket: WebSocket):
         live_capabilities = await bridge.health_check()
         if live_capabilities is None:
             logger.warning(f"[{client.id}] Health check falló. Cerrando sesión.")
+            try:
+                await sender.flush()  # deliver the queued `status` before the 1011 close
+            except ClientGone:
+                pass
             await websocket.close(code=1011, reason="Servicio crítico no disponible.")
             return
 
         # 3.6 SEND READY — confirms session is established and announces capabilities
         # resolved_agent comes from the policy helper above.
         try:
-            await websocket.send_json(
+            await sender.send_json(
                 {
                     "type": "ready",
                     "session_id": session_id,
@@ -148,6 +158,7 @@ async def gateway_websocket(websocket: WebSocket):
                     "live_capabilities": live_capabilities,
                 }
             )
+            await sender.flush()
         except Exception as e:
             logger.warning(f"[{client.id}] Failed to send ready: {e}")
             return
@@ -159,6 +170,11 @@ async def gateway_websocket(websocket: WebSocket):
             logger.error(f"[{client.id}] Error crítico de Runtime en el Puente Principal: {e}")
     finally:
         await bridge.close_all(status="error")
+        # close_all() queued session_end; drain it before the socket goes away.
+        try:
+            await sender.aclose(settings.SHUTDOWN_DRAIN_S)
+        except Exception as e:  # aclose never raises by contract; be defensive
+            logger.debug(f"[{client.id}] sender.aclose falló: {e}")
         if "DISCONNECTED" not in websocket.client_state.name:
             try:
                 await websocket.close()
