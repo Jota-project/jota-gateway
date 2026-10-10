@@ -572,7 +572,7 @@ Llegan entrelazados con los mensajes JSON. Identifica audio por el magic byte `0
 
 ## 13. Timeouts y cierre de sesión
 
-**Nuevo — issue #115 (v1.17.0).** El gateway acota cuatro esperas que antes eran indefinidas. Tres son visibles en el wire; la cuarta es puramente interna.
+**Nuevo — issue #115 (v1.17.0).** El gateway acota cuatro esperas que antes eran indefinidas. Tres son visibles en el wire; la cuarta es puramente interna. **Nuevo — issue #130 (S3a).** Se añade una quinta, `PUSH_TTS_DRAIN_TIMEOUT_S` (última fila), que en el wire solo se nota como audio de un turno de push que se corta.
 
 | Deadline | Valor por defecto | Qué provoca | Cómo lo ves |
 |---|---|---|---|
