@@ -422,6 +422,66 @@ async def test_idle_watchdog_closes_when_push_exceeds_grace_period(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_idle_watchdog_does_not_close_while_push_backlog_within_grace(monkeypatch):
+    """#130 S3a: a push event queued but not yet processed is activity in flight."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 5)
+    bridge, ws, _ = _make_bridge()
+    bridge._last_client_activity = time.monotonic() - 10
+
+    bridge._push_pending = 1
+    bridge._push_pending_since = time.monotonic()
+
+    close_called = []
+
+    async def _fake_close():
+        close_called.append(True)
+
+    bridge.close_all = _fake_close
+
+    task = asyncio.create_task(bridge._idle_watchdog())
+    await asyncio.sleep(0.1)
+    assert not task.done()
+    assert not close_called
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_idle_watchdog_closes_when_push_backlog_exceeds_grace(monkeypatch):
+    """Review focus 5: a wedged push worker + silent client must not leak the
+    session — the backlog only defers the idle close for TURN_TIMEOUT_S."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.05)
+    bridge, ws, _ = _make_bridge()
+    bridge._last_client_activity = time.monotonic() - 10
+
+    bridge._push_pending = 1
+    bridge._push_pending_since = time.monotonic() - 5
+
+    close_called = []
+
+    async def _fake_close():
+        close_called.append(True)
+
+    bridge.close_all = _fake_close
+
+    await asyncio.wait_for(bridge._idle_watchdog(), timeout=2.0)
+
+    assert close_called
+
+
+
+
+@pytest.mark.asyncio
 async def test_run_launches_idle_watchdog_that_closes_the_session(monkeypatch, mock_tracker):
     """Drives the REAL bridge.run() (not `_idle_watchdog()` directly) end to
     end, so a regression that deletes

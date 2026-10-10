@@ -572,7 +572,7 @@ Llegan entrelazados con los mensajes JSON. Identifica audio por el magic byte `0
 
 ## 13. Timeouts y cierre de sesión
 
-**Nuevo — issue #115 (v1.17.0).** El gateway acota cuatro esperas que antes eran indefinidas. Tres son visibles en el wire; la cuarta es puramente interna.
+**Nuevo — issue #115 (v1.17.0).** El gateway acota cuatro esperas que antes eran indefinidas. Tres son visibles en el wire; la cuarta es puramente interna. **Nuevo — issue #130 (S3a).** Se añade una quinta, `PUSH_TTS_DRAIN_TIMEOUT_S` (última fila), que en el wire solo se nota como audio de un turno de push que se corta.
 
 | Deadline | Valor por defecto | Qué provoca | Cómo lo ves |
 |---|---|---|---|
@@ -580,6 +580,7 @@ Llegan entrelazados con los mensajes JSON. Identifica audio por el magic byte `0
 | `TURN_TIMEOUT_S` | 120s, **idle-reset** | El orquestador deja de mandar nada durante un turno ya en marcha (cuelgue real, no duración total) | `{"type":"error","code":"TURN_ERROR","message":"turn_timeout","fatal":false,"turn_id":"..."}` (ver §9) — la sesión sigue viva, solo ese turno se aborta |
 | `IDLE_TIMEOUT_S` | 300s (5 min) | No mandas **ningún** mensaje (ni audio ni texto) durante ese tiempo | Cierre WS con código 1000, **sin ningún mensaje de error o aviso previo** |
 | `SHUTDOWN_DRAIN_S` | 30s | Interno — límite que el gateway se da a sí mismo para esperar un turno en curso al cerrar una sesión (reinicio del servidor, u otro camino de cierre) | Ninguno directo; en el peor caso el turno se corta sin `turn_end` |
+| `PUSH_TTS_DRAIN_TIMEOUT_S` | 30s | El audio TTS de un turno de push (iniciado por el agente) sigue sintetizándose 30s después del `end` del agente | El audio restante de ese push se corta, el TTS se cierra y el `turn_end` se envía igualmente — la sesión sigue viva. Los turnos normales no tienen un tope equivalente: solo el audio de push |
 
 ### `TURN_TIMEOUT_S` es "idle-reset", no un techo total
 

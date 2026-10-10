@@ -13,6 +13,11 @@ class FrameDispatcher:
     """Routes incoming OpenClaw frames to the correct queue or bridge.
 
     Knows about TurnRegistry and ClientRegistry. Does not touch WebSocket or TTS.
+
+    Push handlers are never awaited here: this runs inside OpenClaw's _listen loop,
+    so anything slow would stall every session sharing the connection (issue #130
+    S3a). The routing decision (including the #112 normal-turn check) is still taken
+    synchronously, and only the resulting work is queued on the bridge's push worker.
     """
 
     def __init__(self, turn_registry: TurnRegistry, client_registry: ClientRegistry) -> None:
@@ -75,7 +80,7 @@ class FrameDispatcher:
         client_id = client_id_from_session_key(sk)
         bridge = self._clients.get(client_id)
         if bridge is not None:
-            await bridge.deliver_push(payload)
+            bridge.enqueue_push("chat", payload)
 
     async def _handle_agent_lifecycle(self, payload: dict) -> None:
         sk = payload.get("sessionKey")
@@ -100,7 +105,7 @@ class FrameDispatcher:
                     "agent start suppressed: normal turn active for sk=%s", sk
                 )
                 return
-            await bridge.on_push_turn_start(sk)
+            bridge.enqueue_push("turn_start", sk)
         elif phase == "end":
             # Always forwarded, never suppressed: on_push_turn_end() already
             # no-ops when no push turn is open (issue #84's orphan-end
@@ -112,7 +117,7 @@ class FrameDispatcher:
             # _push_turn_open stuck True, its TTS connection never closed,
             # and the push path permanently dead for the rest of the session
             # (caught in final review, 2026-08-04).
-            await bridge.on_push_turn_end(sk)
+            bridge.enqueue_push("turn_end", sk)
 
     async def _handle_session_tool(self, payload: dict) -> None:
         sk = payload.get("sessionKey")
@@ -128,4 +133,4 @@ class FrameDispatcher:
         client_id = client_id_from_session_key(sk)
         bridge = self._clients.get(client_id)
         if bridge is not None:
-            await bridge.deliver_push_tool_call(data)
+            bridge.enqueue_push("tool", data)

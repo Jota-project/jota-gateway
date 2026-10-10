@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -499,3 +500,28 @@ async def test_deliver_push_tool_call_rejected_when_no_turn_open():
     data = {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {"command": "ls"}}
     await bridge.deliver_push_tool_call(data)
     ws.send_json.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_on_push_turn_end_bounds_audio_drain(monkeypatch):
+    """#130 S3a: la espera de la síntesis TTS está acotada por
+    PUSH_TTS_DRAIN_TIMEOUT_S. Al vencer se cancela el audio, se cierra el TTS y
+    el turn_end se envía igualmente."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 0.05)
+    bridge, _ = make_bridge(output_mode=("audio", "text"))
+    mock_tts = AsyncMock()
+    bridge._push_tts = mock_tts
+    bridge._push_turn_id = "t-1"
+    bridge._push_turn_open = True
+    stuck = asyncio.create_task(asyncio.sleep(3600))
+    bridge._push_audio_task = stuck
+
+    await asyncio.wait_for(bridge.on_push_turn_end("agent:main:hab_sito"), timeout=2.0)
+
+    assert stuck.cancelled()
+    mock_tts.close.assert_awaited_once()
+    bridge.client_ws.send_json.assert_any_call({"type": "turn_end", "turn_id": "t-1"})
+    assert bridge._push_turn_open is False
+    assert bridge._push_tts is None

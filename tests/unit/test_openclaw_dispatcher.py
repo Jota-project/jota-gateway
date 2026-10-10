@@ -1,7 +1,9 @@
-from unittest.mock import AsyncMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.core.config import settings
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.dispatcher import FrameDispatcher
@@ -108,7 +110,7 @@ async def test_chat_event_routes_to_session_queue():
 @pytest.mark.asyncio
 async def test_chat_event_no_active_turn_routes_to_client_registry():
     dispatcher, turn_reg, client_reg = make_dispatcher()
-    bridge = AsyncMock()
+    bridge = MagicMock()
     client_reg.register("client-a", bridge)
     payload = {
         "sessionKey": "agent:main:client-a",
@@ -118,7 +120,7 @@ async def test_chat_event_no_active_turn_routes_to_client_registry():
     }
     frame = {"type": "event", "event": "chat", "payload": payload}
     await dispatcher.dispatch(frame)
-    bridge.deliver_push.assert_awaited_once_with(payload)
+    bridge.enqueue_push.assert_called_once_with("chat", payload)
 
 
 @pytest.mark.asyncio
@@ -131,7 +133,7 @@ async def test_chat_event_no_session_key_ignored():
 @pytest.mark.asyncio
 async def test_agent_lifecycle_start_calls_on_push_turn_start():
     dispatcher, _, client_reg = make_dispatcher()
-    bridge = AsyncMock()
+    bridge = MagicMock()
     client_reg.register("client-a", bridge)
     payload = {
         "sessionKey": "agent:main:client-a",
@@ -141,13 +143,13 @@ async def test_agent_lifecycle_start_calls_on_push_turn_start():
     }
     frame = {"type": "event", "event": "agent", "payload": payload}
     await dispatcher.dispatch(frame)
-    bridge.on_push_turn_start.assert_awaited_once_with("agent:main:client-a")
+    bridge.enqueue_push.assert_called_once_with("turn_start", "agent:main:client-a")
 
 
 @pytest.mark.asyncio
 async def test_agent_lifecycle_end_calls_on_push_turn_end():
     dispatcher, _, client_reg = make_dispatcher()
-    bridge = AsyncMock()
+    bridge = MagicMock()
     client_reg.register("client-a", bridge)
     payload = {
         "sessionKey": "agent:main:client-a",
@@ -157,7 +159,7 @@ async def test_agent_lifecycle_end_calls_on_push_turn_end():
     }
     frame = {"type": "event", "event": "agent", "payload": payload}
     await dispatcher.dispatch(frame)
-    bridge.on_push_turn_end.assert_awaited_once_with("agent:main:client-a")
+    bridge.enqueue_push.assert_called_once_with("turn_end", "agent:main:client-a")
 
 
 @pytest.mark.asyncio
@@ -167,7 +169,7 @@ async def test_agent_lifecycle_start_suppressed_when_normal_turn_active():
     duplicate the turn the client is already receiving via chat.send."""
     dispatcher, turn_reg, client_reg = make_dispatcher()
     q = turn_reg.register("req-1", "agent:main:client-a")
-    bridge = AsyncMock()
+    bridge = MagicMock()
     client_reg.register("client-a", bridge)
     payload = {
         "sessionKey": "agent:main:client-a",
@@ -177,7 +179,7 @@ async def test_agent_lifecycle_start_suppressed_when_normal_turn_active():
     }
     frame = {"type": "event", "event": "agent", "payload": payload}
     await dispatcher.dispatch(frame)
-    bridge.on_push_turn_start.assert_not_awaited()
+    bridge.enqueue_push.assert_not_called()
     assert q.empty()
 
 
@@ -189,7 +191,7 @@ async def test_agent_lifecycle_end_always_forwarded_regardless_of_normal_turn():
     unconditionally and lets the bridge decide."""
     dispatcher, turn_reg, client_reg = make_dispatcher()
     turn_reg.register("req-1", "agent:main:client-a")
-    bridge = AsyncMock()
+    bridge = MagicMock()
     client_reg.register("client-a", bridge)
     payload = {
         "sessionKey": "agent:main:client-a",
@@ -199,7 +201,7 @@ async def test_agent_lifecycle_end_always_forwarded_regardless_of_normal_turn():
     }
     frame = {"type": "event", "event": "agent", "payload": payload}
     await dispatcher.dispatch(frame)
-    bridge.on_push_turn_end.assert_awaited_once_with("agent:main:client-a")
+    bridge.enqueue_push.assert_called_once_with("turn_end", "agent:main:client-a")
 
 
 @pytest.mark.asyncio
@@ -269,7 +271,7 @@ async def test_session_tool_update_phase_is_dropped():
 @pytest.mark.asyncio
 async def test_session_tool_no_active_turn_routes_to_client_registry():
     dispatcher, turn_reg, client_reg = make_dispatcher()
-    bridge = AsyncMock()
+    bridge = MagicMock()
     client_reg.register("client-a", bridge)
     payload = {
         "sessionKey": "agent:main:client-a",
@@ -277,7 +279,7 @@ async def test_session_tool_no_active_turn_routes_to_client_registry():
     }
     frame = {"type": "event", "event": "session.tool", "payload": payload}
     await dispatcher.dispatch(frame)
-    bridge.deliver_push_tool_call.assert_awaited_once_with(payload["data"])
+    bridge.enqueue_push.assert_called_once_with("tool", payload["data"])
 
 
 @pytest.mark.asyncio
@@ -303,8 +305,10 @@ async def test_dispatcher_chat_event_push_disabled_client_receives_nothing():
     payload = {"sessionKey": "agent:main:hab_sito", "runId": "r1", "seq": 1, "deltaText": "Push!"}
     frame = {"type": "event", "event": "chat", "payload": payload}
     await dispatcher.dispatch(frame)
+    await bridge.push_idle()
 
     ws.send_json.assert_not_awaited()
+    await bridge.close_all()
 
 
 @pytest.mark.asyncio
@@ -324,8 +328,10 @@ async def test_dispatcher_session_tool_push_disabled_client_receives_nothing():
     }
     frame = {"type": "event", "event": "session.tool", "payload": payload}
     await dispatcher.dispatch(frame)
+    await bridge.push_idle()
 
     ws.send_json.assert_not_awaited()
+    await bridge.close_all()
 
 
 @pytest.mark.asyncio
@@ -373,8 +379,11 @@ async def test_dispatcher_full_push_lifecycle_disabled_client_receives_nothing()
         }
     )
 
+    await bridge.push_idle()
+
     ws.send_json.assert_not_awaited()
     assert bridge._push_turn_open is False
+    await bridge.close_all()
 
 
 @pytest.mark.asyncio
@@ -449,8 +458,10 @@ async def test_dispatcher_agent_lifecycle_suppressed_full_sequence_with_active_t
     assert data["phase"] == "result"
     assert q.empty()
 
+    await bridge.push_idle()
     assert bridge._push_turn_open is False
     ws.send_json.assert_not_awaited()
+    await bridge.close_all()
 
 
 @pytest.mark.asyncio
@@ -472,6 +483,7 @@ async def test_agent_lifecycle_end_closes_push_turn_opened_before_normal_turn():
             "payload": {"sessionKey": "agent:main:hab_sito", "data": {"phase": "start"}},
         }
     )
+    await bridge.push_idle()
     assert bridge._push_turn_open is True
     push_turn_id = bridge._push_turn_id
 
@@ -488,8 +500,69 @@ async def test_agent_lifecycle_end_closes_push_turn_opened_before_normal_turn():
         }
     )
 
+    await bridge.push_idle()
     assert bridge._push_turn_open is False
     ws.send_json.assert_any_call({"type": "turn_end", "turn_id": push_turn_id})
+    await bridge.close_all()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_agent_end_does_not_wait_for_slow_tts_drain(monkeypatch):
+    """#130 S3a — el motivo de todo el cambio: un push cuyo audio TTS tarda en
+    drenar no debe retener a dispatch() (y por tanto a _listen y al resto de
+    sesiones multiplexadas)."""
+    # Pinned so the proof does not depend on the default drain timeout.
+    monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 30)
+    dispatcher, _, client_reg = make_dispatcher()
+    bridge, ws = make_real_bridge(push_enabled=True)
+    client_reg.register("hab_sito", bridge)
+    stuck = asyncio.create_task(asyncio.sleep(3600))
+    bridge._push_tts = AsyncMock()
+    bridge._push_audio_task = stuck
+    bridge._push_turn_open = True
+    bridge._push_turn_id = "t-1"
+
+    await asyncio.wait_for(
+        dispatcher.dispatch(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {"sessionKey": "agent:main:hab_sito", "data": {"phase": "end"}},
+            }
+        ),
+        timeout=0.5,
+    )
+    # What is proven: dispatch() returned within the 0.5s wait_for although the
+    # drain it enqueued would take PUSH_TTS_DRAIN_TIMEOUT_S (30s) — dispatch did
+    # not wait for the handler. (_push_pending == 1 only shows the event is queued.)
+    assert bridge._push_pending == 1
+
+    # Cleanup: close_all() must not hang on the stuck audio task.
+    await asyncio.wait_for(bridge.close_all(), timeout=2.0)
+    assert stuck.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_keeps_the_112_decision_synchronous_in_listen():
+    """The normal-turn check happens when the frame arrives (in _listen), not when
+    the worker later runs: a turn registered *after* dispatch must not retroactively
+    suppress an already-enqueued start."""
+    dispatcher, turn_reg, client_reg = make_dispatcher()
+    bridge, ws = make_real_bridge(push_enabled=True)
+    client_reg.register("hab_sito", bridge)
+
+    await dispatcher.dispatch(
+        {
+            "type": "event",
+            "event": "agent",
+            "payload": {"sessionKey": "agent:main:hab_sito", "data": {"phase": "start"}},
+        }
+    )
+    turn_reg.register("req-1", "agent:main:hab_sito")  # registered after the frame
+    await bridge.push_idle()
+
+    assert bridge._push_turn_open is True
+    await bridge.close_all()
 
 
 # --- Issue #136: unknown frames/events must not vanish silently -------------

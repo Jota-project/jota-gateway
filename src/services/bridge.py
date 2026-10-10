@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import time
+from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -109,6 +110,19 @@ class JotaBridge:
         # combined with a silent client would otherwise block the idle watchdog
         # from ever calling close_all() and leak the session indefinitely.
         self._push_turn_opened_at: float | None = None
+        # Push worker (issue #130 S3a): the dispatcher no longer awaits push handlers
+        # inside OpenClaw's _listen loop. It calls enqueue_push(); a single worker per
+        # bridge runs the handlers, so one session's slow TTS can't stall every other
+        # session multiplexed on the same connection, and the total order
+        # start -> deltas -> tool -> end the _push_turn_open logic relies on is kept.
+        # Unbounded on purpose in S3a (bounding it is S3b).
+        self._push_queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+        self._push_worker: asyncio.Task | None = None
+        self._push_accepting: bool = True
+        # Events enqueued and not yet finished, and since when the backlog is
+        # non-empty: _idle_watchdog() counts a bounded pending backlog as in flight.
+        self._push_pending: int = 0
+        self._push_pending_since: float | None = None
         # Guards close_all() so it's safe to call more than once (issue #101):
         # routes.py's outer try/finally always calls it on the way out, even
         # when bridge.run() already called it from its own internal finally.
@@ -191,6 +205,37 @@ class JotaBridge:
                 except Exception as e:
                     logger.error(f"[{self.client_id}] _active_turn falló: {e}")
 
+            # Stop push intake and the worker *before* touching _push_tts / the audio
+            # task it may be driving (issue #130 S3a). The worker is also in
+            # self.tasks (via _spawn), but cancelling it there would happen after
+            # _push_tts is closed. asyncio.wait + timeout (not a bare await) so a
+            # handler that failed to honour the cancellation can't hang teardown.
+            self._push_accepting = False
+            worker = self._push_worker
+            if (
+                worker is not None
+                and worker is not asyncio.current_task()
+                and not worker.done()
+            ):
+                worker.cancel()
+                try:
+                    await asyncio.wait({worker}, timeout=settings.SHUTDOWN_DRAIN_S)
+                except asyncio.CancelledError:
+                    logger.debug(
+                        f"[{self.client_id}] close_all: cancelación externa absorbida "
+                        f"durante el cierre del push worker."
+                    )
+                else:
+                    if not worker.done():
+                        logger.warning(
+                            f"[{self.client_id}] push worker no terminó dentro de "
+                            f"SHUTDOWN_DRAIN_S={settings.SHUTDOWN_DRAIN_S}s."
+                        )
+            while not self._push_queue.empty():
+                self._push_queue.get_nowait()
+                self._push_queue.task_done()
+            self._push_pending = 0
+            self._push_pending_since = None
             if self._push_audio_task and not self._push_audio_task.done():
                 self._push_audio_task.cancel()
                 try:
@@ -386,7 +431,11 @@ class JotaBridge:
         `_push_turn_open` shows something is actively in flight, this skips
         the close for this tick and re-checks shortly after — it does not
         reset the idle window, it just defers the decision until nothing is
-        in flight anymore.
+        in flight anymore. A third signal is a non-empty push backlog
+        (`_push_pending > 0`, issue #130 S3a: queued push events the worker
+        has not processed yet); like `_push_turn_open` it only counts for
+        TURN_TIMEOUT_S from `_push_pending_since`, so a wedged worker cannot
+        gate this watchdog forever.
 
         `_active_turn` is safe to trust indefinitely because it's implicitly
         bounded — the orchestrator call underneath it is capped by
@@ -409,7 +458,18 @@ class JotaBridge:
                     self._push_turn_opened_at is None
                     or time.monotonic() - self._push_turn_opened_at < settings.TURN_TIMEOUT_S
                 )
-                if (self._active_turn and not self._active_turn.done()) or push_in_flight:
+                # Issue #130 S3a: queued-but-unprocessed push events are in flight too,
+                # bounded the same way as an open push turn so a wedged worker can't
+                # gate this watchdog forever.
+                push_backlog_in_flight = self._push_pending > 0 and (
+                    self._push_pending_since is None
+                    or time.monotonic() - self._push_pending_since < settings.TURN_TIMEOUT_S
+                )
+                if (
+                    (self._active_turn and not self._active_turn.done())
+                    or push_in_flight
+                    or push_backlog_in_flight
+                ):
                     # Not idle — a turn/push is actively in flight. Re-check
                     # shortly rather than closing or resetting the full window.
                     await asyncio.sleep(2)
@@ -460,7 +520,9 @@ class JotaBridge:
         )
 
         # Loop principal de lectura del cliente
-        self._spawn(self._client_input_loop(), "client_input_loop")
+        # Handle kept directly: the push worker may already sit in self.tasks[0]
+        # (enqueue_push can run between connect_internal_services() and run()).
+        client_task = self._spawn(self._client_input_loop(), "client_input_loop")
         # Idle watchdog: cierra la sesión si el cliente no manda nada (issue #115).
         self._spawn(self._idle_watchdog(), "idle_watchdog")
 
@@ -479,7 +541,6 @@ class JotaBridge:
 
         # El ciclo de vida de la sesión lo marca _client_input_loop.
         # listen_loop y watchdog corren en background y terminan solos sin cerrar la sesión.
-        client_task = self.tasks[0]  # siempre el primero (ver arriba)
         try:
             await client_task
         except asyncio.CancelledError:
@@ -880,11 +941,26 @@ class JotaBridge:
                 await self._push_tts.end()
             except Exception:
                 pass
-            if self._push_audio_task and not self._push_audio_task.done():
-                try:
-                    await self._push_audio_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+            audio_task = self._push_audio_task
+            if audio_task is not None:
+                if not audio_task.done():
+                    # asyncio.wait (not wait_for) on purpose: it never re-raises the
+                    # task's own outcome, so an *external* cancellation of this
+                    # coroutine (close_all() cancelling the push worker, #130 S3a)
+                    # propagates instead of being mistaken for the audio task's.
+                    done, _ = await asyncio.wait(
+                        {audio_task}, timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
+                    )
+                    if not done:
+                        logger.warning(
+                            f"[{self.client_id}] push audio no terminó dentro de "
+                            f"PUSH_TTS_DRAIN_TIMEOUT_S={settings.PUSH_TTS_DRAIN_TIMEOUT_S}s "
+                            f"— cancelando."
+                        )
+                        audio_task.cancel()
+                # Retrieves the outcome (incl. cancellation/exception) so nothing is
+                # reported as "never retrieved".
+                await asyncio.gather(audio_task, return_exceptions=True)
             self._push_audio_task = None
             try:
                 await self._push_tts.close()
@@ -898,3 +974,47 @@ class JotaBridge:
             pass
         self._push_turn_open = False
         self._push_turn_opened_at = None
+
+    def enqueue_push(self, kind: str, arg: Any) -> None:
+        """Queue a push event for this bridge's worker (issue #130 S3a).
+
+        Synchronous and never blocks: it is called from OpenClaw's _listen loop via
+        FrameDispatcher. `kind` is "turn_start" | "chat" | "tool" | "turn_end" and
+        `arg` is what the matching handler takes (session_key for turn_*, the frame
+        payload for chat/tool). No-op once the bridge is closing.
+        """
+        if not self._push_accepting:
+            return
+        if self._push_worker is None:
+            self._push_worker = self._spawn(self._push_worker_loop(), "push_worker")
+        if self._push_pending == 0:
+            self._push_pending_since = time.monotonic()
+        self._push_pending += 1
+        self._push_queue.put_nowait((kind, arg))
+
+    async def push_idle(self) -> None:
+        """Wait until the worker has finished every queued push event (for tests)."""
+        await self._push_queue.join()
+
+    async def _push_worker_loop(self) -> None:
+        while True:
+            kind, arg = await self._push_queue.get()
+            try:
+                if kind == "turn_start":
+                    await self.on_push_turn_start(arg)
+                elif kind == "chat":
+                    await self.deliver_push(arg)
+                elif kind == "tool":
+                    await self.deliver_push_tool_call(arg)
+                elif kind == "turn_end":
+                    await self.on_push_turn_end(arg)
+                else:
+                    logger.warning(f"[{self.client_id}] push event desconocido: {kind!r}")
+            except Exception as e:
+                # Type name only: the payload may carry user text.
+                logger.warning(f"[{self.client_id}] push {kind} falló: {type(e).__name__}")
+            finally:
+                self._push_pending = max(0, self._push_pending - 1)
+                if self._push_pending == 0:
+                    self._push_pending_since = None
+                self._push_queue.task_done()
