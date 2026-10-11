@@ -1,3 +1,10 @@
+# [1.18.0](https://github.com/Jota-project/jota-gateway/compare/v1.17.0...v1.18.0) (2026-10-11)
+
+
+### Features
+
+* política de cliente lento con timeout por envío y abort del transporte ([#130](https://github.com/Jota-project/jota-gateway/issues/130) S2) ([#200](https://github.com/Jota-project/jota-gateway/issues/200)) ([578801d](https://github.com/Jota-project/jota-gateway/commit/578801d53f9f2eb4323539cb5716acca04668093)), closes [#199](https://github.com/Jota-project/jota-gateway/issues/199) [#199](https://github.com/Jota-project/jota-gateway/issues/199)
+
 # [1.17.0](https://github.com/Jota-project/jota-gateway/compare/v1.16.0...v1.17.0) (2026-10-10)
 
 
