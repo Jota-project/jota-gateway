@@ -913,8 +913,36 @@ class JotaBridge:
                 )
             except Exception:
                 pass
-        if self._push_tts:
-            await self._push_tts.send_text_chunk(delta)
+        tts = self._push_tts
+        if tts:
+            try:
+                await asyncio.wait_for(
+                    tts.send_text_chunk(delta), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
+                )
+            except Exception as e:
+                # Issue #199: a hung/failed push TTS must not wedge the worker nor
+                # log one warning per token. Drop it; the turn continues text-only.
+                await self._drop_push_tts(f"send_text_chunk {type(e).__name__}")
+
+    async def _drop_push_tts(self, reason: str) -> None:
+        """Abandon this turn's push TTS (issue #199). Every wait is bounded by
+        PUSH_TTS_DRAIN_TIMEOUT_S; logs once per turn (a later call is a no-op)."""
+        tts = self._push_tts
+        if tts is None:
+            return
+        self._push_tts = None
+        logger.warning(
+            f"[{self.client_id}] TTS de push abandonado ({reason}); "
+            f"el turno sigue solo con texto."
+        )
+        audio_task, self._push_audio_task = self._push_audio_task, None
+        if audio_task is not None and not audio_task.done():
+            audio_task.cancel()
+            await asyncio.wait({audio_task}, timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
+        try:
+            await asyncio.wait_for(tts.close(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
+        except Exception:
+            pass
 
     async def deliver_push_tool_call(self, data: dict) -> None:
         if not self._push_allowed():
@@ -936,34 +964,41 @@ class JotaBridge:
             logger.debug(f"[{self.client_id}] push_turn_end ignored: no push turn open")
             return
 
-        if self._push_tts:
+        tts = self._push_tts
+        if tts:
             try:
-                await self._push_tts.end()
-            except Exception:
-                pass
-            audio_task = self._push_audio_task
-            if audio_task is not None:
-                if not audio_task.done():
-                    # asyncio.wait (not wait_for) on purpose: it never re-raises the
-                    # task's own outcome, so an *external* cancellation of this
-                    # coroutine (close_all() cancelling the push worker, #130 S3a)
-                    # propagates instead of being mistaken for the audio task's.
-                    done, _ = await asyncio.wait(
-                        {audio_task}, timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
+                await asyncio.wait_for(tts.end(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
+            except Exception as e:
+                # Issue #199: end() hung or failed — no audio to wait for.
+                await self._drop_push_tts(f"end {type(e).__name__}")
+        audio_task = self._push_audio_task
+        if self._push_tts is not None and audio_task is not None:
+            if not audio_task.done():
+                # asyncio.wait (not wait_for) on purpose: it never re-raises the
+                # task's own outcome, so an *external* cancellation of this
+                # coroutine (close_all() cancelling the push worker, #130 S3a)
+                # propagates instead of being mistaken for the audio task's.
+                done, _ = await asyncio.wait(
+                    {audio_task}, timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
+                )
+                if not done:
+                    logger.warning(
+                        f"[{self.client_id}] push audio no terminó dentro de "
+                        f"PUSH_TTS_DRAIN_TIMEOUT_S={settings.PUSH_TTS_DRAIN_TIMEOUT_S}s "
+                        f"— cancelando."
                     )
-                    if not done:
-                        logger.warning(
-                            f"[{self.client_id}] push audio no terminó dentro de "
-                            f"PUSH_TTS_DRAIN_TIMEOUT_S={settings.PUSH_TTS_DRAIN_TIMEOUT_S}s "
-                            f"— cancelando."
-                        )
-                        audio_task.cancel()
-                # Retrieves the outcome (incl. cancellation/exception) so nothing is
-                # reported as "never retrieved".
+                    audio_task.cancel()
+                    # Issue #204: bounded, an audio ignoring cancellation can't hang us.
+                    await asyncio.wait({audio_task}, timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
+            if audio_task.done():
+                # Retrieves the outcome so nothing is reported as "never retrieved".
                 await asyncio.gather(audio_task, return_exceptions=True)
-            self._push_audio_task = None
+        self._push_audio_task = None
+        if self._push_tts is not None:
             try:
-                await self._push_tts.close()
+                await asyncio.wait_for(
+                    self._push_tts.close(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
+                )
             except Exception:
                 pass
             self._push_tts = None
@@ -985,7 +1020,7 @@ class JotaBridge:
         """
         if not self._push_accepting:
             return
-        if self._push_worker is None:
+        if self._push_worker is None or self._push_worker.done():
             self._push_worker = self._spawn(self._push_worker_loop(), "push_worker")
         if self._push_pending == 0:
             self._push_pending_since = time.monotonic()
@@ -997,7 +1032,7 @@ class JotaBridge:
         await self._push_queue.join()
 
     async def _push_worker_loop(self) -> None:
-        while True:
+        while self._push_accepting:
             kind, arg = await self._push_queue.get()
             try:
                 if kind == "turn_start":
