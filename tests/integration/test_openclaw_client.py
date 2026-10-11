@@ -461,6 +461,50 @@ async def test_stream_response_times_out_when_no_events_arrive(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stream_response_overflow_errors_and_sends_chat_abort(monkeypatch):
+    """#130 S3b: a consumer that falls behind the bounded turn queue gets a
+    `turn_overflow` error and chat.abort is still sent (the error must not mark
+    the turn as finished)."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "TURN_QUEUE_MAX", 2)
+    fake_ws = SmartFakeWS({"agent:main:client-a": []})
+    client = await connected_client(fake_ws)
+
+    async def consume():
+        return [
+            e
+            async for e in client.stream_response(
+                "hola", "client-a", session_key="agent:main:client-a"
+            )
+        ]
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0.05)  # blocked at queue.get()
+    for i in range(10):  # no suspension point: the consumer cannot drain meanwhile
+        await client._dispatcher.dispatch(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "sessionKey": "agent:main:client-a",
+                    "state": "delta",
+                    "deltaText": str(i),
+                },
+            }
+        )
+    events = await asyncio.wait_for(task, timeout=1.0)
+
+    assert events[-1].type == "error"
+    assert events[-1].content == "turn_overflow"
+    await asyncio.sleep(0.05)
+    aborts = [f for f in fake_ws.sent_frames if f.get("method") == "chat.abort"]
+    assert len(aborts) == 1
+    assert client._turn_registry.get_queue_by_session("agent:main:client-a") is None
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_stream_response_idle_reset_survives_slow_but_active_turn(monkeypatch):
     """A turn with gaps below TURN_TIMEOUT_S between events must complete
     normally even if its total duration exceeds TURN_TIMEOUT_S — the timeout
