@@ -455,6 +455,30 @@ On first startup (`run_migrations()` in the lifespan), the schema is created aut
 
 ---
 
+## Sincronización obligatoria con Obsidian (ciclo de vida de issues y PRs)
+
+El estado del trabajo de este repo vive en **tres sitios que deben coincidir**: GitHub (issues, PRs, milestones, releases), `docs/ROADMAP.md` y el vault de Obsidian J-Project, en `Producto Jota/jota-gateway/` (prefijo `JGW`; ficha `jota-gateway.md`, `JGW Roadmap.md`, carpetas `Fases/`, `Issues/`, `Decisiones/`, `Notas/`). Obsidian no es opcional ni un volcado de una sola vez: **cada cambio de estado de una issue o PR exige contrastar y actualizar los tres**, y **antes de trabajar** hay que leer también Obsidian, no solo GitHub.
+
+Se usa el MCP `obsidian` (requiere Obsidian abierto). Antes de escribir, lee `CLAUDE.md` y `IA y reglas/Guia-MCP-Obsidian.md` del vault (sección «Dar de alta un repo de código»). Edita con `vault_patch` y no sobrescribas con `vault_write` sin leer antes; nunca borres notas (se mueven a `Archivo/` con `status: archivada`).
+
+| Momento | Qué hacer en Obsidian (además de GitHub y `docs/ROADMAP.md`) |
+|---|---|
+| **Antes de empezar** una issue | Lee `JGW-<n> …`, `JGW Roadmap`, la fase y las decisiones relacionadas. Contrasta con `gh issue view <n>`: estado, labels, milestone. Si no coinciden, corrige la nota o avisa al usuario antes de seguir. Si la issue no tiene nota, créala. |
+| **Se crea una issue nueva** | Crea `Issues/JGW-<n> Título.md` con las propiedades fijas: `repo`, `number`, `url`, `status`, `labels`, `phase`, `synced`, más `type: issue`, `area: producto`, `priority`, `project: J`, `created`, `tags`. Añádela a la tabla de `JGW Roadmap` (en «Sin fase» si no tiene milestone). |
+| **Se empieza a trabajar** en ella | `status: en-curso`, `synced` a hoy; anota la rama. |
+| **Se abre la PR** | Anota en la nota de la issue el número y la URL de la PR y su alcance. Si la PR cierra varias issues, actualiza todas. |
+| **Cambia el alcance o aparece trabajo derivado** | Actualiza la nota; cada issue de seguimiento nueva sigue la fila «Se crea una issue nueva». Una decisión de diseño va a `Decisiones/JGW Decisión - Tema.md`. |
+| **La PR se mergea / la issue se cierra** | `status: hecho` (o muévela a `Archivo/` con `status: archivada`), `synced`; quita o marca la fila en `JGW Roadmap`; si cierra una fase, actualiza `Fases/JGW Fase N …` (`status`, `end`, `release`) y la tabla del roadmap. |
+| **Sale una release** | Añade la línea en `Notas/JGW Changelog.md` y actualiza `version` y `synced` en la ficha `jota-gateway.md`. |
+| **Al terminar la sesión** | Una línea en `Actividad IA` de `Diario/Diarias/YYYY-MM-DD.md`, con enlaces a las notas tocadas. |
+
+Reglas de contraste:
+
+- Si GitHub y Obsidian discrepan en el **estado**, manda GitHub (verifícalo con `gh`), y se corrige Obsidian. La **información de contexto** (decisiones, avances por subfase, notas) la conserva Obsidian: léela antes de decidir.
+- `docs/ROADMAP.md` tiene la cabecera desfasada con facilidad; no lo uses como única fuente del estado.
+- No se da una issue o PR por cerrada del todo mientras Obsidian siga mostrando otro estado. Si Obsidian está cerrado o el MCP falla, **no reintentes en bucle**: dilo al usuario y deja constancia explícita en la PR o en la respuesta de que Obsidian queda sin sincronizar.
+- Nada de claves, tokens ni transcripts en Obsidian (aplican las reglas de higiene de logs de más abajo).
+
 ## Production readiness / log hygiene
 
 `client_key` is a bearer credential and must never be written to logs in full or as a plaintext prefix. When correlation is necessary, use `src.core.logging.fingerprint_key(value)`, which returns the first 8 hexadecimal characters of the value's SHA-256 digest, and log it as `fp=<fingerprint>`. After successful authentication, use `client.id` as the primary correlation ID.
