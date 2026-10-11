@@ -13,6 +13,7 @@ from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.models import GatewayInfo, ToolCallEvent
 from src.services.openclaw.registry import (
     TURN_IN_PROGRESS_ERROR,
+    TURN_OVERFLOW_ERROR,
     TurnInProgress,
     TurnRegistry,
 )
@@ -59,6 +60,9 @@ class OpenClawClient:
             return await self._do_connect()
 
     async def _do_connect(self) -> GatewayInfo:
+        # Last roster known from a previous connect, kept as fallback if agents.list
+        # fails on this one (#151). Captured before gateway_info is rebuilt below.
+        previous_agents = dict(self.gateway_info.agents) if self.gateway_info else {}
         self._ws = await websockets.connect(self._uri)
         conn_err: Exception | None = None
         try:
@@ -83,6 +87,13 @@ class OpenClawClient:
                 self.gateway_info.update_agents_from_list(agents_res.get("payload", {}))
             else:
                 logger.warning(f"agents.list failed at connect: {agents_res.get('error')}")
+                if not self.gateway_info.agents and previous_agents:
+                    # Wiping the roster would make has_agent() reject every named
+                    # agent with 1008 until the next successful agents.list (#151).
+                    self.gateway_info.agents = previous_agents
+                    logger.warning(
+                        f"keeping last known agent roster ({len(previous_agents)} agents)"
+                    )
 
             sub_id = str(uuid.uuid4())
             await self._ws.send(json.dumps(frames.sessions_subscribe(sub_id)))
@@ -255,6 +266,12 @@ class OpenClawClient:
                         yield OrchestratorEvent(type="error", content=str(data.get("error", {})))
                     else:
                         yield OrchestratorEvent(type="status", content="done")
+                    break
+                elif kind == "overflow":
+                    # Consumer fell behind the bounded queue (#130 S3b). _finished
+                    # stays False on purpose, like turn_timeout: the `finally`
+                    # must still send chat.abort.
+                    yield OrchestratorEvent(type="error", content=TURN_OVERFLOW_ERROR)
                     break
                 elif kind == "error":
                     _finished = True

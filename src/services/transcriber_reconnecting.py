@@ -1,10 +1,14 @@
 import asyncio
 import logging
-import time
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
 
-from src.services.reconnection import ConnectionState, ServiceStatus
+from src.services.reconnection import (
+    ConnectionState,
+    ServiceHealth,
+    ServiceStatus,
+    health_attr,
+    reconnect_with_backoff,
+)
 from src.services.transcriber_client import TranscriberClient
 
 logger = logging.getLogger(__name__)
@@ -17,6 +21,12 @@ class ReconnectingTranscriberClient:
     Delegates send_audio/send_end/close to the inner client unchanged, so bridge.py's
     call sites for those don't need to know reconnection exists.
     """
+
+    state = health_attr("state")
+    on_state_change = health_attr("on_state_change")
+    _connected_at = health_attr("connected_at")
+    _reconnect_attempts = health_attr("reconnect_attempts")
+    _last_error = health_attr("last_error")
 
     def __init__(
         self,
@@ -31,13 +41,9 @@ class ReconnectingTranscriberClient:
         self._initial_backoff = initial_backoff
         self._max_backoff = max_backoff
         self._max_duration = max_duration
-        self.state = ConnectionState.DEGRADED
-        self._connected_at: datetime | None = None
-        self._reconnect_attempts = 0
-        self._last_error: str | None = None
+        self._health = ServiceHealth("transcriber", ConnectionState.DEGRADED)
         self._closed = False
         self._run_task: asyncio.Task | None = None
-        self.on_state_change: Callable[[ConnectionState], None] | None = None
         self._language = "es"
         self._token = ""
         self._vad_thold = 0.0
@@ -47,9 +53,7 @@ class ReconnectingTranscriberClient:
         return self._client._last_transcription_at
 
     def _set_state(self, state: ConnectionState) -> None:
-        self.state = state
-        if self.on_state_change:
-            self.on_state_change(state)
+        self._health.set_state(state)
 
     async def connect(self, language: str = "es", token: str = "", vad_thold: float = 0.0) -> None:
         """Attempts the initial connection. Never raises: on failure this
@@ -57,10 +61,7 @@ class ReconnectingTranscriberClient:
         self._language, self._token, self._vad_thold = language, token, vad_thold
         try:
             await self._client.connect(language=language, token=token, vad_thold=vad_thold)
-            self._set_state(ConnectionState.CONNECTED)
-            self._connected_at = datetime.now(UTC)
-            self._reconnect_attempts = 0
-            self._last_error = None
+            self._health.mark_connected()
         except Exception as e:
             self._last_error = str(e)
             logger.error("[%s] transcriber initial connect failed: %s", self._client_id, e)
@@ -138,44 +139,19 @@ class ReconnectingTranscriberClient:
             self._set_state(ConnectionState.RECONNECTING)
 
     async def _reconnect_loop(self) -> bool:
-        start = time.monotonic()
-        backoff = self._initial_backoff
-        while True:
-            try:
-                await self._client.connect(
-                    language=self._language, token=self._token, vad_thold=self._vad_thold
-                )
-                self._set_state(ConnectionState.CONNECTED)
-                self._connected_at = datetime.now(UTC)
-                self._reconnect_attempts = 0
-                self._last_error = None
-                logger.info("[%s] transcriber reconnected.", self._client_id)
-                return True
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                self._reconnect_attempts += 1
-                self._last_error = str(e)
-                logger.warning(
-                    "[%s] transcriber reconnect attempt %d failed: %s",
-                    self._client_id,
-                    self._reconnect_attempts,
-                    e,
-                )
+        async def attempt() -> None:
+            await self._client.connect(
+                language=self._language, token=self._token, vad_thold=self._vad_thold
+            )
 
-            if time.monotonic() - start >= self._max_duration:
-                self._set_state(ConnectionState.DEGRADED)
-                logger.warning("[%s] transcriber reconnect exhausted — DEGRADED.", self._client_id)
-                return False
-
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, self._max_backoff)
+        return await reconnect_with_backoff(
+            attempt,
+            self._health,
+            initial_backoff=self._initial_backoff,
+            max_backoff=self._max_backoff,
+            max_duration=self._max_duration,
+            label=f"{self._client_id} transcriber",
+        )
 
     def status(self) -> ServiceStatus:
-        return ServiceStatus(
-            name="transcriber",
-            state=self.state,
-            connected_at=self._connected_at,
-            reconnect_attempts=self._reconnect_attempts,
-            last_error=self._last_error,
-        )
+        return self._health.status()

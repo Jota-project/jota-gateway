@@ -14,6 +14,8 @@ class FrameDispatcher:
 
     Knows about TurnRegistry and ClientRegistry. Does not touch WebSocket or TTS.
 
+    Turn queues are bounded and fed with non-blocking puts (issue #130 S3b).
+
     Push handlers are never awaited here: this runs inside OpenClaw's _listen loop,
     so anything slow would stall every session sharing the connection (issue #130
     S3a). The routing decision (including the #112 normal-turn check) is still taken
@@ -53,9 +55,7 @@ class FrameDispatcher:
         payload = frame.get("payload", {})
         if payload.get("status") == "started":
             return
-        q = self._turns.get_queue_by_req(frame.get("id", ""))
-        if q is not None:
-            await q.put(("done", frame))
+        self._turns.deliver_by_req(frame.get("id", ""), ("done", frame))
 
     async def _handle_event(self, frame: dict) -> None:
         event = frame.get("event", "")
@@ -73,10 +73,10 @@ class FrameDispatcher:
         sk = payload.get("sessionKey")
         if sk is None:
             return
-        q = self._turns.get_queue_by_session(sk)
-        if q is not None:
-            await q.put(("chat", payload))
+        if self._turns.deliver_by_session(sk, ("chat", payload)):
             return
+        if self._turns.is_aborted(sk):
+            return  # late frame of a turn aborted for overflow (#130 S3b)
         client_id = client_id_from_session_key(sk)
         bridge = self._clients.get(client_id)
         if bridge is not None:
@@ -105,6 +105,9 @@ class FrameDispatcher:
                     "agent start suppressed: normal turn active for sk=%s", sk
                 )
                 return
+            if self._turns.is_aborted(sk):
+                logger.debug("agent start suppressed: turn aborted for overflow sk=%s", sk)
+                return
             bridge.enqueue_push("turn_start", sk)
         elif phase == "end":
             # Always forwarded, never suppressed: on_push_turn_end() already
@@ -126,10 +129,10 @@ class FrameDispatcher:
         data = payload.get("data", {})
         if data.get("phase") not in ("start", "result"):
             return
-        q = self._turns.get_queue_by_session(sk)
-        if q is not None:
-            await q.put(("tool", data))
+        if self._turns.deliver_by_session(sk, ("tool", data)):
             return
+        if self._turns.is_aborted(sk):
+            return  # late frame of a turn aborted for overflow (#130 S3b)
         client_id = client_id_from_session_key(sk)
         bridge = self._clients.get(client_id)
         if bridge is not None:

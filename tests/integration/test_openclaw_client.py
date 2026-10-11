@@ -79,6 +79,8 @@ class SmartFakeWS:
         self.hello_ok_payload = hello_ok_payload or HELLO_OK_PAYLOAD
         self.agents_list_payload = agents_list_payload or AGENTS_LIST_PAYLOAD
         self.tool_calls: dict[str, list[dict]] = tool_calls or {}
+        # Flip to False to make agents.list answer ok:false (roster fetch failure, #151).
+        self.agents_list_ok: bool = True
         self._to_client: asyncio.Queue = asyncio.Queue()
         self._from_client: asyncio.Queue = asyncio.Queue()
         self.sent_frames: list[dict] = []
@@ -158,8 +160,9 @@ class SmartFakeWS:
                         {
                             "type": "res",
                             "id": req_id,
-                            "ok": True,
-                            "payload": self.agents_list_payload,
+                            "ok": self.agents_list_ok,
+                            "payload": self.agents_list_payload if self.agents_list_ok else {},
+                            **({} if self.agents_list_ok else {"error": "overloaded"}),
                         }
                     )
                 )
@@ -283,6 +286,54 @@ async def test_connect_populates_agents_via_agents_list_when_snapshot_lacks_agen
     assert client.gateway_info.has_agent("assistant")
     assert client.gateway_info.has_agent("ci-tester")
     assert client.gateway_info.default_agent_id == "main"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_keeps_last_known_roster_when_agents_list_fails():
+    """#151: a transient agents.list failure on a *re*connect must not wipe the
+    roster (has_agent() would then reject every named agent with 1008)."""
+    fake_ws = SmartFakeWS(hello_ok_payload=HELLO_OK_PAYLOAD_NO_SNAPSHOT_AGENTS)
+    client = await connected_client(fake_ws)
+    assert client.gateway_info.has_agent("ci-tester")
+
+    fake_ws2 = SmartFakeWS(hello_ok_payload=HELLO_OK_PAYLOAD_NO_SNAPSHOT_AGENTS)
+    fake_ws2.agents_list_ok = False
+    await fake_ws2.start()
+    with patch("websockets.connect", return_value=fake_ws2):
+        info = await client.connect()
+
+    assert info.has_agent("main")
+    assert info.has_agent("assistant")
+    assert info.has_agent("ci-tester")
+    assert client.gateway_info is info
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_first_connect_with_failed_agents_list_has_empty_roster():
+    """No previous roster to fall back to: behaviour unchanged (empty, warning)."""
+    fake_ws = SmartFakeWS(hello_ok_payload=HELLO_OK_PAYLOAD_NO_SNAPSHOT_AGENTS)
+    fake_ws.agents_list_ok = False
+    client = await connected_client(fake_ws)
+    assert client.gateway_info.agents == {}
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_replaces_roster_when_agents_list_succeeds():
+    fake_ws = SmartFakeWS(hello_ok_payload=HELLO_OK_PAYLOAD_NO_SNAPSHOT_AGENTS)
+    client = await connected_client(fake_ws)
+
+    fake_ws2 = SmartFakeWS(
+        hello_ok_payload=HELLO_OK_PAYLOAD_NO_SNAPSHOT_AGENTS,
+        agents_list_payload={"defaultId": "main", "agents": [{"id": "main", "name": "Main"}]},
+    )
+    await fake_ws2.start()
+    with patch("websockets.connect", return_value=fake_ws2):
+        info = await client.connect()
+
+    assert set(info.agents) == {"main"}
     await client.close()
 
 
@@ -457,6 +508,50 @@ async def test_stream_response_times_out_when_no_events_arrive(monkeypatch):
 
     aborts = [f for f in fake_ws.sent_frames if f.get("method") == "chat.abort"]
     assert len(aborts) == 1
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_stream_response_overflow_errors_and_sends_chat_abort(monkeypatch):
+    """#130 S3b: a consumer that falls behind the bounded turn queue gets a
+    `turn_overflow` error and chat.abort is still sent (the error must not mark
+    the turn as finished)."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "TURN_QUEUE_MAX", 2)
+    fake_ws = SmartFakeWS({"agent:main:client-a": []})
+    client = await connected_client(fake_ws)
+
+    async def consume():
+        return [
+            e
+            async for e in client.stream_response(
+                "hola", "client-a", session_key="agent:main:client-a"
+            )
+        ]
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0.05)  # blocked at queue.get()
+    for i in range(10):  # no suspension point: the consumer cannot drain meanwhile
+        await client._dispatcher.dispatch(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "sessionKey": "agent:main:client-a",
+                    "state": "delta",
+                    "deltaText": str(i),
+                },
+            }
+        )
+    events = await asyncio.wait_for(task, timeout=1.0)
+
+    assert events[-1].type == "error"
+    assert events[-1].content == "turn_overflow"
+    await asyncio.sleep(0.05)
+    aborts = [f for f in fake_ws.sent_frames if f.get("method") == "chat.abort"]
+    assert len(aborts) == 1
+    assert client._turn_registry.get_queue_by_session("agent:main:client-a") is None
     await client.close()
 
 
