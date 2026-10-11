@@ -1,10 +1,10 @@
 # jota-gateway Roadmap
 
-> **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fases 1, 2, 3 y 4 ✅ cerradas (Fase 3: 2026-08-06, mergeada a `main` 2026-10-08; Fase 4: 2026-10-08, mergeada a `main` en #181 y publicada como v1.14.12; 8 de 9 issues — #126 pasa a Fase 5)
-> **Última actualización:** 2026-10-09
-> **Issues abiertas:** 10 (rango GitHub `#118`–`#163`)
-> **Versión actual:** v1.14.12 (release 2026-10-08, cierra Fase 4)
-> **Próximo release:** Fase 5 (polish batch, incluye #126). *(Los targets numéricos de esta versión del roadmap —1.15.x/1.16.0/1.17.0— no se ajustaron a la realidad: la Fase 2 salió como v1.14.10, la Fase 3 como v1.14.11 y la Fase 4 como v1.14.12, asignados por semantic-release al taggear; verificar el número que asigna el release automático.)*
+> **Estado:** 🔧 En remediación (post auditoría 2026-07-15) — Fases 1, 2, 3, 4 y 5 ✅ cerradas en código (Fase 5: 2026-10-11, PR integrado `phase5/close-126-130-followups`; pendiente de merge a `main`). Quedan 5 issues de seguimiento de baja severidad (#201, #202, #203, #205, #206) que pasan al backlog posterior a la auditoría.
+> **Última actualización:** 2026-10-11
+> **Issues abiertas:** 5 (todas de seguimiento, baja severidad: #201, #202, #203, #205, #206)
+> **Versión actual:** v1.18.0 (release de #130 S2); el PR de cierre de Fase 5 saldrá como la siguiente versión que asigne semantic-release
+> **Próximo release:** el que asigne semantic-release al mergear el PR de cierre de Fase 5. *(Los targets numéricos de versiones anteriores del roadmap no se ajustaron a la realidad: asigna el release automático.)*
 
 Este documento es el **plan vivo de remediación y evolución** de jota-gateway. Cada tarea referencia una issue de GitHub; las casillas se tachan al cerrar la issue. Se actualiza en el mismo PR que cierra la issue, o en un PR dedicado.
 
@@ -18,13 +18,13 @@ Este documento es el **plan vivo de remediación y evolución** de jota-gateway.
 
 | Métrica | Valor |
 |---|---|
-| Issues totales | **80** (10 abiertas) |
+| Issues totales | **88** (5 abiertas) |
 | 🔴 Críticos | 6 |
 | 🟠 Altos | 15 |
 | 🟡 Medios | 14 |
 | ⚪ Tech-debt / polish | 5 |
 | Estimación | ~3 sprints (6–9 semanas) |
-| Próximo milestone | Fase 5 (polish batch) — incluye #126 (refactor de wrappers de reconexión, movida desde Fase 4) |
+| Próximo milestone | Auditoría completa del gateway frente a los clientes y nuevo roadmap (sesión aparte) |
 | Regresiones confirmadas vs auditoría junio | 2 |
 | Features documentadas sin implementar | 3 |
 
@@ -71,8 +71,8 @@ El gateway funciona correctamente en **happy path** (sesión única + backend sa
 **Segunda revisión post-cierre (2026-07-18, cubriendo #102/#104 + pase general sobre el resto):** 10 ángulos de review en paralelo + verificación manual. #102 y #104 en sí mismos están limpios (374 tests verdes, invariantes documentadas en CLAUDE.md se sostienen). El pase general encontró 4 issues nuevas, ninguna introducida por #102/#104:
 - [x] **#149** 🔴 — Watchdog de silencio cierra sesiones sanas justo tras reconectar el transcriber (`_last_transcription_at` no se resetea, `elapsed` cuenta desde antes del corte) — contradice el "resumes normally" documentado para el fix de la Fase 1 anterior.
 - [x] **#150** 🟠 — `ReconnectingOpenClawClient.stream_response()` no envuelve su generador interno en `aclosing()` — el fix de #99/#147 solo cierra el wrapper, no el generador real de `OpenClawClient` que tiene el `finally: unregister()`. Reintroduce la race de TurnRegistry un nivel más adentro, en cada evento `error`.
-- [ ] **#151** 🟡 — `agents.list` transitorio durante una reconexión en background deja el roster de agentes vacío sin fallback al último conocido — no se arregla ahora, queda en cola.
-- [ ] **#152** ⚪ — `ReconnectingTTSClient` muta `_backoff`/`_last_error`/`state` sin lock entre turnos concurrentes (singleton compartido por todas las sesiones) — no se arregla ahora, queda en cola.
+- [x] **#151** 🟡 — `agents.list` transitorio durante una reconexión en background deja el roster de agentes vacío sin fallback al último conocido — no se arregla ahora, queda en cola. — cerrado por el PR de cierre de Fase 5 (2026-10-11): `OpenClawClient._do_connect()` conserva el último roster con WARNING si `agents.list` responde `ok:false`
+- [x] **#152** ⚪ — `ReconnectingTTSClient` muta `_backoff`/`_last_error`/`state` sin lock entre turnos concurrentes (singleton compartido por todas las sesiones) — no se arregla ahora, queda en cola. — cerrado por el PR de cierre de Fase 5 (2026-10-11): `LazyBackoffGate` con tokens de orden en vez de `asyncio.Lock` (un lock serializaría los connects de TTS de todas las sesiones)
 
 Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama `fix/149-150-phase1-review-followups-2`) — incluye además la reparación de dos tests del watchdog (`test_watchdog_resets_count_when_transcription_arrives`, `test_watchdog_pauses_but_does_not_exit_when_reconnecting`) que parcheaban `asyncio.sleep` de forma global y por tanto nunca ejercitaban de verdad el loop del watchdog (confirmado rompiendo a propósito el manejo de RECONNECTING: seguían en verde). #151/#152 quedan documentadas para priorizar más adelante — refuerzan la deuda ya trackeada en #126 (los 3 wrappers de reconexión duplican lógica sin base compartida).
 
@@ -95,6 +95,13 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 - [x] **#161** 🟠 — `create_client()` (`admin_routes.py:74`) guardaba `allowed_agents: []` (deniega todo, semántica de #105) como `None` (sin restricción) por un check *truthy* en vez de `is not None` — el PATCH (`update_client`) ya lo hacía bien. Con #105 recién mergeado, este bug pasa de inerte a activo: un admin que cree un cliente pensando que lo ha bloqueado a "ningún agente" le da acceso a todos. Mismo patrón en `output_mode` (menor severidad, "informational only"). Ningún test lo cubría — el test de "deny-all" existente inserta directo en BD, sin pasar por este endpoint.
 - [x] **#162** 🟡 — el handshake WS no recortaba espacios del `agent` solicitado antes de pasarlo a `resolve_agent()`, a diferencia de REST — inconsistencia entre las dos superficies para la misma entrada malformada, y contradecía la cascada documentada en este mismo `CLAUDE.md` ("if non-empty after stripping"). Fix: normalización centralizada dentro de `resolve_agent()` en vez de duplicada por call site.
 - [x] **#163** ⚪ — `DbClient._generations` (contador de generación de #107) crece sin límite, una entrada por `client_key` histórico, nunca se purga. Bajo impacto, pero un "pop" ingenuo en `invalidate()` reintroduce la race que #107 cerró para la primera invalidación de una key — requiere diseño dedicado. Diferido a **Fase 5**.
+- [x] **#199** 🟡 — Push TTS: `send_text_chunk` y `end()` sin tope de tiempo — **S** — cerrado por el PR de cierre de Fase 5 (2026-10-11): ambos acotados con `PUSH_TTS_DRAIN_TIMEOUT_S`; al vencer se abandona el TTS y el turno sigue solo con texto
+- [x] **#204** 🟡 — Endurecer el worker de push de #130 S3a — **S** — cerrado por el PR de cierre de Fase 5 (2026-10-11): respawn del worker, salida con `_push_accepting=False`, `gather` acotado
+- [ ] **#201** ⚪ — `_cancel_active_turn()` sin serializar (seguimiento de #130) — **S** — *backlog posterior a la auditoría*
+- [ ] **#202** ⚪ — Push abierto y turno normal pueden solaparse en el mismo socket (seguimiento de #130) — **M** — *backlog posterior a la auditoría*
+- [ ] **#203** ⚪ — Endurecer la política de cliente lento de #130 S2 (sin transporte, estado de sesión, tests, default de 10 s) — **M** — *backlog posterior a la auditoría*
+- [ ] **#205** ⚪ — `health_check(propagate=True)` deja escapar `ClientGone` si el cliente se desconecta durante el arranque — **XS** — *backlog posterior a la auditoría*
+- [ ] **#206** ⚪ — CI y reproducibilidad: test intermitente de idle-reset y ausencia de lockfile — **S** — *backlog posterior a la auditoría*
 
 ### 🟠 Fase 3 — Lifecycle & producción (semanas 4–5) — ✅ CERRADA (2026-08-06)
 
@@ -133,7 +140,7 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 - [x] **#125** 🟡 `[027]` — Stale `"tags"` reference in `admin_routes.py:112` — **XS** — cerrado por #178 (rama `fix/123-124-125-small-fixes`, mergeado a `phase/4-consistency`)
 - [→] **#126** — *movida a Fase 5 el 2026-10-08 (ver abajo)*
 
-### 🟡⚪ Fase 5 — Polish batch (semana 7)
+### 🟡⚪ Fase 5 — Polish batch (semana 7) — ✅ CERRADA (2026-10-11)
 
 **Triage (2026-10-08):** verificado contra el código en `main` (`4bd1877`). #132 ya estaba resuelta (#115); #129 y #134 se reducen de alcance; #127, #128, #133, #135, #136, #137 y #138 siguen vigentes; #130, #131, #143 y #163 pendientes de análisis. Orden propuesto: (1) #137+#138, (2) bugs pequeños #127/#128/#135/#136, (3) #133, (4) #131/#130/#143/#163, (5) #126 con #151/#152 en spec propio.
 
@@ -141,11 +148,11 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 **Release target:** 1.19.0.
 **Acceptance gate:** typecheck (mypy/pyright) en CI, Docker build on PR, pytest timeout global, Dockerfile non-root + digest pin, coverage delta visible.
 
-- [ ] **#126** 🟡 `[028]` — Three reconnecting wrappers duplicated without shared base — **L** — *movida desde Fase 4 (2026-10-08); bloqueantes #102, #103, #104 ya cerrados; requiere spec + plan propios. Candidata natural para absorber #152 (lock del singleton TTS) y relacionada con #151*
+- [x] **#126** 🟡 `[028]` — Three reconnecting wrappers duplicated without shared base — **L** — *movida desde Fase 4 (2026-10-08); bloqueantes #102, #103, #104 ya cerrados; requiere spec + plan propios. Candidata natural para absorber #152 (lock del singleton TTS) y relacionada con #151* — **cerrado por el PR de cierre de Fase 5 (2026-10-11):** núcleo compartido por composición en `src/services/reconnection.py` (`ServiceHealth`, `reconnect_with_backoff`, `LazyBackoffGate`); sin clase base. `on_state_change` dispara ya solo en transición real en los tres wrappers. Absorbe #151 y #152. Spec: `docs/superpowers/specs/2026-10-11-reconnecting-wrappers-design.md`
 - [x] **#127** 🟡 `[029]` — `PipelineTracker.close()` not idempotent — **S** — cerrado por #188 (2026-10-09): `close()` idempotente con dos flags independientes
 - [x] **#128** 🟡 `[030]` — Session-wide final-text dedup drops legitimate repeated utterances — **S** — cerrado por #189 (2026-10-09): ventana de 1 s desde el último final entregado (`_FINAL_DEDUP_WINDOW_S`); el bug de origen, jota-transcriber#27, ya estaba corregido upstream en #28
 - [x] **#129** 🟡 `[031]` — Watchdog timing semantics tied to poll ticks; re-entrant shutdown — **M→S** — *triage 2026-10-08: la idempotencia de `close_all()` ya está resuelta (#101/#110); queda decidir/documentar la semántica de `max_silence_turns` (ticks de 2s vs ventanas de `silence_timeout_s`) y testearla con tiempo real* — cerrado por este PR (2026-10-09): decidido y documentado que `max_silence_turns` cuenta ticks de 2 s (`_WATCHDOG_POLL_S`), con test en tiempo real
-- [ ] **#130** 🟡 `[032]` — Client output is neither serialized nor backpressured — **L** — S1 (salida serializada) hecha en PR #197; S3a (handlers de push fuera de `_listen`, worker FIFO por bridge) hecha en PR #198 — cumple **solo en parte** el criterio "un TTS atascado tiene tope de tiempo": el drenado del audio está acotado (`PUSH_TTS_DRAIN_TIMEOUT_S`), pero `send_text_chunk` y `tts.end()` del TTS de push siguen sin tope y pueden atascar el worker de push de ese bridge (seguimiento en #199); S2 (cliente lento: tope por envío `CLIENT_SEND_TIMEOUT_S`, cierre 1013 y abort del transporte) hecha en PR #200; S3b (TurnRegistry acotado) y #199 pendientes. Orden: S3a → S2 → S3b
+- [x] **#130** 🟡 `[032]` — Client output is neither serialized nor backpressured — **L** — S1 (salida serializada) hecha en PR #197; S3a (handlers de push fuera de `_listen`, worker FIFO por bridge) hecha en PR #198 — cumple **solo en parte** el criterio "un TTS atascado tiene tope de tiempo": el drenado del audio está acotado (`PUSH_TTS_DRAIN_TIMEOUT_S`), pero `send_text_chunk` y `tts.end()` del TTS de push siguen sin tope y pueden atascar el worker de push de ese bridge (seguimiento en #199); S2 (cliente lento: tope por envío `CLIENT_SEND_TIMEOUT_S`, cierre 1013 y abort del transporte) hecha en PR #200; S3b (TurnRegistry acotado) y #199 pendientes. Orden: S3a → S2 → S3b — **completa (2026-10-11):** S3b hecha (`TurnRegistry` con cola acotada `TURN_QUEUE_MAX`, `put_nowait`, overflow → `turn_overflow` + `chat.abort`, lápida de 5 s) y #199 hecha; el seguimiento restante queda en #201–#205
 - [x] **#131** 🟡 `[033]` — Transcriber task failures not supervised or retrieved — **M** — cerrado por este PR (2026-10-09): frames malformados descartados, excepción inesperada del listen loop → `DEGRADED` + `status unavailable`, tareas de sesión supervisadas con `_supervise()`
 - [x] **#132** ⚪ `[034]` — No idle timeout for clients that never send input — **S** — *triage 2026-10-08: ya resuelta por #115 (`_idle_watchdog` aplica a toda sesión, cobertura en `test_bridge_watchdog.py`); cerrada sin cambios de código*
 - [x] **#133** ⚪ `[035]` — Logs and session events contain credentials and transcripts — **S** — cerrado por #191 (2026-10-09): `send`, barge-in y `transcription_final` solo registran longitud (`text_len`), sin texto en logs INFO ni en `SessionRecord`
@@ -262,7 +269,7 @@ Antes de implementar las issues marcadas con ⚠️, hay que resolver:
 | **Fase 2 done** | ✅ 5 🟠 cerrados (#105–#109), `/v1/*` rechaza untrusted sin bearer ✅, admin rechaza sin token ✅, cero keys en logs ✅ — *pentest manual no ejecutado, ver nota en la fase* |
 | **Fase 3 done** | ✅ 8 🟠 cerrados (#110–#117) por PRs #164–#174 (2026-08-06), mergeado a `main` 2026-10-08 — `kill -9`/shutdown ✅ (#110), 3 wrappers DEGRADED-stable ✅ (Fase 1), `ready.capabilities` ✅ (#166) — *50 sesiones concurrentes ⚠️ pendiente de load test dedicado* |
 | **Fase 4 done** | Cero referencias muertas, `.env.sample` levanta gateway limpio, `db_client` test de concurrencia |
-| **Fase 5 done** | Typecheck CI, Docker build on PR, pytest timeout global, Dockerfile non-root + digest pin |
+| **Fase 5 done** | ✅ Typecheck CI, Docker build on PR, pytest timeout global, Dockerfile non-root + digest pin (#137/#138, 2026-10-09) · #126 y #130 cerradas (2026-10-11) — *quedan 5 issues de seguimiento de baja severidad, sin bloquear el cierre* |
 
 ---
 
