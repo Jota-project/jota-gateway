@@ -69,6 +69,16 @@ del umbral no se cortan y la cola ilimitada sigue creciendo para ellos mientras 
 producción: el criterio "ni acumular memoria sin límite" se cumple solo para clientes por debajo
 del umbral. No es un limitador de caudal.
 
+**Matiz (medición del 2026-10-11, tras la revisión de los clientes).** Esas cifras solo valen cuando
+el gateway tiene más datos en vuelo que los buffers del sistema (varios MB). Con uvicorn 0.54.0 real
+y un cliente `websockets` por defecto que lee a ritmo de reproducción (1x), una respuesta de 6 MB
+(≈125 s de audio) no hizo esperar a ningún `send` (espera máxima 0,0 s), tampoco con clientes que
+leían a 20 y a 5 KB/s sostenidos durante 190 s: los buffers del sistema (macOS, loopback) absorbieron
+todo. En la práctica la política solo actúa con un cliente parado o con mucho más audio en vuelo del
+que caben en esos buffers. Las cifras de 3 a 20 KB/s corresponden a una prueba con producción
+continua e indefinida. Linux sigue sin medirse. En la misma prueba el cliente cerró la conexión a
+los 40 s por su propio keepalive (ver `docs/client-protocol.md` §13), algo independiente de S2.
+
 ## 4. Diseño
 
 ### 4.1 Señal y política en `QueuedSender` (`src/services/outbound.py`)

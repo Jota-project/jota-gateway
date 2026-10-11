@@ -73,7 +73,10 @@ class QueuedSender:
     that stays blocked that long marks the client slow (`ClientSlow`), drops what is
     pending and calls `on_slow` once. This is a drain-rate threshold, not a stall
     detector: a client draining far below the rate the gateway writes is cut too, one
-    reading at a reasonable rate is not. The queue itself stays unbounded, so for a
+    reading at a reasonable rate is not. In practice it only triggers when more data is
+    in flight than the OS socket buffers hold (several MB) or the client stops reading;
+    measured with a client that reads at playback pace, a 6 MB reply never made a send
+    wait. The queue itself stays unbounded, so for a
     client above the threshold it keeps growing for as long as production lasts: the
     timeout bounds memory only for clients below the threshold.
     """
