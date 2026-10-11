@@ -1,15 +1,19 @@
 import asyncio
 import contextlib
 import logging
-import time
 import uuid
-from collections.abc import AsyncGenerator, Callable
-from datetime import UTC, datetime
+from collections.abc import AsyncGenerator
 
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.models import GatewayInfo
 from src.services.protocol import OrchestratorEvent
-from src.services.reconnection import ConnectionState, ServiceStatus
+from src.services.reconnection import (
+    ConnectionState,
+    ServiceHealth,
+    ServiceStatus,
+    health_attr,
+    reconnect_with_backoff,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +24,12 @@ class ReconnectingOpenClawClient:
     Implements OrchestratorProtocol so JotaBridge needs no changes.
     Exposes gateway_info after successful connect.
     """
+
+    state = health_attr("state")
+    on_state_change = health_attr("on_state_change")
+    _connected_at = health_attr("connected_at")
+    _reconnect_attempts = health_attr("reconnect_attempts")
+    _last_error = health_attr("last_error")
 
     def __init__(
         self,
@@ -34,15 +44,11 @@ class ReconnectingOpenClawClient:
         self._initial_backoff = initial_backoff
         self._max_backoff = max_backoff
         self._max_duration = max_duration
-        self.state = ConnectionState.DEGRADED
+        self._health = ServiceHealth(name, ConnectionState.DEGRADED)
         self.gateway_info: GatewayInfo | None = None
-        self._connected_at: datetime | None = None
-        self._reconnect_attempts: int = 0
-        self._last_error: str | None = None
         self._reconnect_task: asyncio.Task | None = None
         self._reconnect_job_id: str = ""
         self._reconnect_exhausted: bool = False
-        self.on_state_change: Callable[[ConnectionState], None] | None = None
         # Register disconnect callback so the inner client notifies us on unexpected drops.
         self._client.on_disconnect = self._handle_disconnect
 
@@ -52,10 +58,7 @@ class ReconnectingOpenClawClient:
     async def connect(self) -> None:
         try:
             self.gateway_info = await self._client.connect()
-            self._set_state(ConnectionState.CONNECTED)
-            self._connected_at = datetime.now(UTC)
-            self._reconnect_attempts = 0
-            self._last_error = None
+            self._health.mark_connected()
             self._reconnect_exhausted = False
         except Exception as e:
             self._last_error = str(e)
@@ -114,18 +117,10 @@ class ReconnectingOpenClawClient:
             yield OrchestratorEvent(type="error", content=str(e))
 
     def status(self) -> ServiceStatus:
-        return ServiceStatus(
-            name=self._name,
-            state=self.state,
-            connected_at=self._connected_at,
-            reconnect_attempts=self._reconnect_attempts,
-            last_error=self._last_error,
-        )
+        return self._health.status()
 
     def _set_state(self, state: ConnectionState) -> None:
-        self.state = state
-        if self.on_state_change:
-            self.on_state_change(state)
+        self._health.set_state(state)
 
     def _handle_disconnect(self) -> None:
         self._ensure_reconnecting()
@@ -153,34 +148,16 @@ class ReconnectingOpenClawClient:
         return self._reconnect_job_id
 
     async def _reconnect_loop(self) -> None:
-        start = time.monotonic()
-        backoff = self._initial_backoff
-        while True:
-            try:
-                self.gateway_info = await self._client.connect()
-                self._set_state(ConnectionState.CONNECTED)
-                self._connected_at = datetime.now(UTC)
-                self._reconnect_attempts = 0
-                self._last_error = None
-                logger.info("[%s] reconnected.", self._name)
-                return
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                self._reconnect_attempts += 1
-                self._last_error = str(e)
-                logger.warning(
-                    "[%s] reconnect attempt %d failed: %s",
-                    self._name,
-                    self._reconnect_attempts,
-                    e,
-                )
+        async def attempt() -> None:
+            self.gateway_info = await self._client.connect()
 
-            if time.monotonic() - start >= self._max_duration:
-                self._set_state(ConnectionState.DEGRADED)
-                self._reconnect_exhausted = True
-                logger.warning("[%s] reconnect exhausted — DEGRADED.", self._name)
-                return
-
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, self._max_backoff)
+        recovered = await reconnect_with_backoff(
+            attempt,
+            self._health,
+            initial_backoff=self._initial_backoff,
+            max_backoff=self._max_backoff,
+            max_duration=self._max_duration,
+            label=self._name,
+        )
+        if not recovered:
+            self._reconnect_exhausted = True
