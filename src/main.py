@@ -10,6 +10,7 @@ from src.api.openai_routes import router as openai_router
 from src.api.routes import router as stream_router
 from src.core.config import settings
 from src.core.request_id import RequestIdMiddleware
+from src.core.transport import TransportCaptureMiddleware
 from src.db.database import dispose_engine, run_migrations
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.dispatcher import FrameDispatcher
@@ -143,6 +144,8 @@ app = FastAPI(
 )
 
 app.add_middleware(RequestIdMiddleware)
+# Captures uvicorn's transport per WebSocket so a slow client can be dropped (issue #130 S2).
+app.add_middleware(TransportCaptureMiddleware)
 
 app.include_router(stream_router)  # WS /ws/stream
 app.include_router(openai_router)  # HTTP /v1/*

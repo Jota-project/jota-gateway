@@ -5,7 +5,8 @@ import asyncio
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
-from src.services.outbound import ClientGone, DirectSender, QueuedSender
+from src.core.config import settings
+from src.services.outbound import ClientGone, ClientSlow, DirectSender, QueuedSender
 
 
 class FakeWS:
@@ -254,3 +255,140 @@ async def test_queued_cancelled_aclose_still_fails_pending_flush():
         await closer
     with pytest.raises(ClientGone):
         await asyncio.wait_for(flusher, timeout=1.0)
+
+
+class DelayedWS(FakeWS):
+    """Cada send tarda `delay` pero termina."""
+
+    def __init__(self, delay: float):
+        super().__init__()
+        self._delay = delay
+
+    async def _send(self, kind: str, payload):
+        await asyncio.sleep(self._delay)
+        self.sent.append((kind, payload))
+
+
+async def test_queued_send_blocked_past_timeout_marks_client_slow(monkeypatch):
+    monkeypatch.setattr(settings, "CLIENT_SEND_TIMEOUT_S", 0.05)
+    calls: list[int] = []
+
+    async def on_slow():
+        calls.append(1)
+
+    s = QueuedSender(FakeWS(hang=True), on_slow=on_slow)
+    await s.send_json({"type": "token"})
+    await asyncio.wait_for(s._writer, timeout=1.0)
+
+    assert isinstance(s._failure, ClientSlow)
+    assert calls == [1]
+    with pytest.raises(ClientGone) as exc:
+        await s.send_json({"x": 1})
+    assert isinstance(exc.value.__cause__, ClientSlow)
+
+
+async def test_queued_slow_client_discards_pending_and_fails_flush(monkeypatch):
+    monkeypatch.setattr(settings, "CLIENT_SEND_TIMEOUT_S", 0.05)
+    s = QueuedSender(FakeWS(hang=True))
+    await s.send_json({"a": 1})
+    await s.send_json({"b": 2})
+    flush = asyncio.create_task(s.flush())
+
+    with pytest.raises(ClientGone):
+        await asyncio.wait_for(flush, timeout=1.0)
+    assert s._queue.empty()
+
+
+async def test_queued_fast_sends_are_unaffected_by_the_timeout(monkeypatch):
+    monkeypatch.setattr(settings, "CLIENT_SEND_TIMEOUT_S", 0.5)
+    ws = FakeWS()
+    s = QueuedSender(ws, on_slow=None)
+    for i in range(3):
+        await s.send_json({"i": i})
+    await s.flush()
+    assert s._failure is None
+    assert [p for _, p in ws.sent] == [{"i": 0}, {"i": 1}, {"i": 2}]
+    await s.aclose(1.0)
+
+
+async def test_queued_timeout_is_per_send_not_cumulative(monkeypatch):
+    """A slow-but-progressing client must not be cut."""
+    monkeypatch.setattr(settings, "CLIENT_SEND_TIMEOUT_S", 0.2)
+    ws = DelayedWS(delay=0.02)  # each send << timeout; 15 sends total > timeout
+    called: list[int] = []
+
+    async def on_slow():
+        called.append(1)
+
+    s = QueuedSender(ws, on_slow=on_slow)
+    for i in range(15):
+        await s.send_json({"i": i})
+    await s.flush()
+
+    assert s._failure is None
+    assert called == []
+    assert len(ws.sent) == 15
+    await s.aclose(1.0)
+
+
+async def test_queued_send_raising_timeouterror_itself_is_not_a_slow_client():
+    """TimeoutError is an OSError subclass; only the writer's own
+    asyncio.timeout expiring means 'slow client'."""
+    called: list[int] = []
+
+    async def on_slow():
+        called.append(1)
+
+    s = QueuedSender(RaisingWS(TimeoutError("socket")), on_slow=on_slow)
+    await s.send_json({"a": 1})
+    await asyncio.wait_for(s._writer, timeout=1.0)
+
+    assert isinstance(s._failure, TimeoutError)
+    assert not isinstance(s._failure, ClientSlow)
+    assert called == []
+
+
+async def test_queued_on_slow_raising_does_not_break_teardown(monkeypatch, caplog):
+    """A raising on_slow callback is logged and does not break teardown."""
+    monkeypatch.setattr(settings, "CLIENT_SEND_TIMEOUT_S", 0.05)
+
+    async def on_slow():
+        raise RuntimeError("callback roto")
+
+    s = QueuedSender(FakeWS(hang=True), on_slow=on_slow)
+    with caplog.at_level("WARNING", logger="src.services.outbound"):
+        await s.send_json({"a": 1})
+        await asyncio.wait_for(s._writer, timeout=1.0)  # writer ends, no exception escapes
+
+    assert isinstance(s._failure, ClientSlow)
+    assert any("on_slow falló" in r.getMessage() for r in caplog.records)
+    await asyncio.wait_for(s.aclose(1.0), timeout=2.0)
+
+
+async def test_queued_on_slow_hanging_does_not_wedge_aclose(monkeypatch):
+    """A hanging callback is cancelled by aclose's own bound."""
+    monkeypatch.setattr(settings, "CLIENT_SEND_TIMEOUT_S", 0.05)
+    started = asyncio.Event()
+
+    async def on_slow():
+        started.set()
+        await asyncio.Event().wait()
+
+    s = QueuedSender(FakeWS(hang=True), on_slow=on_slow)
+    await s.send_json({"a": 1})
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    await asyncio.wait_for(s.aclose(0.1), timeout=2.0)
+    assert s._writer.done()
+
+
+async def test_queued_slow_client_logs_one_warning_without_payload(monkeypatch, caplog):
+    monkeypatch.setattr(settings, "CLIENT_SEND_TIMEOUT_S", 0.05)
+    s = QueuedSender(FakeWS(hang=True))
+    with caplog.at_level("INFO", logger="src.services.outbound"):
+        await s.send_json({"type": "transcription", "text": "SECRETO"})
+        await asyncio.wait_for(s._writer, timeout=1.0)
+    records = [r for r in caplog.records if r.name == "src.services.outbound"]
+    assert len(records) == 1
+    assert records[0].levelname == "WARNING"
+    assert "SECRETO" not in records[0].getMessage()

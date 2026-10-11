@@ -11,6 +11,7 @@ from src.core.config import settings
 from src.core.exceptions import ClientInactive, ClientNotFound
 from src.core.logging import fingerprint_key
 from src.core.network import resolve_client_ip
+from src.core.transport import drop_slow_client
 from src.models.schemas import Handshake
 from src.services.bridge import JotaBridge
 from src.services.db_client import db_client
@@ -85,9 +86,18 @@ async def gateway_websocket(websocket: WebSocket):
 
     session_id = f"{client.id}:{int(time.time() * 1000)}"
     session_registry = app_state.session_registry
-    # One outbound path per session: sender -> tracker -> bridge (issue #130 S1).
+    # One outbound path per session: sender -> tracker -> bridge (issue #130 S1); a client
+    # that stops reading is dropped (issue #130 S2).
     # Created only after every handshake rejection above, so no writer task leaks.
-    sender = QueuedSender(websocket)
+    async def _on_slow_client() -> None:
+        # `tracker` is created right below; this only runs when the writer's send times
+        # out, long after the session is fully constructed.
+        await drop_slow_client(
+            websocket,
+            record=lambda: tracker.record("client_slow", timeout_s=settings.CLIENT_SEND_TIMEOUT_S),
+        )
+
+    sender = QueuedSender(websocket, on_slow=_on_slow_client)
     tracker = PipelineTracker(
         session_id=session_id,
         client_id=client.id,

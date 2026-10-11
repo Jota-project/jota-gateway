@@ -120,8 +120,9 @@ Intactas: `tests/unit/test_bridge_push.py`.
 
 - Cola de `TurnRegistry` acotada y abort del turno lento (S3b).
 - Política de cliente lento y decisión de transporte (S2).
-- Carrera entre dos llamadas concurrentes a `_cancel_active_turn()` y solape de un push abierto
-  con un turno normal en el mismo socket: issues separadas, decisión del 2026-10-10.
+- Carrera entre dos llamadas concurrentes a `_cancel_active_turn()` (#201) y solape de un push
+  abierto con un turno normal en el mismo socket (#202): issues separadas, decisión del
+  2026-10-10.
 - Tombstone de frames tardíos de un turno abortado (pertenece a S3b, que genera ese flujo).
 
 ## 6. Documentación a actualizar al cerrar
@@ -132,6 +133,35 @@ comportamiento visible cambia.
 
 ## 7. No verificado
 
-- La versión de uvicorn que resolvería hoy el build de la imagen y desde cuándo sansio bloquea.
-- Comportamiento en Linux/Docker y con uvloop (el spike fue macOS, asyncio puro).
+- ~~La versión de uvicorn que resolvería hoy el build de la imagen y desde cuándo sansio
+  bloquea.~~ Resuelto en S2: el backpressure de sansio llegó en uvicorn 0.52.1 y `pip` resuelve
+  hoy 0.54.0; el mínimo declarado pasó a `>=0.52.1` (PR #200).
+- Comportamiento en Linux/Docker y con uvloop (el spike fue macOS, asyncio puro). El CI de los
+  PR #198 y #200 corre en Linux (3.12 y 3.14) y pasa; los números de caudal siguen midiéndose
+  solo en macOS.
 - Que ningún test existente dependa del orden de ejecución inline más allá de los señalados.
+
+## 8. Desviaciones respecto a este spec y cambios posteriores (2026-10-10)
+
+Lo implementado (PR #198) difiere de lo escrito arriba en estos puntos, por motivos que se
+descubrieron al leer el código o en las revisiones:
+
+1. **§3.3 — el drenado usa `asyncio.wait` + `gather`, no `wait_for`.** `on_push_turn_end` tragaba
+   `CancelledError` al esperar la tarea de audio; con el worker, un `close_all()` que lo
+   cancelase ahí lo dejaría vivo y se colgaría. `asyncio.wait` no relanza el resultado de la
+   tarea y deja propagar una cancelación externa.
+2. **§3.4 — el backlog pendiente solo difiere el cierre por idle durante `TURN_TIMEOUT_S`**, igual
+   que `_push_turn_open` (#115). Sin tope, un worker atascado con un cliente silencioso
+   filtraría la sesión.
+3. **§3.4 — `close_all()` espera al worker con `asyncio.wait(timeout=SHUTDOWN_DRAIN_S)`**, no con
+   un `await` sin límite. Si un handler ignorase la cancelación, el teardown podría tardar hasta
+   dos ventanas de drenado (ningún handler actual lo hace).
+4. **Corrección de un bug de interacción entre tareas:** `run()` usaba `self.tasks[0]` como tarea
+   del cliente y el worker, creado perezosamente antes de `run()` (el bridge ya está registrado
+   desde `connect_internal_services`), podía ocupar esa posición. Ahora se conserva el handle
+   que devuelve `_spawn`.
+5. **§2, último criterio — "un TTS atascado tiene tope de tiempo" solo se cumple en parte:**
+   el drenado del audio está acotado, pero `send_text_chunk` y `tts.end()` no. Seguimiento en
+   #199 (y en #204 para el resto del endurecimiento del worker).
+6. **§6:** `docs/client-protocol.md` §13 sí cambió (fila de `PUSH_TTS_DRAIN_TIMEOUT_S`), porque
+   el audio de un push puede cortarse tras el timeout.
