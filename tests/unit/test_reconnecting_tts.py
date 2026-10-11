@@ -177,3 +177,65 @@ async def test_on_state_change_not_called_when_unset():
         mock_client.connect.side_effect = OSError("refused")
         MockTTS.return_value = mock_client
         await w.connect(voice=None, speed=None, client_id="c1")  # must not raise
+
+
+# --- concurrent turns (#152) -----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_failures_of_one_outage_double_backoff_once():
+    import asyncio
+
+    w = ReconnectingTTSClient(url="test:1", token="t", initial_backoff=1.0, max_backoff=60.0)
+    changes = []
+    w.on_state_change = changes.append
+    gate = asyncio.Event()
+
+    async def failing_connect(**kwargs):
+        await gate.wait()  # all attempts are in flight before any of them fails
+        raise OSError("refused")
+
+    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
+        MockTTS.return_value.connect = failing_connect
+        tasks = [
+            asyncio.create_task(w.connect(voice=None, speed=None, client_id=f"c{i}"))
+            for i in range(5)
+        ]
+        await asyncio.sleep(0)
+        gate.set()
+        results = await asyncio.gather(*tasks)
+
+    assert results == [None] * 5
+    assert w._backoff == 2.0  # one outage, one doubling (not 32.0)
+    assert w._reconnect_attempts == 1
+    assert changes == [ConnectionState.RECONNECTING]
+
+
+@pytest.mark.asyncio
+async def test_failure_finishing_after_a_newer_success_does_not_clobber_it():
+    import asyncio
+
+    w = ReconnectingTTSClient(url="test:1", token="t", initial_backoff=1.0)
+    release_slow = asyncio.Event()
+    calls = 0
+
+    async def connect(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:  # the slow, older attempt: fails only after the other succeeded
+            await release_slow.wait()
+            raise OSError("late failure")
+
+    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
+        MockTTS.return_value.connect = connect
+        slow = asyncio.create_task(w.connect(voice=None, speed=None, client_id="a"))
+        await asyncio.sleep(0)
+        fast = await w.connect(voice=None, speed=None, client_id="b")
+        assert fast is not None
+        release_slow.set()
+        assert await slow is None
+
+    assert w.state == ConnectionState.CONNECTED
+    assert w._last_error is None
+    assert w._backoff == 1.0
+    assert w._last_failure_at is None
