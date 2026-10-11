@@ -9,7 +9,7 @@
 Este documento es el **plan vivo de remediación y evolución** de jota-gateway. Cada tarea referencia una issue de GitHub; las casillas se tachan al cerrar la issue. Se actualiza en el mismo PR que cierra la issue, o en un PR dedicado.
 
 **Auditoría completa:** en Obsidian, `Producto Jota/jota-gateway/Specs y planes/JGW Plan 2026-07-15 - production-readiness-roadmap` (planning narrative; los specs y planes ya no viven en este repo, ver [`superpowers/README.md`](./superpowers/README.md)).
-**Histórico:** [`../AUDIT_2026-06-28.md`](../AUDIT_2026-06-28.md) (auditoría anterior).
+**Histórico:** auditoría anterior (2026-06-28) en Obsidian, `Producto Jota/jota-gateway/Notas/JGW Auditoría 2026-06-28 - anterior`.
 **Estado de las issues:** https://github.com/Jota-project/jota-gateway/issues?q=is:open+label:audit:2026-07-15
 
 ---
@@ -34,7 +34,7 @@ Este documento es el **plan vivo de remediación y evolución** de jota-gateway.
 
 El gateway funciona correctamente en **happy path** (sesión única + backend sano). Tiene **bugs críticos latentes**, **dos regresiones confirmadas** de hallazgos que la auditoría de junio marcó como resueltos, **features documentadas nunca implementadas**, y **gaps serios de producción** (sin timeouts, sin drenado de shutdown, auth de `/v1/*` mal documentada, claves en logs).
 
-### Regresiones conocidas (de `AUDIT_2026-06-28.md`)
+### Regresiones conocidas (de la auditoría anterior, 2026-06-28; ahora en Obsidian)
 
 - **Bug 10** — circuit-breaker en estado `DEGRADED` de `ReconnectingOpenClawClient` → sigue sin estar implementado.
 - **`_last_error` no se limpia** tras reconexión exitosa → en los 3 reconnecting wrappers.
@@ -289,7 +289,7 @@ Este documento se actualiza en el mismo PR que cierra la issue, o en un PR dedic
 ## Referencias
 
 - [CHANGELOG.md](../CHANGELOG.md) — historial de releases
-- [AUDIT_2026-06-28.md](../AUDIT_2026-06-28.md) — auditoría anterior (bugs ya resueltos)
+- Obsidian: `Producto Jota/jota-gateway/Notas/JGW Auditoría 2026-06-28 - anterior` — auditoría anterior (bugs ya resueltos)
 - Obsidian: `Producto Jota/jota-gateway/Specs y planes/` — specs, planes y la auditoría completa (planning narrative); índice en `JGW Specs y planes - Índice`
 - [docs/openclaw-protocol.md](./openclaw-protocol.md) — protocolo OpenClaw v4 (source of truth)
 - [docs/client-protocol.md](./client-protocol.md) — protocolo cliente WebSocket
