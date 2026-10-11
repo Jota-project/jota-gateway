@@ -1,3 +1,10 @@
+# [1.17.0](https://github.com/Jota-project/jota-gateway/compare/v1.16.0...v1.17.0) (2026-10-10)
+
+
+### Features
+
+* handlers de push fuera de _listen con worker FIFO por bridge ([#130](https://github.com/Jota-project/jota-gateway/issues/130) S3a) ([#198](https://github.com/Jota-project/jota-gateway/issues/198)) ([b21cf62](https://github.com/Jota-project/jota-gateway/commit/b21cf62232bac3f4fca118fb1532da65a549f6f8)), closes [#112](https://github.com/Jota-project/jota-gateway/issues/112) [#115](https://github.com/Jota-project/jota-gateway/issues/115)
+
 # [1.16.0](https://github.com/Jota-project/jota-gateway/compare/v1.15.2...v1.16.0) (2026-10-10)
 
 
