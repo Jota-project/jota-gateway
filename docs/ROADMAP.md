@@ -8,7 +8,7 @@
 
 Este documento es el **plan vivo de remediación y evolución** de jota-gateway. Cada tarea referencia una issue de GitHub; las casillas se tachan al cerrar la issue. Se actualiza en el mismo PR que cierra la issue, o en un PR dedicado.
 
-**Auditoría completa:** [`docs/superpowers/plans/2026-07-15-production-readiness-roadmap.md`](./superpowers/plans/2026-07-15-production-readiness-roadmap.md) (planning narrative).
+**Auditoría completa:** en Obsidian, `Producto Jota/jota-gateway/Specs y planes/JGW Plan 2026-07-15 - production-readiness-roadmap` (planning narrative; los specs y planes ya no viven en este repo, ver [`superpowers/README.md`](./superpowers/README.md)).
 **Histórico:** [`../AUDIT_2026-06-28.md`](../AUDIT_2026-06-28.md) (auditoría anterior).
 **Estado de las issues:** https://github.com/Jota-project/jota-gateway/issues?q=is:open+label:audit:2026-07-15
 
@@ -148,7 +148,7 @@ Ambas #149 y #150 arregladas antes de empezar Fase 2 (decisión 2026-07-18, rama
 **Release target:** 1.19.0.
 **Acceptance gate:** typecheck (mypy/pyright) en CI, Docker build on PR, pytest timeout global, Dockerfile non-root + digest pin, coverage delta visible.
 
-- [x] **#126** 🟡 `[028]` — Three reconnecting wrappers duplicated without shared base — **L** — *movida desde Fase 4 (2026-10-08); bloqueantes #102, #103, #104 ya cerrados; requiere spec + plan propios. Candidata natural para absorber #152 (lock del singleton TTS) y relacionada con #151* — **cerrado por el PR de cierre de Fase 5 (2026-10-11):** núcleo compartido por composición en `src/services/reconnection.py` (`ServiceHealth`, `reconnect_with_backoff`, `LazyBackoffGate`); sin clase base. `on_state_change` dispara ya solo en transición real en los tres wrappers. Absorbe #151 y #152. Spec: `docs/superpowers/specs/2026-10-11-reconnecting-wrappers-design.md`
+- [x] **#126** 🟡 `[028]` — Three reconnecting wrappers duplicated without shared base — **L** — *movida desde Fase 4 (2026-10-08); bloqueantes #102, #103, #104 ya cerrados; requiere spec + plan propios. Candidata natural para absorber #152 (lock del singleton TTS) y relacionada con #151* — **cerrado por el PR de cierre de Fase 5 (2026-10-11):** núcleo compartido por composición en `src/services/reconnection.py` (`ServiceHealth`, `reconnect_with_backoff`, `LazyBackoffGate`); sin clase base. `on_state_change` dispara ya solo en transición real en los tres wrappers. Absorbe #151 y #152. Spec: en Obsidian, `JGW Spec 2026-10-11 - reconnecting-wrappers`
 - [x] **#127** 🟡 `[029]` — `PipelineTracker.close()` not idempotent — **S** — cerrado por #188 (2026-10-09): `close()` idempotente con dos flags independientes
 - [x] **#128** 🟡 `[030]` — Session-wide final-text dedup drops legitimate repeated utterances — **S** — cerrado por #189 (2026-10-09): ventana de 1 s desde el último final entregado (`_FINAL_DEDUP_WINDOW_S`); el bug de origen, jota-transcriber#27, ya estaba corregido upstream en #28
 - [x] **#129** 🟡 `[031]` — Watchdog timing semantics tied to poll ticks; re-entrant shutdown — **M→S** — *triage 2026-10-08: la idempotencia de `close_all()` ya está resuelta (#101/#110); queda decidir/documentar la semántica de `max_silence_turns` (ticks de 2s vs ventanas de `silence_timeout_s`) y testearla con tiempo real* — cerrado por este PR (2026-10-09): decidido y documentado que `max_silence_turns` cuenta ticks de 2 s (`_WATCHDOG_POLL_S`), con test en tiempo real
@@ -290,7 +290,7 @@ Este documento se actualiza en el mismo PR que cierra la issue, o en un PR dedic
 
 - [CHANGELOG.md](../CHANGELOG.md) — historial de releases
 - [AUDIT_2026-06-28.md](../AUDIT_2026-06-28.md) — auditoría anterior (bugs ya resueltos)
-- [docs/superpowers/plans/2026-07-15-production-readiness-roadmap.md](./superpowers/plans/2026-07-15-production-readiness-roadmap.md) — planning narrative completo
+- Obsidian: `Producto Jota/jota-gateway/Specs y planes/` — specs, planes y la auditoría completa (planning narrative); índice en `JGW Specs y planes - Índice`
 - [docs/openclaw-protocol.md](./openclaw-protocol.md) — protocolo OpenClaw v4 (source of truth)
 - [docs/client-protocol.md](./client-protocol.md) — protocolo cliente WebSocket
 - [CLAUDE.md](../CLAUDE.md) — contexto para Claude Code
