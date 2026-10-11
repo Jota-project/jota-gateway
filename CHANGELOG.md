@@ -1,3 +1,10 @@
+# [1.19.0](https://github.com/Jota-project/jota-gateway/compare/v1.18.0...v1.19.0) (2026-10-11)
+
+
+### Features
+
+* cierre de la Fase 5 — wrappers de reconexión ([#126](https://github.com/Jota-project/jota-gateway/issues/126)), cola de turno acotada ([#130](https://github.com/Jota-project/jota-gateway/issues/130) S3b) y push TTS acotado ([#199](https://github.com/Jota-project/jota-gateway/issues/199)) ([#208](https://github.com/Jota-project/jota-gateway/issues/208)) ([1d7238c](https://github.com/Jota-project/jota-gateway/commit/1d7238c8cc88652929769474dffdf860eb098e50)), closes [#152](https://github.com/Jota-project/jota-gateway/issues/152) [#206](https://github.com/Jota-project/jota-gateway/issues/206) [#201](https://github.com/Jota-project/jota-gateway/issues/201) [#202](https://github.com/Jota-project/jota-gateway/issues/202) [#203](https://github.com/Jota-project/jota-gateway/issues/203) [#205](https://github.com/Jota-project/jota-gateway/issues/205) [#151](https://github.com/Jota-project/jota-gateway/issues/151) [#152](https://github.com/Jota-project/jota-gateway/issues/152) [#204](https://github.com/Jota-project/jota-gateway/issues/204)
+
 # [1.18.0](https://github.com/Jota-project/jota-gateway/compare/v1.17.0...v1.18.0) (2026-10-11)
 
 
