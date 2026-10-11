@@ -13,6 +13,7 @@ from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.models import GatewayInfo, ToolCallEvent
 from src.services.openclaw.registry import (
     TURN_IN_PROGRESS_ERROR,
+    TURN_OVERFLOW_ERROR,
     TurnInProgress,
     TurnRegistry,
 )
@@ -255,6 +256,12 @@ class OpenClawClient:
                         yield OrchestratorEvent(type="error", content=str(data.get("error", {})))
                     else:
                         yield OrchestratorEvent(type="status", content="done")
+                    break
+                elif kind == "overflow":
+                    # Consumer fell behind the bounded queue (#130 S3b). _finished
+                    # stays False on purpose, like turn_timeout: the `finally`
+                    # must still send chat.abort.
+                    yield OrchestratorEvent(type="error", content=TURN_OVERFLOW_ERROR)
                     break
                 elif kind == "error":
                     _finished = True

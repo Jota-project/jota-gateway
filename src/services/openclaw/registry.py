@@ -1,7 +1,9 @@
 import asyncio
 import logging
+import time
 from typing import Any
 
+from src.core.config import settings
 from src.services.session_registry import SessionStatus
 
 logger = logging.getLogger(__name__)
@@ -22,6 +24,16 @@ def client_id_from_session_key(session_key: str) -> str:
 # free-form string literal in multiple files.
 TURN_IN_PROGRESS_ERROR = "turn_in_progress"
 
+# Error content stream_response() emits when a turn's bounded queue overflowed
+# (consumer too slow, issue #130 S3b).
+TURN_OVERFLOW_ERROR = "turn_overflow"
+
+# How long, after a turn is aborted for overflow, late frames of that session_key
+# are dropped instead of being re-routed as push (issue #130 S3b). Internal
+# constant, not a setting: it only has to cover frames already in flight when
+# chat.abort is sent.
+TURN_ABORT_TOMBSTONE_S = 5.0
+
 
 class TurnInProgress(Exception):
     """Raised when register() is called for a session_key with an active turn."""
@@ -34,9 +46,21 @@ class TurnRegistry:
       ("chat", payload_dict)  — streaming token
       ("done", frame_dict)    — final res frame
       ("error", str)          — internal error (e.g. reconnect)
+      ("overflow", None)      — the bounded queue overflowed; abort the turn
+
+    Queues are bounded (issue #130 S3b). Producers (FrameDispatcher, running inside
+    OpenClaw's _listen loop) use deliver_*(), which never blocks: when a turn's queue
+    is full the turn is flagged for abort instead of stalling every multiplexed
+    session.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_queue_size: int | None = None) -> None:
+        self._max_queue_size = max_queue_size
+        # Sessions whose turn overflowed and is awaiting abort: further frames are
+        # dropped. Cleared by unregister().
+        self._overflowed: set[str] = set()
+        # session_key -> monotonic deadline; see TURN_ABORT_TOMBSTONE_S.
+        self._tombstones: dict[str, float] = {}
         self._sessions: dict[str, asyncio.Queue] = {}
         self._req_to_session: dict[str, str] = {}
         # session_key -> req_id of the turn that currently owns it. Lets
@@ -48,7 +72,8 @@ class TurnRegistry:
     def register(self, req_id: str, session_key: str) -> asyncio.Queue:
         if session_key in self._sessions:
             raise TurnInProgress(session_key)
-        queue: asyncio.Queue = asyncio.Queue()
+        size = self._max_queue_size if self._max_queue_size is not None else settings.TURN_QUEUE_MAX
+        queue: asyncio.Queue = asyncio.Queue(maxsize=size)
         self._sessions[session_key] = queue
         self._req_to_session[req_id] = session_key
         self._session_owner[session_key] = req_id
@@ -61,6 +86,7 @@ class TurnRegistry:
         if self._session_owner.get(session_key) == req_id:
             self._sessions.pop(session_key, None)
             self._session_owner.pop(session_key, None)
+            self._overflowed.discard(session_key)
         self._req_to_session.pop(req_id, None)
 
     def get_queue_by_session(self, session_key: str) -> asyncio.Queue | None:
@@ -70,9 +96,61 @@ class TurnRegistry:
         sk = self._req_to_session.get(req_id)
         return self._sessions.get(sk) if sk else None
 
+    def deliver_by_session(self, session_key: str, item: tuple) -> bool:
+        """Non-blocking put for the turn owning session_key. True if a turn owns it
+        (even if the item was dropped), False if none does."""
+        queue = self._sessions.get(session_key)
+        if queue is None:
+            return False
+        self._deliver(session_key, queue, item)
+        return True
+
+    def deliver_by_req(self, req_id: str, item: tuple) -> bool:
+        session_key = self._req_to_session.get(req_id)
+        if session_key is None:
+            return False
+        return self.deliver_by_session(session_key, item)
+
+    def _deliver(self, session_key: str, queue: asyncio.Queue, item: tuple) -> None:
+        if session_key in self._overflowed:
+            return  # turn already flagged for abort: drop
+        try:
+            queue.put_nowait(item)
+        except asyncio.QueueFull:
+            logger.warning(
+                "turn queue overflow for sk=%s (max=%d): aborting turn", session_key, queue.maxsize
+            )
+            self._overflowed.add(session_key)
+            self._tombstones[session_key] = time.monotonic() + TURN_ABORT_TOMBSTONE_S
+            # Pending items belong to a turn that is being aborted: discard them.
+            while not queue.empty():
+                queue.get_nowait()
+            queue.put_nowait(("overflow", None))
+
+    @staticmethod
+    def _force_put(queue: asyncio.Queue, item: tuple) -> None:
+        """Put item even if the queue is full, discarding the oldest entries."""
+        while True:
+            try:
+                queue.put_nowait(item)
+                return
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+
+    def is_aborted(self, session_key: str) -> bool:
+        """True while late frames of an overflow-aborted turn must be dropped."""
+        now = time.monotonic()
+        for sk in [k for k, deadline in self._tombstones.items() if deadline <= now]:
+            del self._tombstones[sk]
+        return session_key in self._tombstones
+
     def error_all(self, message: str) -> None:
         for queue in self._sessions.values():
-            queue.put_nowait(("error", message))
+            self._force_put(queue, ("error", message))
+        self._overflowed.clear()
         self._sessions.clear()
         self._req_to_session.clear()
         self._session_owner.clear()

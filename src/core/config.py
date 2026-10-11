@@ -49,5 +49,10 @@ class Settings(BaseSettings):
     # conexión (issue #130 S2). Es por envío, no acumulado.
     CLIENT_SEND_TIMEOUT_S: float = Field(default=10.0, gt=0)
 
+    # Eventos máximos en la cola de un turno de OpenClaw (issue #130 S3b). Si el
+    # consumidor se atrasa y se llena, el turno se aborta (chat.abort + TURN_ERROR
+    # "turn_overflow") en vez de bloquear _listen y a las demás sesiones.
+    TURN_QUEUE_MAX: int = Field(default=1000, gt=0)
+
 
 settings = Settings()
