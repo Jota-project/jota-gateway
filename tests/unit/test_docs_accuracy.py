@@ -13,7 +13,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 # Históricos: citan nombres viejos a propósito (títulos de issues, planes).
-_HISTORICAL = ("docs/ROADMAP.md", "docs/superpowers/", "AUDIT_")
+_HISTORICAL = ("docs/superpowers/", "AUDIT_")
 
 
 def _tracked_markdown() -> list[Path]:
