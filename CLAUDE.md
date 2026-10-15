@@ -33,7 +33,7 @@ python3 src/cli.py delete-client <client_key>
 
 ## Architecture
 
-> 📋 **Estado del proyecto:** consulta [`docs/ROADMAP.md`](docs/ROADMAP.md) para el plan vivo de remediación (40 issues `#99`–`#138`, 5 fases). La auditoría completa (narrativa de planificación) y todos los specs y planes viven **solo en Obsidian** (`Producto Jota/jota-gateway/Specs y planes/`, nota `JGW Plan 2026-07-15 - production-readiness-roadmap`); ver [`docs/superpowers/README.md`](docs/superpowers/README.md). Cuando trabajes en una issue, márcala como `[x]` en el roadmap al cerrarla.
+> 📋 **Estado del proyecto:** el estado (issues, milestones, labels, releases) vive en **GitHub**; la narrativa (roadmap, fases, decisiones, auditorías, specs y planes) vive **solo en Obsidian** (`Producto Jota/jota-gateway/`, nota `JGW Roadmap`). El repo ya no tiene `docs/ROADMAP.md` (eliminado el 2026-10-11, archivado en el vault); ver [`docs/superpowers/README.md`](docs/superpowers/README.md).
 
 jota-gateway is a **BFF (Backend For Frontend)** — the single entry point for all clients (ESP32, web, app, Home Assistant). It has four surfaces:
 
@@ -457,11 +457,11 @@ On first startup (`run_migrations()` in the lifespan), the schema is created aut
 
 ## Sincronización obligatoria con Obsidian (ciclo de vida de issues y PRs)
 
-El estado del trabajo de este repo vive en **tres sitios que deben coincidir**: GitHub (issues, PRs, milestones, releases), `docs/ROADMAP.md` y el vault de Obsidian J-Project, en `Producto Jota/jota-gateway/` (prefijo `JGW`; ficha `jota-gateway.md`, `JGW Roadmap.md`, carpetas `Fases/`, `Issues/`, `Decisiones/`, `Notas/`). Obsidian no es opcional ni un volcado de una sola vez: **cada cambio de estado de una issue o PR exige contrastar y actualizar los tres**, y **antes de trabajar** hay que leer también Obsidian, no solo GitHub.
+El estado del trabajo de este repo vive en **dos sitios que deben coincidir**: GitHub (issues, PRs, milestones, releases) y el vault de Obsidian J-Project, en `Producto Jota/jota-gateway/` (prefijo `JGW`; ficha `jota-gateway.md`, `JGW Roadmap.md`, carpetas `Fases/`, `Issues/`, `Decisiones/`, `Notas/`). Obsidian no es opcional ni un volcado de una sola vez: **cada cambio de estado de una issue o PR exige contrastar y actualizar los dos**, y **antes de trabajar** hay que leer también Obsidian, no solo GitHub.
 
 Se usa el MCP `obsidian` (requiere Obsidian abierto). Antes de escribir, lee `CLAUDE.md` y `IA y reglas/Guia-MCP-Obsidian.md` del vault (sección «Dar de alta un repo de código»). Edita con `vault_patch` y no sobrescribas con `vault_write` sin leer antes; nunca borres notas (se mueven a `Archivo/` con `status: archivada`).
 
-| Momento | Qué hacer en Obsidian (además de GitHub y `docs/ROADMAP.md`) |
+| Momento | Qué hacer en Obsidian (además de GitHub) |
 |---|---|
 | **Antes de empezar** una issue | Lee `JGW-<n> …`, `JGW Roadmap`, la fase y las decisiones relacionadas. Contrasta con `gh issue view <n>`: estado, labels, milestone. Si no coinciden, corrige la nota o avisa al usuario antes de seguir. Si la issue no tiene nota, créala. |
 | **Se crea una issue nueva** | Crea `Issues/JGW-<n> Título.md` con las propiedades fijas: `repo`, `number`, `url`, `status`, `labels`, `phase`, `synced`, más `type: issue`, `area: producto`, `priority`, `project: J`, `created`, `tags`. Añádela a la tabla de `JGW Roadmap` (en «Sin fase» si no tiene milestone). |
@@ -475,7 +475,6 @@ Se usa el MCP `obsidian` (requiere Obsidian abierto). Antes de escribir, lee `CL
 Reglas de contraste:
 
 - Si GitHub y Obsidian discrepan en el **estado**, manda GitHub (verifícalo con `gh`), y se corrige Obsidian. La **información de contexto** (decisiones, avances por subfase, notas) la conserva Obsidian: léela antes de decidir.
-- `docs/ROADMAP.md` tiene la cabecera desfasada con facilidad; no lo uses como única fuente del estado.
 - No se da una issue o PR por cerrada del todo mientras Obsidian siga mostrando otro estado. Si Obsidian está cerrado o el MCP falla, **no reintentes en bucle**: dilo al usuario y deja constancia explícita en la PR o en la respuesta de que Obsidian queda sin sincronizar.
 - Nada de claves, tokens ni transcripts en Obsidian (aplican las reglas de higiene de logs de más abajo).
 
