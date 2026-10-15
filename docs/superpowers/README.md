@@ -14,4 +14,4 @@ Convención de nombres: `JGW Spec AAAA-MM-DD - tema` y `JGW Plan AAAA-MM-DD - te
 - Los specs que estuvieron trackeados (hasta 2026-10-11) siguen disponibles en el historial de git: `git log --all -- docs/superpowers/specs/`.
 - Los planes nunca estuvieron en git; su única copia está en Obsidian.
 
-El estado vivo del proyecto está en [`docs/ROADMAP.md`](../ROADMAP.md) y, sobre todo, en Obsidian (`JGW Roadmap`).
+El estado vivo del proyecto está en GitHub (issues, milestones, releases) y la narrativa en Obsidian (`JGW Roadmap`). `docs/ROADMAP.md` ya no existe (archivado en el vault el 2026-10-11).
