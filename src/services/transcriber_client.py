@@ -189,5 +189,12 @@ class TranscriberClient:
 
     async def close(self):
         self._is_ready = False
-        if self.ws and not self.ws.closed:
-            await self.ws.close()
+        if self.ws:
+            # `websockets.asyncio` has no `.closed` (G-01, #214): close() is idempotent,
+            # so no state check is needed. A failure is logged (type only), never swallowed.
+            try:
+                await self.ws.close()
+            except Exception as e:
+                logger.warning(
+                    f"[{self.client_id}] Transcriber close falló ({type(e).__name__})"
+                )
