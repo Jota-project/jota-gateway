@@ -24,6 +24,32 @@ logger = logging.getLogger(__name__)
 _DEFAULT_KEEPALIVE_S = 12.0
 _MIN_KEEPALIVE_S = 1.0
 
+# Stable error content delivered to every in-flight turn when the OpenClaw connection
+# ends (clean close, error or teardown). Never a raw exception string (G-03/G-04).
+ORCHESTRATOR_DISCONNECTED_ERROR = "orchestrator_disconnected"
+
+# Inbound frame size limit (G-05). websockets defaults to 1 MiB while OpenClaw announces
+# up to 25 MiB in hello-ok's policy.maxPayload; a larger frame closed the socket with
+# 1009 and dropped every multiplexed session. The connect happens *before* hello-ok, so
+# the limit starts at the documented server default (or the last announced value on a
+# reconnect) and is re-aligned with the announced maxPayload right after hello-ok.
+_DEFAULT_MAX_PAYLOAD = 26_214_400  # 25 MiB, OpenClaw's documented maxPayload
+_MIN_FRAME_LIMIT = 1_048_576  # 1 MiB floor: never below websockets' own default
+_MAX_FRAME_LIMIT = 67_108_864  # 64 MiB cap: bounds memory if the server announces more
+
+
+def _frame_limit(announced: object) -> int:
+    """Clamp an announced maxPayload to [_MIN_FRAME_LIMIT, _MAX_FRAME_LIMIT]; anything
+    that is not a positive int falls back to _DEFAULT_MAX_PAYLOAD."""
+    if isinstance(announced, bool) or not isinstance(announced, int) or announced <= 0:
+        announced = _DEFAULT_MAX_PAYLOAD
+    return max(_MIN_FRAME_LIMIT, min(announced, _MAX_FRAME_LIMIT))
+
+
+def _log_safe(value: object) -> str:
+    """Server-provided scalar rendered for a log line: short, single-line."""
+    return str(value).replace("\n", " ").replace("\r", " ")[:40]
+
 
 class OpenClawClient:
     """Single persistent WebSocket to OpenClaw, multiplexed across all sessions.
@@ -63,7 +89,8 @@ class OpenClawClient:
         # Last roster known from a previous connect, kept as fallback if agents.list
         # fails on this one (#151). Captured before gateway_info is rebuilt below.
         previous_agents = dict(self.gateway_info.agents) if self.gateway_info else {}
-        self._ws = await websockets.connect(self._uri)
+        limit = _frame_limit(self.gateway_info.max_payload if self.gateway_info else None)
+        self._ws = await websockets.connect(self._uri, max_size=limit)
         conn_err: Exception | None = None
         try:
             raw = await asyncio.wait_for(self._ws.recv(), timeout=15.0)
@@ -78,7 +105,10 @@ class OpenClawClient:
             hello = json.loads(raw)
             if not hello.get("ok"):
                 raise RuntimeError(f"OpenClaw handshake failed: {hello.get('error')}")
-            self.gateway_info = GatewayInfo.from_hello_ok(hello.get("payload", {}))
+            hello_payload = hello.get("payload") or {}
+            self.gateway_info = GatewayInfo.from_hello_ok(hello_payload)
+            self._log_hello(hello_payload)
+            self._apply_frame_limit(self.gateway_info.max_payload, limit)
 
             agents_req_id = str(uuid.uuid4())
             await self._ws.send(json.dumps(frames.agents_list(agents_req_id)))
@@ -117,6 +147,29 @@ class OpenClawClient:
                 except Exception:
                     pass
                 self._ws = None
+
+    @staticmethod
+    def _log_hello(payload: dict) -> None:
+        """Once per connection: server/protocol version announced by hello-ok (G-48),
+        only the fields that actually came. Makes protocol drift visible."""
+        server = payload.get("server")
+        version = server.get("version") if isinstance(server, dict) else None
+        protocol = payload.get("protocol")
+        parts = []
+        if version is not None:
+            parts.append(f"server_version={_log_safe(version)}")
+        if protocol is not None:
+            parts.append(f"protocol={_log_safe(protocol)}")
+        logger.info("OpenClaw hello-ok: %s", " ".join(parts) or "no version info")
+
+    def _apply_frame_limit(self, announced: int, current: int) -> None:
+        """Align the live socket's inbound limit with hello-ok's maxPayload (G-05)."""
+        wanted = _frame_limit(announced)
+        if wanted == current:
+            return
+        protocol = getattr(self._ws, "protocol", None)
+        if protocol is not None and hasattr(protocol, "max_message_size"):
+            protocol.max_message_size = wanted
 
     async def _recv_matching(self, req_id: str, timeout: float) -> dict:
         """Read frames until the res matching req_id arrives, ignoring any
@@ -292,29 +345,40 @@ class OpenClawClient:
             if self._ws is None:
                 raise ConnectionError("not connected")
             async for raw in self._ws:
-                frame = json.loads(raw)
-                fid = frame.get("id", "")
-                if fid in self._health_futures:
-                    fut = self._health_futures.pop(fid)
-                    if not fut.done():
-                        fut.set_result(frame)
-                    continue
-                await self._dispatcher.dispatch(frame)
+                # One bad frame must never take the multiplexed connection (and every
+                # session on it) down: drop it, log only the reason, never the content.
+                try:
+                    await self._handle_raw_frame(raw)
+                except Exception as e:
+                    logger.warning("dropping malformed OpenClaw frame (%s)", type(e).__name__)
         except asyncio.CancelledError:
             # Clean shutdown via close()/reconnect — do NOT call on_disconnect,
             # that would wrongly trigger ReconnectingOpenClawClient's reconnect
-            # loop for an intentional teardown. But any turn still in flight on
-            # THIS connection has no one left to deliver its response — without
-            # error_all() it hangs forever at `await queue.get()` (no timeout
-            # anywhere in the chain) and permanently occupies its session_key
-            # in TurnRegistry (issue #103 follow-up).
-            self._turn_registry.error_all("connection closed")
+            # loop for an intentional teardown. The `finally` below still fails
+            # every in-flight turn (issue #103 follow-up).
             return
         except Exception as e:
-            logger.error(f"_listen error: {e}")
-            self._turn_registry.error_all(str(e))
+            logger.error("_listen error (%s)", type(e).__name__)
+        finally:
+            # Single teardown for every way out (clean close 1000, error, cancel): any
+            # turn still in flight on THIS connection has no one left to deliver its
+            # response — without error_all() it would wait TURN_TIMEOUT_S and keep its
+            # session_key occupied (G-04). Stable message: no raw exception text.
+            self._turn_registry.error_all(ORCHESTRATOR_DISCONNECTED_ERROR)
         if self.on_disconnect:
             self.on_disconnect()
+
+    async def _handle_raw_frame(self, raw: str | bytes) -> None:
+        frame = json.loads(raw)
+        if not isinstance(frame, dict):
+            raise TypeError("frame is not an object")
+        fid = frame.get("id", "")
+        if fid in self._health_futures:
+            fut = self._health_futures.pop(fid)
+            if not fut.done():
+                fut.set_result(frame)
+            return
+        await self._dispatcher.dispatch(frame)
 
     def _keepalive_interval(self) -> float:
         """Seconds between keepalive pings: 80% of the server's tick, never below
