@@ -13,6 +13,23 @@ if TYPE_CHECKING:
     from src.services.openclaw.models import GatewayInfo
 
 
+# Nombre del *modelo* que anuncia `GET /v1/models`. No es un agente de OpenClaw:
+# como `model` en /v1/chat/completions significa "sin agente explícito" (#217, G-36).
+MODEL_ALIAS = "jota-gateway"
+
+
+def agent_from_model(model: str | None) -> str | None:
+    """Traduce el campo `model` de la API OpenAI al agente *solicitado*.
+
+    Devuelve None (sin agente explícito -> cascada de `resolve_agent`) para vacío,
+    solo espacios o el alias `MODEL_ALIAS`; en otro caso, el nombre tal cual (un agente).
+    """
+    name = (model or "").strip()
+    if not name or name == MODEL_ALIAS:
+        return None
+    return name
+
+
 class AgentPolicyError(Exception):
     """Raised when the requested agent violates per-client policy or the
     OpenClaw global roster.
