@@ -251,3 +251,16 @@ def test_ready_uses_both_sections_for_text_only_handshake(client):
         "tts": False,
         "transcriber": False,
     }
+
+
+def test_handshake_validation_error_log_has_no_key_material(client, caplog):
+    """G-27b (#216): el ERROR por campo obligatorio ausente no vuelca la client_key
+    (pydantic incluye `input_value=` con el dict entero) — solo tipo y ubicación."""
+    key = "Zq9xKLMNOPQRSTUVWXYZabcdefghij0123456789"
+    with caplog.at_level(logging.ERROR), pytest.raises(Exception):
+        with client.websocket_connect("/ws/stream") as ws:
+            ws.send_json({"client_key": key, "output_mode": ["text"]})  # falta input_mode
+            ws.receive_text()
+    assert "handshake" in caplog.text.lower()  # el error sigue registrándose
+    assert key[:6] not in caplog.text
+    assert "input_mode" in caplog.text

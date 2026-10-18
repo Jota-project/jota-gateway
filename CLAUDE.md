@@ -178,6 +178,8 @@ python3 src/cli.py activate-client <client_key>
 python3 src/cli.py delete-client <client_key>
 ```
 
+**Key hygiene in the CLI (G-27, #216):** `add-client` prints the full generated key once (the only moment the operator can capture it). `list-clients` shows ID, NAME, ACTIVE and the key's `fp` (`fingerprint_key()`, same as log lines) — no key characters; and the "client not found" error echoes only `fp=`, never the key. The WS handshake validation ERROR logs field + error type only (pydantic's `input_value=` would carry the key).
+
 `--key` lets you import an existing token verbatim (e.g. migrating from jota-db). Omit it to generate a random key.
 
 The CLI calls `run_migrations()` when run as a script, so it is safe to run against a fresh `data/gateway.db`.

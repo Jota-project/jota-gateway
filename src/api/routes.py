@@ -35,7 +35,17 @@ async def gateway_websocket(websocket: WebSocket):
         msg_data = json.loads(raw_msg)
         handshake = Handshake(**msg_data)
     except (json.JSONDecodeError, ValidationError) as e:
-        logger.error(f"Payload inicial inválido de handshake. {e}")
+        # G-27b (#216): str(ValidationError) incluye `input_value=` con el dict entero
+        # (la client_key). Solo campo y tipo de error; de JSONDecodeError, su mensaje
+        # (posición, sin el documento).
+        if isinstance(e, ValidationError):
+            detail = ", ".join(
+                f"{'.'.join(str(p) for p in err['loc'])}:{err['type']}"
+                for err in e.errors(include_input=False, include_url=False, include_context=False)
+            )
+        else:
+            detail = f"JSON inválido ({e.msg})"
+        logger.error(f"Payload inicial inválido de handshake. {detail}")
         await websocket.close(
             code=1008, reason="Handshake invalido. Se esperaba JSON de configuración."
         )

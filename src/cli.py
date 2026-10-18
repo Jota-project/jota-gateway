@@ -11,6 +11,7 @@ from typing import get_args
 
 from sqlmodel import Session, select
 
+from src.core.logging import fingerprint_key
 from src.db.database import get_engine, run_migrations
 from src.db.models import ClientRecord
 from src.models.admin_schemas import ClientType
@@ -30,7 +31,11 @@ def _get_engine():
 def _require(session: Session, client_key: str) -> ClientRecord:
     rec = session.exec(select(ClientRecord).where(ClientRecord.client_key == client_key)).first()
     if rec is None:
-        print(f"ERROR: No se encontró cliente con key '{client_key}'", file=sys.stderr)
+        # G-27c (#216): la key es una credencial; solo su huella (la misma `fp=` de los logs).
+        print(
+            f"ERROR: No se encontró cliente con esa key (fp={fingerprint_key(client_key)})",
+            file=sys.stderr,
+        )
         sys.exit(1)
     return rec
 
@@ -57,11 +62,13 @@ def cmd_list(engine) -> None:
     if not records:
         print("(sin clientes)")
         return
+    # G-27c (#216): ni un prefijo de la key (20 chars son ~120 bits de una de 256). El
+    # operador identifica por ID/NAME y correlaciona con los logs por la huella `fp`.
     fmt = "{:<36}  {:<20}  {:<8}  {}"
-    print(fmt.format("ID", "NAME", "ACTIVE", "KEY (primeros 20 chars)"))
+    print(fmt.format("ID", "NAME", "ACTIVE", "KEY FP (sha256[:8])"))
     print("-" * 90)
     for r in records:
-        print(fmt.format(r.id, r.name[:20], str(r.is_active), r.client_key[:20] + "..."))
+        print(fmt.format(r.id, r.name[:20], str(r.is_active), fingerprint_key(r.client_key)))
 
 
 def cmd_deactivate(client_key: str, engine) -> None:
