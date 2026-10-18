@@ -9,6 +9,11 @@ from src.services.openclaw.registry import (
 logger = logging.getLogger(__name__)
 
 
+def _as_dict(value: object) -> dict:
+    """`payload`/`data` may arrive as null or a non-object: treat that as empty (G-03)."""
+    return value if isinstance(value, dict) else {}
+
+
 class FrameDispatcher:
     """Routes incoming OpenClaw frames to the correct queue or bridge.
 
@@ -52,14 +57,17 @@ class FrameDispatcher:
         )
 
     async def _handle_res(self, frame: dict) -> None:
-        payload = frame.get("payload", {})
-        if payload.get("status") == "started":
-            return
-        self._turns.deliver_by_req(frame.get("id", ""), ("done", frame))
+        # A res ends the turn only when it is a failure (ok:false) or the legacy
+        # completion of servers older than 2026.6.11 (explicit status "done"). Any other
+        # ok:true ack ("started", "accepted", ...) is not a turn end (G-47); the real
+        # completion is the chat event with state "final".
+        payload = _as_dict(frame.get("payload"))
+        if frame.get("ok") is False or payload.get("status") == "done":
+            self._turns.deliver_by_req(frame.get("id", ""), ("done", frame))
 
     async def _handle_event(self, frame: dict) -> None:
         event = frame.get("event", "")
-        payload = frame.get("payload", {})
+        payload = _as_dict(frame.get("payload"))
         if event == "chat":
             await self._handle_chat(payload)
         elif event == "agent":
@@ -86,7 +94,7 @@ class FrameDispatcher:
         sk = payload.get("sessionKey")
         if sk is None:
             return
-        phase = payload.get("data", {}).get("phase")
+        phase = _as_dict(payload.get("data")).get("phase")
         client_id = client_id_from_session_key(sk)
         bridge = self._clients.get(client_id)
         if bridge is None:
@@ -126,7 +134,7 @@ class FrameDispatcher:
         sk = payload.get("sessionKey")
         if sk is None:
             return
-        data = payload.get("data", {})
+        data = _as_dict(payload.get("data"))
         if data.get("phase") not in ("start", "result"):
             return
         if self._turns.deliver_by_session(sk, ("tool", data)):

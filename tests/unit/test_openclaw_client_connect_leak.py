@@ -58,7 +58,7 @@ async def test_connect_closes_socket_when_challenge_fails():
     turn_reg = TurnRegistry()
     dispatcher = FrameDispatcher(turn_registry=turn_reg, client_registry=ClientRegistry())
 
-    async def fake_connect(uri):
+    async def fake_connect(uri, **kwargs):
         return fake_ws
 
     with patch("websockets.connect", side_effect=fake_connect):
