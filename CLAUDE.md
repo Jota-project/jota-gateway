@@ -39,7 +39,7 @@ jota-gateway is a **BFF (Backend For Frontend)** — the single entry point for 
 
 - **WebSocket** `/ws/stream` — full voice+text session managed by `JotaBridge`
 - **Admin REST** `/admin/*` — client CRUD + observability (sessions, orchestrators); requires `X-Admin-Token`
-- **OpenAI-compatible REST** `/v1/*` — `GET /v1/models` and `POST /v1/chat/completions` for Home Assistant integration; delegates to the singleton `OpenClawClient`. Requests from a trusted origin (loopback and/or `TRUSTED_NETWORKS`) need no auth; anyone else must send `Authorization: Bearer <client_key>`, validated against the same `ClientRecord` table the WS handshake uses (`src/core/network.py`, `resolve_ha_caller` in `src/api/openai_routes.py`) — see issue #52.
+- **OpenAI-compatible REST** `/v1/*` — `GET /v1/models` and `POST /v1/chat/completions` for Home Assistant integration; delegates to the singleton `OpenClawClient`. Requests from a trusted origin (loopback and/or `TRUSTED_NETWORKS`) need no auth; anyone else must send `Authorization: Bearer <client_key>`, validated against the same `ClientRecord` table the WS handshake uses (`src/core/network.py`, `resolve_ha_caller` in `src/api/openai_routes.py`) — see issue #52. **Fail-closed behind a proxy (G-31, #216):** `resolve_client_ip()` returns a non-IP sentinel (`NO_REAL_IP`) when the peer is in `TRUSTED_PROXIES` but `X-Real-IP` is missing or not a valid IP, so a same-host reverse proxy that doesn't set it no longer turns every Internet client into "loopback"; consequently a *direct* loopback caller without a proxy also needs a Bearer unless `TRUSTED_PROXIES` is emptied. `X-Forwarded-For` never grants trust: the image's `CMD` runs uvicorn with `--no-proxy-headers` (otherwise uvicorn would rewrite the peer from a forwarded XFF) and `--ws-max-size 1048576`; listen host via `GATEWAY_HOST`. Tests: `tests/integration/test_v1_proxy_uvicorn.py` (real uvicorn).
 - **Health** `/healthz`, `/ready` — liveness and readiness probes
 
 There is no longer any dependency on `jota-db`. Client identity and configuration live in the local SQLite database (`data/gateway.db`).
@@ -52,7 +52,8 @@ ADMIN_TOKEN=<secret>                     # required for /admin/* routes
 
 TRUST_LOOPBACK=true                      # 127.0.0.1/::1 exempt from /v1/* auth
 TRUSTED_NETWORKS=                        # CSV of CIDRs exempt from /v1/* auth, e.g. 192.168.1.0/24. Empty = fail-closed.
-TRUSTED_PROXIES=127.0.0.1,::1            # CSV of IPs/CIDRs allowed to set X-Real-IP for /v1/*
+TRUSTED_PROXIES=127.0.0.1,::1            # CSV of IPs/CIDRs allowed to set X-Real-IP for /v1/*. A proxy peer WITHOUT a valid X-Real-IP is NOT a trusted origin (fail-closed, G-31 #216)
+GATEWAY_HOST=0.0.0.0                     # Docker image only (Dockerfile CMD), not a Settings field; 127.0.0.1 behind a same-host proxy
 
 TRANSCRIBER_WS_URL=localhost:9000
 TTS_WS_URL=localhost:8005

@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 _IpNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
+# Not an IP on purpose: is_trusted_origin() rejects it, and it reads well in logs.
+NO_REAL_IP = "proxy-without-real-ip"
+
 
 def _parse_networks(csv: str) -> list[_IpNetwork]:
     networks: list[_IpNetwork] = []
@@ -63,14 +66,22 @@ def resolve_client_ip(connection: HTTPConnection) -> str:
     Returns the IP to evaluate with is_trusted_origin().
 
     If the immediate TCP peer is a trusted proxy (settings.TRUSTED_PROXIES),
-    trust X-Real-IP if present. Otherwise the peer connected directly — use
-    its address as-is and ignore any X-Real-IP it sends.
+    its X-Real-IP is the client address. A proxy peer WITHOUT a valid X-Real-IP
+    fails closed (G-31, #216): returning the peer would turn a same-host proxy
+    (loopback is trusted) into an open door for every Internet client, so we
+    return a non-IP sentinel that is_trusted_origin() rejects and /v1 asks for
+    a Bearer. Otherwise the peer connected directly — use its address as-is and
+    ignore any X-Real-IP it sends.
     """
     peer = connection.client.host if connection.client else ""
 
     if is_trusted_proxy(peer):
-        real_ip = connection.headers.get("x-real-ip")
-        return real_ip if real_ip else peer
+        real_ip = (connection.headers.get("x-real-ip") or "").strip()
+        try:
+            ipaddress.ip_address(real_ip)
+        except ValueError:
+            return NO_REAL_IP
+        return real_ip
 
     if connection.headers.get("x-real-ip"):
         logger.warning(

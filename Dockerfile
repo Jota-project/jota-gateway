@@ -30,5 +30,12 @@ EXPOSE 8004
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/healthz', timeout=3)"]
 
-# Levantamos en el host general para que Docker pueda mapearlo.
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8004", "--timeout-graceful-shutdown", "35"]
+# Host de escucha por GATEWAY_HOST (default 0.0.0.0, como antes). Detrás de un reverse
+# proxy en el mismo host conviene GATEWAY_HOST=127.0.0.1 (el HEALTHCHECK de arriba usa
+# 127.0.0.1, así que no sirve con una IP de LAN concreta).
+# --no-proxy-headers: la única señal de "IP real detrás de un proxy" es X-Real-IP (ver
+# src/core/network.py); sin él uvicorn dejaría que un X-Forwarded-For reenviado por el
+# proxy reescribiera el peer TCP.
+# --ws-max-size: tope de cualquier mensaje WebSocket entrante (default de uvicorn: 16 MiB);
+# 1 MiB sobra para audio PCM en chunks y para los mensajes de control.
+CMD ["sh", "-c", "exec uvicorn src.main:app --host \"${GATEWAY_HOST:-0.0.0.0}\" --port 8004 --no-proxy-headers --ws-max-size 1048576 --timeout-graceful-shutdown 35"]
