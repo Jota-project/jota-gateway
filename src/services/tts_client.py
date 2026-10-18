@@ -57,9 +57,8 @@ class TTSClient:
             try:
                 msg = json.loads(raw)
             except (json.JSONDecodeError, TypeError) as exc:
-                raise RuntimeError(
-                    f"[{self.client_id}] TTS sent non-JSON during auth: {raw!r}"
-                ) from exc
+                # G-40 (#216): never the frame content, only a fixed reason.
+                raise RuntimeError(f"[{self.client_id}] TTS sent non-JSON during auth") from exc
 
             if not isinstance(msg, dict):
                 # G-66 (#214): valid JSON but not an object — name the type only.
@@ -68,7 +67,12 @@ class TTSClient:
                 )
 
             if msg.get("type") != "auth_ok":
-                raise RuntimeError(f"[{self.client_id}] TTS auth failed: {msg}")
+                # G-40 (#216): only the protocol error `code` (short identifier), never
+                # the rest of the message.
+                code = msg.get("code")
+                if not (isinstance(code, str) and code.isidentifier() and len(code) <= 40):
+                    code = "unknown"
+                raise RuntimeError(f"[{self.client_id}] TTS auth failed (code={code})")
 
             _authenticated = True
             logger.info("[%s] Connected to TTS at ws://%s/ws", self.client_id, self.url)
@@ -116,7 +120,9 @@ class TTSClient:
                     try:
                         data = json.loads(msg)
                     except json.JSONDecodeError:
-                        logger.warning("[%s] TTS unparseable frame: %r", self.client_id, msg)
+                        logger.warning(
+                            "[%s] TTS unparseable frame descartado (non-JSON)", self.client_id
+                        )
                         continue
                     if not isinstance(data, dict):
                         # G-66 (#214): skip it; log the type only, never the content.

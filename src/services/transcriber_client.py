@@ -110,7 +110,8 @@ class TranscriberClient:
                     data = json.loads(message)
                     t_msg = TranscriberMessage(**data)
                 except json.JSONDecodeError:
-                    logger.warning(f"[{self.client_id}] Transcriber mandó un non-JSON: {message!r}")
+                    # G-40 (#216): never the frame content (may carry transcript text).
+                    logger.warning(f"[{self.client_id}] Transcriber mandó un frame non-JSON")
                     continue
                 except (ValidationError, TypeError) as e:
                     # Valid JSON with an unexpected shape (#131): skip the frame, keep
