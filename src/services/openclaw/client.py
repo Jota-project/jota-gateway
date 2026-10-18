@@ -1,11 +1,13 @@
 import asyncio
 import json
 import logging
+import traceback
 import uuid
 from collections.abc import AsyncGenerator, Callable
 
 import websockets
 from websockets.asyncio.client import ClientConnection
+from websockets.exceptions import ConnectionClosed
 
 from src.core.config import settings
 from src.services.openclaw import frames
@@ -44,6 +46,14 @@ def _frame_limit(announced: object) -> int:
     if isinstance(announced, bool) or not isinstance(announced, int) or announced <= 0:
         announced = _DEFAULT_MAX_PAYLOAD
     return max(_MIN_FRAME_LIMIT, min(announced, _MAX_FRAME_LIMIT))
+
+
+def _traceback_no_message(exc: BaseException) -> str:
+    """Traceback as `file:line in func` entries plus the exception type: never the
+    exception message nor source lines, which could carry frame/user content."""
+    entries = traceback.extract_tb(exc.__traceback__)
+    where = " <- ".join(f"{e.filename.split('/')[-1]}:{e.lineno} in {e.name}" for e in entries)
+    return f"{type(exc).__name__} at {where}"
 
 
 def _log_safe(value: object) -> str:
@@ -351,14 +361,25 @@ class OpenClawClient:
                     await self._handle_raw_frame(raw)
                 except Exception as e:
                     logger.warning("dropping malformed OpenClaw frame (%s)", type(e).__name__)
+                    logger.debug("malformed frame traceback (no message): %s", _traceback_no_message(e))
         except asyncio.CancelledError:
             # Clean shutdown via close()/reconnect — do NOT call on_disconnect,
             # that would wrongly trigger ReconnectingOpenClawClient's reconnect
             # loop for an intentional teardown. The `finally` below still fails
             # every in-flight turn (issue #103 follow-up).
             return
+        except ConnectionClosed as e:
+            # Only the numeric close codes (never the reason text): the 1009 "too big"
+            # case used to be diagnosable from the message, keep it diagnosable.
+            logger.error(
+                "_listen: OpenClaw connection closed (%s, rcvd=%s, sent=%s)",
+                type(e).__name__,
+                e.rcvd.code if e.rcvd else None,
+                e.sent.code if e.sent else None,
+            )
         except Exception as e:
             logger.error("_listen error (%s)", type(e).__name__)
+            logger.debug("_listen error traceback (no message): %s", _traceback_no_message(e))
         finally:
             # Single teardown for every way out (clean close 1000, error, cancel): any
             # turn still in flight on THIS connection has no one left to deliver its

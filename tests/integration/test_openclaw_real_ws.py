@@ -30,6 +30,7 @@ class FakeOpenClawServer:
     accepted  -> ack `ok:true,status:"accepted"` (no es fin de turno), delta y final
     malformed -> ack started, frames basura, luego delta y final
     close     -> cierra la conexión con 1000 sin responder
+    huge      -> un frame de ~26 MiB (supera el límite de 25 MiB: cierre 1009)
     big       -> ack started, un delta de `big_bytes` y final
     """
 
@@ -116,6 +117,9 @@ class FakeOpenClawServer:
                     json.dumps({"type": "event", "event": "agent", "payload": {"sessionKey": SK_B, "data": None}})
                 )
                 await ws.send(json.dumps({"type": "res", "id": "x", "payload": None}))
+            if text == "huge":
+                await ws.send(self._chat(sk, "delta", "SECRETCONTENT" * (2 * MIB)))
+                return
             if text == "big":
                 await ws.send(self._chat(sk, "delta", "x" * self.big_bytes))
                 await ws.send(self._chat(sk, "final"))
@@ -301,3 +305,74 @@ async def test_hello_ok_server_and_protocol_are_logged_once(server, caplog):
         assert "2026.6.11" in recs[0] and "protocol=4" in recs[0]
     finally:
         await client.close()
+
+
+# ── Observabilidad de la caída (revisión de #226) ─────────────────
+
+
+async def test_1009_close_logs_code_but_no_frame_content(server, caplog):
+    caplog.set_level(logging.DEBUG, logger="src.services.openclaw.client")
+    client, _ = make_client(server.port)
+    await client.connect()
+    try:
+        events = await asyncio.wait_for(run_turn(client, SK_A, "huge"), 10)
+        assert errors(events) == ["orchestrator_disconnected"]
+        assert "1009" in caplog.text
+        assert "SECRETCONTENT" not in caplog.text
+    finally:
+        await client.close()
+
+
+async def test_handler_error_logs_traceback_without_exception_message(caplog):
+    caplog.set_level(logging.DEBUG, logger="src.services.openclaw.client")
+    turns = TurnRegistry()
+    client = OpenClawClient("x", 1, "t", turns, FrameDispatcher(turns, ClientRegistry()))
+
+    class Boom:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise RuntimeError("secret internal detail")
+
+    client._ws = Boom()
+    await client._listen()
+    assert "secret internal detail" not in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "__anext__" in caplog.text  # traceback frames (code lines) are present
+
+
+# ── Reconexión tras cierre limpio (hueco de cobertura de #226) ────
+
+
+async def test_clean_close_fires_on_disconnect_after_error_all_and_new_connection_is_clean(server):
+    from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
+    from src.services.reconnection import ConnectionState
+
+    client, turns = make_client(server.port)
+    order = []
+    real_error_all = turns.error_all
+    turns.error_all = lambda msg: (order.append(("error_all", msg)), real_error_all(msg))[1]
+    roc = ReconnectingOpenClawClient(client, "oc", initial_backoff=0.05, max_backoff=0.1)
+    real_on_disc = client.on_disconnect
+    client.on_disconnect = lambda: (order.append(("on_disconnect", None)), real_on_disc())[1]
+    await roc.connect()
+    try:
+        events = await asyncio.wait_for(run_turn(roc, SK_A, "close"), 3)
+        assert errors(events) == ["orchestrator_disconnected"]
+        assert order[:2] == [("error_all", "orchestrator_disconnected"), ("on_disconnect", None)]
+        for _ in range(100):
+            if roc.state == ConnectionState.CONNECTED and server.connections == 2:
+                break
+            await asyncio.sleep(0.05)
+        assert server.connections == 2 and roc.state == ConnectionState.CONNECTED
+        calls_before = len(order)
+        events = await asyncio.wait_for(run_turn(roc, SK_A, "ok"), 3)
+        assert errors(events) == [] and tokens(events) == "reply-ok"
+        await asyncio.sleep(0.1)
+        assert [o for o in order[calls_before:] if o[0] == "error_all"] == []
+        assert [o for o in order if o[0] == "error_all"] == [
+            ("error_all", "orchestrator_disconnected")
+        ]
+    finally:
+        await roc.close()
