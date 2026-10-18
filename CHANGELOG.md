@@ -1,3 +1,10 @@
+## [1.19.2](https://github.com/Jota-project/jota-gateway/compare/v1.19.1...v1.19.2) (2026-10-18)
+
+
+### Bug Fixes
+
+* fugas y topes del transcriber y del TTS ([#214](https://github.com/Jota-project/jota-gateway/issues/214)) ([#225](https://github.com/Jota-project/jota-gateway/issues/225)) ([340ffb1](https://github.com/Jota-project/jota-gateway/commit/340ffb1b6d76658d72d55fba5b81254c1be485e1)), closes [#216](https://github.com/Jota-project/jota-gateway/issues/216) [#215](https://github.com/Jota-project/jota-gateway/issues/215)
+
 ## [1.19.1](https://github.com/Jota-project/jota-gateway/compare/v1.19.0...v1.19.1) (2026-10-18)
 
 
