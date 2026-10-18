@@ -124,3 +124,34 @@ def test_non_streaming_non_runtime_error_returns_502(client, mock_orchestrator):
     r = client.post("/v1/chat/completions", json={**BODY, "model": "openclaw"})
     assert r.status_code == 502, r.text
     assert "boom interno" not in r.text
+
+
+def test_non_runtime_error_message_never_reaches_logs_stream_and_non_stream(
+    client, mock_orchestrator, caplog
+):
+    """Higiene de logs: solo el tipo de la excepción, nunca su mensaje (puede llevar texto
+    de usuario), ni en el traceback a DEBUG."""
+    import logging
+    import traceback
+
+    marker = "SECRET-USER-TEXT"
+    caplog.set_level(logging.DEBUG)
+
+    async def _boom(*args, **kwargs):
+        raise ValueError(marker)
+        yield  # pragma: no cover
+
+    mock_orchestrator.stream_response = _boom
+    r = client.post("/v1/chat/completions", json={**BODY, "model": "openclaw"})
+    assert r.status_code == 502
+    with client.stream(
+        "POST", "/v1/chat/completions", json={**BODY, "model": "openclaw", "stream": True}
+    ) as r2:
+        r2.read()
+
+    assert "ValueError" in caplog.text  # sí se registra el tipo
+    assert marker not in caplog.text
+    for rec in caplog.records:
+        assert marker not in rec.getMessage()
+        if rec.exc_info:
+            assert marker not in "".join(traceback.format_exception(*rec.exc_info))
