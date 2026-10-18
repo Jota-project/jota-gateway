@@ -61,6 +61,12 @@ class TTSClient:
                     f"[{self.client_id}] TTS sent non-JSON during auth: {raw!r}"
                 ) from exc
 
+            if not isinstance(msg, dict):
+                # G-66 (#214): valid JSON but not an object — name the type only.
+                raise RuntimeError(
+                    f"[{self.client_id}] TTS sent non-object during auth ({type(msg).__name__})"
+                )
+
             if msg.get("type") != "auth_ok":
                 raise RuntimeError(f"[{self.client_id}] TTS auth failed: {msg}")
 
@@ -111,6 +117,14 @@ class TTSClient:
                         data = json.loads(msg)
                     except json.JSONDecodeError:
                         logger.warning("[%s] TTS unparseable frame: %r", self.client_id, msg)
+                        continue
+                    if not isinstance(data, dict):
+                        # G-66 (#214): skip it; log the type only, never the content.
+                        logger.warning(
+                            "[%s] TTS frame descartado: no es un objeto JSON (%s)",
+                            self.client_id,
+                            type(data).__name__,
+                        )
                         continue
                     msg_type = data.get("type")
                     if msg_type == "done":
