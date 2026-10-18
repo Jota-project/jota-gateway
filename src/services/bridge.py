@@ -726,7 +726,8 @@ class JotaBridge:
         Envía texto al Orchestrator y despacha tokens/eventos al cliente y al TTS.
 
         Si el cliente pidió audio, crea un TTSClient por petición y corre
-        pipe_tokens + pipe_audio concurrentemente vía asyncio.gather.
+        pipe_tokens + pipe_audio concurrentemente (pipe_audio como tarea; todas las
+        esperas del TTS acotadas, #214).
         """
         from src.core.session_key import make_session_key
         from src.services.orchestration import call_orchestrator
@@ -837,10 +838,14 @@ class JotaBridge:
                     except Exception as e:
                         await _drop_tts(f"end {type(e).__name__}")
 
+        audio_progress_at = time.monotonic()
+
         async def pipe_audio():
+            nonlocal audio_progress_at
             header = bytes([0xA1]) + turn_seq.to_bytes(2, "big")
             _first_chunk = True
             async for chunk in tts.get_audio_stream():
+                audio_progress_at = time.monotonic()
                 if _first_chunk:
                     await self.tracker.record("tts_first_chunk")
                     _first_chunk = False
@@ -854,14 +859,19 @@ class JotaBridge:
             audio_task = asyncio.create_task(pipe_audio())
             try:
                 await pipe_tokens()
-                if not audio_task.done():
-                    # asyncio.wait (not wait_for): an external cancellation (barge-in)
-                    # propagates instead of being mistaken for the audio task's own.
-                    done, _ = await asyncio.wait(
-                        {audio_task}, timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
+                # Cap by INACTIVITY, not absolute: the window restarts with every audio
+                # chunk, so a long healthy reply is never truncated. asyncio.wait (not
+                # wait_for): an external cancellation (barge-in) propagates instead of
+                # being mistaken for the audio task's own.
+                audio_progress_at = time.monotonic()
+                while not audio_task.done():
+                    idle_left = settings.PUSH_TTS_DRAIN_TIMEOUT_S - (
+                        time.monotonic() - audio_progress_at
                     )
-                    if not done:
-                        await _drop_tts("el audio no terminó (sin done)")
+                    if idle_left <= 0:
+                        await _drop_tts("el audio no progresa (sin done)")
+                        break
+                    await asyncio.wait({audio_task}, timeout=idle_left)
             finally:
                 if not audio_task.done():
                     audio_task.cancel()
