@@ -1,3 +1,10 @@
+## [1.19.1](https://github.com/Jota-project/jota-gateway/compare/v1.19.0...v1.19.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* frontera con OpenClaw — frames malformados, cierre limpio y max_size ([#213](https://github.com/Jota-project/jota-gateway/issues/213)) ([#226](https://github.com/Jota-project/jota-gateway/issues/226)) ([769cc60](https://github.com/Jota-project/jota-gateway/commit/769cc609b659c317151e7db1ffe2496bd8806031))
+
 # [1.19.0](https://github.com/Jota-project/jota-gateway/compare/v1.18.0...v1.19.0) (2026-10-11)
 
 
