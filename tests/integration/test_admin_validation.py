@@ -95,7 +95,7 @@ def test_create_invalid_values_return_422(http, payload):
 def test_create_nan_inf_return_422(http, literal):
     r = http.post(
         "/admin/clients",
-        content='{"name": "x", "tts_speed": %s}' % literal,
+        content=f'{{"name": "x", "tts_speed": {literal}}}',
         headers=JSON_HEADERS,
     )
     assert r.status_code == 422, r.text
