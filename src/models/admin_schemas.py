@@ -9,9 +9,9 @@ contratos internos con la interfaz HTTP de administración.
 
 import json
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from src.db.models import ClientRecord
 from src.models.schemas import OutputMode
@@ -21,45 +21,87 @@ from src.models.schemas import OutputMode
 ClientType = Literal["ha", "esp32", "web", "app"]
 
 
+# Tipos acotados solo para la ENTRADA (#217 / G-28). Los topes superiores evitan
+# desbordes de entero en SQLite (OverflowError -> 500) y valores absurdos.
+_Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+_Text = Annotated[str, StringConstraints(min_length=1, max_length=200)]
+_VadThold = Annotated[float, Field(ge=0.0, le=1.0)]
+_Speed = Annotated[float, Field(gt=0.0, le=10.0)]
+_Seconds = Annotated[float, Field(gt=0.0, le=86_400.0)]
+_MinChars = Annotated[int, Field(ge=1, le=10_000)]
+_Turns = Annotated[int, Field(ge=1, le=10_000)]
+
+# Campos de PATCH que mapean a columnas NOT NULL: `null` explícito -> 422.
+_NOT_NULL_UPDATE_FIELDS = (
+    "name",
+    "is_active",
+    "stt_language",
+    "stt_vad_thold",
+    "tts_voice",
+    "tts_speed",
+    "barge_in_enabled",
+    "barge_in_min_chars",
+    "silence_timeout_s",
+    "max_silence_turns",
+    "push_enabled",
+    "tool_calls_enabled",
+)
+
+
 class ClientCreate(BaseModel):
-    name: str
-    client_key: str | None = None  # si se omite, se genera uno aleatorio
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    name: _Name
+    client_key: str | None = None  # si se omite (o es ""), se genera uno aleatorio
     client_type: ClientType | None = None
     default_agent: str | None = None
     allowed_agents: list[str] | None = None
     # Pipeline config
-    stt_language: str = "es"
-    stt_vad_thold: float = 0.0
-    tts_voice: str = "af_heart"
-    tts_speed: float = 1.0
+    stt_language: _Text = "es"
+    stt_vad_thold: _VadThold = 0.0
+    tts_voice: _Text = "af_heart"
+    tts_speed: _Speed = 1.0
     barge_in_enabled: bool = True
-    barge_in_min_chars: int = 5
+    barge_in_min_chars: _MinChars = 5
     output_mode: list[OutputMode] | None = None
-    silence_timeout_s: float = 2.0
-    max_silence_turns: int = 3
+    silence_timeout_s: _Seconds = 2.0
+    max_silence_turns: _Turns = 3
     push_enabled: bool = True
     tool_calls_enabled: bool = False
 
 
 class ClientUpdate(BaseModel):
-    """Todos los campos opcionales — PATCH semántico (exclude_unset)."""
+    """Todos los campos opcionales — PATCH semántico (exclude_unset).
 
-    name: str | None = None
+    Un `null` explícito solo vale para los campos que admiten NULL en la BD
+    (`client_type`, `default_agent`, `allowed_agents`, `output_mode`); en el resto es 422.
+    """
+
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    name: _Name | None = None
     is_active: bool | None = None
     client_type: ClientType | None = None
     default_agent: str | None = None
     allowed_agents: list[str] | None = None
-    stt_language: str | None = None
-    stt_vad_thold: float | None = None
-    tts_voice: str | None = None
-    tts_speed: float | None = None
+    stt_language: _Text | None = None
+    stt_vad_thold: _VadThold | None = None
+    tts_voice: _Text | None = None
+    tts_speed: _Speed | None = None
     barge_in_enabled: bool | None = None
-    barge_in_min_chars: int | None = None
+    barge_in_min_chars: _MinChars | None = None
     output_mode: list[OutputMode] | None = None
-    silence_timeout_s: float | None = None
-    max_silence_turns: int | None = None
+    silence_timeout_s: _Seconds | None = None
+    max_silence_turns: _Turns | None = None
     push_enabled: bool | None = None
     tool_calls_enabled: bool | None = None
+
+    @model_validator(mode="after")
+    def _reject_null_for_not_null_columns(self) -> "ClientUpdate":
+        for field in _NOT_NULL_UPDATE_FIELDS:
+            if field in self.model_fields_set and getattr(self, field) is None:
+                raise ValueError(f"{field} no admite null")
+        return self
 
 
 class ClientResponse(BaseModel):
