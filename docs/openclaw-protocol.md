@@ -312,7 +312,31 @@ How the `agent` segment is resolved and validated lives in `CLAUDE.md` ("Session
 
 ---
 
+## Frame size, malformed frames and connection end (2026-10-18, issue #213)
+
+Observed/decided while hardening the gateway's boundary with OpenClaw (audit G-03/G-04/G-05/G-47/G-48):
+
+- **`hello-ok.policy.maxPayload` (25 MiB = 26214400 on 2026.6.11) is the largest frame the
+  server may send.** `websockets` defaults to a 1 MiB inbound limit, so one larger frame closes
+  the socket with 1009 and drops every multiplexed session. The client connects *before*
+  `hello-ok`, so it starts with 25 MiB (or the last announced value on a reconnect) and re-aligns
+  the live socket right after `hello-ok`; clamped to [1 MiB, 64 MiB].
+- **Malformed frames are possible in principle** (not valid JSON, a JSON array, `payload: null`,
+  `data: null`). The gateway drops them per frame; they never end the connection.
+- **A clean close (1000) from the server ends the iteration silently** (no exception), so
+  in-flight turns must be failed explicitly on any exit from the listen loop.
+- **`res` frames:** `chat.send`'s ack is `ok:true` with `payload.status == "started"`. Only
+  `ok:false` is a failure that ends the turn; the explicit `status: "done"` is kept as a legacy
+  completion fallback (pre-2026.6.11). Any other `ok:true` status is not a turn end; the real
+  completion is the `chat` event with `state == "final"`.
+- **`hello-ok` carries `protocol` and `server.version`;** the gateway logs both once per
+  connection (INFO) so version drift shows in the logs.
+
+---
+
 ## Change log of this file
+
+- **2026-10-18**: added "Frame size, malformed frames and connection end" (issue #213).
 
 - **2026-10-08**: added "Session key carries the per-client identity" — documents the
   `agent:{agent}:{client.id}` convention introduced by #52/#105 (issue #119). No server-side

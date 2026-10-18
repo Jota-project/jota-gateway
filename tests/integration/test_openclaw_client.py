@@ -817,7 +817,7 @@ async def test_admin_trigger_reconnect_coalesces_with_real_background_reconnect(
     release_connect = asyncio.Event()
     connect_calls = 0
 
-    async def gated_connect(uri):
+    async def gated_connect(uri, **kwargs):
         nonlocal connect_calls
         connect_calls += 1
         if connect_calls == 1:
