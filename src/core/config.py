@@ -37,7 +37,11 @@ class Settings(BaseSettings):
     TRANSCRIBER_READY_TIMEOUT_S: float = 10.0
 
     # Deadlines acotados (issue #115)
-    HANDSHAKE_TIMEOUT_S: float = 10.0
+    # 5 s (antes 10, #216): un handshake es un único mensaje pequeño; el margen largo solo
+    # sirve a quien conecta y se queda callado, reteniendo la conexión sin autenticar.
+    HANDSHAKE_TIMEOUT_S: float = 5.0
+    # Tope (caracteres) del primer mensaje, comprobado antes de parsear/autenticar (#216).
+    HANDSHAKE_MAX_BYTES: int = Field(default=4096, gt=0)
     TURN_TIMEOUT_S: float = 120.0
     IDLE_TIMEOUT_S: float = 300.0
     SHUTDOWN_DRAIN_S: float = 30.0

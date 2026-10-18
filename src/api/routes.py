@@ -32,6 +32,13 @@ async def gateway_websocket(websocket: WebSocket):
         raw_msg = await asyncio.wait_for(
             websocket.receive_text(), timeout=settings.HANDSHAKE_TIMEOUT_S
         )
+        if len(raw_msg) > settings.HANDSHAKE_MAX_BYTES:
+            # Antes de parsear/autenticar: json.loads + pydantic cuestan ~8x el tamaño.
+            logger.warning(
+                f"Handshake rechazado: {len(raw_msg)} caracteres > HANDSHAKE_MAX_BYTES."
+            )
+            await websocket.close(code=1008, reason="Handshake too large")
+            return
         msg_data = json.loads(raw_msg)
         handshake = Handshake(**msg_data)
     except (json.JSONDecodeError, ValidationError) as e:

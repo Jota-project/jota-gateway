@@ -57,7 +57,8 @@ El agente efectivo de la sesión no es simplemente "el que pediste o el global":
 
 | Situación | Código WS | Motivo |
 |-----------|-----------|--------|
-| No se recibe el handshake JSON en los primeros `HANDSHAKE_TIMEOUT_S` (10s por defecto) | 1008 | `"Handshake timeout"` |
+| No se recibe el handshake JSON en los primeros `HANDSHAKE_TIMEOUT_S` (5s por defecto) | 1008 | `"Handshake timeout"` |
+| El handshake supera `HANDSHAKE_MAX_BYTES` (4096 caracteres) | 1008 | `"Handshake too large"` |
 | JSON inválido o campos incorrectos | 1008 | `"Handshake invalido"` |
 | `client_key` inválida o cliente inactivo | 1008 | `"Clave de cliente invalida o inactiva"` |
 | Servicio de identidad no disponible | 1011 | `"Servicio de identidad no disponible"` |
@@ -576,7 +577,7 @@ Llegan entrelazados con los mensajes JSON. Identifica audio por el magic byte `0
 
 | Deadline | Valor por defecto | Qué provoca | Cómo lo ves |
 |---|---|---|---|
-| `HANDSHAKE_TIMEOUT_S` | 10s | No mandas el JSON de handshake a tiempo | Cierre WS 1008, `"Handshake timeout"` (ver §1) |
+| `HANDSHAKE_TIMEOUT_S` | 5s | No mandas el JSON de handshake a tiempo | Cierre WS 1008, `"Handshake timeout"` (ver §1) |
 | `TURN_TIMEOUT_S` | 120s, **idle-reset** | El orquestador deja de mandar nada durante un turno ya en marcha (cuelgue real, no duración total) | `{"type":"error","code":"TURN_ERROR","message":"turn_timeout","fatal":false,"turn_id":"..."}` (ver §9) — la sesión sigue viva, solo ese turno se aborta |
 | `TURN_QUEUE_MAX` | 1000 eventos por turno | El gateway no consigue procesar los eventos del orquestador al ritmo al que llegan para ese turno (consumidor atascado); es un fallo interno raro, no depende de tu lectura del socket | `{"type":"error","code":"TURN_ERROR","message":"turn_overflow","fatal":false,"turn_id":"..."}` — la sesión sigue viva, solo ese turno se aborta (los tokens pendientes se descartan); mismo tratamiento en el cliente que `turn_timeout` |
 | `IDLE_TIMEOUT_S` | 300s (5 min) | No mandas **ningún** mensaje (ni audio ni texto) durante ese tiempo | Cierre WS con código 1000, **sin ningún mensaje de error o aviso previo** |

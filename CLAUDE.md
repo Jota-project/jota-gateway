@@ -75,7 +75,8 @@ TRANSCRIBER_RECONNECT_MAX_DURATION=300.0
 TTS_RECONNECT_INITIAL_BACKOFF=1.0
 TTS_RECONNECT_MAX_BACKOFF=60.0
 
-HANDSHAKE_TIMEOUT_S=10.0
+HANDSHAKE_TIMEOUT_S=5.0                  # was 10.0 until #216 — slow clients (ESP32) may need to raise it
+HANDSHAKE_MAX_BYTES=4096                 # max chars of the first WS message, checked before parsing/auth (#216); else 1008 "Handshake too large"
 TURN_TIMEOUT_S=120.0
 IDLE_TIMEOUT_S=300.0
 SHUTDOWN_DRAIN_S=30.0
@@ -209,8 +210,9 @@ The singleton `db_client = DbClient()` is imported from this module everywhere. 
 ## WebSocket session lifecycle (`routes.py` → `bridge.py`)
 
 1. Client connects and sends a **Handshake** JSON. The initial `websocket.receive_text()` wait
-   for it is bounded by `HANDSHAKE_TIMEOUT_S` (issue #115) — a client that connects and never
+   for it is bounded by `HANDSHAKE_TIMEOUT_S` (issue #115, default 5 s since #216) — a client that connects and never
    sends anything gets closed with code 1008 instead of holding the connection open forever.
+   The message is also capped by `HANDSHAKE_MAX_BYTES` (4096 chars) *before* `json.loads`/pydantic/auth (1008 `"Handshake too large"`), on top of the image's uvicorn `--ws-max-size 1048576` (1009 for anything bigger).
    ```json
    {
      "client_key": "...",
