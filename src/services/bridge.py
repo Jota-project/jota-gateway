@@ -759,6 +759,25 @@ class JotaBridge:
         agent = self.handshake.agent or self._default_agent
         session_key = make_session_key(agent, self.client_id)
 
+        # Issue #214 (G-02): every TTS wait of the turn is bounded by
+        # PUSH_TTS_DRAIN_TIMEOUT_S, same mechanism as push (#199). A dead/hung TTS is
+        # dropped once (one WARNING) and the turn goes on text-only.
+        audio_task: asyncio.Task | None = None
+        tts_live = tts
+
+        async def _drop_tts(reason: str) -> None:
+            nonlocal tts_live
+            if tts_live is None:
+                return
+            tts_live = None
+            logger.warning(
+                f"[{self.client_id}] TTS del turno abandonado ({reason}); "
+                f"el turno sigue solo con texto."
+            )
+            if audio_task is not None and not audio_task.done():
+                audio_task.cancel()
+                await asyncio.wait({audio_task}, timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
+
         async def _on_token(token_text: str):
             try:
                 if "text" in self.handshake.output_mode:
@@ -767,8 +786,14 @@ class JotaBridge:
                     )
             except Exception:
                 pass
-            if tts:
-                await tts.send_text_chunk(token_text)
+            if tts_live:
+                try:
+                    await asyncio.wait_for(
+                        tts_live.send_text_chunk(token_text),
+                        timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S,
+                    )
+                except Exception as e:
+                    await _drop_tts(f"send_text_chunk {type(e).__name__}")
 
         async def _on_tool_call(tool_call: ToolCallEvent):
             if not self.config.tool_calls_enabled:
@@ -804,8 +829,13 @@ class JotaBridge:
                 except Exception:
                     pass
             finally:
-                if tts:
-                    await tts.end()
+                if tts_live:
+                    try:
+                        await asyncio.wait_for(
+                            tts_live.end(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
+                        )
+                    except Exception as e:
+                        await _drop_tts(f"end {type(e).__name__}")
 
         async def pipe_audio():
             header = bytes([0xA1]) + turn_seq.to_bytes(2, "big")
@@ -821,10 +851,31 @@ class JotaBridge:
             await self.tracker.record("tts_done")
 
         if tts:
+            audio_task = asyncio.create_task(pipe_audio())
             try:
-                await asyncio.gather(pipe_tokens(), pipe_audio())
+                await pipe_tokens()
+                if not audio_task.done():
+                    # asyncio.wait (not wait_for): an external cancellation (barge-in)
+                    # propagates instead of being mistaken for the audio task's own.
+                    done, _ = await asyncio.wait(
+                        {audio_task}, timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
+                    )
+                    if not done:
+                        await _drop_tts("el audio no terminó (sin done)")
             finally:
-                await tts.close()
+                if not audio_task.done():
+                    audio_task.cancel()
+                    await asyncio.wait({audio_task}, timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
+                if audio_task.done() and not audio_task.cancelled() and audio_task.exception():
+                    logger.warning(
+                        f"[{self.client_id}] pipe_audio falló ({type(audio_task.exception()).__name__})"
+                    )
+                try:
+                    await asyncio.wait_for(tts.close(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
+                except Exception as e:
+                    logger.warning(
+                        f"[{self.client_id}] TTS close del turno falló ({type(e).__name__})"
+                    )
         else:
             await pipe_tokens()
 
