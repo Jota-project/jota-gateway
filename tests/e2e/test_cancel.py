@@ -25,8 +25,8 @@ async def test_cancel_stops_the_active_turn_on_real_openclaw(test_client_record,
 
         await cancel_active_turn(ws)
 
-        # No turn_end (nor interrupted) should ever arrive for the cancelled turn —
-        # drain briefly and assert nothing matches.
+        # Since #215 (G-10) a cancelled turn is closed with exactly one turn_end
+        # (no `interrupted`: that is only for barge-in). Drain briefly and check.
         leftover_frames = []
         try:
             while True:
@@ -35,10 +35,11 @@ async def test_cancel_stops_the_active_turn_on_real_openclaw(test_client_record,
         except TimeoutError:
             pass
 
-        assert not any(
-            f.get("turn_id") == cancelled_turn_id and f["type"] == "turn_end"
-            for f in leftover_frames
-        ), f"turn_end no debería llegar para un turno cancelado: {leftover_frames}"
+        ends = [
+            f for f in leftover_frames
+            if f.get("turn_id") == cancelled_turn_id and f["type"] == "turn_end"
+        ]
+        assert len(ends) == 1, f"se esperaba un único turn_end del turno cancelado: {leftover_frames}"
 
         # A fresh turn afterwards must complete normally — proves the session
         # wasn't left in a broken state by the cancellation.

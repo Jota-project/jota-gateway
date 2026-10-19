@@ -1,3 +1,10 @@
+## [1.19.4](https://github.com/Jota-project/jota-gateway/compare/v1.19.3...v1.19.4) (2026-10-19)
+
+
+### Bug Fixes
+
+* turno y sesión — parches sin extraer ([#215](https://github.com/Jota-project/jota-gateway/issues/215), [#201](https://github.com/Jota-project/jota-gateway/issues/201), [#227](https://github.com/Jota-project/jota-gateway/issues/227)) ([#231](https://github.com/Jota-project/jota-gateway/issues/231)) ([4e3c171](https://github.com/Jota-project/jota-gateway/commit/4e3c171f1e5aab3abf83b5f0e219406f3b521e7b)), closes [#101](https://github.com/Jota-project/jota-gateway/issues/101) [#225](https://github.com/Jota-project/jota-gateway/issues/225)
+
 ## [1.19.3](https://github.com/Jota-project/jota-gateway/compare/v1.19.2...v1.19.3) (2026-10-19)
 
 
