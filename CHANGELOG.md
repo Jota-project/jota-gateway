@@ -1,3 +1,10 @@
+## [1.19.5](https://github.com/Jota-project/jota-gateway/compare/v1.19.4...v1.19.5) (2026-10-19)
+
+
+### Bug Fixes
+
+* exposición y logs — /v1 fail-closed, compare_digest y claves fuera de logs ([#216](https://github.com/Jota-project/jota-gateway/issues/216)) ([#230](https://github.com/Jota-project/jota-gateway/issues/230)) ([28ab442](https://github.com/Jota-project/jota-gateway/commit/28ab442c8e5dfe3f057d84312b06ee9028d97c9b))
+
 ## [1.19.4](https://github.com/Jota-project/jota-gateway/compare/v1.19.3...v1.19.4) (2026-10-19)
 
 
