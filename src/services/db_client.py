@@ -14,6 +14,7 @@ import logging
 from sqlmodel import Session, select
 
 from src.core.cache import make_cache
+from src.core.config import settings
 from src.core.exceptions import ClientInactive, ClientNotFound
 from src.db.database import get_engine
 from src.db.models import ClientRecord
@@ -55,7 +56,9 @@ class DbClient:
 
     def __init__(self, engine=None):
         self._engine = engine
-        self._session_cache, self._session_lock = make_cache(maxsize=500, ttl=60)
+        self._session_cache, self._session_lock = make_cache(
+            maxsize=500, ttl=settings.SESSION_CACHE_TTL_S
+        )
         # Global invalidation epoch (issue #163). One int instead of a per-key
         # dict: a per-key counter can't be purged safely (an in-flight read of a
         # deleted/rotated key could still repopulate the cache once its entry is
@@ -67,7 +70,8 @@ class DbClient:
 
     async def get_session(self, client_key: str) -> tuple[Client, ClientConfig]:
         """
-        Resuelve client_key → (Client, ClientConfig). Resultado cacheado 60 s.
+        Resuelve client_key → (Client, ClientConfig). Resultado cacheado
+        SESSION_CACHE_TTL_S (10 s por defecto; antes 60 s, G-06).
 
         Usa una época global de invalidación para evitar repoblar el caché
         con un valor obsoleto: si invalidate() (de CUALQUIER key) corre en

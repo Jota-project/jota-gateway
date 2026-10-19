@@ -15,6 +15,11 @@ from src.api.routes import router as stream_router
 from src.core.config import settings
 from src.core.network import warn_if_open_proxy_config
 from src.core.request_id import RequestIdMiddleware
+from src.core.startup_checks import (
+    acquire_single_process_lock,
+    release_single_process_lock,
+    warn_insecure_tokens,
+)
 from src.core.transport import TransportCaptureMiddleware
 from src.db.database import dispose_engine, run_migrations
 from src.services.openclaw.client import OpenClawClient
@@ -33,9 +38,26 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # M6f (#218): un solo proceso por base de datos. El estado vivo (sesiones, cachés,
+    # ClientRegistry) es por proceso, así que varios workers sobre la misma BD no están
+    # soportados. El lock se toma antes que nada y se suelta al final del apagado; si el
+    # arranque falla a medias, también (finally). El SO lo libera si el proceso muere.
+    lock_handle = None
+    if settings.SINGLE_PROCESS_LOCK:
+        lock_handle = acquire_single_process_lock(settings.DATABASE_URL)
+    try:
+        async with _lifespan_body(app):
+            yield
+    finally:
+        release_single_process_lock(lock_handle)
+
+
+@asynccontextmanager
+async def _lifespan_body(app: FastAPI):
     run_migrations()
     logger.info("BD inicializada")
     warn_if_open_proxy_config()
+    warn_insecure_tokens(settings)
 
     turn_registry = TurnRegistry()
     client_registry = ClientRegistry()
