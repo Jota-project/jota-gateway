@@ -10,7 +10,7 @@ from src.core.config import settings
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.openclaw.models import ToolCallEvent
 from src.services.openclaw.registry import ClientRegistry
-from src.services.outbound import DirectSender, OutboundSender
+from src.services.outbound import ClientGone, DirectSender, OutboundSender
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.protocol import OrchestratorProtocol
 from src.services.reconnection import ConnectionState, to_wire_state
@@ -132,6 +132,21 @@ class JotaBridge:
         # observing a half-finished, permanently-poisoned guard.
         self._closed: bool = False
         self._close_lock = asyncio.Lock()
+        # Set on entry to close_all() and never reset: from then on no new turn may
+        # start (G-09, #215). Distinct from `_closed`, which only flips once teardown
+        # completes so an interrupted close_all() can be retried (#101).
+        self._closing: bool = False
+        # Serializes turn cancel/start (G-08, #201).
+        self._turn_lock = asyncio.Lock()
+        # Id of the turn currently running (set after its turn_start is enqueued).
+        self._active_turn_id: str | None = None
+        # True once the client is known to be gone (disconnect seen by the input loop,
+        # or ClientGone from the sender): its turn is cancelled, not drained (G-18).
+        self._client_gone: bool = False
+        # Audio activity, for the silence watchdog (#227): last audio frame, and the
+        # first frame of the current burst (a frame after an idle gap starts a new one).
+        self._last_audio_at: float | None = None
+        self._audio_burst_start: float | None = None
 
     async def connect_internal_services(self):
         """Inicializa clientes de microservicios dependiendo del handshake."""
@@ -172,6 +187,9 @@ class JotaBridge:
         silently no-op'ing forever (issue #101 follow-up: the eager guard used
         to defeat the very safety net routes.py relies on).
         """
+        # Before taking the lock, so a `send` arriving while another close_all() is
+        # draining the turn is already refused (G-09).
+        self._closing = True
         async with self._close_lock:
             if self._closed:
                 return
@@ -189,7 +207,17 @@ class JotaBridge:
             # naturally without holding up shutdown forever if it never does.
             # Explicit cancellation otherwise only happens via
             # _cancel_active_turn() (barge-in) or task cancellation from outside.
-            if self._active_turn and not self._active_turn.done():
+            if self._active_turn and not self._active_turn.done() and self._client_gone:
+                # G-18: nobody is listening any more, so draining the turn would only
+                # hold the teardown for up to SHUTDOWN_DRAIN_S. Cancel it (the
+                # orchestrator stream's aclose sends chat.abort).
+                turn = self._active_turn
+                turn.cancel()
+                try:
+                    await asyncio.wait({turn}, timeout=settings.SHUTDOWN_DRAIN_S)
+                except asyncio.CancelledError:
+                    pass
+            elif self._active_turn and not self._active_turn.done():
                 try:
                     await asyncio.wait_for(self._active_turn, timeout=settings.SHUTDOWN_DRAIN_S)
                 except asyncio.CancelledError:
@@ -349,17 +377,65 @@ class JotaBridge:
             "transcriber": transcriber_live,
         }
 
+    async def _cancel_turn(self) -> tuple[bool, str | None]:
+        """Cancel the turn running *now*. Returns (cancelled, its turn_id).
+
+        G-08 (#201): the target is captured on entry, calls are serialized, and
+        `_active_turn` is only cleared if it is still that same task. Two concurrent
+        callers therefore cancel the turn once (the second gets False) and neither
+        can wipe the reference to a turn started in between.
+        """
+        turn, turn_id = self._active_turn, self._active_turn_id
+        if turn is None or turn.done():
+            return False, None
+        async with self._turn_lock:
+            if turn.done():  # another caller cancelled it while we waited for the lock
+                return False, None
+            await self._cancel_and_wait(turn)
+            return True, turn_id
+
     async def _cancel_active_turn(self) -> bool:
         """Cancel the active orchestrator turn if one is running. Returns True if cancelled."""
-        if self._active_turn and not self._active_turn.done():
-            self._active_turn.cancel()
-            try:
-                await self._active_turn
-            except (asyncio.CancelledError, Exception):
-                pass
+        return (await self._cancel_turn())[0]
+
+    async def _cancel_and_wait(self, turn: asyncio.Task) -> None:
+        turn.cancel()
+        try:
+            await turn
+        except (asyncio.CancelledError, Exception):
+            pass
+        if self._active_turn is turn:
             self._active_turn = None
+
+    async def _start_turn(self, text: str) -> None:
+        """Replace the active turn (if any) with a new one for `text`.
+
+        Refused once the session is closing (G-09): the input loop is still reading
+        while close_all() drains, and a turn created then would survive the teardown.
+        """
+        if self._closing:
+            logger.info(f"[{self.client_id}] send ignorado: la sesión se está cerrando.")
+            return
+        async with self._turn_lock:
+            if self._closing:
+                return
+            current = self._active_turn
+            if current is not None and not current.done():
+                await self._cancel_and_wait(current)
+            task = asyncio.create_task(self._call_orchestrator(text), name="turn")
+            self._supervise(task)
+            self._active_turn = task
+
+    def _turn_in_flight(self) -> bool:
+        """A normal turn is running, or a push turn is open (bounded by TURN_TIMEOUT_S
+        like the idle watchdog's check, so an orphaned push can't pause silence
+        monitoring forever)."""
+        if self._active_turn is not None and not self._active_turn.done():
             return True
-        return False
+        return self._push_turn_open and (
+            self._push_turn_opened_at is None
+            or time.monotonic() - self._push_turn_opened_at < settings.TURN_TIMEOUT_S
+        )
 
     async def _transcription_watchdog(self):
         """Notifica al cliente si hay silencio prolongado; cierra tras max_silence_turns consecutivos."""
@@ -403,8 +479,37 @@ class JotaBridge:
                 recovery_baseline = time.monotonic()
             was_connected = True
 
-            last = recovery_baseline or current_transcription_at or self._first_audio_at
-            elapsed = time.monotonic() - last
+            now = time.monotonic()
+            if self._turn_in_flight():
+                # Decision of Sito (#215): a turn in progress is activity, not silence.
+                # Strikes reset and the window restarts from now, so the first window
+                # after the turn is a fresh one (no strike on the first tick after it).
+                silence_count = 0
+                recovery_baseline = now
+                continue
+
+            last_audio = self._last_audio_at if self._last_audio_at is not None else self._first_audio_at
+            if last_audio is None or now - last_audio > self._audio_gap_s():
+                # #227: the client is not sending audio (wake-word client idle between
+                # turns, keepalive only). Silence is only counted while audio flows:
+                # no strikes, no `degraded`, accumulated strikes are forgotten.
+                silence_count = 0
+                continue
+
+            burst_start = (
+                self._audio_burst_start if self._audio_burst_start is not None else self._first_audio_at
+            )
+            # A burst that opened after the last transcription starts a fresh window,
+            # so a stale pre-idle timestamp is never blamed on the client.
+            last = max(
+                t for t in (recovery_baseline, current_transcription_at, burst_start) if t is not None
+            )
+            if last_audio <= last:
+                # No audio since the window's reference point (the last transcription):
+                # the client already said its piece and went quiet. Nothing to blame it for.
+                silence_count = 0
+                continue
+            elapsed = now - last
 
             if elapsed > self.config.silence_timeout_s:
                 silence_count += 1
@@ -570,13 +675,22 @@ class JotaBridge:
 
                 if message.get("type") == "websocket.disconnect":
                     logger.info(f"[{self.client_id}] Cliente físico desconectado.")
+                    self._client_gone = True
                     break
 
                 # AUDIO → Transcriber
                 if "bytes" in message:
                     if self.handshake.input_mode == "audio" and self.transcriber:
+                        now = time.monotonic()
                         if self._first_audio_at is None:
-                            self._first_audio_at = time.monotonic()
+                            self._first_audio_at = now
+                        # A frame after an idle gap opens a new audio burst (#227).
+                        if (
+                            self._last_audio_at is None
+                            or now - self._last_audio_at > self._audio_gap_s()
+                        ):
+                            self._audio_burst_start = now
+                        self._last_audio_at = now
                         await self.transcriber.send_audio(message["bytes"])
 
                 # TEXTO → Orchestrator (prompt directo desde un cliente de texto)
@@ -584,35 +698,67 @@ class JotaBridge:
                     text_data = message["text"]
                     try:
                         json_msg = json.loads(text_data)
+                        parsed = True
                     except Exception:
                         json_msg = None
+                        parsed = False
 
-                    if json_msg and json_msg.get("type") == "end":
+                    if not parsed:
+                        if self.handshake.input_mode == "text":
+                            # Texto plano en modo texto — compatibilidad con clientes de texto puro
+                            await self._start_turn(text_data)
+                    elif not isinstance(json_msg, dict):
+                        # G-20: a JSON scalar/list (`42`, `[1]`, `"s"`, `true`, `null`)
+                        # is not a protocol message. Non-fatal error, session goes on.
+                        await self._send_invalid_message()
+                    elif json_msg.get("type") == "end":
                         # Cliente terminó de hablar → señalizar fin al transcriber
                         if self.handshake.input_mode == "audio" and self.transcriber:
                             await self.transcriber.send_end()
 
-                    elif json_msg and json_msg.get("type") == "cancel":
+                    elif json_msg.get("type") == "cancel":
                         # Cliente cancela el turn activo sin lanzar uno nuevo
                         await self._cancel_active_turn()
 
-                    elif json_msg and json_msg.get("type") == "send":
+                    elif json_msg.get("type") == "send":
                         # Cliente confirma/edita la transcripción y la envía al orquestador
-                        text = json_msg.get("text", "").strip()
-                        if text and self.orchestrator:
-                            logger.info(f"[{self.client_id}] send recibido: len={len(text)}")
-                            await self._cancel_active_turn()
-                            self._active_turn = asyncio.create_task(self._call_orchestrator(text))
-
-                    elif json_msg is None and self.handshake.input_mode == "text":
-                        # Texto plano en modo texto — compatibilidad con clientes de texto puro
-                        await self._cancel_active_turn()
-                        self._active_turn = asyncio.create_task(self._call_orchestrator(text_data))
+                        raw_text = json_msg.get("text", "")
+                        if not isinstance(raw_text, str):
+                            await self._send_invalid_message()
+                        else:
+                            text = raw_text.strip()
+                            if text and self.orchestrator:
+                                logger.info(f"[{self.client_id}] send recibido: len={len(text)}")
+                                await self._start_turn(text)
 
         except WebSocketDisconnect:
             logger.info(f"[{self.client_id}] Cliente físico desconectado.")
+            self._client_gone = True
         except Exception as e:
             logger.error(f"[{self.client_id}] Error en input loop: {e}")
+
+    def _audio_gap_s(self) -> float:
+        """Silence in the audio stream after which the client counts as idle (#227).
+
+        `silence_timeout_s`, floored at one watchdog poll. An always-streaming client
+        sends frames far more often than that, so for it nothing changes; a client
+        that only sends audio after a local wake word is idle between turns.
+        """
+        return max(self.config.silence_timeout_s, _WATCHDOG_POLL_S)
+
+    async def _send_invalid_message(self) -> None:
+        """Non-fatal error for a malformed client message (G-20). Never echoes the payload."""
+        try:
+            await self._sender.send_json(
+                {
+                    "type": "error",
+                    "code": "INVALID_MESSAGE",
+                    "message": "invalid message",
+                    "fatal": False,
+                }
+            )
+        except Exception:
+            pass
 
     async def _on_transcriber_warning(self, code: str, message: str | None):
         """Reenvía warnings del transcriber al cliente (e.g. buffer_full)."""
@@ -683,13 +829,18 @@ class JotaBridge:
 
             # Barge-in: interrupt active turn if enabled and partial is substantial enough
             if self.config.barge_in_enabled and len(text) >= self.config.barge_in_min_chars:
-                if await self._cancel_active_turn():
+                cancelled, cancelled_turn_id = await self._cancel_turn()
+                if cancelled:
                     logger.info(
                         f"[{self.client_id}] Barge-in: turno cancelado por parcial len={len(text)}"
                     )
                     await self.tracker.record("barge_in")
+                    interrupted: dict[str, str] = {"type": "interrupted"}
+                    if cancelled_turn_id:
+                        interrupted["turn_id"] = cancelled_turn_id
                     try:
-                        await self._sender.send_json({"type": "interrupted"})
+                        # After the cancelled turn's own turn_end (G-10).
+                        await self._sender.send_json(interrupted)
                     except Exception:
                         pass
             return  # partials never reach the orchestrator
@@ -729,12 +880,11 @@ class JotaBridge:
         pipe_tokens + pipe_audio concurrentemente (pipe_audio como tarea; todas las
         esperas del TTS acotadas, #214).
         """
-        from src.core.session_key import make_session_key
-        from src.services.orchestration import call_orchestrator
-
         self._turn_seq += 1
-        turn_seq = self._turn_seq
-        turn_id = f"t-{turn_seq}"
+        # `turn_id` keeps the full counter; `turn_seq` is the uint16 the audio header
+        # carries (G-11), sent as the same value in `turn_start` so clients can match.
+        turn_id = f"t-{self._turn_seq}"
+        turn_seq = self._turn_seq & 0xFFFF
 
         self.tracker.start_turn()
 
@@ -744,6 +894,39 @@ class JotaBridge:
             )
         except Exception:
             return
+
+        # From here a client has seen `turn_start`: exactly one `turn_end` must follow
+        # on every path — normal, error, cancel, barge-in, override (G-10).
+        self._active_turn_id = turn_id
+        try:
+            await self._run_turn(text, turn_id, turn_seq)
+        except Exception as e:
+            if not isinstance(e, ClientGone):
+                # Type name only: the message may carry user text.
+                logger.error(f"[{self.client_id}] Turno falló: {type(e).__name__}")
+                try:
+                    await self._sender.send_json(
+                        {
+                            "type": "error",
+                            "code": "TURN_ERROR",
+                            "message": "internal_error",
+                            "fatal": False,
+                            "turn_id": turn_id,
+                        }
+                    )
+                except Exception:
+                    pass
+        finally:
+            if self._active_turn_id == turn_id:
+                self._active_turn_id = None
+            try:
+                await self._sender.send_json({"type": "turn_end", "turn_id": turn_id})
+            except Exception:
+                pass
+
+    async def _run_turn(self, text: str, turn_id: str, turn_seq: int) -> None:
+        from src.core.session_key import make_session_key
+        from src.services.orchestration import call_orchestrator
 
         needs_audio = "audio" in self.handshake.output_mode
 
@@ -780,11 +963,19 @@ class JotaBridge:
                 await asyncio.wait({audio_task}, timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
 
         async def _on_token(token_text: str):
+            # G-18: a gone client aborts the turn (raising unwinds call_orchestrator's
+            # aclosing(), whose stream finally sends chat.abort) instead of letting it
+            # stream into the void and be drained for SHUTDOWN_DRAIN_S.
+            if self._client_gone:
+                raise ClientGone("cliente no disponible")
             try:
                 if "text" in self.handshake.output_mode:
                     await self._sender.send_json(
                         {"type": "token", "turn_id": turn_id, "text": token_text}
                     )
+            except ClientGone:
+                self._client_gone = True
+                raise
             except Exception:
                 pass
             if tts_live:
@@ -797,10 +988,15 @@ class JotaBridge:
                     await _drop_tts(f"send_text_chunk {type(e).__name__}")
 
         async def _on_tool_call(tool_call: ToolCallEvent):
+            if self._client_gone:
+                raise ClientGone("cliente no disponible")
             if not self.config.tool_calls_enabled:
                 return
             try:
                 await self._sender.send_json(_tool_call_message(turn_id, tool_call))
+            except ClientGone:
+                self._client_gone = True
+                raise
             except Exception:
                 pass
 
@@ -815,6 +1011,8 @@ class JotaBridge:
                     on_token=_on_token,
                     on_tool_call=_on_tool_call,
                 )
+            except ClientGone:
+                logger.info(f"[{self.client_id}] Cliente no disponible: turno abortado.")
             except RuntimeError as e:
                 logger.error(f"[{self.client_id}] Orchestrator error: {e}")
                 try:
@@ -851,7 +1049,9 @@ class JotaBridge:
                     _first_chunk = False
                 try:
                     await self._sender.send_bytes(header + chunk)
-                except Exception:
+                except Exception as e:
+                    if isinstance(e, ClientGone):
+                        self._client_gone = True
                     return
             await self.tracker.record("tts_done")
 
@@ -859,6 +1059,8 @@ class JotaBridge:
             audio_task = asyncio.create_task(pipe_audio())
             try:
                 await pipe_tokens()
+                if self._client_gone:
+                    audio_task.cancel()  # G-18: nobody to play it to
                 # Cap by INACTIVITY, not absolute: the window restarts with every audio
                 # chunk, so a long healthy reply is never truncated. asyncio.wait (not
                 # wait_for): an external cancellation (barge-in) propagates instead of
@@ -889,11 +1091,6 @@ class JotaBridge:
         else:
             await pipe_tokens()
 
-        try:
-            await self._sender.send_json({"type": "turn_end", "turn_id": turn_id})
-        except Exception:
-            pass
-
     def _push_allowed(self) -> bool:
         """Single decision point for whether an unsolicited (orchestrator-pushed)
         frame may reach the client (issue #109): the client must have push
@@ -922,7 +1119,7 @@ class JotaBridge:
             return
 
         self._turn_seq += 1
-        self._push_turn_seq = self._turn_seq
+        self._push_turn_seq = self._turn_seq & 0xFFFF  # uint16 on the wire (G-11)
         self._push_turn_id = f"t-{self._turn_seq}"
         self._push_turn_open = True
         self._push_turn_opened_at = time.monotonic()
@@ -932,7 +1129,7 @@ class JotaBridge:
                 {
                     "type": "turn_start",
                     "turn_id": self._push_turn_id,
-                    "turn_seq": self._turn_seq,
+                    "turn_seq": self._push_turn_seq,
                 }
             )
         except Exception:
