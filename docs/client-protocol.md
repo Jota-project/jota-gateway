@@ -198,7 +198,7 @@ Cada turno consiste en tres mensajes en este orden:
 | Campo | Descripción |
 |-------|-------------|
 | `turn_id` | Identificador del turno (`t-{N}`, secuencial por sesión desde 1) |
-| `turn_seq` | El mismo N como entero — aparece también en el header de los frames de audio |
+| `turn_seq` | N módulo 65 536 (uint16, no monótono tras el desbordamiento; compáralo por igualdad, no por orden) — es el mismo valor que lleva el header de los frames de audio |
 
 ### `token` — texto en streaming
 
@@ -216,7 +216,7 @@ Los tokens llegan en orden; concaténalos para reconstruir la respuesta completa
 { "type": "turn_end", "turn_id": "t-1" }
 ```
 
-Señala que el orquestador terminó de generar la respuesta. El audio TTS puede seguir llegando brevemente después (ya está en tránsito).
+Señala que el turno terminó. **Todo turno con `turn_start` recibe exactamente un `turn_end`** — también si falla (tras un `error`), si se cancela (`cancel`, barge-in, transcripción final, un `send` que lo sustituye) o si el cierre de sesión lo corta. El audio TTS puede seguir llegando brevemente después (ya está en tránsito).
 
 ### `tool_call` — uso de herramientas del agente (opt-in)
 
@@ -314,10 +314,10 @@ Los frames de audio llegan como **mensajes binarios** intercalados con los JSON 
 | Parámetro | Valor |
 |-----------|-------|
 | Magic byte | `0xA1` — identifica frames de audio |
-| `turn_seq` | Uint16 big-endian — mismo valor que `turn_start.turn_seq` |
+| `turn_seq` | Uint16 big-endian — mismo valor que `turn_start.turn_seq`. Es el contador de turnos módulo 65 536: tras el turno 65 535 vuelve a 0 (el `turn_id` `t-N` no se reinicia), así que compara por igualdad y no asumas que crece siempre |
 | Audio | PCM16 signed 16-bit little-endian, 24 000 Hz, 1 canal (mono) |
 
-El `turn_seq` permite descartar audio de turnos anteriores si ya llegó un `turn_start` con seq mayor (barge-in sin mensaje adicional).
+El `turn_seq` permite descartar audio de turnos anteriores: un frame cuyo `turn_seq` **no coincide** con el del último `turn_start` recibido no es del turno actual. Es módulo 65 536 y no es monótono tras el desbordamiento, así que **no compares "mayor/menor"**: compara por igualdad (o usa `turn_id` en los mensajes JSON).
 
 ### Cómo parsear un frame
 
@@ -341,11 +341,9 @@ async for msg in ws:
         if len(msg) >= 3 and msg[0] == 0xA1:
             frame_seq = (msg[1] << 8) | msg[2]
             pcm16 = msg[3:]
-            if frame_seq >= current_turn_seq:
-                # Audio del turno actual o más nuevo — reproducir
-                if frame_seq > current_turn_seq:
-                    audio_player.stop()  # barge-in, descarta audio anterior
-                    current_turn_seq = frame_seq
+            if frame_seq == current_turn_seq:
+                # Audio del turno actual — reproducir. Los frames de otro turno
+                # (anterior, ya cancelado) se descartan; nunca compares con > o <.
                 audio_player.write(pcm16)
 
     elif isinstance(msg, str):
@@ -368,15 +366,17 @@ El barge-in ocurre cuando el usuario empieza a hablar mientras el orquestador a�
 El gateway detecta la parcial de transcripción y cancela el turno activo si supera el umbral mínimo de caracteres (`capabilities.barge_in`). El cliente recibe:
 
 ```json
-{ "type": "interrupted" }
+{ "type": "interrupted", "turn_id": "t-1" }
 ```
+
+`turn_id` es el turno cancelado (puede faltar si el turno aún no había enviado su `turn_start`). El gateway cierra todo turno cancelado con su propio `turn_end` **antes** de `interrupted`: el orden es `turn_end` (t-1) → `interrupted` (t-1) → `turn_start` (t-2).
 
 Tras `interrupted`:
 - Limpia la UI de la respuesta en curso
 - Descarta audio con `turn_seq` del turno cancelado (ya no llegará más)
 - El flujo reinicia normalmente — sigue enviando audio
 
-El nuevo turno llegará con un `turn_start` con `turn_seq` mayor, lo que también activa el descarte de audio del turn anterior a nivel de frame sin necesitar el mensaje `interrupted`.
+El nuevo turno llegará con un `turn_start` con un `turn_seq` distinto (módulo 65 536, no necesariamente mayor), lo que también activa el descarte de audio del turno anterior a nivel de frame (por igualdad de `turn_seq`) sin necesitar el mensaje `interrupted`.
 
 ---
 
@@ -395,7 +395,7 @@ Los tres microservicios downstream (orquestador, Transcriber, TTS) tienen recone
 | `unavailable` | El servicio está caído. Puede o no estar reintentando activamente en segundo plano (ver tabla siguiente). |
 | `reconnecting` | Reintentando activamente ahora mismo. |
 | `restored` | Volvió a la normalidad tras haber estado `unavailable`/`reconnecting`. |
-| `degraded` | Solo para `transcriber` — señal de **calidad**, no de conectividad (silencio prolongado, buffer lleno, GPU saturada con `code: "gpu_saturated"`). No forma parte del ciclo unavailable→reconnecting→restored. Cuando la causa es saturación del transcriber, el aviso de recuperación es `restored`; el resto de causas de `degraded` no tienen aviso de recuperación. |
+| `degraded` | Solo para `transcriber` — señal de **calidad**, no de conectividad (silencio prolongado **mientras envías audio** — con un turno en curso o sin mandar audio, p. ej. sesión persistente en reposo con solo `keepalive`, no se cuenta silencio; buffer lleno, GPU saturada con `code: "gpu_saturated"`). No forma parte del ciclo unavailable→reconnecting→restored. Cuando la causa es saturación del transcriber, el aviso de recuperación es `restored`; el resto de causas de `degraded` no tienen aviso de recuperación. |
 
 Por servicio:
 
@@ -447,6 +447,7 @@ Los errores llegan independientemente de `output_mode`:
 | Código | Fatal | Cuándo ocurre |
 |--------|-------|---------------|
 | `TURN_ERROR` | false | Fallo en un turno concreto (orquestador caído/reconectando durante una sesión activa, **o** el turno se cuelga sin progreso — `message: "turn_timeout"`, ver §13); la sesión continúa — **el único código realmente emitido hoy** |
+| `INVALID_MESSAGE` | false | Mensaje de texto del cliente que no es un objeto JSON (`42`, `[1]`, `"s"`, `true`, `null`) o `send` con `text` que no es cadena (#215). La sesión continúa; el mensaje se ignora. En modo texto, un prompt plano que parsea como JSON escalar (`"42"`, `"true"`, `"null"`) también recibe `INVALID_MESSAGE`: los prompts van en `{"type":"send","text":...}` |
 | `AUTH_FAILED` | true | Documentado para `client_key` inválida o inactiva — en la práctica se señaliza cerrando el WS con 1008, sin este mensaje previo |
 | `AGENT_NOT_FOUND` | true | Documentado para agente inexistente — en la práctica se señaliza cerrando el WS con 1008, sin este mensaje previo |
 | `ORCHESTRATOR_UNAVAILABLE` | true | Documentado para orquestador no disponible al iniciar — en la práctica se señaliza cerrando el WS con 1011, sin este mensaje previo |
@@ -550,7 +551,7 @@ El cliente escribe; el gateway sintetiza audio con el texto de la respuesta.
 | Tipo | Formato | Cuándo |
 |------|---------|--------|
 | `ready` | `{"type":"ready","session_id":"...","agent":"...","input_mode":"...","output_mode":[...],"requested_capabilities":{...},"live_capabilities":{...}}` | Tras handshake exitoso; puede ir precedido de `status` |
-| `turn_start` | `{"type":"turn_start","turn_id":"t-N","turn_seq":N}` | Inicio de cada turno |
+| `turn_start` | `{"type":"turn_start","turn_id":"t-N","turn_seq":N mod 65536}` | Inicio de cada turno |
 | `token` | `{"type":"token","turn_id":"t-N","text":"..."}` | `"text"` en `output_mode` — tokens en streaming |
 | `turn_end` | `{"type":"turn_end","turn_id":"t-N"}` | Fin de cada turno |
 | `tool_call` | `{"type":"tool_call","turn_id":"t-N","phase":"start"\|"result","name":"...","tool_call_id":"...","args":{...}\|null,"result":"..."\|null,"is_error":bool\|null}` | Solo si `tool_calls_enabled=True` para el cliente — uso de herramientas del agente |
@@ -580,7 +581,7 @@ Llegan entrelazados con los mensajes JSON. Identifica audio por el magic byte `0
 | `TURN_TIMEOUT_S` | 120s, **idle-reset** | El orquestador deja de mandar nada durante un turno ya en marcha (cuelgue real, no duración total) | `{"type":"error","code":"TURN_ERROR","message":"turn_timeout","fatal":false,"turn_id":"..."}` (ver §9) — la sesión sigue viva, solo ese turno se aborta |
 | `TURN_QUEUE_MAX` | 1000 eventos por turno | El gateway no consigue procesar los eventos del orquestador al ritmo al que llegan para ese turno (consumidor atascado); es un fallo interno raro, no depende de tu lectura del socket | `{"type":"error","code":"TURN_ERROR","message":"turn_overflow","fatal":false,"turn_id":"..."}` — la sesión sigue viva, solo ese turno se aborta (los tokens pendientes se descartan); mismo tratamiento en el cliente que `turn_timeout` |
 | `IDLE_TIMEOUT_S` | 300s (5 min) | No mandas **ningún** mensaje (ni audio ni texto) durante ese tiempo | Cierre WS con código 1000, **sin ningún mensaje de error o aviso previo** |
-| `SHUTDOWN_DRAIN_S` | 30s | Interno — límite que el gateway se da a sí mismo para esperar un turno en curso al cerrar una sesión (reinicio del servidor, u otro camino de cierre) | Ninguno directo; en el peor caso el turno se corta sin `turn_end` |
+| `SHUTDOWN_DRAIN_S` | 30s | Interno — límite que el gateway se da a sí mismo para esperar un turno en curso al cerrar una sesión (reinicio del servidor, u otro camino de cierre) | Ninguno directo; si el turno se corta, aun así recibe su `turn_end` (si el socket sigue abierto). Si tu cliente se desconecta, el turno se cancela de inmediato, sin esperar este tiempo |
 | `PUSH_TTS_DRAIN_TIMEOUT_S` | 30s | El audio TTS de un turno de push (iniciado por el agente) sigue sintetizándose 30s después del `end` del agente | El audio restante de ese push se corta, el TTS se cierra y el `turn_end` se envía igualmente — la sesión sigue viva. Con el mismo tope se acotan las escrituras de texto al TTS de push y su `end()`: si vencen, el resto de ese push llega solo como `token` de texto, sin más audio, y el `turn_end` se envía igualmente. Los turnos normales no tienen un tope equivalente: solo el audio de push |
 | `CLIENT_SEND_TIMEOUT_S` | 10s, **por envío** | El gateway no consigue escribirte un mensaje durante ese tiempo porque tu socket **drena por debajo del ritmo al que el gateway escribe**: o has dejado de leer, o lees muy por debajo del caudal de salida (el audio TTS PCM16 a 24 kHz son 48 KB/s). Es un umbral de caudal de drenado, del orden de unos pocos KB/s (teoría) a unas pocas decenas de KB/s (medidas de laboratorio en macOS), según kernel y tasa de producción, y **solo cuando hay más datos en vuelo que los buffers del sistema** (varios MB); con respuestas de tamaño normal y un cliente que lee, no se activa; un cliente que lee a un ritmo razonable no se corta | Cierre WS con código **1013** (`client too slow`) (mejor esfuerzo) si reanudas la lectura en los 2 s siguientes; si no, o si el close frame se pierde, la conexión se corta sin close frame (1006). Los mensajes pendientes se descartan; reconecta y abre una sesión nueva |
 

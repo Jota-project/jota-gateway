@@ -99,6 +99,7 @@ async def test_incomplete_final_is_recorded_in_tracker_without_text(bridge):
 
 async def test_watchdog_does_not_count_silence_while_transcriber_busy(bridge):
     bridge._first_audio_at = time.monotonic() - 10
+    bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
     bridge._transcriber_busy = True
     ticks = {"n": 0}
 
@@ -117,6 +118,7 @@ async def test_watchdog_does_not_count_silence_while_transcriber_busy(bridge):
 
 async def test_watchdog_grants_fresh_baseline_after_busy_clears(bridge):
     bridge._first_audio_at = time.monotonic() - 10
+    bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
     bridge.transcriber._last_transcription_at = time.monotonic() - 10
     bridge._transcriber_busy = True
     ticks = {"n": 0}
