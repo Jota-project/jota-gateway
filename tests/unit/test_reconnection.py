@@ -113,7 +113,7 @@ async def test_backoff_loop_degrades_when_max_duration_exceeded():
     assert ok is False
     assert h.state == ConnectionState.DEGRADED
     assert h.reconnect_attempts >= 1
-    assert h.last_error == "down"
+    assert h.last_error == "OSError"  # tipo, no el texto (#228)
 
 
 @pytest.mark.asyncio

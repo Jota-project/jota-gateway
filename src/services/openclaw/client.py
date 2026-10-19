@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-import traceback
+import re
 import uuid
 from collections.abc import AsyncGenerator, Callable
 
@@ -20,6 +20,7 @@ from src.services.openclaw.registry import (
     TurnRegistry,
 )
 from src.services.protocol import OrchestratorEvent
+from src.services.reconnection import traceback_no_message
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,23 @@ _MIN_KEEPALIVE_S = 1.0
 # Stable error content delivered to every in-flight turn when the OpenClaw connection
 # ends (clean close, error or teardown). Never a raw exception string (G-03/G-04).
 ORCHESTRATOR_DISCONNECTED_ERROR = "orchestrator_disconnected"
+
+# Other stable error contents (#228): fixed text, never `str(e)` nor OpenClaw's own error
+# text. They reach WS clients as `TURN_ERROR.message` and /v1 callers as the error body.
+ORCHESTRATOR_SEND_FAILED_ERROR = "orchestrator_send_failed"  # chat.send could not be written
+ORCHESTRATOR_UNAVAILABLE_ERROR = "orchestrator_unavailable"  # not connected / reconnecting
+ORCHESTRATOR_ERROR = "orchestrator_error"  # OpenClaw rejected the turn, or an internal failure
+ORCHESTRATOR_HANDSHAKE_FAILED_ERROR = "orchestrator_handshake_failed"  # connect() handshake
+
+
+class OrchestratorHandshakeError(RuntimeError):
+    """The OpenClaw v4 handshake failed or got an unexpected/malformed frame. The message
+    is the fixed code: it never carries the offending frame or OpenClaw's error text."""
+
+    stable_code = ORCHESTRATOR_HANDSHAKE_FAILED_ERROR
+
+    def __init__(self) -> None:
+        super().__init__(ORCHESTRATOR_HANDSHAKE_FAILED_ERROR)
 
 # Inbound frame size limit (G-05). websockets defaults to 1 MiB while OpenClaw announces
 # up to 25 MiB in hello-ok's policy.maxPayload; a larger frame closed the socket with
@@ -48,12 +66,19 @@ def _frame_limit(announced: object) -> int:
     return max(_MIN_FRAME_LIMIT, min(announced, _MAX_FRAME_LIMIT))
 
 
-def _traceback_no_message(exc: BaseException) -> str:
-    """Traceback as `file:line in func` entries plus the exception type: never the
-    exception message nor source lines, which could carry frame/user content."""
-    entries = traceback.extract_tb(exc.__traceback__)
-    where = " <- ".join(f"{e.filename.split('/')[-1]}:{e.lineno} in {e.name}" for e in entries)
-    return f"{type(exc).__name__} at {where}"
+_traceback_no_message = traceback_no_message
+
+_SAFE_CODE_RE = re.compile(r"[A-Za-z0-9_.:-]{1,48}")
+
+
+def _safe_error_code(error: object) -> str:
+    """The short `code` OpenClaw attaches to an `error`, for operator diagnostics (#228).
+    Only returned when it is a plain identifier; anything else (no code, wrong type, long,
+    spaces/newlines) is `unspecified`. The `message`/body is never read."""
+    code = error.get("code") if isinstance(error, dict) else None
+    if isinstance(code, str) and _SAFE_CODE_RE.fullmatch(code):
+        return code
+    return "unspecified"
 
 
 def _log_safe(value: object) -> str:
@@ -104,18 +129,23 @@ class OpenClawClient:
         conn_err: Exception | None = None
         try:
             raw = await asyncio.wait_for(self._ws.recv(), timeout=15.0)
-            frame = json.loads(raw)
+            frame = self._parse_handshake_frame(raw)
             if frame.get("event") != "connect.challenge":
-                raise RuntimeError(f"Expected connect.challenge, got: {frame}")
+                raise OrchestratorHandshakeError()
 
             req_id = str(uuid.uuid4())
             await self._ws.send(json.dumps(frames.connect_backend(req_id, self._token)))
 
             raw = await asyncio.wait_for(self._ws.recv(), timeout=30.0)
-            hello = json.loads(raw)
+            hello = self._parse_handshake_frame(raw)
             if not hello.get("ok"):
-                raise RuntimeError(f"OpenClaw handshake failed: {hello.get('error')}")
+                logger.warning(
+                    "OpenClaw rejected the handshake (code=%s)", _safe_error_code(hello.get("error"))
+                )
+                raise OrchestratorHandshakeError()
             hello_payload = hello.get("payload") or {}
+            if not isinstance(hello_payload, dict):
+                raise OrchestratorHandshakeError()
             self.gateway_info = GatewayInfo.from_hello_ok(hello_payload)
             self._log_hello(hello_payload)
             self._apply_frame_limit(self.gateway_info.max_payload, limit)
@@ -126,7 +156,11 @@ class OpenClawClient:
             if agents_res.get("ok"):
                 self.gateway_info.update_agents_from_list(agents_res.get("payload", {}))
             else:
-                logger.warning(f"agents.list failed at connect: {agents_res.get('error')}")
+                # Only the short code, never OpenClaw's error text (#228).
+                logger.warning(
+                    "agents.list failed at connect (code=%s)",
+                    _safe_error_code(agents_res.get("error")),
+                )
                 if not self.gateway_info.agents and previous_agents:
                     # Wiping the roster would make has_agent() reject every named
                     # agent with 1008 until the next successful agents.list (#151).
@@ -157,6 +191,18 @@ class OpenClawClient:
                 except Exception:
                     pass
                 self._ws = None
+
+    @staticmethod
+    def _parse_handshake_frame(raw: str | bytes) -> dict:
+        """A handshake frame that is not a JSON object is a handshake failure with a
+        stable reason, never a stray AttributeError/JSONDecodeError (#228)."""
+        try:
+            frame = json.loads(raw)
+        except ValueError:
+            raise OrchestratorHandshakeError() from None
+        if not isinstance(frame, dict):
+            raise OrchestratorHandshakeError()
+        return frame
 
     @staticmethod
     def _log_hello(payload: dict) -> None:
@@ -267,7 +313,7 @@ class OpenClawClient:
         session_key: str | None = None,
     ) -> AsyncGenerator[OrchestratorEvent, None]:
         if not self._ws:
-            yield OrchestratorEvent(type="error", content="not connected")
+            yield OrchestratorEvent(type="error", content=ORCHESTRATOR_UNAVAILABLE_ERROR)
             return
         if not session_key:
             raise ValueError(
@@ -290,7 +336,9 @@ class OpenClawClient:
                 )
                 _sent = True
             except Exception as e:
-                yield OrchestratorEvent(type="error", content=f"send failed: {e}")
+                logger.warning("chat.send failed (%s)", type(e).__name__)
+                logger.debug("chat.send traceback (no message): %s", _traceback_no_message(e))
+                yield OrchestratorEvent(type="error", content=ORCHESTRATOR_SEND_FAILED_ERROR)
                 _finished = True
                 return
 
@@ -326,7 +374,13 @@ class OpenClawClient:
                 elif kind == "done":
                     _finished = True
                     if not data.get("ok"):
-                        yield OrchestratorEvent(type="error", content=str(data.get("error", {})))
+                        # OpenClaw's own error text stays out of the client and the logs;
+                        # the operator gets only the short code.
+                        logger.warning(
+                            "OpenClaw rejected the turn (code=%s)",
+                            _safe_error_code(data.get("error")),
+                        )
+                        yield OrchestratorEvent(type="error", content=ORCHESTRATOR_ERROR)
                     else:
                         yield OrchestratorEvent(type="status", content="done")
                     break
