@@ -39,7 +39,7 @@ jota-gateway is a **BFF (Backend For Frontend)** — the single entry point for 
 
 - **WebSocket** `/ws/stream` — full voice+text session managed by `JotaBridge`
 - **Admin REST** `/admin/*` — client CRUD + observability (sessions, orchestrators); requires `X-Admin-Token`
-- **OpenAI-compatible REST** `/v1/*` — `GET /v1/models` and `POST /v1/chat/completions` for Home Assistant integration; delegates to the singleton `OpenClawClient`. Requests from a trusted origin (loopback and/or `TRUSTED_NETWORKS`) need no auth; anyone else must send `Authorization: Bearer <client_key>`, validated against the same `ClientRecord` table the WS handshake uses (`src/core/network.py`, `resolve_ha_caller` in `src/api/openai_routes.py`) — see issue #52. Errors during an SSE turn (any `Exception`, not only `RuntimeError`, #217) end as an `error` event + a chunk with `finish_reason:"error"` + `data: [DONE]`, never as a truncated `stop`; non-stream gives `502` (non-`RuntimeError` failures carry a generic `internal_error` message, no internals).
+- **OpenAI-compatible REST** `/v1/*` — `GET /v1/models` and `POST /v1/chat/completions` for Home Assistant integration; delegates to the singleton `OpenClawClient`. Requests from a trusted origin (a direct peer in `TRUSTED_NETWORKS`, a loopback peer if `TRUST_LOOPBACK`, or a client vouched for by a `TRUSTED_PROXIES` proxy via a valid `X-Real-IP`) need no auth — **but with the default `TRUSTED_PROXIES=127.0.0.1,::1`, a direct loopback client with no `X-Real-IP` is NOT exempt since #216 and must send a Bearer** (empty `TRUSTED_PROXIES=` to restore the old behaviour when there is no proxy); anyone else must send `Authorization: Bearer <client_key>`, validated against the same `ClientRecord` table the WS handshake uses (`src/core/network.py`, `resolve_ha_caller` in `src/api/openai_routes.py`) — see issue #52. **Fail-closed behind a proxy (G-31, #216):** `resolve_client_ip()` returns a non-IP sentinel (`NO_REAL_IP`) when the peer is in `TRUSTED_PROXIES` but `X-Real-IP` is missing or not a valid IP, so a same-host reverse proxy that doesn't set it no longer turns every Internet client into "loopback"; consequently a *direct* loopback caller without a proxy also needs a Bearer unless `TRUSTED_PROXIES` is emptied. `X-Forwarded-For` never grants trust: the image's `CMD` runs uvicorn with `--no-proxy-headers` (otherwise uvicorn would rewrite the peer from a forwarded XFF) and `--ws-max-size 1048576`; listen host via `GATEWAY_HOST`. Tests: `tests/integration/test_v1_proxy_uvicorn.py` (real uvicorn). Errors during an SSE turn (any `Exception`, not only `RuntimeError`, #217) end as an `error` event + a chunk with `finish_reason:"error"` + `data: [DONE]`, never as a truncated `stop`; non-stream gives `502` (non-`RuntimeError` failures carry a generic `internal_error` message, no internals).
 - **Health** `/healthz`, `/ready` — liveness and readiness probes
 
 There is no longer any dependency on `jota-db`. Client identity and configuration live in the local SQLite database (`data/gateway.db`).
@@ -50,9 +50,10 @@ There is no longer any dependency on `jota-db`. Client identity and configuratio
 DATABASE_URL=sqlite:///data/gateway.db   # path to SQLite file
 ADMIN_TOKEN=<secret>                     # required for /admin/* routes
 
-TRUST_LOOPBACK=true                      # 127.0.0.1/::1 exempt from /v1/* auth
+TRUST_LOOPBACK=true                      # 127.0.0.1/::1 exempt from /v1/* auth — except when the peer is in TRUSTED_PROXIES and sends no valid X-Real-IP (#216). WARNING at startup if TRUST_LOOPBACK and TRUSTED_PROXIES is empty
 TRUSTED_NETWORKS=                        # CSV of CIDRs exempt from /v1/* auth, e.g. 192.168.1.0/24. Empty = fail-closed.
-TRUSTED_PROXIES=127.0.0.1,::1            # CSV of IPs/CIDRs allowed to set X-Real-IP for /v1/*
+TRUSTED_PROXIES=127.0.0.1,::1            # CSV of IPs/CIDRs allowed to set X-Real-IP for /v1/*. A proxy peer WITHOUT a valid X-Real-IP is NOT a trusted origin (fail-closed, G-31 #216)
+GATEWAY_HOST=0.0.0.0                     # Docker image only (Dockerfile CMD), not a Settings field; 127.0.0.1 behind a same-host proxy
 
 TRANSCRIBER_WS_URL=localhost:9000
 TTS_WS_URL=localhost:8005
@@ -74,7 +75,8 @@ TRANSCRIBER_RECONNECT_MAX_DURATION=300.0
 TTS_RECONNECT_INITIAL_BACKOFF=1.0
 TTS_RECONNECT_MAX_BACKOFF=60.0
 
-HANDSHAKE_TIMEOUT_S=10.0
+HANDSHAKE_TIMEOUT_S=5.0                  # was 10.0 until #216 — slow clients (ESP32) may need to raise it
+HANDSHAKE_MAX_BYTES=4096                 # max CHARS (not bytes) of the first WS message; --ws-max-size 1 MiB exists only in the image CMD (plain `uvicorn` = 16 MiB), checked before parsing/auth (#216); else 1008 "Handshake too large"
 TURN_TIMEOUT_S=120.0
 IDLE_TIMEOUT_S=300.0
 SHUTDOWN_DRAIN_S=30.0
@@ -177,6 +179,8 @@ python3 src/cli.py activate-client <client_key>
 python3 src/cli.py delete-client <client_key>
 ```
 
+**Key hygiene in the CLI (G-27, #216):** `add-client` prints the full generated key once (the only moment the operator can capture it). `list-clients` shows ID, NAME, ACTIVE and the key's `fp` (`fingerprint_key()`, same as log lines) — no key characters; and the "client not found" error echoes only `fp=`, never the key. The WS handshake validation ERROR logs field + error type only (pydantic's `input_value=` would carry the key).
+
 `--key` lets you import an existing token verbatim (e.g. migrating from jota-db). Omit it to generate a random key.
 
 The CLI calls `run_migrations()` when run as a script, so it is safe to run against a fresh `data/gateway.db`.
@@ -206,8 +210,9 @@ The singleton `db_client = DbClient()` is imported from this module everywhere. 
 ## WebSocket session lifecycle (`routes.py` → `bridge.py`)
 
 1. Client connects and sends a **Handshake** JSON. The initial `websocket.receive_text()` wait
-   for it is bounded by `HANDSHAKE_TIMEOUT_S` (issue #115) — a client that connects and never
+   for it is bounded by `HANDSHAKE_TIMEOUT_S` (issue #115, default 5 s since #216) — a client that connects and never
    sends anything gets closed with code 1008 instead of holding the connection open forever.
+   The message is also capped by `HANDSHAKE_MAX_BYTES` (4096 chars) *before* `json.loads`/pydantic/auth (1008 `"Handshake too large"`), on top of the image's uvicorn `--ws-max-size 1048576` (1009 for anything bigger).
    ```json
    {
      "client_key": "...",

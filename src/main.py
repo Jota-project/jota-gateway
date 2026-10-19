@@ -13,6 +13,7 @@ from src.api.health_routes import router as health_router
 from src.api.openai_routes import router as openai_router
 from src.api.routes import router as stream_router
 from src.core.config import settings
+from src.core.network import warn_if_open_proxy_config
 from src.core.request_id import RequestIdMiddleware
 from src.core.transport import TransportCaptureMiddleware
 from src.db.database import dispose_engine, run_migrations
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     run_migrations()
     logger.info("BD inicializada")
+    warn_if_open_proxy_config()
 
     turn_registry = TurnRegistry()
     client_registry = ClientRegistry()

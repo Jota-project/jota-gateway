@@ -62,9 +62,21 @@ def test_resolve_client_ip_ignores_x_real_ip_from_untrusted_peer():
     assert resolve_client_ip(request) == "203.0.113.5"
 
 
-def test_resolve_client_ip_falls_back_to_peer_when_no_header():
+def test_resolve_client_ip_trusted_proxy_without_header_fails_closed():
+    # G-31 (#216): a same-host proxy that sets no X-Real-IP must not look like loopback.
     request = _FakeRequest("127.0.0.1")
-    assert resolve_client_ip(request) == "127.0.0.1"
+    assert is_trusted_origin(resolve_client_ip(request)) is False
+
+
+def test_resolve_client_ip_trusted_proxy_with_invalid_header_fails_closed():
+    for bad in ("", "  ", "garbage", "1.2.3.4, 5.6.7.8"):
+        request = _FakeRequest("127.0.0.1", headers={"x-real-ip": bad})
+        assert is_trusted_origin(resolve_client_ip(request)) is False
+
+
+def test_resolve_client_ip_direct_peer_unchanged():
+    request = _FakeRequest("192.168.1.9")
+    assert resolve_client_ip(request) == "192.168.1.9"
 
 
 def test_resolve_client_ip_accepts_websocket_connection():

@@ -125,3 +125,31 @@ def test_add_client_rejects_unknown_type():
     assert exc.value.code == 2
     with Session(e) as s:
         assert s.exec(select(ClientRecord)).all() == []
+
+
+def test_list_clients_never_prints_key_characters():
+    """G-27c (#216): list-clients muestra la huella (fp), no caracteres de la key."""
+    from src.core.logging import fingerprint_key
+
+    e = _engine()
+    key = "Zq9xKLMNOPQRSTUVWXYZabcdefghij0123456789"
+    _run(["add-client", "--name", "Dev", "--key", key], e)
+    out = _run(["list-clients"], e)
+    assert key[:6] not in out
+    assert fingerprint_key(key) in out
+
+
+def test_unknown_key_error_does_not_echo_the_key(capsys):
+    """G-27c (#216): `_require` no imprime la key (ni entera ni en parte) en stderr."""
+    import pytest
+
+    from src.core.logging import fingerprint_key
+
+    e = _engine()
+    key = "Zq9xKLMNOPQRSTUVWXYZabcdefghij0123456789"
+    with pytest.raises(SystemExit) as exc:
+        _run(["delete-client", key], e)
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert key[:6] not in err
+    assert fingerprint_key(key) in err

@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 _IpNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
+# Not an IP on purpose: is_trusted_origin() rejects it, and it reads well in logs.
+NO_REAL_IP = "proxy-without-real-ip"
+
 
 def _parse_networks(csv: str) -> list[_IpNetwork]:
     networks: list[_IpNetwork] = []
@@ -58,19 +61,42 @@ def is_trusted_origin(ip_str: str) -> bool:
     return _ip_in_networks(ip_str, _parse_networks(settings.TRUSTED_NETWORKS))
 
 
+def warn_if_open_proxy_config() -> None:
+    """WARNING at startup for TRUST_LOOPBACK with an empty TRUSTED_PROXIES (#216).
+
+    A same-host reverse proxy would then look like a loopback client for everyone behind
+    it (its X-Real-IP is ignored), leaving /v1/* open to the Internet.
+    """
+    if settings.TRUST_LOOPBACK and not _parse_networks(settings.TRUSTED_PROXIES):
+        logger.warning(
+            "TRUST_LOOPBACK is on and TRUSTED_PROXIES is empty: a reverse proxy on this "
+            "host would make every client look like loopback and /v1/* would be open. "
+            "Fine without a proxy; otherwise set TRUSTED_PROXIES to the proxy address "
+            "and make it overwrite X-Real-IP."
+        )
+
+
 def resolve_client_ip(connection: HTTPConnection) -> str:
     """
     Returns the IP to evaluate with is_trusted_origin().
 
     If the immediate TCP peer is a trusted proxy (settings.TRUSTED_PROXIES),
-    trust X-Real-IP if present. Otherwise the peer connected directly — use
-    its address as-is and ignore any X-Real-IP it sends.
+    its X-Real-IP is the client address. A proxy peer WITHOUT a valid X-Real-IP
+    fails closed (G-31, #216): returning the peer would turn a same-host proxy
+    (loopback is trusted) into an open door for every Internet client, so we
+    return a non-IP sentinel that is_trusted_origin() rejects and /v1 asks for
+    a Bearer. Otherwise the peer connected directly — use its address as-is and
+    ignore any X-Real-IP it sends.
     """
     peer = connection.client.host if connection.client else ""
 
     if is_trusted_proxy(peer):
-        real_ip = connection.headers.get("x-real-ip")
-        return real_ip if real_ip else peer
+        real_ip = (connection.headers.get("x-real-ip") or "").strip()
+        try:
+            ipaddress.ip_address(real_ip)
+        except ValueError:
+            return NO_REAL_IP
+        return real_ip
 
     if connection.headers.get("x-real-ip"):
         logger.warning(

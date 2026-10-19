@@ -208,12 +208,15 @@ def _configure_app_mocks(mock_registry, monkeypatch):
 def client(mock_services, mock_registry, seed_client, monkeypatch):
     """TestClient con SQLite en memoria y orchestrator mock inyectado.
 
-    client=("127.0.0.1", 50000): peer loopback, para que /v1/* (ver
-    src/core/network.py) se comporte igual que en el despliegue doméstico
-    real sin exigir Authorization en cada test existente.
+    client=("127.0.0.1", 50000) + X-Real-IP: 127.0.0.1: peer loopback (un proxy de
+    TRUSTED_PROXIES) que avala a un cliente loopback, para que /v1/* (ver
+    src/core/network.py) no exija Authorization en cada test existente. Desde
+    G-31 (#216) un peer proxy SIN X-Real-IP válido ya no es confiable.
     """
     _configure_app_mocks(mock_registry, monkeypatch)
-    with TestClient(app, client=("127.0.0.1", 50000)) as c:
+    with TestClient(
+        app, client=("127.0.0.1", 50000), headers={"x-real-ip": "127.0.0.1"}
+    ) as c:
         yield c
 
 
