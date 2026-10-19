@@ -4,15 +4,21 @@ import logging
 import uuid
 from collections.abc import AsyncGenerator
 
-from src.services.openclaw.client import OpenClawClient
+from src.services.openclaw.client import (
+    ORCHESTRATOR_ERROR,
+    ORCHESTRATOR_UNAVAILABLE_ERROR,
+    OpenClawClient,
+)
 from src.services.openclaw.models import GatewayInfo
 from src.services.protocol import OrchestratorEvent
 from src.services.reconnection import (
     ConnectionState,
     ServiceHealth,
     ServiceStatus,
+    describe_error,
     health_attr,
     reconnect_with_backoff,
+    traceback_no_message,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,8 +68,12 @@ class ReconnectingOpenClawClient:
             self._health.mark_connected()
             self._reconnect_exhausted = False
         except Exception as e:
-            self._last_error = str(e)
-            logger.error("[%s] initial connect failed: %s — starting retry", self._name, e)
+            # Type/stable code only (#228): the text can carry OpenClaw-provided content.
+            self._last_error = describe_error(e)
+            logger.error(
+                "[%s] initial connect failed (%s) — starting retry", self._name, self._last_error
+            )
+            logger.debug("[%s] connect traceback (no message): %s", self._name, traceback_no_message(e))
             self._ensure_reconnecting()
 
     async def close(self) -> None:
@@ -96,7 +106,7 @@ class ReconnectingOpenClawClient:
         if self.state != ConnectionState.CONNECTED:
             if self.state == ConnectionState.DEGRADED:
                 self._ensure_reconnecting()
-            yield OrchestratorEvent(type="error", content="orchestrator_unavailable")
+            yield OrchestratorEvent(type="error", content=ORCHESTRATOR_UNAVAILABLE_ERROR)
             return
         try:
             # aclosing() here (not just around the outer generator in
@@ -118,8 +128,11 @@ class ReconnectingOpenClawClient:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.warning("[%s] stream_response error: %s", self._name, e)
-            yield OrchestratorEvent(type="error", content=str(e))
+            logger.warning("[%s] stream_response error (%s)", self._name, type(e).__name__)
+            logger.debug(
+                "[%s] stream_response traceback (no message): %s", self._name, traceback_no_message(e)
+            )
+            yield OrchestratorEvent(type="error", content=ORCHESTRATOR_ERROR)
 
     def status(self) -> ServiceStatus:
         return self._health.status()

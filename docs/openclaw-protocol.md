@@ -334,8 +334,43 @@ Observed/decided while hardening the gateway's boundary with OpenClaw (audit G-0
 
 ---
 
+## Errors toward clients and handshake failures (2026-10-19, issue #228)
+
+OpenClaw's own error text (`res` with `ok:false`, a `hello` rejection, an unexpected
+handshake frame) and raw exception messages (websockets close reasons end up inside
+`ConnectionClosed`'s text) are internal: the gateway never relays them to a client nor writes
+them to a log. What it does instead:
+
+| Situation | Client sees (`TURN_ERROR.message` / `/v1` error) | Log |
+|---|---|---|
+| `chat.send` can't be written | `orchestrator_send_failed` | WARNING with the exception *type* only |
+| `res` with `ok:false` for a turn | `orchestrator_error` | WARNING with OpenClaw's short `error.code` only (see below) |
+| Not connected / reconnecting | `orchestrator_unavailable` | — |
+| Connection ends mid-turn | `orchestrator_disconnected` (#213) | type / close codes only |
+| `turn_timeout`, `turn_overflow`, `turn_in_progress` | same literals (unchanged) | — |
+| Unexpected exception wrapping the stream | `orchestrator_error` | type only; traceback without message at DEBUG |
+
+Handshake (`connect()`): a rejected `hello`, a first frame that is not `connect.challenge`, or
+a challenge/`hello`/`hello.payload` that is not a JSON object all raise
+`OrchestratorHandshakeError`, whose reason is the fixed `orchestrator_handshake_failed`. It is
+retried by the reconnect loop like any failed connect. `ReconnectingOpenClawClient`'s
+`last_error` (exposed by `GET /admin/orchestrators/{name}/status`) holds that code, or just the
+exception type name (`OSError`, `TimeoutError`...) for anything else. The same `last_error`
+rule applies to every wrapper that goes through `reconnect_with_backoff`.
+
+For operator diagnostics, a rejected `hello`, a failed `agents.list` and a rejected turn log one
+WARNING line with OpenClaw's `error.code` (`code=...`), only when it matches
+`[A-Za-z0-9_.:-]{1,48}`; otherwise `code=unspecified`. `error.message` and the rest of the body
+are never read.
+
+Note: the `websockets` library itself logs raw frames at DEBUG on its own `websockets.*`
+loggers; keep those at their default level in production.
+
+---
+
 ## Change log of this file
 
+- **2026-10-19**: added "Errors toward clients and handshake failures" (issue #228).
 - **2026-10-18**: added "Frame size, malformed frames and connection end" (issue #213).
 
 - **2026-10-08**: added "Session key carries the per-client identity" — documents the

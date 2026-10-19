@@ -16,7 +16,7 @@ from src.models.schemas import Client, ClientConfig
 from src.services.db_client import db_client
 from src.services.openclaw.client import _traceback_no_message
 from src.services.openclaw.registry import TURN_IN_PROGRESS_ERROR
-from src.services.orchestration import call_orchestrator
+from src.services.orchestration import OrchestratorError, call_orchestrator
 from src.services.pipeline_tracker import PipelineTracker, _NullWS
 
 logger = logging.getLogger(__name__)
@@ -82,14 +82,21 @@ async def resolve_ha_caller(request: Request) -> HACaller:
 
 @router.get("/models")
 async def list_models(request: Request, caller: HACaller = Depends(resolve_ha_caller)):
-    return JSONResponse(
-        {
-            "object": "list",
-            "data": [
-                {"id": MODEL_ALIAS, "object": "model", "created": 0, "owned_by": "jota-gateway"}
-            ],
-        }
-    )
+    # Alias first, then the roster agents (#234). The roster is whatever OpenClaw announced
+    # (`agents.list`); without it only the alias is advertised. An authenticated client with
+    # an explicit `allowed_agents` list only sees the agents it may actually use.
+    models = [{"id": MODEL_ALIAS, "object": "model", "created": 0, "owned_by": "jota-gateway"}]
+    orchestrator = getattr(request.app.state, "openclaw", None)
+    # The legacy trusted-origin caller (no Bearer, no config) gets only the alias: the legacy
+    # chat path ignores `model` and always uses the default agent, so advertising agents it
+    # cannot actually pick would be misleading.
+    gateway_info = getattr(orchestrator, "gateway_info", None) if caller.config else None
+    allowed = caller.config.allowed_agents if caller.config is not None else None
+    for agent_id in gateway_info.agents if gateway_info is not None else ():
+        if agent_id == MODEL_ALIAS or (allowed is not None and agent_id not in allowed):
+            continue
+        models.append({"id": agent_id, "object": "model", "created": 0, "owned_by": "openclaw"})
+    return JSONResponse({"object": "list", "data": models})
 
 
 def _extract_last_user_message(messages: list[_ChatMessage]) -> str:
@@ -189,8 +196,9 @@ async def chat_completions(
                         tracker=tracker,
                         on_token=_on_token,
                     )
-                except RuntimeError as e:
-                    logger.error(f"HTTP orchestrator error: {e}")
+                except OrchestratorError as e:
+                    # Stable code (orchestrator_error, turn_timeout...): safe to relay (#228).
+                    logger.error("HTTP orchestrator error (%s)", e)
                     orchestrator_error = e
                     error_message = str(e)
                 except Exception as e:
@@ -267,10 +275,11 @@ async def chat_completions(
             tracker=tracker,
             on_token=_on_token,
         )
-    except RuntimeError as e:
-        logger.error(f"HTTP orchestrator error: {e}")
+    except OrchestratorError as e:
+        logger.error("HTTP orchestrator error (%s)", e)
         orchestrator_error = e
     except Exception as e:
+        # Any other exception (RuntimeError included) may carry raw text: never relayed.
         _log_unexpected_error(e)
         orchestrator_error = RuntimeError("internal_error")
     finally:
