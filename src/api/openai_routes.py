@@ -8,12 +8,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from src.core.agent_policy import AgentPolicyError, resolve_agent
+from src.core.agent_policy import MODEL_ALIAS, AgentPolicyError, agent_from_model, resolve_agent
 from src.core.exceptions import ClientInactive, ClientNotFound
 from src.core.network import is_trusted_origin, resolve_client_ip
 from src.core.session_key import make_session_key
 from src.models.schemas import Client, ClientConfig
 from src.services.db_client import db_client
+from src.services.openclaw.client import _traceback_no_message
 from src.services.openclaw.registry import TURN_IN_PROGRESS_ERROR
 from src.services.orchestration import call_orchestrator
 from src.services.pipeline_tracker import PipelineTracker, _NullWS
@@ -21,6 +22,13 @@ from src.services.pipeline_tracker import PipelineTracker, _NullWS
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1")
+
+
+def _log_unexpected_error(exc: BaseException) -> None:
+    """Solo el tipo a ERROR; traceback sin mensaje ni líneas de código a DEBUG (patrón de
+    #226): el mensaje de la excepción puede llevar texto de usuario o secretos."""
+    logger.error("HTTP orchestrator unexpected error (%s)", type(exc).__name__)
+    logger.debug("HTTP orchestrator error traceback (no message): %s", _traceback_no_message(exc))
 
 
 class _ChatMessage(BaseModel):
@@ -78,7 +86,7 @@ async def list_models(request: Request, caller: HACaller = Depends(resolve_ha_ca
         {
             "object": "list",
             "data": [
-                {"id": "jota-gateway", "object": "model", "created": 0, "owned_by": "jota-gateway"}
+                {"id": MODEL_ALIAS, "object": "model", "created": 0, "owned_by": "jota-gateway"}
             ],
         }
     )
@@ -114,7 +122,8 @@ async def chat_completions(
     session_registry = request.app.state.session_registry
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
-    # body.model is the requested agent (analogous to handshake.agent in WS).
+    # body.model is the requested agent (analogous to handshake.agent in WS), except the
+    # advertised model name `jota-gateway`, which means "no explicit agent" (#217, G-36).
     # resolve_agent() normalizes empty/whitespace-only to None so the cascade
     # falls through to client_config.default_agent, then
     # gateway_info.default_agent_id, then the legacy "main" fallback. Issue #105.
@@ -125,7 +134,7 @@ async def chat_completions(
     if caller.config is not None:
         try:
             resolved_agent = resolve_agent(
-                requested=body.model,
+                requested=agent_from_model(body.model),
                 client_config=caller.config,
                 gateway_info=orchestrator.gateway_info,
             )
@@ -158,7 +167,8 @@ async def chat_completions(
 
         async def generate():
             queue: asyncio.Queue[str | None] = asyncio.Queue()
-            orchestrator_error: RuntimeError | None = None
+            orchestrator_error: Exception | None = None
+            error_message = ""
 
             async def _on_token(t: str):
                 chunk = {
@@ -169,7 +179,7 @@ async def chat_completions(
                 await queue.put(f"data: {json.dumps(chunk)}\n\n")
 
             async def _run():
-                nonlocal orchestrator_error
+                nonlocal orchestrator_error, error_message
                 try:
                     await call_orchestrator(
                         orchestrator,
@@ -182,6 +192,13 @@ async def chat_completions(
                 except RuntimeError as e:
                     logger.error(f"HTTP orchestrator error: {e}")
                     orchestrator_error = e
+                    error_message = str(e)
+                except Exception as e:
+                    # Cualquier otro fallo no es un éxito truncado (#217, G-37): se cierra como
+                    # error sin filtrar el detalle interno al cliente.
+                    _log_unexpected_error(e)
+                    orchestrator_error = e
+                    error_message = "internal_error"
                 finally:
                     await queue.put(
                         None
@@ -211,7 +228,7 @@ async def chat_completions(
             if orchestrator_error is not None:
                 error = {
                     "error": {
-                        "message": str(orchestrator_error),
+                        "message": error_message,
                         "type": "server_error",
                     },
                 }
@@ -222,6 +239,7 @@ async def chat_completions(
                     "choices": [{"delta": {}, "index": 0, "finish_reason": "error"}],
                 }
                 yield f"data: {json.dumps(final)}\n\n"
+                yield "data: [DONE]\n\n"
                 return
 
             final = {
@@ -252,6 +270,9 @@ async def chat_completions(
     except RuntimeError as e:
         logger.error(f"HTTP orchestrator error: {e}")
         orchestrator_error = e
+    except Exception as e:
+        _log_unexpected_error(e)
+        orchestrator_error = RuntimeError("internal_error")
     finally:
         await tracker.close()
 

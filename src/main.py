@@ -1,8 +1,12 @@
 import asyncio
 import logging
+import math
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from src.api.admin_routes import router as admin_router
 from src.api.health_routes import router as health_router
@@ -142,6 +146,29 @@ app = FastAPI(
     version="3.0.0",
     lifespan=lifespan,
 )
+
+
+
+def _json_safe(value):
+    """Sustituye NaN/Infinity por su texto: no son JSON válido y romperían el 422."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(request: Request, exc: RequestValidationError):
+    # Mismo cuerpo que el handler por defecto de FastAPI ({"detail": [...]}), pero un
+    # `NaN`/`Infinity` en la entrada (el 'input' del error) ya no convierte el 422 en 500 (#217).
+    return JSONResponse(
+        status_code=422,
+        content=jsonable_encoder({"detail": _json_safe(exc.errors())}),
+    )
+
 
 app.add_middleware(RequestIdMiddleware)
 # Captures uvicorn's transport per WebSocket so a slow client can be dropped (issue #130 S2).
