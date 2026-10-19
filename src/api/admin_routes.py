@@ -39,6 +39,8 @@ from src.services.db_client import db_client
 from src.services.reconnection import ConnectionState
 from src.services.transcriber_client import TranscriberClient
 
+_ROTATE_KEY_ATTEMPTS = 3
+
 router = APIRouter(prefix="/admin", dependencies=[Depends(get_admin_auth)])
 
 
@@ -52,6 +54,21 @@ def _get_or_404(session: Session, client_id: str) -> ClientRecord:
     if rec is None:
         raise HTTPException(status_code=404, detail="Client not found")
     return rec
+
+
+def _check_agent_consistency(default_agent: str | None, allowed_agents: list[str] | None) -> None:
+    """422 si el estado resultante deja `default_agent` fuera de `allowed_agents`.
+
+    `allowed_agents is None` = sin restricción; `[]` = todo denegado (#105), así que
+    un `default_agent` con `[]` es inconsistente.
+    """
+    if default_agent is None or allowed_agents is None:
+        return
+    if default_agent not in allowed_agents:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="default_agent must be one of allowed_agents",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +87,7 @@ def create_client(
     body: ClientCreate,
     session: Session = Depends(get_db_session),
 ) -> ClientResponse:
+    _check_agent_consistency(body.default_agent, body.allowed_agents)
     record = ClientRecord(
         name=body.name,
         client_key=body.client_key or secrets.token_urlsafe(32),
@@ -120,6 +138,15 @@ def update_client(
     rec = _get_or_404(session, client_id)
     old_key = rec.client_key
     patch = body.model_dump(exclude_unset=True)
+    # Solo si el PATCH toca alguno de los dos campos: una fila antigua inconsistente
+    # que se edita por otros campos no debe fallar (solo se valida la entrada, #122).
+    if "default_agent" in patch or "allowed_agents" in patch:
+        _check_agent_consistency(
+            patch.get("default_agent", rec.default_agent),
+            patch["allowed_agents"]
+            if "allowed_agents" in patch
+            else (json.loads(rec.allowed_agents) if rec.allowed_agents else None),
+        )
     # Serializar listas a JSON antes de escribir en la BD
     for list_field in ("allowed_agents", "output_mode"):
         if list_field in patch:
@@ -154,9 +181,20 @@ def rotate_client_key(
 ) -> ClientResponse:
     rec = _get_or_404(session, client_id)
     old_key = rec.client_key
-    rec.client_key = secrets.token_urlsafe(32)
-    session.add(rec)
-    session.commit()
+    for _ in range(_ROTATE_KEY_ATTEMPTS):
+        rec.client_key = secrets.token_urlsafe(32)
+        session.add(rec)
+        try:
+            session.commit()
+            break
+        except IntegrityError:
+            # Colisión de client_key: reintento con otra. Sin loguear ni encadenar la
+            # excepción (su mensaje lleva la clave, G-27a).
+            session.rollback()
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="could not generate a unique client_key"
+        ) from None
     session.refresh(rec)
     db_client.invalidate(old_key)
     return ClientResponse.from_record(rec)
