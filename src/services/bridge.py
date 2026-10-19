@@ -422,6 +422,8 @@ class JotaBridge:
             current = self._active_turn
             if current is not None and not current.done():
                 await self._cancel_and_wait(current)
+            if self._closing:  # close_all() may have started during the cancel wait
+                return
             task = asyncio.create_task(self._call_orchestrator(text), name="turn")
             self._supervise(task)
             self._active_turn = task

@@ -416,3 +416,41 @@ async def test_client_gone_during_a_turn_cancels_the_orchestrator_stream():
     finally:
         await sender.aclose(1.0)
     assert closed.is_set()
+
+
+async def test_close_all_starting_while_a_send_waits_for_the_cancel_leaves_no_turn(monkeypatch):
+    """G-09 (review): `_start_turn` must re-check `_closing` after awaiting the
+    cancellation of the previous turn, inside the lock."""
+    monkeypatch.setattr(settings, "SHUTDOWN_DRAIN_S", 5.0)
+    bridge, _ = _bridge()
+    gate = asyncio.Event()
+    new_turns = []
+
+    async def old():
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            await gate.wait()  # slow cancellation
+            raise
+
+    async def stream(*a, **k):
+        new_turns.append(1)
+        await asyncio.sleep(3600)
+        yield OrchestratorEvent(type="token", content="x")
+
+    bridge.orchestrator.stream_response = stream
+    bridge._active_turn = asyncio.create_task(old())
+    await asyncio.sleep(0)
+
+    starter = asyncio.create_task(bridge._start_turn("two"))
+    await asyncio.sleep(0.02)  # _start_turn is now awaiting the old turn's cancellation
+    closer = asyncio.create_task(bridge.close_all())
+    await asyncio.sleep(0.02)  # close_all has begun
+    gate.set()
+    await asyncio.wait_for(asyncio.gather(starter, closer), timeout=3.0)
+
+    live = bridge._active_turn is not None and not bridge._active_turn.done()
+    if live:
+        bridge._active_turn.cancel()
+    assert not live, "a turn is alive after close_all() completed"
+    assert new_turns == []

@@ -198,7 +198,7 @@ Cada turno consiste en tres mensajes en este orden:
 | Campo | Descripción |
 |-------|-------------|
 | `turn_id` | Identificador del turno (`t-{N}`, secuencial por sesión desde 1) |
-| `turn_seq` | El mismo N como entero — aparece también en el header de los frames de audio |
+| `turn_seq` | N módulo 65 536 (uint16, no monótono tras el desbordamiento; compáralo por igualdad, no por orden) — es el mismo valor que lleva el header de los frames de audio |
 
 ### `token` — texto en streaming
 
@@ -317,7 +317,7 @@ Los frames de audio llegan como **mensajes binarios** intercalados con los JSON 
 | `turn_seq` | Uint16 big-endian — mismo valor que `turn_start.turn_seq`. Es el contador de turnos módulo 65 536: tras el turno 65 535 vuelve a 0 (el `turn_id` `t-N` no se reinicia), así que compara por igualdad y no asumas que crece siempre |
 | Audio | PCM16 signed 16-bit little-endian, 24 000 Hz, 1 canal (mono) |
 
-El `turn_seq` permite descartar audio de turnos anteriores si ya llegó un `turn_start` con seq mayor (barge-in sin mensaje adicional).
+El `turn_seq` permite descartar audio de turnos anteriores: un frame cuyo `turn_seq` **no coincide** con el del último `turn_start` recibido no es del turno actual. Es módulo 65 536 y no es monótono tras el desbordamiento, así que **no compares "mayor/menor"**: compara por igualdad (o usa `turn_id` en los mensajes JSON).
 
 ### Cómo parsear un frame
 
@@ -341,11 +341,9 @@ async for msg in ws:
         if len(msg) >= 3 and msg[0] == 0xA1:
             frame_seq = (msg[1] << 8) | msg[2]
             pcm16 = msg[3:]
-            if frame_seq >= current_turn_seq:
-                # Audio del turno actual o más nuevo — reproducir
-                if frame_seq > current_turn_seq:
-                    audio_player.stop()  # barge-in, descarta audio anterior
-                    current_turn_seq = frame_seq
+            if frame_seq == current_turn_seq:
+                # Audio del turno actual — reproducir. Los frames de otro turno
+                # (anterior, ya cancelado) se descartan; nunca compares con > o <.
                 audio_player.write(pcm16)
 
     elif isinstance(msg, str):
@@ -378,7 +376,7 @@ Tras `interrupted`:
 - Descarta audio con `turn_seq` del turno cancelado (ya no llegará más)
 - El flujo reinicia normalmente — sigue enviando audio
 
-El nuevo turno llegará con un `turn_start` con `turn_seq` mayor, lo que también activa el descarte de audio del turn anterior a nivel de frame sin necesitar el mensaje `interrupted`.
+El nuevo turno llegará con un `turn_start` con un `turn_seq` distinto (módulo 65 536, no necesariamente mayor), lo que también activa el descarte de audio del turno anterior a nivel de frame (por igualdad de `turn_seq`) sin necesitar el mensaje `interrupted`.
 
 ---
 
@@ -449,7 +447,7 @@ Los errores llegan independientemente de `output_mode`:
 | Código | Fatal | Cuándo ocurre |
 |--------|-------|---------------|
 | `TURN_ERROR` | false | Fallo en un turno concreto (orquestador caído/reconectando durante una sesión activa, **o** el turno se cuelga sin progreso — `message: "turn_timeout"`, ver §13); la sesión continúa — **el único código realmente emitido hoy** |
-| `INVALID_MESSAGE` | false | Mensaje de texto del cliente que no es un objeto JSON (`42`, `[1]`, `"s"`, `true`, `null`) o `send` con `text` que no es cadena (#215). La sesión continúa; el mensaje se ignora |
+| `INVALID_MESSAGE` | false | Mensaje de texto del cliente que no es un objeto JSON (`42`, `[1]`, `"s"`, `true`, `null`) o `send` con `text` que no es cadena (#215). La sesión continúa; el mensaje se ignora. En modo texto, un prompt plano que parsea como JSON escalar (`"42"`, `"true"`, `"null"`) también recibe `INVALID_MESSAGE`: los prompts van en `{"type":"send","text":...}` |
 | `AUTH_FAILED` | true | Documentado para `client_key` inválida o inactiva — en la práctica se señaliza cerrando el WS con 1008, sin este mensaje previo |
 | `AGENT_NOT_FOUND` | true | Documentado para agente inexistente — en la práctica se señaliza cerrando el WS con 1008, sin este mensaje previo |
 | `ORCHESTRATOR_UNAVAILABLE` | true | Documentado para orquestador no disponible al iniciar — en la práctica se señaliza cerrando el WS con 1011, sin este mensaje previo |
@@ -553,7 +551,7 @@ El cliente escribe; el gateway sintetiza audio con el texto de la respuesta.
 | Tipo | Formato | Cuándo |
 |------|---------|--------|
 | `ready` | `{"type":"ready","session_id":"...","agent":"...","input_mode":"...","output_mode":[...],"requested_capabilities":{...},"live_capabilities":{...}}` | Tras handshake exitoso; puede ir precedido de `status` |
-| `turn_start` | `{"type":"turn_start","turn_id":"t-N","turn_seq":N}` | Inicio de cada turno |
+| `turn_start` | `{"type":"turn_start","turn_id":"t-N","turn_seq":N mod 65536}` | Inicio de cada turno |
 | `token` | `{"type":"token","turn_id":"t-N","text":"..."}` | `"text"` en `output_mode` — tokens en streaming |
 | `turn_end` | `{"type":"turn_end","turn_id":"t-N"}` | Fin de cada turno |
 | `tool_call` | `{"type":"tool_call","turn_id":"t-N","phase":"start"\|"result","name":"...","tool_call_id":"...","args":{...}\|null,"result":"..."\|null,"is_error":bool\|null}` | Solo si `tool_calls_enabled=True` para el cliente — uso de herramientas del agente |
