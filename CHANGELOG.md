@@ -1,3 +1,10 @@
+## [1.19.8](https://github.com/Jota-project/jota-gateway/compare/v1.19.7...v1.19.8) (2026-10-19)
+
+
+### Bug Fixes
+
+* operación mínima y revocación de sesiones vivas ([#218](https://github.com/Jota-project/jota-gateway/issues/218), [#205](https://github.com/Jota-project/jota-gateway/issues/205), [#232](https://github.com/Jota-project/jota-gateway/issues/232)) ([#237](https://github.com/Jota-project/jota-gateway/issues/237)) ([1d73c37](https://github.com/Jota-project/jota-gateway/commit/1d73c3711d26ab4f2e64de9edf95f6f2826f2332)), closes [#102](https://github.com/Jota-project/jota-gateway/issues/102)
+
 ## [1.19.7](https://github.com/Jota-project/jota-gateway/compare/v1.19.6...v1.19.7) (2026-10-19)
 
 
