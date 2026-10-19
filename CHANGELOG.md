@@ -1,3 +1,10 @@
+## [1.19.3](https://github.com/Jota-project/jota-gateway/compare/v1.19.2...v1.19.3) (2026-10-19)
+
+
+### Bug Fixes
+
+* API admin y REST — 409/422, alias jota-gateway y SSE ([#217](https://github.com/Jota-project/jota-gateway/issues/217)) ([#229](https://github.com/Jota-project/jota-gateway/issues/229)) ([c0e3c34](https://github.com/Jota-project/jota-gateway/commit/c0e3c349edd6669f61e69a9a907c0ee8a749b24a)), closes [#122](https://github.com/Jota-project/jota-gateway/issues/122) [#226](https://github.com/Jota-project/jota-gateway/issues/226)
+
 ## [1.19.2](https://github.com/Jota-project/jota-gateway/compare/v1.19.1...v1.19.2) (2026-10-18)
 
 
