@@ -99,7 +99,7 @@ Auth: header `X-Admin-Token`. Sin header → 422. Token incorrecto → 401. `ADM
 
 | Endpoint | Método | Descripción |
 |----------|--------|-------------|
-| `/v1/models` | GET | Devuelve el alias `jota-gateway` y los agentes del roster de OpenClaw (filtrados por `allowed_agents` del cliente autenticado); sin roster, solo el alias |
+| `/v1/models` | GET | Devuelve el alias `jota-gateway` y los agentes del roster de OpenClaw (filtrados por `allowed_agents`) para un llamante con Bearer; un origen confiable sin Bearer (el chat ignora `model` y usa el agente por defecto) y un gateway sin roster, solo el alias |
 | `/v1/chat/completions` | POST | Chat completion; soporta `stream: true/false` |
 
 ---

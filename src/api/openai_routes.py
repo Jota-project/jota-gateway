@@ -84,11 +84,13 @@ async def resolve_ha_caller(request: Request) -> HACaller:
 async def list_models(request: Request, caller: HACaller = Depends(resolve_ha_caller)):
     # Alias first, then the roster agents (#234). The roster is whatever OpenClaw announced
     # (`agents.list`); without it only the alias is advertised. An authenticated client with
-    # an explicit `allowed_agents` list only sees the agents it may actually use; the
-    # trusted-origin legacy caller (no config) sees the whole roster.
+    # an explicit `allowed_agents` list only sees the agents it may actually use.
     models = [{"id": MODEL_ALIAS, "object": "model", "created": 0, "owned_by": "jota-gateway"}]
     orchestrator = getattr(request.app.state, "openclaw", None)
-    gateway_info = getattr(orchestrator, "gateway_info", None)
+    # The legacy trusted-origin caller (no Bearer, no config) gets only the alias: the legacy
+    # chat path ignores `model` and always uses the default agent, so advertising agents it
+    # cannot actually pick would be misleading.
+    gateway_info = getattr(orchestrator, "gateway_info", None) if caller.config else None
     allowed = caller.config.allowed_agents if caller.config is not None else None
     for agent_id in gateway_info.agents if gateway_info is not None else ():
         if agent_id == MODEL_ALIAS or (allowed is not None and agent_id not in allowed):

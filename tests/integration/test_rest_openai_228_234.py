@@ -21,11 +21,52 @@ def _ids(r):
 # ── #234 ──────────────────────────────────────────────────────────────────────
 
 
-def test_models_lists_alias_and_roster_agents(client):
-    r = client.get("/v1/models")
+def test_models_lists_alias_and_roster_agents_for_bearer_caller(
+    client_untrusted, ha_bearer_headers
+):
+    r = client_untrusted.get("/v1/models", headers=ha_bearer_headers)
     assert r.status_code == 200
     assert _ids(r) == ["jota-gateway", "main", "a", "openclaw"]
     assert all(m["object"] == "model" for m in r.json()["data"])
+
+
+def test_models_for_legacy_trusted_caller_lists_only_alias(client):
+    """Origen confiable SIN Bearer: chat ignora body.model y usa el agente por defecto, así
+    que no se anuncian agentes que no se podrían elegir."""
+    assert _ids(client.get("/v1/models")) == ["jota-gateway"]
+
+
+def _chat_session_key(c, mock_orchestrator, model, headers=None):
+    captured = {}
+
+    async def _stream(text, user_id, model_id=None, session_key=None):
+        captured["sk"] = session_key
+        yield OrchestratorEvent(type="token", content="ok")
+        yield OrchestratorEvent(type="status", content="done")
+
+    mock_orchestrator.stream_response = _stream
+    r = c.post("/v1/chat/completions", json={**BODY, "model": model}, headers=headers or {})
+    assert r.status_code == 200, r.text
+    return captured["sk"]
+
+
+def test_models_chat_coherence_bearer_every_listed_model_selects_that_agent(
+    client_untrusted, ha_bearer_headers, mock_orchestrator
+):
+    for mid in _ids(client_untrusted.get("/v1/models", headers=ha_bearer_headers)):
+        sk = _chat_session_key(client_untrusted, mock_orchestrator, mid, ha_bearer_headers)
+        expected = "main" if mid == "jota-gateway" else mid
+        assert sk.split(":")[1] == expected
+
+
+def test_models_chat_coherence_legacy_listed_model_is_what_chat_uses(
+    client, mock_orchestrator
+):
+    listed = _ids(client.get("/v1/models"))
+    assert listed == ["jota-gateway"]
+    # Un agente real no listado se ignora en la rama legacy: cae al agente por defecto.
+    assert _chat_session_key(client, mock_orchestrator, "a").split(":")[1] == "main"
+    assert _chat_session_key(client, mock_orchestrator, listed[0]).split(":")[1] == "main"
 
 
 def test_models_respects_allowed_agents_of_authenticated_client(
@@ -69,11 +110,12 @@ def test_models_with_empty_roster_lists_only_alias(client, mock_orchestrator):
     assert _ids(client.get("/v1/models")) == ["jota-gateway"]
 
 
-def test_models_never_duplicates_the_alias(client, mock_orchestrator):
+def test_models_never_duplicates_the_alias(client_untrusted, ha_bearer_headers, mock_orchestrator):
     from src.services.openclaw.models import AgentInfo
 
     mock_orchestrator.gateway_info.agents["jota-gateway"] = AgentInfo("jota-gateway", "x", False)
-    assert _ids(client.get("/v1/models")).count("jota-gateway") == 1
+    ids = _ids(client_untrusted.get("/v1/models", headers=ha_bearer_headers))
+    assert ids.count("jota-gateway") == 1 and len(ids) > 1
 
 
 # ── #228: lo que ve un llamador de /v1 ────────────────────────────────────────
