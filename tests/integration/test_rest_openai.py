@@ -259,7 +259,7 @@ def test_streaming_orchestrator_error_before_first_token_is_terminal_error(
     assert not any(
         payload.get("choices", [{}])[0].get("finish_reason") == "stop" for payload in payloads
     )
-    assert "[DONE]" not in body
+    assert body.rstrip().endswith("data: [DONE]")  # #217: [DONE] también ante error
 
     http_sessions = [
         session
@@ -303,7 +303,7 @@ def test_streaming_orchestrator_error_after_token_preserves_partial_output(
     assert not any(
         payload.get("choices", [{}])[0].get("finish_reason") == "stop" for payload in payloads
     )
-    assert "[DONE]" not in body
+    assert body.rstrip().endswith("data: [DONE]")  # #217: [DONE] también ante error
 
     http_sessions = [
         session
@@ -362,7 +362,7 @@ def test_streaming_turn_timeout_is_terminal_error(client, mock_orchestrator):
         },
     }
     assert payloads[-1]["choices"][0]["finish_reason"] == "error"
-    assert "[DONE]" not in body
+    assert body.rstrip().endswith("data: [DONE]")  # #217: [DONE] también ante error
 
 
 def test_non_streaming_turn_conflict_returns_409(client, mock_orchestrator):

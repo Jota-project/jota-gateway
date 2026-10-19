@@ -27,6 +27,7 @@ import secrets
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from src.api.deps import get_admin_auth
@@ -88,7 +89,16 @@ def create_client(
         tool_calls_enabled=body.tool_calls_enabled,
     )
     session.add(record)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        # client_key duplicada (única restricción alcanzable tras validar la entrada).
+        # `from None` y sin loguear la excepción: su mensaje/parámetros contienen la
+        # client_key completa (credencial bearer, G-27a).
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="client_key already exists"
+        ) from None
     session.refresh(record)
     return ClientResponse.from_record(record)
 
