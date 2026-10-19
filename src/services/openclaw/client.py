@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import uuid
 from collections.abc import AsyncGenerator, Callable
 
@@ -67,6 +68,18 @@ def _frame_limit(announced: object) -> int:
 
 _traceback_no_message = traceback_no_message
 
+_SAFE_CODE_RE = re.compile(r"[A-Za-z0-9_.:-]{1,48}")
+
+
+def _safe_error_code(error: object) -> str:
+    """The short `code` OpenClaw attaches to an `error`, for operator diagnostics (#228).
+    Only returned when it is a plain identifier; anything else (no code, wrong type, long,
+    spaces/newlines) is `unspecified`. The `message`/body is never read."""
+    code = error.get("code") if isinstance(error, dict) else None
+    if isinstance(code, str) and _SAFE_CODE_RE.fullmatch(code):
+        return code
+    return "unspecified"
+
 
 def _log_safe(value: object) -> str:
     """Server-provided scalar rendered for a log line: short, single-line."""
@@ -126,6 +139,9 @@ class OpenClawClient:
             raw = await asyncio.wait_for(self._ws.recv(), timeout=30.0)
             hello = self._parse_handshake_frame(raw)
             if not hello.get("ok"):
+                logger.warning(
+                    "OpenClaw rejected the handshake (code=%s)", _safe_error_code(hello.get("error"))
+                )
                 raise OrchestratorHandshakeError()
             hello_payload = hello.get("payload") or {}
             if not isinstance(hello_payload, dict):
@@ -140,8 +156,11 @@ class OpenClawClient:
             if agents_res.get("ok"):
                 self.gateway_info.update_agents_from_list(agents_res.get("payload", {}))
             else:
-                # OpenClaw's own error text is never logged (#228).
-                logger.warning("agents.list failed at connect")
+                # Only the short code, never OpenClaw's error text (#228).
+                logger.warning(
+                    "agents.list failed at connect (code=%s)",
+                    _safe_error_code(agents_res.get("error")),
+                )
                 if not self.gateway_info.agents and previous_agents:
                     # Wiping the roster would make has_agent() reject every named
                     # agent with 1008 until the next successful agents.list (#151).
@@ -355,7 +374,12 @@ class OpenClawClient:
                 elif kind == "done":
                     _finished = True
                     if not data.get("ok"):
-                        # OpenClaw's own error text stays out of the client and the logs.
+                        # OpenClaw's own error text stays out of the client and the logs;
+                        # the operator gets only the short code.
+                        logger.warning(
+                            "OpenClaw rejected the turn (code=%s)",
+                            _safe_error_code(data.get("error")),
+                        )
                         yield OrchestratorEvent(type="error", content=ORCHESTRATOR_ERROR)
                     else:
                         yield OrchestratorEvent(type="status", content="done")

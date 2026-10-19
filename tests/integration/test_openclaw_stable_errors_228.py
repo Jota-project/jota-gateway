@@ -36,7 +36,8 @@ class Server:
     """OpenClaw mínimo. `hello` (str | None) sustituye la respuesta a `connect`;
     `challenge` sustituye el primer frame; `on_chat` decide qué hacer con `chat.send`."""
 
-    def __init__(self, hello=None, challenge=None, on_chat=None):
+    def __init__(self, hello=None, challenge=None, on_chat=None, agents_error=None):
+        self.agents_error = agents_error
         self.hello = hello
         self.challenge = challenge
         self.on_chat = on_chat
@@ -77,6 +78,8 @@ class Server:
                                 },
                             )
                         )
+                elif method == "agents.list" and self.agents_error is not None:
+                    await ws.send(_res(rid, ok=False, error=self.agents_error))
                 elif method == "agents.list":
                     await ws.send(_res(rid, {"defaultId": "main", "agents": [{"id": "main"}]}))
                 elif method == "sessions.subscribe":
