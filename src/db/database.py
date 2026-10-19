@@ -8,6 +8,12 @@ from sqlalchemy.engine import make_url
 from sqlmodel import Session, create_engine
 
 from src.core.config import settings
+from src.db.models import ClientRecord
+
+
+class SchemaMismatchError(RuntimeError):
+    """El esquema real de una BD legacy no coincide con el modelo (G-42)."""
+
 
 _engine = None
 _ALEMBIC_INI = Path(__file__).resolve().parent.parent.parent / "alembic.ini"
@@ -63,9 +69,20 @@ def run_migrations() -> None:
       original): stamp head, sin ejecutar ningún DDL.
     - BD ya versionada: upgrade head aplica solo las migraciones pendientes.
     """
-    tables = inspect(get_engine()).get_table_names()
+    insp = inspect(get_engine())
+    tables = insp.get_table_names()
     cfg = _alembic_config()
     if "clients" in tables and "alembic_version" not in tables:
+        # G-42 (#218): sellar `head` sobre un esquema al que le faltan columnas lo dejaría
+        # «versionado» pero roto (fallos tardíos en runtime). Fallar antes, sin DDL ni sello.
+        present = {c["name"] for c in insp.get_columns("clients")}
+        missing = sorted(c.name for c in ClientRecord.__table__.columns if c.name not in present)
+        if missing:
+            raise SchemaMismatchError(
+                "La tabla `clients` existe sin `alembic_version` (BD legacy) pero le faltan "
+                f"columnas del modelo: {', '.join(missing)}. No se sella `head`; añádelas "
+                "a mano (ALTER TABLE) o migra la BD antes de arrancar."
+            )
         command.stamp(cfg, "head")
     else:
         command.upgrade(cfg, "head")
