@@ -1,3 +1,10 @@
+## [1.19.7](https://github.com/Jota-project/jota-gateway/compare/v1.19.6...v1.19.7) (2026-10-19)
+
+
+### Bug Fixes
+
+* errores estables hacia el cliente y /v1/models con el roster ([#228](https://github.com/Jota-project/jota-gateway/issues/228), [#234](https://github.com/Jota-project/jota-gateway/issues/234)) ([#236](https://github.com/Jota-project/jota-gateway/issues/236)) ([ea522fe](https://github.com/Jota-project/jota-gateway/commit/ea522fed5ccf786c7135116278e388db9325f051))
+
 ## [1.19.6](https://github.com/Jota-project/jota-gateway/compare/v1.19.5...v1.19.6) (2026-10-19)
 
 
