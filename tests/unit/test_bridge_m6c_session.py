@@ -201,7 +201,9 @@ async def test_idle_persistent_client_is_not_closed_nor_degraded(monkeypatch, ti
     loop_task = asyncio.create_task(bridge._client_input_loop())
     wd = asyncio.create_task(bridge._transcription_watchdog())
     try:
-        await _feed(ws, audio_for=0.1, keepalive_for=0.8)  # >= 8 windows, ~16 ticks idle
+        await _feed(ws, audio_for=0.03)  # the user speaks a turn (shorter than a tick)...
+        bridge.transcriber._last_transcription_at = time.monotonic()  # ...and it is transcribed
+        await _feed(ws, keepalive_for=0.8)  # then only keepalive: >= 8 windows, ~16 ticks idle
     finally:
         wd.cancel()
         loop_task.cancel()
@@ -217,7 +219,9 @@ async def test_audio_resuming_after_idle_starts_a_fresh_silence_window(monkeypat
     loop_task = asyncio.create_task(bridge._client_input_loop())
     wd = asyncio.create_task(bridge._transcription_watchdog())
     try:
-        await _feed(ws, audio_for=0.05, keepalive_for=0.6)  # idle phase
+        await _feed(ws, audio_for=0.03)  # one turn, transcribed, then idle
+        bridge.transcriber._last_transcription_at = time.monotonic()
+        await _feed(ws, keepalive_for=0.6)  # idle phase
         assert not ws.of("status") and not closed_at
         resumed = time.monotonic()
         await _feed(ws, audio_for=1.0)  # wake word again, then silence in the audio

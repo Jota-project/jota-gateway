@@ -54,6 +54,7 @@ async def test_watchdog_notifies_client_after_silence_timeout():
     config = ClientConfig(silence_timeout_s=1, max_silence_turns=1)
     bridge, ws, transcriber = _make_bridge(config=config)
     bridge._first_audio_at = time.monotonic() - 2
+    bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
     transcriber._last_transcription_at = None
     bridge.close_all = AsyncMock()
 
@@ -86,6 +87,7 @@ async def test_watchdog_closes_session_after_max_silence_turns():
     config = ClientConfig(silence_timeout_s=1, max_silence_turns=2)
     bridge, ws, transcriber = _make_bridge(config=config)
     bridge._first_audio_at = time.monotonic() - 2
+    bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
     transcriber._last_transcription_at = None
 
     close_called = []
@@ -108,6 +110,7 @@ async def test_watchdog_resets_count_when_transcription_arrives():
     config = ClientConfig(silence_timeout_s=1, max_silence_turns=2)
     bridge, ws, transcriber = _make_bridge(config=config)
     bridge._first_audio_at = time.monotonic() - 2
+    bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
     transcriber._last_transcription_at = None
 
     close_called = []
@@ -151,6 +154,7 @@ async def test_watchdog_pauses_but_does_not_exit_when_reconnecting():
     config = ClientConfig(silence_timeout_s=1, max_silence_turns=2)
     bridge, ws, transcriber = _make_bridge(config=config)
     bridge._first_audio_at = time.monotonic() - 2
+    bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
     transcriber._last_transcription_at = time.monotonic()  # fresh, no silence yet
 
     ticks = {"n": 0}
@@ -194,6 +198,7 @@ async def test_watchdog_does_not_close_immediately_after_reconnect_with_stale_ti
     config = ClientConfig(silence_timeout_s=1, max_silence_turns=2)
     bridge, ws, transcriber = _make_bridge(config=config)
     bridge._first_audio_at = time.monotonic() - 10
+    bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
     # A real transcription happened a while ago, then the transcriber dropped.
     transcriber._last_transcription_at = time.monotonic() - 10
 
@@ -560,6 +565,7 @@ async def test_watchdog_counts_one_strike_per_poll_tick_not_per_timeout_window(m
     config = ClientConfig(silence_timeout_s=0.05, max_silence_turns=3)
     bridge, ws, transcriber = _make_bridge(config=config)
     bridge._first_audio_at = time.monotonic() - 1
+    bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
     transcriber._last_transcription_at = None
     bridge.close_all = AsyncMock()
 
