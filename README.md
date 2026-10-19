@@ -152,8 +152,11 @@ Variables en `.env` (formato `host:port` sin protocolo para todos los URLs):
 | `OPENCLAW_TOKEN` | — | Token de auth para OpenClaw (obligatorio) |
 | `ADMIN_TOKEN` | — | Token para endpoints `/admin/*`; vacío deshabilita el admin API |
 | `ORCHESTRATOR_RECONNECT_INITIAL_BACKOFF` | `1.0` | Backoff inicial en reconexión del orquestador (s) |
-| `ORCHESTRATOR_RECONNECT_MAX_BACKOFF` | `60.0` | Backoff máximo en reconexión del orquestador (s) |
-| `ORCHESTRATOR_RECONNECT_MAX_DURATION` | `300.0` | Tiempo hasta DEGRADED del orquestador (s) |
+| `ORCHESTRATOR_RECONNECT_MAX_BACKOFF` | `60.0` | Backoff máximo en reconexión del orquestador (s); también el periodo del reintento lento en DEGRADED |
+| `ORCHESTRATOR_RECONNECT_MAX_DURATION` | `300.0` | Tiempo hasta DEGRADED del orquestador (s); en DEGRADED sigue reintentando un intento cada `MAX_BACKOFF` s |
+| `SINGLE_PROCESS_LOCK` | `true` | `flock` sobre `gateway.lock` junto a la BD: un segundo proceso (p. ej. `--workers 2`) no arranca. Multi-worker no está soportado |
+| `SESSION_REVALIDATE_INTERVAL_S` | `10.0` | Cada sesión WS se revalida contra la BD; cliente borrado/desactivado/clave rotada → cierre 1008 `revoked` |
+| `SESSION_CACHE_TTL_S` | `10.0` | TTL de la caché de sesiones de `db_client` (antes 60 s) |
 | `TRANSCRIBER_RECONNECT_INITIAL_BACKOFF` | `1.0` | Backoff inicial en reconexión del transcriptor (s) |
 | `TRANSCRIBER_RECONNECT_MAX_BACKOFF` | `60.0` | Backoff máximo en reconexión del transcriptor (s) |
 | `TRANSCRIBER_RECONNECT_MAX_DURATION` | `300.0` | Tiempo hasta DEGRADED del transcriptor (s) |
@@ -247,7 +250,7 @@ src/
 ├── cli.py                   CLI — add-client / list-clients / (de)activate-client / delete-client
 └── services/
     ├── bridge.py            JotaBridge — coordinador de sesión WS
-    ├── db_client.py         DbClient — lee ClientRecord de SQLite local (singleton, caché 60s)
+    ├── db_client.py         DbClient — lee ClientRecord de SQLite local (singleton, caché 10s)
     ├── reconnection.py      ConnectionState / ServiceStatus / to_wire_state() — compartido por los 3 wrappers
     ├── transcriber_client.py       WebSocket → jota-transcriber, protocolo puro (sin reconexión)
     ├── transcriber_reconnecting.py ReconnectingTranscriberClient — uno por sesión de audio, backoff en background

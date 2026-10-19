@@ -83,6 +83,9 @@ SHUTDOWN_DRAIN_S=30.0
 PUSH_TTS_DRAIN_TIMEOUT_S=30.0                # cap on each TTS wait (per op; audio drain of a normal turn = time without progress), #199, #214
 CLIENT_SEND_TIMEOUT_S=10.0
 TURN_QUEUE_MAX=1000                      # events per OpenClaw turn queue; overflow aborts the turn (#130 S3b)
+SINGLE_PROCESS_LOCK=true                 # flock on gateway.lock next to the DB: one process per DB (#218)
+SESSION_REVALIDATE_INTERVAL_S=10.0       # live sessions re-checked against the DB; revoked client → 1008 "revoked" (G-06)
+SESSION_CACHE_TTL_S=10.0                 # db_client session cache TTL (was 60)
 ```
 
 All service addresses are `host:port` **without protocol**. Each client injects the protocol itself (`http://`, `ws://`).
@@ -163,7 +166,7 @@ All routes require `X-Admin-Token: <ADMIN_TOKEN>`.
 
 `POST /admin/clients` body: all fields from `ClientCreate` — `name` is required, `client_key` is optional (generated if omitted), everything else defaults to the table defaults above.
 
-After any mutation, `db_client.invalidate(client_key)` is called to evict the 60s session cache.
+After any mutation, `db_client.invalidate(client_key)` is called to evict the session cache (TTL `SESSION_CACHE_TTL_S`, 10s; was 60s before G-06). `tests/integration/test_admin_invalidate_invariant.py` pins both that PATCH/DELETE/rotate-key invalidate and that they do it *after* the commit (G-07).
 
 Schemas: `src/models/admin_schemas.py` — `ClientCreate`, `ClientUpdate`, `ClientResponse`.
 
@@ -185,7 +188,7 @@ python3 src/cli.py delete-client <client_key>
 
 The CLI calls `run_migrations()` when run as a script, so it is safe to run against a fresh `data/gateway.db`.
 
-Every mutating command (`add-client`, `activate-client`, `deactivate-client`, `delete-client`) calls `db_client.invalidate(key)` after its commit, same as `admin_routes.py` (issue #123). The CLI is a separate process, though, so that only clears *its own* in-process cache — it does **not** evict a running gateway's 60s `_session_cache`. Run the CLI against a stopped gateway, or use the admin REST API for live changes.
+Every mutating command (`add-client`, `activate-client`, `deactivate-client`, `delete-client`) calls `db_client.invalidate(key)` after its commit, same as `admin_routes.py` (issue #123). The CLI is a separate process, though, so that only clears *its own* in-process cache — it does **not** evict a running gateway's `_session_cache` (10s TTL; a live session of a client changed from the CLI is revalidated and closed within TTL + `SESSION_REVALIDATE_INTERVAL_S`). Run the CLI against a stopped gateway, or use the admin REST API for live changes.
 
 ---
 
@@ -195,7 +198,7 @@ Replaces the old HTTP client. Reads `ClientRecord` from SQLite and returns `(Cli
 
 ```python
 await db_client.get_session(client_key) -> (Client, ClientConfig)
-db_client.invalidate(client_key)        # evict from 60s TTL cache
+db_client.invalidate(client_key)        # evict from the session cache (SESSION_CACHE_TTL_S, 10s)
 ```
 
 `ClientConfig` fields mapped from `ClientRecord`:
@@ -226,7 +229,7 @@ The singleton `db_client = DbClient()` is imported from this module everywhere. 
 3. If `agent` is specified, `routes.py` validates it against `openclaw.gateway_info.has_agent(agent)` — unknown agents close with code 1008.
 4. `routes.py` constructs a `QueuedSender(websocket)` for this session's outbound path (issue #130 S1), then passes it to `PipelineTracker` and `JotaBridge` (order: sender → tracker → bridge). `JotaBridge` is instantiated with client, config, WebSocket, the singleton `ReconnectingOpenClawClient` (from `app.state.openclaw`), the singleton `ReconnectingTTSClient` (from `app.state.tts`), `app.state.client_registry`, and `default_agent`.
 5. `bridge.connect_internal_services()` — starts a `ReconnectingTranscriberClient` only if `input_mode == "audio"`; registers the bridge in `ClientRegistry`. `ReconnectingTranscriberClient.connect()` never raises — a failed initial connect just leaves it in `RECONNECTING` state for `health_check()`/the background `run()` loop to handle, it no longer aborts session setup.
-6. `bridge.health_check()` — pings each microservice; **only the orchestrator is fatal** (its failure returns `False`, closing the WebSocket with code 1011 before `ready` is ever sent). Transcriber and TTS failures are both non-fatal — the session opens normally and the client is notified via `status` messages (see "Service reconnection" below). `routes.py` calls `sender.flush()` before closing with 1011 to deliver any queued `status` messages.
+6. `bridge.health_check()` — pings each microservice; **only the orchestrator is fatal** (its failure returns `False`, closing the WebSocket with code 1011 before `ready` is ever sent). Transcriber and TTS failures are both non-fatal — the session opens normally and the client is notified via `status` messages (see "Service reconnection" below). `routes.py` calls `sender.flush()` before closing with 1011 to deliver any queued `status` messages. A `ClientGone` escaping `health_check(propagate=True)` (client left during startup) is a normal disconnect: INFO + clean return, the `finally` still runs `close_all`/`sender.aclose` (#205). A non-text first frame (binary) closes 1008 `"Handshake invalido. Se esperaba texto."` (#232).
 7. `bridge.run()` — launches concurrent tasks: `_client_input_loop` + idle watchdog + `transcriber.run()` (listen + background reconnect) + silence watchdog.
 
 ### JotaBridge data flow
@@ -280,6 +283,14 @@ uniformly to text and audio sessions, not just audio ones.
   `_push_turn_open` are each bounded by `TURN_TIMEOUT_S` (from `_push_pending_since` /
   `_push_turn_opened_at`), so a wedged worker or an orphaned push can't gate the watchdog forever.
 
+### Session revalidation (G-06, issue #218)
+
+`run()` also spawns `_session_revalidation_loop` (supervised, in `bridge.tasks`): every `SESSION_REVALIDATE_INTERVAL_S` (10s) it calls `db_client.get_session(client_key)`. `ClientNotFound`/`ClientInactive` (client deleted, `is_active=false`, key rotated) → `_revoke_session()`: tracker event `session_revoked`, `client_ws.close(1008, "revoked")` bounded by `CLIENT_SEND_TIMEOUT_S`, then `close_all(status="revoked")` (the active turn is cancelled, not drained: `_client_gone=True`). Any other exception is transient: one WARNING with only the exception type, retry next tick, the session is never closed for it. Revocation through `/admin/*` evicts the cache at once, so the session closes at the next tick; a change from the CLI (other process) takes up to TTL + interval. Test: `tests/integration/test_session_revocation.py` (real uvicorn + `websockets`).
+
+### Startup checks and single-process guard (issue #218)
+
+`lifespan()` takes `fcntl.flock(LOCK_EX|LOCK_NB)` on `<dir of the DB>/gateway.lock` first (`src/core/startup_checks.py`); if held, startup fails with `SingleProcessLockError` ("multi-worker no está soportado"). It is released in the lifespan `finally` (and by the OS if the process dies). `SINGLE_PROCESS_LOCK=false` disables it; skipped for in-memory/non-SQLite URLs. Two opens of the same file *inside one process* also conflict, so `tests/conftest.py` disables it for every test (the lock tests re-enable it). `uvicorn --reload` works: the reloader waits for the old child to exit (releasing the lock) before spawning the new one. It also logs a WARNING (never the value) for empty/placeholder `ADMIN_TOKEN`, empty/placeholder `OPENCLAW_TOKEN` and `TTS_TOKEN` left at its default.
+
 ### Lifespan shutdown
 
 `src/main.py`'s `lifespan()` wraps everything after service construction in
@@ -295,7 +306,9 @@ Uvicorn's external cancellation to clean up. On shutdown, in order:
    windows in that unlikely case (no current handler ignores cancellation). Mirrors `broadcast_status`'s isolation contract — one
    session that raises or times out never blocks or fails the others. A session
    closed this way is recorded with `SessionRecord.status = "shutdown"` (a fourth
-   value alongside `"active"/"completed"/"error"`), visible via `GET /admin/sessions`.
+   value alongside `"active"/"completed"/"error"`; a fifth, `"revoked"`, is written when the
+   session revalidation closes a session of a deleted/deactivated/rekeyed client, see
+   "Session revalidation" below), visible via `GET /admin/sessions`.
 2. **Close OpenClaw** — only after step 1, so any turn still in flight when
    shutdown began has already been given its `SHUTDOWN_DRAIN_S` window to finish
    naturally inside `close_all()`'s own `_active_turn` wait (see `JotaBridge.close_all()`
@@ -353,7 +366,7 @@ The HA REST endpoint (`/v1/chat/completions`) uses `client_id="ha"` for the trus
 
 | Client | Protocol | Notes |
 |---|---|---|
-| `DbClient` | SQLite (SQLModel) | Singleton; reads `ClientRecord`; caches sessions 60s via TTLCache |
+| `DbClient` | SQLite (SQLModel) | Singleton; reads `ClientRecord`; caches sessions `SESSION_CACHE_TTL_S` (10s) via TTLCache |
 | `OpenClawClient` | WebSocket v4 | Singleton per app; multiplexed — N concurrent sessions on one connection; sends `chat.abort` on barge-in |
 | `ReconnectingOpenClawClient` | — | Wraps `OpenClawClient`; auto-reconnects with exponential backoff; exposes state (CONNECTED/RECONNECTING/DEGRADED) |
 | `TranscriberClient` | WebSocket | Protocol-only, unchanged; one instance per session (audio mode only); receives PCM Float32 16kHz |
@@ -384,7 +397,7 @@ The HA REST endpoint (`/v1/chat/completions`) uses `client_id="ha"` for the trus
 Built once in `main.py` lifespan; stored in `app.state`.
 
 - `OpenClawClient` (`client.py`) — WebSocket v4 handshake (challenge → connect → hello-ok → **agents.list → sessions.subscribe**), persistent `_listen` task, `_keepalive_loop` (pings at 80% of `tickIntervalMs`, floored at 1s so a `tickIntervalMs` of 0 can't flood the socket — issue #135). All events carry `sessionKey`; `stream_response()` registers a `Queue` in `TurnRegistry` per turn, sends `{"sessionKey": key}` and reads the queue until turn completion or `error` (see turn-completion note below). `connect()` is serialized by a `_connect_lock` and always tears down (`_cancel_and_close()`) the previous `_ws`/`_listener_task`/`_keepalive_task` before opening a new socket — otherwise the old listener could start racing the new handshake for frames, or dispatch stale frames to the shared `TurnRegistry`, once it actually got scheduled to run (issue #103). Each `queue.get()` wait inside that loop is bounded by `TURN_TIMEOUT_S` (issue #115) with idle-reset semantics — the timeout resets on every event received, so a turn making steady progress can run indefinitely; only a genuine gap longer than `TURN_TIMEOUT_S` between events yields a `turn_timeout` error. **Frontera de `_listen` (issue #213, M6a):** cada frame se procesa en su propio `try` (`_handle_raw_frame`): uno malformado (no JSON, no objeto, `payload`/`data` nulos) se descarta con un WARNING que solo lleva el tipo de la excepción, nunca el contenido, y no afecta a ninguna sesión. Un único `finally` de `_listen` llama a `TurnRegistry.error_all(ORCHESTRATOR_DISCONNECTED_ERROR)` (`"orchestrator_disconnected"`, mensaje estable, nunca `str(e)`) en cualquier salida — cierre limpio 1000, excepción o cancelación —, así que los turnos en vuelo fallan al instante y su `session_key` queda libre; `on_disconnect` sigue sin dispararse en la cancelación. **`max_size`:** `websockets.connect` recibe `max_size=_frame_limit(...)` (por defecto 1 MiB, insuficiente frente a los 25 MiB de `hello-ok.policy.maxPayload`): antes del `hello-ok` se usa 25 MiB (o el último `maxPayload` anunciado en una reconexión) y justo después se alinea el socket vivo con el `maxPayload` anunciado (`protocol.max_message_size`), acotado a [1 MiB, 64 MiB]. Una vez por conexión se registra en INFO la versión de servidor y de protocolo de `hello-ok`.
-- `ReconnectingOpenClawClient` (`reconnecting.py`) — wraps `OpenClawClient`; on unexpected disconnect calls `on_disconnect` hook, retries with exponential backoff up to `ORCHESTRATOR_RECONNECT_MAX_DURATION` seconds; after that enters DEGRADED state. `stream_response()` returns an `error` event immediately when not CONNECTED. `trigger_reconnect()` is the admin-facing entry point (`POST /admin/orchestrators/{name}/reconnect`) — it coalesces onto any reconnect already in flight via the same `_reconnect_task`/job-id tracking the background loop uses, and returns immediately with a job id rather than blocking on the handshake, so an admin-triggered reconnect can never race the background loop into opening two sockets. **Circuit breaker (issue #102):** `_reconnect_exhausted` is set once `_reconnect_loop()` hits `max_duration` and enters DEGRADED; while set, `_ensure_reconnecting()` (called from `ping()`, `stream_response()`, and `on_disconnect`) returns immediately without spawning a new `_reconnect_task`, so DEGRADED no longer relaunches a full reconnect window on every probe/request. It's cleared only by a successful `connect()` or by `trigger_reconnect()` — so an admin-triggered reconnect always gets a fresh attempt even mid-DEGRADED. **Nested-generator cleanup (issue #150):** `stream_response()` wraps its own iteration of the inner `OpenClawClient.stream_response()` in its own `contextlib.aclosing()`, not just a plain `async for`. In production `orchestrator` (in `call_orchestrator()`) is always this class, so the `aclosing()` PR #147 added to `call_orchestrator()` only closes *this* generator — without this inner `aclosing()`, closing it early (e.g. `call_orchestrator` raising on an `error` event) throws `GeneratorExit` at this generator's own suspended `yield`, which propagates straight out without ever resuming/closing the inner `OpenClawClient` generator, so its `finally: self._turn_registry.unregister(...)` gets deferred to the asyncgen GC finalizer instead of running synchronously — reopening the exact TurnRegistry race #99/#147 closed, one layer removed.
+- `ReconnectingOpenClawClient` (`reconnecting.py`) — wraps `OpenClawClient`; on unexpected disconnect calls `on_disconnect` hook, retries with exponential backoff up to `ORCHESTRATOR_RECONNECT_MAX_DURATION` seconds; after that enters DEGRADED state — which is **not terminal** (G-55, #218): a single `_slow_retry_task` makes one `connect()` attempt every `ORCHESTRATOR_RECONNECT_MAX_BACKOFF` seconds until it succeeds (state stays DEGRADED while failing, no flapping, no new full window; `trigger_reconnect()` and `close()` cancel it). `/ready` keeps returning 503 while DEGRADED; the Docker HEALTHCHECK stays on `/healthz` (liveness) on purpose, since recovery is now automatic and no orchestrator restarts on `unhealthy`. `stream_response()` returns an `error` event immediately when not CONNECTED. `trigger_reconnect()` is the admin-facing entry point (`POST /admin/orchestrators/{name}/reconnect`) — it coalesces onto any reconnect already in flight via the same `_reconnect_task`/job-id tracking the background loop uses, and returns immediately with a job id rather than blocking on the handshake, so an admin-triggered reconnect can never race the background loop into opening two sockets. **Circuit breaker (issue #102):** `_reconnect_exhausted` is set once `_reconnect_loop()` hits `max_duration` and enters DEGRADED; while set, `_ensure_reconnecting()` (called from `ping()`, `stream_response()`, and `on_disconnect`) returns immediately without spawning a new `_reconnect_task`, so DEGRADED no longer relaunches a full reconnect window on every probe/request. It's cleared only by a successful `connect()` or by `trigger_reconnect()` — so an admin-triggered reconnect always gets a fresh attempt even mid-DEGRADED. **Nested-generator cleanup (issue #150):** `stream_response()` wraps its own iteration of the inner `OpenClawClient.stream_response()` in its own `contextlib.aclosing()`, not just a plain `async for`. In production `orchestrator` (in `call_orchestrator()`) is always this class, so the `aclosing()` PR #147 added to `call_orchestrator()` only closes *this* generator — without this inner `aclosing()`, closing it early (e.g. `call_orchestrator` raising on an `error` event) throws `GeneratorExit` at this generator's own suspended `yield`, which propagates straight out without ever resuming/closing the inner `OpenClawClient` generator, so its `finally: self._turn_registry.unregister(...)` gets deferred to the asyncgen GC finalizer instead of running synchronously — reopening the exact TurnRegistry race #99/#147 closed, one layer removed.
 - `TurnRegistry` (`registry.py`) — dual-index dict (`session_key → Queue`, `req_id → session_key`); `FrameDispatcher` uses it to route response frames to the correct waiting `stream_response()` call. Queues are bounded (`TURN_QUEUE_MAX`) and fed non-blockingly; overflow aborts the turn (see S3b above).
 - `ClientRegistry` (`registry.py`) — maps `client_id → JotaBridge`; used by `FrameDispatcher` to deliver agent-initiated push events to the right session.
 - `FrameDispatcher` (`dispatcher.py`) — called by `_listen` for every incoming frame; routes `res` frames to `TurnRegistry` (a `res` ends the turn only with `ok:false` or the legacy explicit `status:"done"`; any other `ok:true` ack is ignored, G-47), `chat` events to active turn queue or bridge push hooks, `agent` phase events to `bridge.enqueue_push` (`start` suppressed when a normal turn's queue is registered for that `session_key`, #112 — `end` is always forwarded unconditionally, since `on_push_turn_end` already no-ops safely when no push turn is open), `session.tool` events (`phase: "start"`/`"result"`, `"update"` dropped) to the active turn queue or `bridge.enqueue_push` (push handlers run on the bridge's worker, not inline in `_listen`, #130 S3a). Frame types and event names it doesn't handle are logged **once per kind at INFO** (payload never logged), then at DEBUG (issue #136) — a new INFO line like that after an OpenClaw upgrade is the signal of protocol drift; update `docs/openclaw-protocol.md`.
@@ -459,7 +472,7 @@ On first startup (`run_migrations()` in the lifespan), the schema is created aut
 `run_migrations()` (`src/db/database.py`, Alembic) picks one of three modes by inspecting the DB:
 - **Fresh** — no `clients` table and no `alembic_version`: `upgrade head` from scratch.
 - **Versioned** — `alembic_version` exists: `upgrade head` applies only pending migrations.
-- **Legacy stamp** — `clients` exists but `alembic_version` doesn't (schema already patched by hand with `ALTER TABLE`, as in production after the original incident): `stamp head`, no DDL executed.
+- **Legacy stamp** — `clients` exists but `alembic_version` doesn't (schema already patched by hand with `ALTER TABLE`, as in production after the original incident): `stamp head`, no DDL executed. Before stamping it checks that the real `clients` columns include every `ClientRecord` column; if any is missing it raises `SchemaMismatchError` listing them and neither runs DDL nor stamps (G-42).
 
 `get_engine()` also creates the SQLite file's parent directory if missing (`_ensure_sqlite_dir`, issue #124), so `DATABASE_URL=sqlite:///data/gateway.db` works on a clean non-Docker checkout without a manual `mkdir -p data`. In-memory and non-SQLite URLs are left untouched.
 

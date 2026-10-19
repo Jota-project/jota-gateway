@@ -8,6 +8,15 @@ class Settings(BaseSettings):
     # Base de datos interna
     DATABASE_URL: str = "sqlite:///data/gateway.db"
 
+    # Un solo proceso por base de datos (M6f, #218): flock sobre <dir de la BD>/gateway.lock.
+    # Estado en memoria (sesiones, cachés, registro de bridges) no se comparte entre workers.
+    SINGLE_PROCESS_LOCK: bool = True
+
+    # Revocación de sesiones vivas (M6f, G-06): cada sesión se revalida contra la BD cada
+    # SESSION_REVALIDATE_INTERVAL_S; la caché de db_client vive SESSION_CACHE_TTL_S (antes 60).
+    SESSION_REVALIDATE_INTERVAL_S: float = Field(default=10.0, gt=0)
+    SESSION_CACHE_TTL_S: float = Field(default=10.0, gt=0)
+
     # Admin API
     ADMIN_TOKEN: str = ""
 

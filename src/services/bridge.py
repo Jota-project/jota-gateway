@@ -7,7 +7,9 @@ from typing import Any
 from fastapi import WebSocket, WebSocketDisconnect
 
 from src.core.config import settings
+from src.core.exceptions import ClientInactive, ClientNotFound
 from src.models.schemas import Client, ClientConfig, Handshake
+from src.services.db_client import db_client
 from src.services.openclaw.models import ToolCallEvent
 from src.services.openclaw.registry import ClientRegistry
 from src.services.outbound import ClientGone, DirectSender, OutboundSender
@@ -586,6 +588,47 @@ class JotaBridge:
                 return
             await asyncio.sleep(remaining)
 
+    async def _session_revalidation_loop(self) -> None:
+        """Revalida la sesión contra la BD cada SESSION_REVALIDATE_INTERVAL_S (G-06, #218).
+
+        Si el cliente fue borrado, desactivado o su clave rotada (`ClientNotFound` /
+        `ClientInactive`) se cierra la sesión con 1008 «revoked». Cualquier otro error
+        (BD ocupada, etc.) es transitorio: se registra solo el tipo y se reintenta en el
+        siguiente tick, nunca cierra la sesión. La lectura pasa por la caché de db_client
+        (TTL `SESSION_CACHE_TTL_S`), que las mutaciones de /admin evictan al instante.
+        """
+        while True:
+            await asyncio.sleep(settings.SESSION_REVALIDATE_INTERVAL_S)
+            try:
+                current, _ = await db_client.get_session(self.client.client_key)
+                if current.id != self.client.id:
+                    # Borrado y recreado con la MISMA clave: es otro cliente.
+                    await self._revoke_session()
+                    return
+            except (ClientNotFound, ClientInactive):
+                await self._revoke_session()
+                return
+            except Exception as e:
+                logger.warning(
+                    f"[{self.client_id}] Revalidación de sesión fallida "
+                    f"({type(e).__name__}); se reintenta."
+                )
+
+    async def _revoke_session(self) -> None:
+        """Cierra la sesión con 1008 «revoked» por el camino de cierre existente."""
+        logger.warning(f"[{self.client_id}] Cliente revocado (borrado/desactivado/clave rotada).")
+        await self.tracker.record("session_revoked")
+        # Nadie autorizado escucha ya: el turno en curso se cancela, no se drena (G-18).
+        self._client_gone = True
+        try:
+            await asyncio.wait_for(
+                self.client_ws.close(code=1008, reason="revoked"),
+                timeout=settings.CLIENT_SEND_TIMEOUT_S,
+            )
+        except Exception as e:
+            logger.debug(f"[{self.client_id}] close 1008 revoked falló: {type(e).__name__}")
+        await self.close_all(status="revoked")
+
     def _spawn(self, coro, name: str) -> asyncio.Task:
         """Create a supervised session task and track it in self.tasks."""
         task = asyncio.create_task(coro, name=name)
@@ -632,6 +675,8 @@ class JotaBridge:
         client_task = self._spawn(self._client_input_loop(), "client_input_loop")
         # Idle watchdog: cierra la sesión si el cliente no manda nada (issue #115).
         self._spawn(self._idle_watchdog(), "idle_watchdog")
+        # Revocación de clientes borrados/desactivados/rotados con la sesión abierta (G-06).
+        self._spawn(self._session_revalidation_loop(), "session_revalidation")
 
         # Loop del Transcriptor (solo si hay audio de entrada)
         if self.transcriber:

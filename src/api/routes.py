@@ -61,6 +61,12 @@ async def gateway_websocket(websocket: WebSocket):
         logger.warning("Handshake no recibido dentro de HANDSHAKE_TIMEOUT_S.")
         await websocket.close(code=1008, reason="Handshake timeout")
         return
+    except KeyError:
+        # #232: starlette's receive_text() lee message["text"]; un primer frame binario
+        # (o cualquier mensaje sin "text") lanza KeyError. Sin contenido en el log.
+        logger.warning("Handshake rechazado: el primer mensaje no es texto.")
+        await websocket.close(code=1008, reason="Handshake invalido. Se esperaba texto.")
+        return
     except WebSocketDisconnect:
         logger.info("Cliente desconectado antes o durante el handshake.")
         return
@@ -157,7 +163,13 @@ async def gateway_websocket(websocket: WebSocket):
             return
 
         # 3.5 HEALTH CHECK — verifica disponibilidad de servicios antes de abrir la sesión
-        live_capabilities = await bridge.health_check()
+        try:
+            live_capabilities = await bridge.health_check()
+        except ClientGone:
+            # #205: el cliente se fue durante el arranque; es una desconexión normal.
+            # El `finally` de abajo hace close_all / sender.aclose.
+            logger.info(f"[{client.id}] Cliente desconectado durante el health check.")
+            return
         if live_capabilities is None:
             logger.warning(f"[{client.id}] Health check falló. Cerrando sesión.")
             try:

@@ -55,6 +55,7 @@ class ReconnectingOpenClawClient:
         self._reconnect_task: asyncio.Task | None = None
         self._reconnect_job_id: str = ""
         self._reconnect_exhausted: bool = False
+        self._slow_retry_task: asyncio.Task | None = None
         # Register disconnect callback so the inner client notifies us on unexpected drops.
         self._client.on_disconnect = self._handle_disconnect
 
@@ -76,6 +77,10 @@ class ReconnectingOpenClawClient:
             self._ensure_reconnecting()
 
     async def close(self) -> None:
+        slow = self._slow_retry_task
+        self._cancel_slow_retry()
+        if slow is not None:
+            await asyncio.gather(slow, return_exceptions=True)
         if self._reconnect_task and not self._reconnect_task.done():
             self._reconnect_task.cancel()
             try:
@@ -145,6 +150,7 @@ class ReconnectingOpenClawClient:
         instead of racing it with a second concurrent connect() — returns
         that attempt's job id instead of starting a duplicate one."""
         self._reconnect_exhausted = False
+        self._cancel_slow_retry()  # G-55: el trigger toma el relevo del reintento lento
         return self._ensure_reconnecting()
 
     def _ensure_reconnecting(self) -> str:
@@ -174,3 +180,38 @@ class ReconnectingOpenClawClient:
         )
         if not recovered:
             self._reconnect_exhausted = True
+            self._start_slow_retry()
+
+    def _start_slow_retry(self) -> None:
+        if self._slow_retry_task is None or self._slow_retry_task.done():
+            self._slow_retry_task = asyncio.create_task(self._slow_retry_loop())
+
+    def _cancel_slow_retry(self) -> None:
+        task, self._slow_retry_task = self._slow_retry_task, None
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _slow_retry_loop(self) -> None:
+        """G-55 (#218): DEGRADED no es terminal. Un intento cada `max_backoff` s hasta que
+        OpenClaw vuelva. Sin tormenta (un único intento por ventana, el estado se queda en
+        DEGRADED mientras falla) y sin relanzar la ventana completa: el circuit breaker
+        (#102) sigue cerrado para ping()/stream_response()/on_disconnect. Lo cancelan
+        trigger_reconnect() (que toma el relevo con un intento inmediato) y close()."""
+        while self._reconnect_exhausted:
+            await asyncio.sleep(self._max_backoff)
+            if not self._reconnect_exhausted:
+                return  # un connect() directo ya recuperó el servicio
+            try:
+                self.gateway_info = await self._client.connect()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self._health.mark_attempt_failed(str(e))
+                logger.warning(
+                    "[%s] degraded retry %d failed: %s", self._name, self._reconnect_attempts, e
+                )
+                continue
+            self._health.mark_connected()
+            self._reconnect_exhausted = False
+            logger.info("[%s] recovered from DEGRADED.", self._name)
+            return
