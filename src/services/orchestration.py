@@ -9,6 +9,12 @@ from src.services.protocol import OrchestratorProtocol
 logger = logging.getLogger(__name__)
 
 
+class OrchestratorError(RuntimeError):
+    """The orchestrator emitted an `error` event. Its message is always a stable code
+    (`orchestrator_error`, `turn_timeout`, ...), never raw exception/OpenClaw text, so
+    callers may relay it. Any other RuntimeError is NOT safe to relay (#228)."""
+
+
 async def call_orchestrator(
     orchestrator: OrchestratorProtocol,
     text: str,
@@ -22,7 +28,7 @@ async def call_orchestrator(
     """Iterate orchestrator.stream_response(), record pipeline events, call on_token per token
     and on_tool_call per tool-call event.
 
-    Raises RuntimeError if the orchestrator emits an error event.
+    Raises OrchestratorError (a RuntimeError) if the orchestrator emits an error event.
     """
     if tracker:
         await tracker.record("llm_start")
@@ -59,7 +65,7 @@ async def call_orchestrator(
                     await on_tool_call(event.tool_call)
 
             elif event.type == "error":
-                raise RuntimeError(event.content)
+                raise OrchestratorError(event.content)
 
     if tracker:
         await tracker.record("llm_done", token_count=_token_count)

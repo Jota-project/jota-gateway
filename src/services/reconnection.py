@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -37,6 +38,22 @@ def to_wire_state(state: ConnectionState) -> str:
         ConnectionState.RECONNECTING: "reconnecting",
         ConnectionState.DEGRADED: "unavailable",
     }[state]
+
+
+def traceback_no_message(exc: BaseException) -> str:
+    """Traceback as `file:line in func` entries plus the exception type: never the
+    exception message nor source lines, which could carry frame/user content."""
+    entries = traceback.extract_tb(exc.__traceback__)
+    where = " <- ".join(f"{e.filename.split('/')[-1]}:{e.lineno} in {e.name}" for e in entries)
+    return f"{type(exc).__name__} at {where}"
+
+
+def describe_error(exc: BaseException) -> str:
+    """Stable, content-free description of a failure for `last_error` and logs: the
+    exception's own `stable_code` when it declares one (e.g. the handshake error),
+    otherwise just its type name. Never `str(exc)` (#228)."""
+    code = getattr(exc, "stable_code", None)
+    return code if isinstance(code, str) else type(exc).__name__
 
 
 def health_attr(name: str) -> property:
@@ -121,9 +138,15 @@ async def reconnect_with_backoff(
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            health.mark_attempt_failed(str(e))
+            # Stable description only (#228): the exception text can carry server-provided
+            # content and would otherwise end up in `last_error` (/admin) and the logs.
+            reason = describe_error(e)
+            health.mark_attempt_failed(reason)
             logger.warning(
-                "[%s] reconnect attempt %d failed: %s", label, health.reconnect_attempts, e
+                "[%s] reconnect attempt %d failed: %s", label, health.reconnect_attempts, reason
+            )
+            logger.debug(
+                "[%s] reconnect traceback (no message): %s", label, traceback_no_message(e)
             )
 
         if time.monotonic() - start >= max_duration:

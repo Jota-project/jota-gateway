@@ -456,6 +456,22 @@ Los errores llegan independientemente de `output_mode`:
 | `TRANSCRIBER_UNAVAILABLE` | false | Documentado para Transcriber caído — en la práctica ver `status: {transcriber, unavailable}` (§8), no este código |
 | `INTERNAL_ERROR` | true/false | Reservado para error inesperado; no confirmado en el código actual |
 
+#### Valores de `message` de `TURN_ERROR` (estables — #228)
+
+El `message` de un `TURN_ERROR` es siempre uno de estos códigos fijos, nunca el texto de una excepción ni un texto interno de OpenClaw (que se queda en el servidor, y ni siquiera en sus logs). Los mismos códigos llegan a los llamadores de `/v1/chat/completions` (`{"error": "<código>"}` con 502, o `error.message` dentro del flujo SSE). Cualquier otro fallo interno inesperado en `/v1` llega como `internal_error`.
+
+| `message` | Cuándo |
+|---|---|
+| `orchestrator_unavailable` | El orquestador (OpenClaw) no está conectado o está reconectando al empezar el turno |
+| `orchestrator_send_failed` | El gateway no pudo escribir la petición del turno al orquestador (conexión rota) |
+| `orchestrator_error` | OpenClaw rechazó el turno (`res` con `ok:false`) o falló algo interno en el camino hacia él |
+| `orchestrator_disconnected` | La conexión con el orquestador se cerró con el turno en vuelo |
+| `turn_timeout` | El orquestador no mandó nada durante `TURN_TIMEOUT_S` (§13) |
+| `turn_overflow` | El gateway no pudo procesar los eventos del turno al ritmo de llegada (§13) |
+| `turn_in_progress` | Ya hay un turno en curso para esa sesión (`/v1`: HTTP 409) |
+
+**Cambio de contrato (#228):** antes, `message` podía ser `send failed: <texto de la excepción>`, `not connected`, el `error` crudo de OpenClaw (p. ej. `{'code': ..., 'message': ...}`) o el `str(e)` de una excepción interna. Si tu cliente comparaba esos textos, usa los códigos de la tabla.
+
 Si `fatal: true`, no envíes más mensajes — el servidor cerrará la conexión WS inmediatamente.
 
 ---
