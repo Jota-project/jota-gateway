@@ -76,7 +76,7 @@ def run_migrations() -> None:
         # G-42 (#218): sellar `head` sobre un esquema al que le faltan columnas lo dejaría
         # «versionado» pero roto (fallos tardíos en runtime). Fallar antes, sin DDL ni sello.
         present = {c["name"] for c in insp.get_columns("clients")}
-        missing = sorted(c.name for c in ClientRecord.__table__.columns if c.name not in present)
+        missing = sorted(c.name for c in ClientRecord.metadata.tables["clients"].columns if c.name not in present)
         if missing:
             raise SchemaMismatchError(
                 "La tabla `clients` existe sin `alembic_version` (BD legacy) pero le faltan "
