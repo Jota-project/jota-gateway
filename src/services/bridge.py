@@ -600,7 +600,11 @@ class JotaBridge:
         while True:
             await asyncio.sleep(settings.SESSION_REVALIDATE_INTERVAL_S)
             try:
-                await db_client.get_session(self.client.client_key)
+                current, _ = await db_client.get_session(self.client.client_key)
+                if current.id != self.client.id:
+                    # Borrado y recreado con la MISMA clave: es otro cliente.
+                    await self._revoke_session()
+                    return
             except (ClientNotFound, ClientInactive):
                 await self._revoke_session()
                 return

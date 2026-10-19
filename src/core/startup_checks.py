@@ -3,6 +3,7 @@
 Ninguna función de aquí escribe el VALOR de un token: solo el nombre del setting.
 """
 
+import errno
 import logging
 from pathlib import Path
 from typing import IO
@@ -93,8 +94,15 @@ def acquire_single_process_lock(database_url: str) -> IO | None:
     handle = open(path, "a+")  # noqa: SIM115 — vive hasta release_single_process_lock
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    except OSError as e:
         handle.close()
+        if e.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
+            # ENOLCK, ENOTSUP... (p. ej. NFS/FUSE sin flock): no es «otro proceso».
+            raise SingleProcessLockError(
+                f"El sistema de ficheros de {path.parent} no soporta flock "
+                f"({errno.errorcode.get(e.errno or 0, 'OSError')}): usa un volumen local "
+                "o desactiva el guard con SINGLE_PROCESS_LOCK=false."
+            ) from None
         raise SingleProcessLockError(
             f"Otro proceso del gateway usa esta base de datos (lock {path}); "
             "multi-worker no está soportado. Arranca un solo proceso, o desactiva el guard "

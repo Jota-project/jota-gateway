@@ -148,3 +148,16 @@ def test_defaults():
 
     assert Settings.model_fields["SESSION_REVALIDATE_INTERVAL_S"].default == 10.0
     assert Settings.model_fields["SESSION_CACHE_TTL_S"].default == 10.0
+
+
+async def test_client_recreated_with_same_key_but_new_id_revokes_the_session(server, db_engine):
+    """Borrar y recrear con la MISMA clave (otro id) dentro de la ventana: sigue siendo
+    otro cliente, la sesión del anterior debe cerrarse."""
+    ws = await _open(server)
+    with Session(db_engine) as s:
+        s.delete(s.get(ClientRecord, CLIENT_ID))
+        s.commit()
+        s.add(ClientRecord(id="otro-id", name="Nuevo", client_key=VALID_KEY, is_active=True))
+        s.commit()
+    db_client.invalidate(VALID_KEY)  # el cliente nuevo resuelve la misma clave sin error
+    await _expect_revoked(ws)

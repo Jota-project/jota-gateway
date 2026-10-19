@@ -109,3 +109,37 @@ def test_lock_conflicts_with_another_real_process(tmp_path):
 )
 def test_lock_is_skipped_for_memory_and_non_sqlite(url):
     assert acquire_single_process_lock(url) is None
+
+
+def test_flock_unsupported_filesystem_is_reported_honestly_not_as_another_process(
+    tmp_path, monkeypatch
+):
+    """ENOLCK (NFS/FUSE sin flock) no es «otro proceso»: mensaje distinto, y aborta igual."""
+    import errno
+
+    from src.core import startup_checks
+
+    def _enolck(fd, op):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(startup_checks.fcntl, "flock", _enolck)
+    with pytest.raises(SingleProcessLockError) as exc:
+        acquire_single_process_lock(f"sqlite:///{tmp_path}/gateway.db")
+    msg = str(exc.value)
+    assert "no soporta flock" in msg and "SINGLE_PROCESS_LOCK=false" in msg
+    assert "Otro proceso" not in msg
+
+
+def test_flock_busy_errnos_still_mean_another_process(tmp_path, monkeypatch):
+    import errno
+
+    from src.core import startup_checks
+
+    for code in (errno.EWOULDBLOCK, errno.EAGAIN):
+
+        def _busy(fd, op, code=code):
+            raise OSError(code, "busy")
+
+        monkeypatch.setattr(startup_checks.fcntl, "flock", _busy)
+        with pytest.raises(SingleProcessLockError, match="Otro proceso"):
+            acquire_single_process_lock(f"sqlite:///{tmp_path}/gateway.db")
