@@ -61,6 +61,21 @@ def is_trusted_origin(ip_str: str) -> bool:
     return _ip_in_networks(ip_str, _parse_networks(settings.TRUSTED_NETWORKS))
 
 
+def warn_if_open_proxy_config() -> None:
+    """WARNING at startup for TRUST_LOOPBACK with an empty TRUSTED_PROXIES (#216).
+
+    A same-host reverse proxy would then look like a loopback client for everyone behind
+    it (its X-Real-IP is ignored), leaving /v1/* open to the Internet.
+    """
+    if settings.TRUST_LOOPBACK and not _parse_networks(settings.TRUSTED_PROXIES):
+        logger.warning(
+            "TRUST_LOOPBACK is on and TRUSTED_PROXIES is empty: a reverse proxy on this "
+            "host would make every client look like loopback and /v1/* would be open. "
+            "Fine without a proxy; otherwise set TRUSTED_PROXIES to the proxy address "
+            "and make it overwrite X-Real-IP."
+        )
+
+
 def resolve_client_ip(connection: HTTPConnection) -> str:
     """
     Returns the IP to evaluate with is_trusted_origin().

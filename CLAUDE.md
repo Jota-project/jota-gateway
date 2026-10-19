@@ -50,7 +50,7 @@ There is no longer any dependency on `jota-db`. Client identity and configuratio
 DATABASE_URL=sqlite:///data/gateway.db   # path to SQLite file
 ADMIN_TOKEN=<secret>                     # required for /admin/* routes
 
-TRUST_LOOPBACK=true                      # 127.0.0.1/::1 exempt from /v1/* auth
+TRUST_LOOPBACK=true                      # 127.0.0.1/::1 exempt from /v1/* auth — except when the peer is in TRUSTED_PROXIES and sends no valid X-Real-IP (#216). WARNING at startup if TRUST_LOOPBACK and TRUSTED_PROXIES is empty
 TRUSTED_NETWORKS=                        # CSV of CIDRs exempt from /v1/* auth, e.g. 192.168.1.0/24. Empty = fail-closed.
 TRUSTED_PROXIES=127.0.0.1,::1            # CSV of IPs/CIDRs allowed to set X-Real-IP for /v1/*. A proxy peer WITHOUT a valid X-Real-IP is NOT a trusted origin (fail-closed, G-31 #216)
 GATEWAY_HOST=0.0.0.0                     # Docker image only (Dockerfile CMD), not a Settings field; 127.0.0.1 behind a same-host proxy
@@ -76,7 +76,7 @@ TTS_RECONNECT_INITIAL_BACKOFF=1.0
 TTS_RECONNECT_MAX_BACKOFF=60.0
 
 HANDSHAKE_TIMEOUT_S=5.0                  # was 10.0 until #216 — slow clients (ESP32) may need to raise it
-HANDSHAKE_MAX_BYTES=4096                 # max chars of the first WS message, checked before parsing/auth (#216); else 1008 "Handshake too large"
+HANDSHAKE_MAX_BYTES=4096                 # max CHARS (not bytes) of the first WS message; --ws-max-size 1 MiB exists only in the image CMD (plain `uvicorn` = 16 MiB), checked before parsing/auth (#216); else 1008 "Handshake too large"
 TURN_TIMEOUT_S=120.0
 IDLE_TIMEOUT_S=300.0
 SHUTDOWN_DRAIN_S=30.0
