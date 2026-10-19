@@ -1,3 +1,10 @@
+## [1.19.6](https://github.com/Jota-project/jota-gateway/compare/v1.19.5...v1.19.6) (2026-10-19)
+
+
+### Bug Fixes
+
+* validar la consistencia de agentes en el admin y rotate-key sin 500 ([#233](https://github.com/Jota-project/jota-gateway/issues/233)) ([#235](https://github.com/Jota-project/jota-gateway/issues/235)) ([42d8df6](https://github.com/Jota-project/jota-gateway/commit/42d8df6ebc9520df170b4358553ba6ed39353f10)), closes [#122](https://github.com/Jota-project/jota-gateway/issues/122) [#229](https://github.com/Jota-project/jota-gateway/issues/229) [#105](https://github.com/Jota-project/jota-gateway/issues/105)
+
 ## [1.19.5](https://github.com/Jota-project/jota-gateway/compare/v1.19.4...v1.19.5) (2026-10-19)
 
 
