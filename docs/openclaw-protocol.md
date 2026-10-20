@@ -187,6 +187,11 @@ package (read on the server by the maintainer; summarized here):
   corrections or retractions**.
 - `final`, `aborted` and `error` keep full-message semantics.
 
+**Deliberate gateway decision:** the gateway emits a text tail only for `final`. On
+`aborted` and `error` it does **not** emit any tail from `message`: after an `aborted` the
+client has already cut the reply (barge-in or cancel), and speaking more text after the user
+interrupted would be wrong; an `error` may omit `message` on purpose. Pinned by a test.
+
 How the gateway responds (`src/services/openclaw/chat_text.py`, used by
 `OpenClawClient.stream_response()` and `JotaBridge.deliver_push()`): `ChatTextTracker` keeps
 `current` (the message text per OpenClaw) and `emitted` (already delivered). `replace:true` →
@@ -204,6 +209,11 @@ fixed reason (no content): losing the reply is worse than repeating a fragment. 
 tracker resets after every `final` (and per turn / on opening a push turn). Tokens already sent
 cannot be retracted, so a retraction to a shorter text is not reflected to the client (and
 never re-emitted).
+The tracker also keeps `all_out`, the concatenation of every token delivered in the response;
+when `current` diverges from the last aligned text it is compared against `all_out` before
+falling back to the divergence policy (this avoids re-emitting the whole `final` after an
+empty replace followed by a `delta` without `message`). A whitespace-only `emitted` never
+logs the divergence WARNING.
 Observation: with 2026.10.5 most of the text arrives at once in `final` (capture: a
 16-character delta, a 409-character final), so TTS starts only when generation ends; fixing
 that latency is an OpenClaw streaming-configuration matter.
