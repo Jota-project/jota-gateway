@@ -5,6 +5,7 @@ from src.services.reconnection import (
     LazyBackoffGate,
     ServiceHealth,
     ServiceStatus,
+    describe_error,
     health_attr,
 )
 from src.services.tts_client import TTSClient
@@ -30,6 +31,8 @@ class ReconnectingTTSClient:
     on_state_change = health_attr("on_state_change")
     _reconnect_attempts = health_attr("reconnect_attempts")
     _last_error = health_attr("last_error")
+
+    name = "jota"
 
     def __init__(
         self,
@@ -70,7 +73,7 @@ class ReconnectingTTSClient:
         try:
             await client.connect(voice=voice, speed=speed)
         except Exception as e:
-            self._record_failure(token, str(e))
+            self._record_failure(token, describe_error(e))
             return None
 
         self._record_success()
@@ -90,3 +93,17 @@ class ReconnectingTTSClient:
 
     def status(self) -> ServiceStatus:
         return self._health.status()
+
+    # --- Puerto TextToSpeechProvider (src/services/speech/ports.py) ---
+
+    async def probe(self) -> bool:
+        return await TTSClient.ping(self._url)
+
+    def resolve_voice(self, configured: str | None) -> str | None:
+        return configured
+
+    async def start(self) -> None:
+        return None
+
+    async def aclose(self) -> None:
+        return None

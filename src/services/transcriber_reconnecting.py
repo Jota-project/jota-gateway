@@ -6,6 +6,7 @@ from src.services.reconnection import (
     ConnectionState,
     ServiceHealth,
     ServiceStatus,
+    describe_error,
     health_attr,
     reconnect_with_backoff,
 )
@@ -49,8 +50,12 @@ class ReconnectingTranscriberClient:
         self._vad_thold = 0.0
 
     @property
-    def _last_transcription_at(self) -> float | None:
+    def last_transcript_at(self) -> float | None:
         return self._client._last_transcription_at
+
+    @property
+    def _last_transcription_at(self) -> float | None:
+        return self.last_transcript_at
 
     def _set_state(self, state: ConnectionState) -> None:
         self._health.set_state(state)
@@ -63,8 +68,10 @@ class ReconnectingTranscriberClient:
             await self._client.connect(language=language, token=token, vad_thold=vad_thold)
             self._health.mark_connected()
         except Exception as e:
-            self._last_error = str(e)
-            logger.error("[%s] transcriber initial connect failed: %s", self._client_id, e)
+            self._last_error = describe_error(e)
+            logger.error(
+                "[%s] transcriber initial connect failed: %s", self._client_id, describe_error(e)
+            )
             self._set_state(ConnectionState.RECONNECTING)
 
     async def send_audio(self, audio_bytes: bytes) -> None:
@@ -121,7 +128,7 @@ class ReconnectingTranscriberClient:
                 # Unexpected failure (e.g. a bug in the transcription callback), not a
                 # connection drop: don't reconnect, don't close the session — degrade
                 # so the client gets `status unavailable` via on_state_change (#131).
-                self._last_error = str(e)
+                self._last_error = describe_error(e)
                 logger.error(
                     "[%s] transcriber listen loop crashed — DEGRADED.",
                     self._client_id,
