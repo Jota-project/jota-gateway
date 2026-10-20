@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -31,6 +33,10 @@ class Settings(BaseSettings):
     TRANSCRIBER_WS_URL: str = "localhost:9000"
     TTS_WS_URL: str = "localhost:8005"
     TTS_TOKEN: str = "gateway"
+
+    # Proveedores de voz (src/services/speech/); cambiarlos exige reiniciar el gateway.
+    STT_PROVIDER: Literal["jota"] = "jota"
+    TTS_PROVIDER: Literal["jota"] = "jota"
     OPENCLAW_HOST: str = "127.0.0.1"
     OPENCLAW_PORT: int = 18789
     OPENCLAW_TOKEN: str = ""
