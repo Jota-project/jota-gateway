@@ -1,6 +1,7 @@
 """Los proveedores de voz se construyen en el lifespan y se inyectan (spec 2026-10-20, fase 1)."""
 
 import httpx
+import pytest
 
 from src.core.config import settings
 from src.services.reconnection import ConnectionState
@@ -45,3 +46,19 @@ def test_stt_provider_state_change_broadcasts_transcriber_status(client):
 
     client.portal.call(fire)
     registry.broadcast_status.assert_awaited_once_with("transcriber", "unavailable")
+
+
+@pytest.fixture
+def failing_stt_start(monkeypatch):
+    from src.services.speech.jota import JotaSttProvider
+
+    async def boom(self):
+        raise RuntimeError("secret-provider-detail")
+
+    monkeypatch.setattr(JotaSttProvider, "start", boom)
+
+
+def test_provider_start_failure_does_not_abort_startup(failing_stt_start, client, caplog):
+    """Solo el orquestador es fatal: un start() de proveedor que falla degrada (#110)."""
+    assert client.get("/healthz").status_code == 200
+    assert "secret-provider-detail" not in caplog.text

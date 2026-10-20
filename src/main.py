@@ -26,7 +26,7 @@ from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
 from src.services.openclaw.registry import ClientRegistry, TurnRegistry
-from src.services.reconnection import ConnectionState, to_wire_state
+from src.services.reconnection import ConnectionState, describe_error, to_wire_state
 from src.services.session_registry import SessionRegistry
 from src.services.speech.factory import build_stt_provider, build_tts_provider
 
@@ -121,8 +121,13 @@ async def _lifespan_body(app: FastAPI):
         _notification_tasks.add(task)
         task.add_done_callback(_notification_tasks.discard)
 
-    await stt.start()
-    await tts.start()
+    # Only the orchestrator is fatal: a provider whose start() fails degrades, it must
+    # not abort startup with OpenClaw already connected and never closed (#110).
+    for provider in (stt, tts):
+        try:
+            await provider.start()
+        except Exception as e:
+            logger.error("Speech provider %s failed to start (%s)", provider.name, describe_error(e))
     # Wired after start() on purpose (same reason as the orchestrator): a first-time
     # success must not broadcast a spurious "restored".
     stt.on_state_change = _on_stt_state_change
