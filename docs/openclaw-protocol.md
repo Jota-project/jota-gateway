@@ -172,9 +172,18 @@ What changed versus 2026.6.11/2026.7.1:
 How the gateway responds (`src/services/openclaw/chat_text.py`, used by
 `OpenClawClient.stream_response()` and `JotaBridge.deliver_push()`): it tracks the
 concatenation of delivered `deltaText`; on `final` it extracts the text from `message` and
-emits only the missing suffix before `status done`. Nothing delivered → the whole text; equal
-→ nothing; final text that does not start with what was delivered → nothing is emitted and a
-WARNING with a fixed reason (no content) is logged. The tracker resets after every `final`.
+emits only the missing suffix before `status done`. In order: final starts with what was
+delivered (including nothing delivered) → the suffix; equal → nothing; equal after stripping
+leading whitespace on both sides → the suffix of the stripped text; otherwise (real
+divergence, e.g. `final.message` holds only the last of several assistant messages) → the
+**full** final text plus a WARNING with a fixed reason (no content): losing the reply is worse
+than repeating a fragment. The tracker resets after every `final`.
+
+Not verified against real traffic: a `delta` with `replace:true` and **non-empty** text. The
+gateway does not retract anything for it (it only appends `deltaText`); an empty one changes
+nothing. Observation: with 2026.10.5 most of the text arrives at once in `final` (capture: a
+16-character delta, a 409-character final), so TTS starts only when generation ends; fixing
+that latency is an OpenClaw streaming-configuration matter.
 
 ---
 
