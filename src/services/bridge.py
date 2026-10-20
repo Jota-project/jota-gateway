@@ -10,6 +10,7 @@ from src.core.config import settings
 from src.core.exceptions import ClientInactive, ClientNotFound
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.db_client import db_client
+from src.services.openclaw.chat_text import ChatTextTracker
 from src.services.openclaw.models import ToolCallEvent
 from src.services.openclaw.registry import ClientRegistry
 from src.services.outbound import ClientGone, DirectSender, OutboundSender
@@ -105,6 +106,7 @@ class JotaBridge:
         # is already open so we emit exactly one turn_start/turn_end to the client
         # for the whole multi-step reply, not one per agent event.
         self._push_turn_open: bool = False
+        self._push_text = ChatTextTracker()  # #241: text already emitted in the push reply
         # Bounds how long an open push turn can gate _idle_watchdog() (issue #115
         # follow-up): a push has no timeout of its own the way _active_turn does
         # via stream_response()'s TURN_TIMEOUT_S, so an orphaned push (agent
@@ -1169,6 +1171,7 @@ class JotaBridge:
         self._push_turn_seq = self._turn_seq & 0xFFFF  # uint16 on the wire (G-11)
         self._push_turn_id = f"t-{self._turn_seq}"
         self._push_turn_open = True
+        self._push_text.reset()
         self._push_turn_opened_at = time.monotonic()
 
         try:
@@ -1204,7 +1207,8 @@ class JotaBridge:
     async def deliver_push(self, payload: dict) -> None:
         if not self._push_allowed():
             return
-        delta = payload.get("deltaText", "")
+        # #241: `final` carries the full text without deltaText (OpenClaw 2026.10.5).
+        delta = self._push_text.feed(payload)
         if not delta:
             return
         if "text" in self.handshake.output_mode:
