@@ -393,3 +393,105 @@ async def test_connect_without_voice_uses_default_voice(fake):
     await collect(stream)
     await stream.close()
     assert fake.connections[0]["path"] == f"/v1/text-to-speech/{VOICE}/stream-input"
+
+
+async def _silent_tcp_server():
+    """Acepta TCP, lee y nunca contesta: el handshake WS no termina."""
+
+    async def handle(reader, writer):
+        try:
+            await reader.read()
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    return server, server.sockets[0].getsockname()[1]
+
+
+async def test_probe_hung_handshake_is_failure_not_healthy(monkeypatch):
+    monkeypatch.setattr(tts_mod, "PROBE_CONNECT_TIMEOUT_S", 0.3)
+    server, port = await _silent_tcp_server()
+    try:
+        p = ElevenLabsTtsProvider(make_settings(f"ws://127.0.0.1:{port}"))
+        t0 = time.monotonic()
+        assert await p.probe() is False
+        assert time.monotonic() - t0 < 2.0
+        assert p.state == ConnectionState.RECONNECTING
+        assert await p.probe() is False  # en backoff, no cacheado como sano
+    finally:
+        server.close()
+
+
+async def test_probe_timeout_after_successful_connect_counts_as_success(monkeypatch):
+    import websockets
+
+    async def handler(ws):
+        await asyncio.sleep(5)  # handshake hecho, pero nunca cierra
+
+    monkeypatch.setattr(tts_mod, "PROBE_TIMEOUT_S", 0.5)
+    async with websockets.serve(handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        p = ElevenLabsTtsProvider(make_settings(f"ws://127.0.0.1:{port}"))
+        assert await p.probe() is True
+        assert p.state == ConnectionState.CONNECTED
+
+
+async def test_idle_stream_without_end_closes_itself_at_turn_timeout(fake, monkeypatch, caplog):
+    monkeypatch.setattr(tts_mod, "KEEPALIVE_S", 0.05)
+    monkeypatch.setattr(tts_mod.settings, "TURN_TIMEOUT_S", 0.3)
+    p = ElevenLabsTtsProvider(make_settings(fake.url))
+    stream = await p.connect(VOICE, 1.0, "c1")
+    await stream.send_text_chunk("Hola")
+    with caplog.at_level(logging.WARNING):
+        assert await collect(stream, timeout=3) == []  # el iterador termina solo
+    assert stream._task.done()
+    assert p._sem._value == 10  # hueco liberado
+    assert sum("más allá del tope" in r.getMessage() for r in caplog.records) == 1
+    assert "Hola" not in caplog.text
+    keepalives = fake.messages.count({"text": " "})
+    await asyncio.sleep(0.2)
+    assert fake.messages.count({"text": " "}) == keepalives  # sin más keepalives
+
+
+async def test_capacity_close_after_handshake_advances_backoff_but_not_health():
+    fake = await start_fake(close_after_s=0.1, close_reason="concurrent limit exceeded")
+    try:
+        p = ElevenLabsTtsProvider(make_settings(fake.url))
+        stream = await p.connect(VOICE, 1.0, "c1")
+        assert await collect(stream) == []
+        await stream.close()
+        assert p.counters()["provider_429"] == 1
+        assert await p.connect(VOICE, 1.0, "c1") is None  # dentro de la ventana de backoff
+        assert p.state == ConnectionState.CONNECTED  # la capacidad no es una caída
+        assert p.counters()["capacity_refusals"] == 0
+    finally:
+        await fake.stop()
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("Hola.", True),
+        ("¿Qué tal?", True),
+        ("¡Genial!", True),
+        ("Bueno…", True),
+        ("Dijo «sí.» ", True),
+        ('Dijo "vale."', True),
+        ("Fin (o no.) ", True),
+        ("Una frase. Otra", True),
+        ("Hola:", False),
+        ("Primero;", False),
+        ("Lista: ", False),
+        ("Hola", False),
+        ("Buenos días, Sr.", False),
+        ("Habla con la Dra. ", False),
+        ("manzanas, peras, etc.", False),
+        ("Paso 3.", False),
+        ("Hola Sr. Pérez, qué tal", False),
+        ("Dijo J. Pérez", False),
+        ("Hola Sr. Pérez. Adiós", True),
+        ("En 2024.", True),
+    ],
+)
+def test_ends_sentence_heuristic(text, expected):
+    assert tts_mod._ends_sentence(text) is expected

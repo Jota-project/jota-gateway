@@ -35,6 +35,7 @@ class FakeElevenLabsTts:
         close_midway_after_n_messages: int | None = None,
         close_midway_only_first_connection: bool = True,
         close_code: int = 1011,
+        close_reason: str | None = None,
     ) -> None:
         self.api_key = api_key
         self.handshake_status = handshake_status
@@ -43,6 +44,7 @@ class FakeElevenLabsTts:
         self.close_midway_after_n_messages = close_midway_after_n_messages
         self.close_midway_only_first_connection = close_midway_only_first_connection
         self.close_code = close_code
+        self.close_reason = close_reason
         self.messages: list[dict] = []  # todos los mensajes recibidos, en orden
         self.connections: list[dict] = []  # una entrada por conexión aceptada
         self.sockets_open = 0
@@ -90,7 +92,7 @@ class FakeElevenLabsTts:
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout)
                 except TimeoutError:
-                    await ws.close(self.close_code, "inactivity")
+                    await ws.close(self.close_code, self.close_reason or "inactivity")
                     return
                 msg = json.loads(raw)
                 info["messages"].append(msg)

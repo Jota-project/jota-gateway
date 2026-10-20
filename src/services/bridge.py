@@ -1061,7 +1061,18 @@ class JotaBridge:
                 client_id=self.client_id,
             )
             if tts:
-                await self.tracker.record("tts_start", voice=self.config.tts_voice or "")
+                try:
+                    await self.tracker.record("tts_start", voice=self.config.tts_voice or "")
+                except BaseException:
+                    # Cancelado (barge-in) antes de llegar al try/finally que cierra el TTS:
+                    # sin esto el stream (y su hueco del semáforo) quedaría huérfano.
+                    try:
+                        await asyncio.wait_for(
+                            tts.close(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
+                        )
+                    except Exception:
+                        pass
+                    raise
 
         agent = self.handshake.agent or self._default_agent
         session_key = make_session_key(agent, self.client_id)

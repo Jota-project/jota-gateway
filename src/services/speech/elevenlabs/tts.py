@@ -24,6 +24,7 @@ from collections.abc import AsyncIterator
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+from src.core.config import settings
 from src.services.reconnection import (
     ConnectionState,
     LazyBackoffGate,
@@ -50,13 +51,37 @@ OUTPUT_FORMAT = "pcm_24000"
 MAX_FRAME_BYTES = 16 * 1024 * 1024
 CLOSE_GRACE_S = 0.5  # cierre limpio del socket al terminar; close() total < 1 s
 PROBE_TIMEOUT_S = 5.0
-_SENTENCE_END = re.compile(r"[.!?:;…]\s*$")
+PROBE_CONNECT_TIMEOUT_S = 4.0  # TCP + handshake WS: vencer aquí es un fallo, no "sano"
+# Fin de frase: . ? ! … (más cierres de comillas/paréntesis opcionales) seguido de espacio o del
+# final del chunk. `:` y `;` no cierran frase.
+_SENTENCE_END = re.compile(r"([.?!…])[)\]}\"'»\u201d\u2019]*(?:\s+|$)")
+# Abreviaturas (y números de lista) tras las que un "." no cierra frase.
+_ABBREVIATIONS = frozenset(
+    {"sr", "sra", "srta", "dr", "dra", "prof", "mr", "mrs", "ms", "etc", "ud", "uds"}
+    | {"vs", "núm", "pág", "ej", "aprox", "tel", "avda"}
+)
 _NATIVE_VOICE = re.compile(r"[A-Za-z0-9]{20}")
 _MAX_CLAMP_CLIENTS = 1024
 
 
+def _is_abbreviation(prefix: str) -> bool:
+    """¿El "." que sigue a `prefix` es de una abreviatura ("Sr.", "etc."), una inicial ("J.")
+    o un número corto de lista ("3.")?"""
+    words = prefix.split()
+    token = words[-1].lstrip("([{\"'«“¿¡") if words else ""
+    if not token:
+        return False
+    if token.isdigit():
+        return len(token) <= 2
+    return token.lower() in _ABBREVIATIONS or (len(token) == 1 and token.isupper())
+
+
 def _ends_sentence(text: str) -> bool:
-    return bool(_SENTENCE_END.search(text)) or any(m in text for m in (". ", "? ", "! "))
+    for m in _SENTENCE_END.finditer(text):
+        if m.group(1) == "." and _is_abbreviation(text[: m.start()]):
+            continue
+        return True
+    return False
 
 
 class ElevenLabsTtsStream:
@@ -189,7 +214,7 @@ class ElevenLabsTtsStream:
         """Escribe hasta el final de la entrada; devuelve "reopen" si procede reabrir."""
         reader = asyncio.get_running_loop().create_task(self._read(ws))
         try:
-            last_sent = time.monotonic()
+            last_sent = last_text = time.monotonic()
             try:
                 await ws.send(json.dumps(self._init_message()))
             except ConnectionClosed:
@@ -202,7 +227,7 @@ class ElevenLabsTtsStream:
                     except ConnectionClosed:
                         self._pending.appendleft(msg)
                         break
-                    last_sent = time.monotonic()
+                    last_sent = last_text = time.monotonic()
                     if msg == {"text": ""}:
                         self._end_sent = True
                     continue
@@ -210,11 +235,25 @@ class ElevenLabsTtsStream:
                 waiter = asyncio.get_running_loop().create_task(self._wakeup.wait())
                 try:
                     wait_s = max(0.0, KEEPALIVE_S - (time.monotonic() - last_sent))
+                    if not self._end_requested:  # tope de vida si nadie envía texto ni end()
+                        wait_s = min(
+                            wait_s,
+                            max(0.0, settings.TURN_TIMEOUT_S - (time.monotonic() - last_text)),
+                        )
                     done, _ = await asyncio.wait(
                         {waiter, reader}, timeout=wait_s, return_when=asyncio.FIRST_COMPLETED
                     )
                 finally:
                     waiter.cancel()
+                if (
+                    not done
+                    and not self._end_requested
+                    and time.monotonic() - last_text >= settings.TURN_TIMEOUT_S
+                ):
+                    self._warn_close_once("stream sin texto ni end() más allá del tope; se cierra")
+                    self._closed = True
+                    self._pending.clear()
+                    return "done"
                 if not done:
                     try:
                         await ws.send('{"text": " "}')
@@ -231,7 +270,7 @@ class ElevenLabsTtsStream:
             self._p._mark_auth_failed()
             return "done"
         if outcome == "capacity":
-            self._p._counters["provider_429"] += 1
+            self._p._capacity_close(self._gate_token)
             return "done"
         if self._end_sent or self._reopened:
             self._warn_close_once("cierre inesperado del upstream antes del final")
@@ -425,6 +464,12 @@ class ElevenLabsTtsProvider:
             error = describe_error(exc) if exc is not None else "connect_failed"
         self._record_failure(token, error)
 
+    def _capacity_close(self, token: int) -> None:
+        """Cierre por capacidad tras el handshake: avanza solo el backoff de la compuerta (el
+        siguiente connect espera), sin tocar la salud: no es una caída del servicio."""
+        self._counters["provider_429"] += 1
+        self._gate.record_failure(token)
+
     def _record_failure(self, token: int, error: str) -> None:
         if not self._gate.record_failure(token):
             logger.debug("ElevenLabs TTS connect failure ignored (same outage): %s", error)
@@ -468,6 +513,7 @@ class ElevenLabsTtsProvider:
             "voice_settings": {"speed": 1.0},
             "generation_config": {"chunk_length_schedule": self._chunk_schedule},
         }
+        connected = False
         try:
             async with asyncio.timeout(PROBE_TIMEOUT_S):
                 async with websockets.connect(
@@ -475,7 +521,9 @@ class ElevenLabsTtsProvider:
                     additional_headers={"xi-api-key": self._key},
                     max_size=MAX_FRAME_BYTES,
                     close_timeout=1,
+                    open_timeout=PROBE_CONNECT_TIMEOUT_S,
                 ) as ws:
+                    connected = True
                     await ws.send(json.dumps(init))
                     await ws.send(json.dumps({"text": ""}))
                     try:
@@ -489,7 +537,10 @@ class ElevenLabsTtsProvider:
                         clean = True
                     else:
                         clean = False
-        except TimeoutError:
+        except TimeoutError as e:
+            if not connected:  # el connect/handshake no terminó: no es un servicio sano
+                self._connect_failed(token, classify_exception(e), e)
+                return False
             # Conectó y nadie rechazó las credenciales en el plazo: el servicio responde.
             self._record_success()
             return True

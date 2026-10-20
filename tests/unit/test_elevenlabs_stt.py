@@ -433,3 +433,26 @@ async def test_retire_closes_provider_after_last_session(env):
     assert not p._closed
     await s.close()
     assert p._closed
+
+
+async def test_probe_hung_handshake_is_failure_not_healthy(monkeypatch):
+    from src.services.speech.elevenlabs import stt as stt_mod
+
+    monkeypatch.setattr(stt_mod, "PROBE_CONNECT_TIMEOUT_S", 0.3)
+
+    async def handle(reader, writer):
+        try:
+            await reader.read()
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        p = ElevenLabsSttProvider(make_settings(f"ws://127.0.0.1:{port}"))
+        t0 = time.monotonic()
+        assert await p.probe() is False
+        assert time.monotonic() - t0 < 2.0
+        assert p.state == ConnectionState.RECONNECTING
+    finally:
+        server.close()

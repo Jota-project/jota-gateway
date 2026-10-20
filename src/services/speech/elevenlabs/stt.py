@@ -53,6 +53,7 @@ MAX_CHUNK_BYTES = BYTES_PER_S  # 1 s
 MIN_COMMIT_GAP_S = 1.0
 SESSION_STARTED_TIMEOUT_S = 10.0
 PROBE_TIMEOUT_S = 5.0
+PROBE_CONNECT_TIMEOUT_S = 4.0  # TCP + handshake WS: vencer aquí es un fallo, no "sano"
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 CLOSE_GRACE_S = 0.5
 
@@ -733,6 +734,7 @@ class ElevenLabsSttProvider:
     async def _probe_once(self) -> bool:
         """Abre el realtime y espera `session_started` o el cierre (≤ 5 s); cierra sin enviar
         audio, así que no factura."""
+        connected = False
         try:
             async with asyncio.timeout(PROBE_TIMEOUT_S):
                 async with websockets.connect(
@@ -740,7 +742,9 @@ class ElevenLabsSttProvider:
                     additional_headers={"xi-api-key": self._key},
                     max_size=MAX_FRAME_BYTES,
                     close_timeout=1,
+                    open_timeout=PROBE_CONNECT_TIMEOUT_S,
                 ) as ws:
+                    connected = True
                     try:
                         raw = await ws.recv()
                     except ConnectionClosed:
@@ -757,7 +761,9 @@ class ElevenLabsSttProvider:
                         self._record_success()
                         return True
                     return self._probe_failed("other", None)
-        except TimeoutError:
+        except TimeoutError as e:
+            if not connected:  # el connect/handshake no terminó: no es un servicio sano
+                return self._probe_failed(classify_exception(e), e)
             self._record_success()  # conectó y nadie rechazó las credenciales en el plazo
             return True
         except Exception as e:
