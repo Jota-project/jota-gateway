@@ -53,7 +53,7 @@ def _bridge(config=None, input_mode="audio"):
     if input_mode == "audio":
         t = MagicMock()
         t.state = ConnectionState.CONNECTED
-        t._last_transcription_at = None
+        t.last_transcript_at = None
         t.send_audio = AsyncMock()
         t.send_end = AsyncMock()
         b.transcriber = t
@@ -130,7 +130,7 @@ async def test_watchdog_does_not_close_during_a_20s_turn_with_2s_timeout_3_strik
     bridge, _ = _bridge(ClientConfig(silence_timeout_s=2, max_silence_turns=3))
     start = clock.t
     bridge._first_audio_at = bridge._last_audio_at = bridge._audio_burst_start = start
-    bridge.transcriber._last_transcription_at = start
+    bridge.transcriber.last_transcript_at = start
     events: list[tuple[str, float]] = []
     bridge.close_all = AsyncMock(side_effect=lambda *a, **k: events.append(("close", clock.t)))
     real_notify = bridge.notify_service_status
@@ -202,7 +202,7 @@ async def test_idle_persistent_client_is_not_closed_nor_degraded(monkeypatch, ti
     wd = asyncio.create_task(bridge._transcription_watchdog())
     try:
         await _feed(ws, audio_for=0.03)  # the user speaks a turn (shorter than a tick)...
-        bridge.transcriber._last_transcription_at = time.monotonic()  # ...and it is transcribed
+        bridge.transcriber.last_transcript_at = time.monotonic()  # ...and it is transcribed
         await _feed(ws, keepalive_for=0.8)  # then only keepalive: >= 8 windows, ~16 ticks idle
     finally:
         wd.cancel()
@@ -220,7 +220,7 @@ async def test_audio_resuming_after_idle_starts_a_fresh_silence_window(monkeypat
     wd = asyncio.create_task(bridge._transcription_watchdog())
     try:
         await _feed(ws, audio_for=0.03)  # one turn, transcribed, then idle
-        bridge.transcriber._last_transcription_at = time.monotonic()
+        bridge.transcriber.last_transcript_at = time.monotonic()
         await _feed(ws, keepalive_for=0.6)  # idle phase
         assert not ws.of("status") and not closed_at
         resumed = time.monotonic()

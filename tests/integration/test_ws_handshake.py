@@ -168,7 +168,7 @@ def test_ready_carries_requested_and_live_capabilities_when_audio(client, monkey
 
     # TTS ping returns False (degraded), transcriber state is CONNECTED
     monkeypatch.setattr(
-        "src.services.bridge.TTSClient.ping",
+        "src.services.tts_client.TTSClient.ping",
         AsyncMock(return_value=False),
     )
 
@@ -180,7 +180,7 @@ def test_ready_carries_requested_and_live_capabilities_when_audio(client, monkey
         async def connect(self, *, language: str, vad_thold: float, **kw):
             pass
 
-        async def run(self):
+        async def run(self, **kw):
             pass
 
         async def close(self):
@@ -190,7 +190,7 @@ def test_ready_carries_requested_and_live_capabilities_when_audio(client, monkey
         return FakeTranscriber()
 
     monkeypatch.setattr(
-        "src.services.bridge.ReconnectingTranscriberClient",
+        "src.services.speech.jota.ReconnectingTranscriberClient",
         fake_transcriber_factory,
     )
 

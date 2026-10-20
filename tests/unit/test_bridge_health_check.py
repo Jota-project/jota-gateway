@@ -1,6 +1,6 @@
 """Tests for JotaBridge.health_check() snapshot."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
@@ -47,8 +47,8 @@ async def test_health_check_returns_full_snapshot_when_audio_and_tts_ok():
     bridge.transcriber = MagicMock()
     bridge.transcriber.state = ConnectionState.CONNECTED
 
-    with patch("src.services.bridge.TTSClient.ping", new=AsyncMock(return_value=True)):
-        result = await bridge.health_check()
+    bridge.tts.probe = AsyncMock(return_value=True)
+    result = await bridge.health_check()
 
     assert result == {"barge_in": True, "tts": True, "transcriber": True}
 
@@ -58,8 +58,8 @@ async def test_health_check_returns_tts_false_when_ping_fails():
     bridge.transcriber = MagicMock()
     bridge.transcriber.state = ConnectionState.CONNECTED
 
-    with patch("src.services.bridge.TTSClient.ping", new=AsyncMock(return_value=False)):
-        result = await bridge.health_check()
+    bridge.tts.probe = AsyncMock(return_value=False)
+    result = await bridge.health_check()
 
     assert result == {"barge_in": True, "tts": False, "transcriber": True}
     status_calls = [c.args[0] for c in ws.send_json.call_args_list]

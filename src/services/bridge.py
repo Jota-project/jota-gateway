@@ -18,9 +18,15 @@ from src.services.pipeline_tracker import PipelineTracker
 from src.services.protocol import OrchestratorProtocol
 from src.services.reconnection import ConnectionState, to_wire_state
 from src.services.session_registry import SessionStatus
-from src.services.transcriber_reconnecting import ReconnectingTranscriberClient
-from src.services.tts_client import TTSClient
-from src.services.tts_reconnecting import ReconnectingTTSClient
+from src.services.speech.factory import build_stt_provider
+from src.services.speech.ports import (
+    SpeechToTextProvider,
+    SttCallbacks,
+    SttParams,
+    SttSession,
+    TextToSpeechProvider,
+    TtsStream,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +65,13 @@ class JotaBridge:
         config: ClientConfig,
         client_ws: WebSocket,
         orchestrator: OrchestratorProtocol,
-        tts: ReconnectingTTSClient,
+        tts: TextToSpeechProvider,
         tracker: PipelineTracker,
         handshake: Handshake,
         client_registry: ClientRegistry,
         default_agent: str,
         sender: OutboundSender | None = None,
+        stt: SpeechToTextProvider | None = None,
     ):
         self.client = client
         self.config = config
@@ -76,11 +83,13 @@ class JotaBridge:
         self.handshake: Handshake = handshake
         self.orchestrator: OrchestratorProtocol = orchestrator  # injected, not created here
         self.tts = tts
+        # Sin `stt` (tests, llamadas antiguas) se usa el proveedor por defecto de la factoría.
+        self._stt: SpeechToTextProvider = stt if stt is not None else build_stt_provider(settings)
         self.tracker: PipelineTracker = tracker
         self._client_registry = client_registry
         self._default_agent = default_agent
-        self.transcriber: ReconnectingTranscriberClient | None = None
-        self._push_tts: TTSClient | None = None
+        self.transcriber: SttSession | None = None
+        self._push_tts: TtsStream | None = None
         self._push_audio_task: asyncio.Task | None = None
 
         self.tasks: list[asyncio.Task] = []
@@ -155,18 +164,20 @@ class JotaBridge:
     async def connect_internal_services(self):
         """Inicializa clientes de microservicios dependiendo del handshake."""
         if self.handshake.input_mode == "audio":
-            self.transcriber = ReconnectingTranscriberClient(
-                url=settings.TRANSCRIBER_WS_URL,
-                client_id=self.client_id,
-                initial_backoff=settings.TRANSCRIBER_RECONNECT_INITIAL_BACKOFF,
-                max_backoff=settings.TRANSCRIBER_RECONNECT_MAX_BACKOFF,
-                max_duration=settings.TRANSCRIBER_RECONNECT_MAX_DURATION,
+            # Las callbacks se entregan al abrir la sesión (no en run()): el bucle de
+            # entrada del cliente arranca antes que run() y el primer evento no puede
+            # quedarse sin destinatario.
+            self.transcriber = self._stt.open_session(
+                client=self.client,
+                params=SttParams(self.config.stt_language, self.config.stt_vad_thold),
+                callbacks=SttCallbacks(
+                    on_transcription=self._on_transcription,
+                    on_warning=self._on_transcriber_warning,
+                    on_status=self._on_transcriber_status,
+                    on_incomplete=self._on_transcriber_incomplete,
+                ),
             )
-            await self.transcriber.connect(
-                language=self.config.stt_language,
-                token=self.client.client_key,
-                vad_thold=self.config.stt_vad_thold,
-            )
+            await self.transcriber.start()
             # Wired *after* the initial connect on purpose: on_state_change firing
             # CONNECTED on a normal first-time success would send a spurious
             # "restored" notice for a session where nothing ever broke.
@@ -369,14 +380,16 @@ class JotaBridge:
             transcriber_live = False
 
         if tts_requested:
-            tts_live = await TTSClient.ping(settings.TTS_WS_URL)
+            tts_live = bool(await self.tts.probe())
             if not tts_live:
                 await self.notify_service_status("tts", "unavailable", propagate=True)
         else:
             tts_live = False
 
         return {
-            "barge_in": bool(self.config.barge_in_enabled) and transcriber_live,
+            "barge_in": bool(self.config.barge_in_enabled)
+            and transcriber_live
+            and self._stt.capabilities.partials,
             "tts": tts_live,
             "transcriber": transcriber_live,
         }
@@ -452,7 +465,7 @@ class JotaBridge:
                 return
 
         silence_count = 0
-        last_seen_transcription_at = self.transcriber._last_transcription_at
+        last_seen_transcription_at = self.transcriber.last_transcript_at
         was_connected = True
         recovery_baseline: float | None = None
 
@@ -470,7 +483,7 @@ class JotaBridge:
                 was_connected = False
                 continue
 
-            current_transcription_at = self.transcriber._last_transcription_at
+            current_transcription_at = self.transcriber.last_transcript_at
             if current_transcription_at != last_seen_transcription_at:
                 silence_count = 0
                 last_seen_transcription_at = current_transcription_at
@@ -683,12 +696,7 @@ class JotaBridge:
         # Loop del Transcriptor (solo si hay audio de entrada)
         if self.transcriber:
             self._spawn(
-                self.transcriber.run(
-                    on_transcription_callback=self._on_transcription,
-                    on_warning_callback=self._on_transcriber_warning,
-                    on_status_callback=self._on_transcriber_status,
-                    on_incomplete_callback=self._on_transcriber_incomplete,
-                ),
+                self.transcriber.run(),
                 "transcriber_run",
             )
             self._spawn(self._transcription_watchdog(), "transcription_watchdog")
@@ -979,7 +987,7 @@ class JotaBridge:
 
         needs_audio = "audio" in self.handshake.output_mode
 
-        tts: TTSClient | None = None
+        tts: TtsStream | None = None
         if needs_audio:
             tts = await self.tts.connect(
                 voice=self.config.tts_voice,

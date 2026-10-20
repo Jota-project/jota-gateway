@@ -27,7 +27,7 @@ def bridge(mock_tracker):
     )
     b.transcriber = MagicMock()
     b.transcriber.state = ConnectionState.CONNECTED
-    b.transcriber._last_transcription_at = None
+    b.transcriber.last_transcript_at = None
     return b
 
 
@@ -119,7 +119,7 @@ async def test_watchdog_does_not_count_silence_while_transcriber_busy(bridge):
 async def test_watchdog_grants_fresh_baseline_after_busy_clears(bridge):
     bridge._first_audio_at = time.monotonic() - 10
     bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
-    bridge.transcriber._last_transcription_at = time.monotonic() - 10
+    bridge.transcriber.last_transcript_at = time.monotonic() - 10
     bridge._transcriber_busy = True
     ticks = {"n": 0}
 
