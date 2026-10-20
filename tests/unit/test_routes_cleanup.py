@@ -70,6 +70,7 @@ def _make_app_state(orchestrator_ping_result=True):
     return SimpleNamespace(
         openclaw=orchestrator,
         tts=AsyncMock(),
+        stt=AsyncMock(),
         client_registry=ClientRegistry(),
         session_registry=SessionRegistry(),
     ), orchestrator

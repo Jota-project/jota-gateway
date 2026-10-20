@@ -28,7 +28,7 @@ from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
 from src.services.openclaw.registry import ClientRegistry, TurnRegistry
 from src.services.reconnection import ConnectionState, to_wire_state
 from src.services.session_registry import SessionRegistry
-from src.services.tts_reconnecting import ReconnectingTTSClient
+from src.services.speech.factory import build_stt_provider, build_tts_provider
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s | %(name)s | %(levelname)s | %(message)s"
@@ -99,12 +99,9 @@ async def _lifespan_body(app: FastAPI):
 
     openclaw.on_state_change = _on_orchestrator_state_change
 
-    tts = ReconnectingTTSClient(
-        url=settings.TTS_WS_URL,
-        token=settings.TTS_TOKEN,
-        initial_backoff=settings.TTS_RECONNECT_INITIAL_BACKOFF,
-        max_backoff=settings.TTS_RECONNECT_MAX_BACKOFF,
-    )
+    # Proveedores de voz singleton (STT_PROVIDER / TTS_PROVIDER), inyectados al bridge.
+    stt = build_stt_provider(settings)
+    tts = build_tts_provider(settings)
 
     # Unlike openclaw/transcriber, TTS has no lifespan-level initial connect to
     # wire "after" — ReconnectingTTSClient starts CONNECTED by construction and
@@ -117,7 +114,21 @@ async def _lifespan_body(app: FastAPI):
 
     tts.on_state_change = _on_tts_state_change
 
+    def _on_stt_state_change(state: ConnectionState) -> None:
+        task = asyncio.create_task(
+            client_registry.broadcast_status("transcriber", to_wire_state(state))
+        )
+        _notification_tasks.add(task)
+        task.add_done_callback(_notification_tasks.discard)
+
+    await stt.start()
+    await tts.start()
+    # Wired after start() on purpose (same reason as the orchestrator): a first-time
+    # success must not broadcast a spurious "restored".
+    stt.on_state_change = _on_stt_state_change
+
     app.state.openclaw = openclaw
+    app.state.stt = stt
     app.state.tts = tts
     app.state.turn_registry = turn_registry
     app.state.client_registry = client_registry
@@ -140,6 +151,13 @@ async def _lifespan_body(app: FastAPI):
         await client_registry.close_all_sessions(
             status="shutdown", timeout=settings.SHUTDOWN_DRAIN_S
         )
+
+        # 1b. Close the speech providers once the sessions that used them are gone.
+        for provider in (stt, tts):
+            try:
+                await provider.aclose()
+            except Exception:
+                logger.exception("Error closing speech provider during shutdown")
 
         # 2. Close OpenClaw now that active turns have drained.
         try:

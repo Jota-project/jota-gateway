@@ -31,13 +31,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from src.api.deps import get_admin_auth
-from src.core.config import settings
 from src.db.database import get_db_session
 from src.db.models import ClientRecord
 from src.models.admin_schemas import ClientCreate, ClientResponse, ClientUpdate
 from src.services.db_client import db_client
-from src.services.reconnection import ConnectionState
-from src.services.transcriber_client import TranscriberClient
 
 _ROTATE_KEY_ATTEMPTS = 3
 
@@ -331,18 +328,19 @@ async def post_orchestrator_reconnect(name: str, request: Request) -> dict:
 
 
 @router.get("/transcriber/status")
-async def get_transcriber_status() -> dict:
+async def get_transcriber_status(request: Request) -> dict:
     """Transcriber has no process-level connection (one instance per audio
-    session) — this reports live readiness via /ready, wrapped in the
-    same shape as the other two status endpoints for consistency."""
-    reachable = await TranscriberClient.ping(settings.TRANSCRIBER_WS_URL)
-    state = ConnectionState.CONNECTED if reachable else ConnectionState.DEGRADED
+    session) — this reports live readiness via the STT provider's probe, wrapped
+    in the same shape as the other two status endpoints for consistency."""
+    stt = request.app.state.stt
+    await stt.probe()
+    s = stt.status()
     return {
-        "name": "transcriber",
-        "state": state.value,
-        "connected_at": None,
-        "reconnect_attempts": 0,
-        "last_error": None,
+        "name": s.name,
+        "state": s.state.value,
+        "connected_at": s.connected_at.isoformat() if s.connected_at else None,
+        "reconnect_attempts": s.reconnect_attempts,
+        "last_error": s.last_error,
     }
 
 

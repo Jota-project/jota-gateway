@@ -137,6 +137,7 @@ async def gateway_websocket(websocket: WebSocket):
         client_ws=websocket,
         orchestrator=openclaw,
         tts=app_state.tts,
+        stt=app_state.stt,
         tracker=tracker,
         handshake=handshake,
         client_registry=app_state.client_registry,
