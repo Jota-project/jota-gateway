@@ -17,6 +17,7 @@ from src.core.network import warn_if_open_proxy_config
 from src.core.request_id import RequestIdMiddleware
 from src.core.startup_checks import (
     acquire_single_process_lock,
+    check_speech_settings,
     release_single_process_lock,
     warn_insecure_tokens,
 )
@@ -58,6 +59,10 @@ async def _lifespan_body(app: FastAPI):
     logger.info("BD inicializada")
     warn_if_open_proxy_config()
     warn_insecure_tokens(settings)
+    # Fatal en arranque: un proveedor de pago mal configurado no debe esperar al primer uso.
+    check_speech_settings(
+        settings, stt_provider=settings.STT_PROVIDER, tts_provider=settings.TTS_PROVIDER
+    )
 
     turn_registry = TurnRegistry()
     client_registry = ClientRegistry()

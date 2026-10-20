@@ -8,6 +8,8 @@ def build_stt_provider(settings) -> SpeechToTextProvider:
         from src.services.speech.jota import JotaSttProvider
 
         return JotaSttProvider(settings)
+    if settings.STT_PROVIDER == "elevenlabs":
+        raise ValueError("STT_PROVIDER=elevenlabs no implementado todavía")
     raise ValueError("STT_PROVIDER no soportado")
 
 
@@ -21,4 +23,6 @@ def build_tts_provider(settings) -> TextToSpeechProvider:
             initial_backoff=settings.TTS_RECONNECT_INITIAL_BACKOFF,
             max_backoff=settings.TTS_RECONNECT_MAX_BACKOFF,
         )
+    if settings.TTS_PROVIDER == "elevenlabs":
+        raise ValueError("TTS_PROVIDER=elevenlabs no implementado todavía")
     raise ValueError("TTS_PROVIDER no soportado")

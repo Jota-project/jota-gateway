@@ -45,6 +45,32 @@ class SingleProcessLockError(RuntimeError):
     """Otro proceso del gateway ya usa esta base de datos."""
 
 
+class SpeechConfigError(ValueError):
+    """Configuración de proveedores de voz inválida. El mensaje nombra el setting, nunca el valor."""
+
+    def __init__(self, setting: str) -> None:
+        super().__init__(f"{setting} inválido o ausente para el proveedor de voz elegido")
+        self.setting = setting
+
+
+def check_speech_settings(settings, *, stt_provider: str, tts_provider: str) -> None:
+    """Valida los settings que exigen los proveedores elegidos (lanza SpeechConfigError)."""
+    if "elevenlabs" in (stt_provider, tts_provider):
+        key = settings.ELEVENLABS_API_KEY
+        if key is None or not key.get_secret_value().strip():
+            raise SpeechConfigError("ELEVENLABS_API_KEY")
+    if tts_provider == "elevenlabs":
+        voice = settings.ELEVENLABS_TTS_DEFAULT_VOICE
+        if voice is None or not voice.strip():
+            raise SpeechConfigError("ELEVENLABS_TTS_DEFAULT_VOICE")
+        # v3/v4 no están soportados en el WebSocket stream-input.
+        if settings.ELEVENLABS_TTS_MODEL.strip().lower().startswith(("eleven_v3", "eleven_v4")):
+            raise SpeechConfigError("ELEVENLABS_TTS_MODEL")
+        sched = settings.ELEVENLABS_TTS_CHUNK_SCHEDULE
+        if not 1 <= len(sched) <= 4 or not all(50 <= n <= 500 for n in sched):
+            raise SpeechConfigError("ELEVENLABS_TTS_CHUNK_SCHEDULE")
+
+
 def _is_placeholder(value: str) -> bool:
     return value.strip().lower() in _PLACEHOLDER_TOKENS
 

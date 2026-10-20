@@ -14,6 +14,8 @@ def _disable_single_process_lock(monkeypatch):
     from src.core.config import settings
 
     monkeypatch.setattr(settings, "SINGLE_PROCESS_LOCK", False)
+    # Hermético: una clave real en el entorno del desarrollador no debe filtrarse a los tests.
+    monkeypatch.setattr(settings, "ELEVENLABS_API_KEY", None)
 
 
 @pytest.fixture
