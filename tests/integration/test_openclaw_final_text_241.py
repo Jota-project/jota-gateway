@@ -67,6 +67,15 @@ class Scripted2026_10_5(FakeOpenClawServer):
         elif scenario == "diverge":
             await ws.send(_delta(sk, "Hola ", 1))
             await ws.send(_final(sk, f"Adios {TEXT}"))
+        elif scenario == "multi_message":
+            await ws.send(_delta(sk, "Voy a buscar. ", 1))
+            await ws.send(_final(sk, f"Resultado: {TEXT}"))
+        elif scenario == "trimmed":
+            await ws.send(_delta(sk, " Hola", 1))
+            await ws.send(_final(sk, "Hola mundo"))
+        elif scenario == "xyz":
+            await ws.send(_delta(sk, "abc", 1))
+            await ws.send(_final(sk, "xyz"))
         elif scenario == "no_message":
             await ws.send(_delta(sk, "Hola", 1))
             await ws.send(_ev(sk, state="final", seq=2))
@@ -118,13 +127,24 @@ async def test_final_equal_to_streamed_text_does_not_duplicate(server):
     assert tokens(events) == "Hola mundo"
 
 
-async def test_diverging_final_emits_nothing_and_warns_without_content(server, caplog):
+async def test_diverging_final_emits_full_final_and_warns_without_content(server, caplog):
     caplog.set_level(logging.DEBUG)
-    events = await _turn(server, "diverge")
-    assert tokens(events) == "Hola "
+    events = await _turn(server, "multi_message")
+    assert _toks(events) == ["Voy a buscar. ", f"Resultado: {TEXT}"]
     assert events[-1].content == "done"
     assert any("diverges" in r.getMessage() for r in caplog.records)
     assert TEXT not in caplog.text
+    assert "Voy a buscar" not in caplog.text
+
+
+async def test_final_with_trimmed_leading_space_emits_only_suffix(server):
+    events = await _turn(server, "trimmed")
+    assert _toks(events) == [" Hola", " mundo"]
+
+
+async def test_completely_different_final_is_emitted_in_full(server):
+    events = await _turn(server, "xyz")
+    assert _toks(events) == ["abc", "xyz"]
 
 
 @pytest.mark.parametrize("scenario", ["no_message", "no_text_parts"])

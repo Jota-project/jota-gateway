@@ -34,11 +34,22 @@ def extract_message_text(message: object) -> str:
     return "".join(parts)
 
 
-def missing_tail(emitted: str, final_text: str) -> str | None:
-    """Parte de `final_text` que aún no se emitió, o None si diverge de lo emitido."""
+def missing_tail(emitted: str, final_text: str) -> str:
+    """Parte de `final_text` que aún no se emitió.
+
+    1. `final_text` empieza por lo emitido -> el sufijo.
+    2. Igual tras quitar espacios iniciales de ambos -> el sufijo del texto sin ellos.
+    3. Diverge de verdad -> el texto final completo (perder la respuesta es peor que
+       repetir un fragmento) y un WARNING fijo, sin contenido.
+    """
     if final_text.startswith(emitted):
         return final_text[len(emitted):]
-    return None
+    e, f = emitted.lstrip(), final_text.lstrip()
+    if e.strip() and f.startswith(e):
+        return f[len(e):]
+    if final_text:
+        logger.warning("final text diverges from streamed text; emitting the full final")
+    return final_text
 
 
 class ChatTextTracker:
@@ -60,11 +71,7 @@ class ChatTextTracker:
             final_text = extract_message_text(payload.get("message"))
             out = delta
             if final_text:
-                tail = missing_tail(self.emitted, final_text)
-                if tail is None:
-                    logger.warning("final text diverges from streamed text")
-                else:
-                    out += tail
+                out += missing_tail(self.emitted, final_text)
             self.reset()
             return out
         delta = payload.get("deltaText") or ""

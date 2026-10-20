@@ -40,6 +40,24 @@ async def test_push_final_without_deltas_then_next_response_no_duplicate():
 
 
 @pytest.mark.asyncio
+async def test_push_final_diverging_emits_full_final():
+    bridge, _ = make_bridge()
+    _open(bridge)
+    await bridge.deliver_push({"state": "delta", "deltaText": "Voy a buscar. "})
+    await bridge.deliver_push(_final("Resultado: 5"))
+    assert _sent(bridge) == ["Voy a buscar. ", "Resultado: 5"]
+
+
+@pytest.mark.asyncio
+async def test_push_final_trimmed_space_emits_suffix():
+    bridge, _ = make_bridge()
+    _open(bridge)
+    await bridge.deliver_push({"state": "delta", "deltaText": " Hola"})
+    await bridge.deliver_push(_final("Hola mundo"))
+    assert _sent(bridge) == [" Hola", " mundo"]
+
+
+@pytest.mark.asyncio
 async def test_push_final_without_message_does_not_break():
     bridge, _ = make_bridge()
     _open(bridge)
