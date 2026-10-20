@@ -339,7 +339,7 @@ async def get_transcriber_status(request: Request) -> dict:
     stt = request.app.state.speech.stt
     await stt.probe()
     s = stt.status()
-    return {
+    body = {
         "name": s.name,
         "provider": stt.name,
         "state": s.state.value,
@@ -347,6 +347,10 @@ async def get_transcriber_status(request: Request) -> dict:
         "reconnect_attempts": s.reconnect_attempts,
         "last_error": s.last_error,
     }
+    counters = getattr(stt, "counters", None)  # diagnóstico opcional (ElevenLabs)
+    if callable(counters):
+        body["counters"] = counters()
+    return body
 
 
 @router.get("/tts/status")

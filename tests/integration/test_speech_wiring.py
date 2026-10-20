@@ -133,3 +133,25 @@ def test_admin_tts_status_exposes_counters_only_for_providers_that_have_them(cli
     body = client.get("/admin/tts/status", headers=h).json()
     assert body["provider"] == "elevenlabs"
     assert body["counters"] == {"capacity_refusals": 0, "provider_429": 0, "auth_errors": 0}
+
+
+def test_admin_transcriber_status_exposes_counters_only_for_providers_that_have_them(
+    client, monkeypatch
+):
+    from pydantic import SecretStr
+
+    h = {"X-Admin-Token": "test-admin-token"}
+    assert "counters" not in client.get("/admin/transcriber/status", headers=h).json()
+    monkeypatch.setattr(settings, "ELEVENLABS_API_KEY", SecretStr("k"))
+    monkeypatch.setattr(settings, "ELEVENLABS_BASE_URL", "ws://127.0.0.1:1")  # nada escucha
+    r = client.put("/admin/speech", json={"stt_provider": "elevenlabs"}, headers=h)
+    assert r.status_code == 200
+    body = client.get("/admin/transcriber/status", headers=h).json()
+    assert body["provider"] == "elevenlabs"
+    assert body["counters"] == {
+        "capacity_refusals": 0,
+        "provider_429": 0,
+        "auth_errors": 0,
+        "upstream_opens": 0,
+        "audio_seconds_sent": 0.0,
+    }
