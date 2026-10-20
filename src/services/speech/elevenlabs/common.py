@@ -1,7 +1,7 @@
 """Utilidades comunes de los adaptadores ElevenLabs: URLs, logging y errores normalizados.
 
 Nada de aquí registra ni devuelve el texto de un error del proveedor: solo la clase
-(`auth`/`capacity`/`other`).
+(`auth`/`quota`/`capacity`/`other`).
 """
 
 from __future__ import annotations
@@ -12,9 +12,11 @@ from urllib.parse import quote, urlencode
 
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
-ErrorKind = Literal["auth", "capacity", "other"]
+ErrorKind = Literal["auth", "quota", "capacity", "other"]
 
-_CAPACITY_WORDS = ("limit", "busy", "quota")
+_QUOTA_WORDS = ("quota", "credits", "insufficient")  # cuota agotada: terminal, como auth
+_TIME_LIMIT_WORDS = ("session_time_limit", "time limit")  # tope de la sesión: solo reabrir
+_CAPACITY_WORDS = ("limit", "busy")
 _AUTH_WORDS = (
     "api key",
     "unauthorized",
@@ -56,6 +58,10 @@ def https_base(base: str) -> str:
 
 def classify_close(code: int | None, reason: str | None) -> ErrorKind:
     text = (reason or "").lower()
+    if any(w in text for w in _QUOTA_WORDS):
+        return "quota"
+    if any(w in text for w in _TIME_LIMIT_WORDS):
+        return "other"
     if any(w in text for w in _CAPACITY_WORDS):
         return "capacity"
     # 1008 a secas NO es auth: ElevenLabs también lo usa para timeouts de entrada/inactividad

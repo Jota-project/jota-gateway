@@ -266,8 +266,8 @@ class ElevenLabsTtsStream:
         if outcome in ("final", "overflow", "error") or self._closed:
             return "done"
         # Cierre del upstream antes del final de audio.
-        if outcome == "auth":
-            self._p._mark_auth_failed()
+        if outcome in ("auth", "quota"):
+            self._p._mark_auth_failed(outcome)
             return "done"
         if outcome == "capacity":
             self._p._capacity_close(self._gate_token)
@@ -442,20 +442,20 @@ class ElevenLabsTtsProvider:
 
     # --- bookkeeping de salud ---
 
-    def _mark_auth_failed(self) -> None:
+    def _mark_auth_failed(self, why: str = "auth") -> None:
         self._counters["auth_errors"] += 1
         if not self._auth_failed:
             self._auth_failed = True
             logger.error(
-                "ElevenLabs TTS: credenciales rechazadas (auth); proveedor degradado hasta "
-                "reiniciar o cambiar de proveedor"
+                "ElevenLabs TTS: proveedor degradado (%s) hasta reiniciar o cambiar de proveedor",
+                why,
             )
-        self._health.mark_attempt_failed("auth")
+        self._health.mark_attempt_failed(why)
         self._health.set_state(ConnectionState.DEGRADED)
 
     def _connect_failed(self, token: int, kind: ErrorKind, exc: BaseException | None) -> None:
-        if kind == "auth":
-            self._mark_auth_failed()
+        if kind in ("auth", "quota"):
+            self._mark_auth_failed(kind)
             return
         if kind == "capacity":
             self._counters["provider_429"] += 1
