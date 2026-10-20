@@ -32,8 +32,11 @@ def _status(sk, phase, seq):
     return _ev(sk, state="status", phase=phase, seq=seq)
 
 
-def _delta(sk, text, seq, replace=False):
-    kw = {"state": "delta", "seq": seq, "deltaText": text, "message": _msg(text)}
+def _delta(sk, text, seq, replace=False, snapshot=True):
+    # Per spec (#243) only the first frame of a run carries `message`.
+    kw = {"state": "delta", "seq": seq, "deltaText": text}
+    if snapshot:
+        kw["message"] = _msg(text)
     if replace:
         kw["replace"] = True
     return _ev(sk, **kw)
@@ -62,7 +65,7 @@ class Scripted2026_10_5(FakeOpenClawServer):
             await ws.send(_final(sk, "Hola completo"))
         elif scenario == "covered":
             await ws.send(_delta(sk, "Hola ", 1))
-            await ws.send(_delta(sk, "mundo", 2))
+            await ws.send(_delta(sk, "mundo", 2, snapshot=False))
             await ws.send(_final(sk, "Hola mundo"))
         elif scenario == "diverge":
             await ws.send(_delta(sk, "Hola ", 1))

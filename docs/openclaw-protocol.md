@@ -164,24 +164,44 @@ What changed versus 2026.6.11/2026.7.1:
   parts; only `type:"text"` parts matter) and **no `deltaText`**. The deltas received before
   it can be a strict prefix of the reply (here `'1, 2, 3,'`), so a client that only reads
   `deltaText` loses the tail (`' 4, 5'`).
-- `delta` events with `replace:true` and an empty `deltaText` may appear. They are not a
-  retraction the gateway can honor: tokens already sent to the client cannot be taken back.
+- `delta` events with `replace:true` may appear (empty `deltaText` in the capture). They are
+  not a retraction the gateway can honor: tokens already sent to the client cannot be taken
+  back. Official semantics below ("Official delta/replace/snapshot semantics", issue #243).
 - New `chat` events with `state:"status"` and a `phase` (`preparing_workspace`,
   `preparing_context`, `starting_model`, ...). They carry no text and are ignored.
 
-How the gateway responds (`src/services/openclaw/chat_text.py`, used by
-`OpenClawClient.stream_response()` and `JotaBridge.deliver_push()`): it tracks the
-concatenation of delivered `deltaText`; on `final` it extracts the text from `message` and
-emits only the missing suffix before `status done`. In order: final starts with what was
-delivered (including nothing delivered) → the suffix; equal → nothing; equal after stripping
-leading whitespace on both sides → the suffix of the stripped text; otherwise (real
-divergence, e.g. `final.message` holds only the last of several assistant messages) → the
-**full** final text plus a WARNING with a fixed reason (no content): losing the reply is worse
-than repeating a fragment. The tracker resets after every `final`.
+### Official delta/replace/snapshot semantics (issue #243)
 
-Not verified against real traffic: a `delta` with `replace:true` and **non-empty** text. The
-gateway does not retract anything for it (it only appends `deltaText`); an empty one changes
-nothing. Observation: with 2026.10.5 most of the text arrives at once in `final` (capture: a
+Source: `docs/gateway/protocol/rpc-bootstrap-and-events.md` of the OpenClaw 2026.10.5
+package (read on the server by the maintainer; summarized here):
+
+- `chat` `state:"delta"`: `deltaText` is **what was added**. The **first** text frame of a run
+  for a receiver (also when it joins mid-run or reconnects) additionally carries the complete
+  `message`; later append frames **omit `message`**.
+- A supplied `message` is **authoritative and already includes `deltaText`**: never add the
+  delta twice.
+- Non-prefix replacements carry `replace:true` and use `deltaText` as the **entire**
+  replacement text (the empty string deletes it); replacements always include a full snapshot.
+- Snapshots after the first arrive **at most once every 2 s** per session and connection with
+  the latest text; the terminal event flushes the last snapshot immediately, **including final
+  corrections or retractions**.
+- `final`, `aborted` and `error` keep full-message semantics.
+
+How the gateway responds (`src/services/openclaw/chat_text.py`, used by
+`OpenClawClient.stream_response()` and `JotaBridge.deliver_push()`): `ChatTextTracker` keeps
+`current` (the message text per OpenClaw) and `emitted` (already delivered). `replace:true` →
+`current = deltaText`; `message` present → `current` = its text (no re-adding `deltaText`);
+otherwise `current += deltaText`; `final` → `current` = text of the final `message`. After
+each update it emits only `missing_tail(emitted, current)`. In order: current starts with what
+was delivered (including nothing delivered) → the suffix; equal → nothing; equal after
+stripping leading whitespace on both sides → the suffix of the stripped text; otherwise (real
+divergence, e.g. a non-prefix `replace`, a correction in `final`, or `final.message` holding
+only the last of several assistant messages) → the **full** current text plus a WARNING with a
+fixed reason (no content): losing the reply is worse than repeating a fragment. An empty
+`current` (empty replace or empty snapshot) emits nothing and does not reset `emitted`. The
+tracker resets after every `final` (and per turn / on opening a push turn). Tokens already sent
+cannot be retracted, so a retraction to a shorter text is not reflected to the client.
+Observation: with 2026.10.5 most of the text arrives at once in `final` (capture: a
 16-character delta, a 409-character final), so TTS starts only when generation ends; fixing
 that latency is an OpenClaw streaming-configuration matter.
 
@@ -419,6 +439,7 @@ loggers; keep those at their default level in production.
 
 ## Change log of this file
 
+- **2026-10-20**: documented the official delta/replace/snapshot semantics (issue #243).
 - **2026-10-20**: added "Breaking change — OpenClaw 2026.10.5" (issue #241): `final` carries the full text without `deltaText`.
 - **2026-10-19**: added "Errors toward clients and handshake failures" (issue #228).
 - **2026-10-18**: added "Frame size, malformed frames and connection end" (issue #213).

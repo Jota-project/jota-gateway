@@ -53,29 +53,64 @@ def missing_tail(emitted: str, final_text: str) -> str:
 
 
 class ChatTextTracker:
-    """Acumula lo emitido y calcula el token a entregar por cada evento `chat`."""
+    """Aplica la semantica oficial de OpenClaw 2026.10.5 a los eventos `chat` (#243).
+
+    Mantiene `current` (el texto del mensaje segun OpenClaw) y `emitted` (lo ya
+    entregado, alineado con `current` tras cada emision) y entrega solo lo que falta.
+
+    - `deltaText` = lo anadido; con `replace:true` es el texto ENTERO de reemplazo.
+    - `message` (snapshot) es autoritativo y ya incluye `deltaText`: no se suma dos veces.
+    - `final` -> `current` = texto del `message` final.
+    - Un `current` vacio (reemplazo/snapshot vacio) no emite ni retracta lo emitido.
+    """
 
     def __init__(self) -> None:
         self.emitted = ""
+        self.current = ""
 
     def reset(self) -> None:
         self.emitted = ""
+        self.current = ""
+
+    def _emit_missing(self) -> str:
+        if not self.current:
+            return ""
+        out = missing_tail(self.emitted, self.current)
+        self.emitted = self.current
+        return out
 
     def feed(self, payload: dict) -> str:
         """Texto a emitir como token para este evento `chat` ("" si nada)."""
-        if payload.get("state") == "final":
-            delta = payload.get("deltaText") or ""
-            if not isinstance(delta, str):
-                delta = ""
-            self.emitted += delta
-            final_text = extract_message_text(payload.get("message"))
-            out = delta
-            if final_text:
-                out += missing_tail(self.emitted, final_text)
+        state = payload.get("state")
+        delta = payload.get("deltaText")
+        if not isinstance(delta, str):
+            delta = None
+        message = payload.get("message")
+        has_snapshot = isinstance(message, dict)
+        snapshot = extract_message_text(message) if has_snapshot else ""
+
+        if state == "final":
+            if has_snapshot and (snapshot or delta is None):
+                self.current = snapshot
+            elif delta:
+                self.current += delta
+            out = self._emit_missing()
             self.reset()
             return out
-        delta = payload.get("deltaText") or ""
-        if not isinstance(delta, str) or not delta:
+
+        if state not in (None, "delta"):
+            # Otros estados (status...) solo conservan el comportamiento legacy de deltaText.
+            if not delta:
+                return ""
+            self.current += delta
+            return self._emit_missing()
+
+        if has_snapshot:
+            self.current = snapshot  # autoritativo: ya incluye deltaText
+        elif delta is not None and payload.get("replace") is True:
+            self.current = delta
+        elif delta:
+            self.current += delta
+        else:
             return ""
-        self.emitted += delta
-        return delta
+        return self._emit_missing()
