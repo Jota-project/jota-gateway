@@ -1,7 +1,7 @@
 """Fixtures de la batería de contrato de proveedores de voz.
 
 Cada adaptador aporta un arnés con la misma forma; los casos solo conocen el arnés.
-Hoy solo "jota"; los adaptadores SaaS añadirán su valor a `ADAPTERS`.
+`jota` y `elevenlabs` (TTS contra el upstream falso; el STT de ElevenLabs llega en la fase 4).
 """
 
 from __future__ import annotations
@@ -16,7 +16,8 @@ from src.core.config import settings
 from src.models.schemas import Client
 from tests.fakes.jota_upstreams import FakeTranscriber, FakeTts
 
-ADAPTERS = ["jota"]
+ADAPTERS = ["jota", "elevenlabs"]
+STT_ADAPTERS = ["jota"]
 
 SECRET_KEY = "client-key-SECRET-0123456789"
 SECRET_TTS_TOKEN = "tts-token-SECRET-0123456789"
@@ -46,7 +47,7 @@ class TtsHarness:
     backend_down_provider: Any  # mismo adaptador apuntando a un backend caído
 
 
-@pytest.fixture(params=ADAPTERS)
+@pytest.fixture(params=STT_ADAPTERS)
 async def stt_harness(request):
     assert request.param == "jota"
     from src.services.speech.jota import JotaSttProvider
@@ -67,7 +68,10 @@ async def stt_harness(request):
 
 @pytest.fixture(params=ADAPTERS)
 async def tts_harness(request):
-    assert request.param == "jota"
+    if request.param == "elevenlabs":
+        async for h in _elevenlabs_tts_harness():
+            yield h
+        return
     from src.services.speech.jota import JotaTtsProvider
 
     up = FakeTts()
@@ -85,6 +89,40 @@ async def tts_harness(request):
         token=SECRET_TTS_TOKEN,
         upstream=up,
         backend_down_provider=mk(_closed_port()),
+    )
+    await provider.aclose()
+    await up.stop()
+
+
+async def _elevenlabs_tts_harness():
+    from pydantic import SecretStr
+
+    from src.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
+    from tests.fakes.elevenlabs_tts import FakeElevenLabsTts
+
+    key = "el-key-SECRET-0123456789"
+    up = FakeElevenLabsTts(api_key=key)
+    await up.start()
+
+    def mk(base: str) -> ElevenLabsTtsProvider:
+        return ElevenLabsTtsProvider(
+            settings.model_copy(
+                update={
+                    "ELEVENLABS_API_KEY": SecretStr(key),
+                    "ELEVENLABS_BASE_URL": base,
+                    "ELEVENLABS_TTS_DEFAULT_VOICE": "gc61tTk93h3LBXPxew2V",
+                    "TTS_VOICE_MAP": {},
+                }
+            )
+        )
+
+    provider = mk(up.url)
+    await provider.start()
+    yield TtsHarness(
+        provider=provider,
+        token=key,
+        upstream=up,
+        backend_down_provider=mk(f"ws://127.0.0.1:{_closed_port()}"),
     )
     await provider.aclose()
     await up.stop()

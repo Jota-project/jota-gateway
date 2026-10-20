@@ -382,7 +382,7 @@ class ElevenLabsTtsProvider:
             self._counters["capacity_refusals"] += 1
             return None
         await self._sem.acquire()  # libre: no suspende
-        voice = self.resolve_voice(voice) or self._default_voice or ""
+        voice = voice or self._default_voice or ""  # el bridge ya llamó a resolve_voice()
         try:
             return ElevenLabsTtsStream(
                 self,

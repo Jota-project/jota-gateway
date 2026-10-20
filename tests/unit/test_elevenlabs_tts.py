@@ -384,3 +384,12 @@ async def test_start_never_raises_and_aclose_blocks_new_connects(fake):
     await p.aclose()
     assert await p.connect(VOICE, 1.0, "c1") is None
     assert p.name == "elevenlabs"
+
+
+async def test_connect_without_voice_uses_default_voice(fake):
+    p = ElevenLabsTtsProvider(make_settings(fake.url))
+    stream = await p.connect(None, None, "c1")
+    await stream.end()
+    await collect(stream)
+    await stream.close()
+    assert fake.connections[0]["path"] == f"/v1/text-to-speech/{VOICE}/stream-input"

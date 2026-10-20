@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     ELEVENLABS_STT_MAX_SESSIONS: int = Field(default=15, gt=0)
     ELEVENLABS_STT_ENABLE_LOGGING: bool = False
     ELEVENLABS_TTS_MODEL: str = "eleven_flash_v2_5"
-    ELEVENLABS_TTS_DEFAULT_VOICE: str | None = None
+    ELEVENLABS_TTS_DEFAULT_VOICE: str | None = "gc61tTk93h3LBXPxew2V"  # voz en español (no es secreto)
     ELEVENLABS_TTS_CHUNK_SCHEDULE: list[int] = [120, 160, 250, 290]
     ELEVENLABS_TTS_MAX_STREAMS: int = Field(default=10, gt=0)
     ELEVENLABS_TTS_MAX_BUFFER_BYTES: int = Field(default=10485760, gt=0)

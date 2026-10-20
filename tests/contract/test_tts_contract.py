@@ -41,12 +41,26 @@ async def test_close_midway_returns_quickly(tts_harness):
     assert time.monotonic() - t0 < 1.0
 
 
-async def test_connect_returns_none_when_backend_down(tts_harness):
-    assert await tts_harness.backend_down_provider.connect(None, None, "c1") is None
+async def _failed_attempt(provider, client_id):
+    """Un intento contra un backend caído no da audio. Un adaptador puede devolver `None` ya
+    (jota, que espera a la red) o un stream sin audio (los que conectan en segundo plano)."""
+    stream = await provider.connect(None, None, client_id)
+    if stream is not None:
+        await stream.send_text_chunk("hola.")
+        await stream.end()
+        assert await asyncio.wait_for(_collect(stream), 5) == []
+        await stream.close()
+
+
+async def test_connect_yields_no_audio_and_backs_off_when_backend_down(tts_harness):
+    provider = tts_harness.backend_down_provider
+    await _failed_attempt(provider, "c1")
+    # el fallo queda registrado: dentro de la ventana de backoff no se intenta ni la red
+    assert await provider.connect(None, None, "c1") is None
 
 
 async def test_no_secret_in_logs(tts_harness, caplog):
-    from tests.contract.conftest import SECRET_TTS_TOKEN, USER_TEXT
+    from tests.contract.conftest import USER_TEXT
 
     with caplog.at_level(logging.DEBUG):
         stream = await tts_harness.provider.connect("v", 1.0, "c1")
@@ -54,7 +68,7 @@ async def test_no_secret_in_logs(tts_harness, caplog):
         await stream.end()
         await asyncio.wait_for(_collect(stream), 2)
         await stream.close()
-        assert await tts_harness.backend_down_provider.connect(None, None, "c2") is None
+        await _failed_attempt(tts_harness.backend_down_provider, "c2")
     logged = "\n".join(r.getMessage() for r in caplog.records)
-    assert SECRET_TTS_TOKEN not in logged
+    assert tts_harness.token not in logged
     assert USER_TEXT not in logged

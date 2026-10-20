@@ -61,7 +61,9 @@ def test_startup_fails_without_key_when_elevenlabs():
 
 
 def test_tts_elevenlabs_requires_default_voice():
-    s = _s(ELEVENLABS_API_KEY="k")
+    assert _s().ELEVENLABS_TTS_DEFAULT_VOICE == "gc61tTk93h3LBXPxew2V"
+    check_speech_settings(_s(ELEVENLABS_API_KEY="k"), stt_provider="jota", tts_provider="elevenlabs")
+    s = _s(ELEVENLABS_API_KEY="k", ELEVENLABS_TTS_DEFAULT_VOICE="  ")
     with pytest.raises(SpeechConfigError) as e:
         check_speech_settings(s, stt_provider="jota", tts_provider="elevenlabs")
     assert "ELEVENLABS_TTS_DEFAULT_VOICE" in str(e.value)
