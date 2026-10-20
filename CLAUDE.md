@@ -56,6 +56,9 @@ TRUSTED_PROXIES=127.0.0.1,::1            # CSV of IPs/CIDRs allowed to set X-Rea
 GATEWAY_HOST=0.0.0.0                     # Docker image only (Dockerfile CMD), not a Settings field; 127.0.0.1 behind a same-host proxy
 
 TRANSCRIBER_WS_URL=localhost:9000
+STT_PROVIDER=jota                        # jota only for now (speech providers, src/services/speech/); restart to change
+TTS_PROVIDER=jota                        # idem
+
 TTS_WS_URL=localhost:8005
 TTS_TOKEN=gateway
 TTS_AUTH_TIMEOUT_S=10.0
@@ -391,6 +394,17 @@ The HA REST endpoint (`/v1/chat/completions`) uses `client_id="ha"` for the trus
 - **Never force-closes a session**: only the orchestrator remains a fatal dependency (in `health_check()`, at session start). Transcriber/TTS failures — at start or mid-session — degrade the session, they never close the WebSocket.
 - **Settings are dedicated per service** (`TRANSCRIBER_RECONNECT_*`, `TTS_RECONNECT_*`), not shared with `ORCHESTRATOR_RECONNECT_*` — see Environment variables above.
 - **Admin observability**: `GET /admin/transcriber/status` (live reachability via `TranscriberClient.ping()`, since Transcriber has no process-level connection to report — one instance per session) and `GET /admin/tts/status` (`app.state.tts.status()` — real memory of consecutive failures, current backoff, last error), same shape as the pre-existing `GET /admin/orchestrators/{name}/status`.
+
+### Speech providers (`src/services/speech/`)
+
+STT and TTS go through ports (`typing.Protocol`, `@runtime_checkable`) in `ports.py`, so the bridge doesn't know who is behind them. The ports describe gateway behaviour, not transport: **STT = one stream per audio session, TTS = one synthesis per turn**; each adapter decides its own transport. Spec/plan in the vault (`JGW Spec|Plan 2026-10-20 - Capa de proveedores de voz`); this is phase 1 (jota adapter only, **no behaviour change**).
+
+- **Ports:** `SpeechToTextProvider` (process singleton: `name`, `capabilities: SttCapabilities(partials, warmup_s)`, `state`/`on_state_change`, `open_session(client=, params=, callbacks=)`, `probe()`, `status()`, `start()`, `aclose()`), `SttSession` (one per audio session: `state`, `on_state_change`, `last_transcript_at`, `start()` never raises, `send_audio`, `send_end`, `run()`, idempotent `close()`), `TextToSpeechProvider` (`name`, `connect(voice, speed, client_id) -> TtsStream | None`, `probe()`, `status()`, `resolve_voice()`, `start()`, `aclose()`), `TtsStream` (`send_text_chunk`, `end`, `get_audio_stream`, `close`). **STT callbacks (`SttCallbacks`) are handed over in `open_session`, not in `run()`** (the client input loop starts before `run()`, so the first event must already have a destination).
+- **Factory:** `factory.build_stt_provider(settings)` / `build_tts_provider(settings)` read `STT_PROVIDER` / `TTS_PROVIDER` (`Literal["jota"]` for now; unknown value → `ValueError("... no soportado")` without echoing it). Providers are built once in `main.py`'s lifespan, `await stt.start(); await tts.start()`, stored in `app.state.stt` / `app.state.tts`, and `aclose()`d right after the session drain (step 1b, before closing OpenClaw). Changing provider needs a restart.
+- **Bridge:** `JotaBridge(..., stt=app_state.stt)`; `stt` defaults to `None` → `build_stt_provider(settings)` so the many test constructions and old callers keep working. The attribute name `self.transcriber` is kept (now an `SttSession`); `connect_internal_services` does `open_session(...)` + `await start()`, `run()` takes no arguments, the watchdog reads `transcriber.last_transcript_at`. `health_check` uses `await self.tts.probe()` and `live_capabilities.barge_in` is also gated by `stt.capabilities.partials`.
+- **jota adapter (`jota.py`):** `JotaSttProvider` (state always CONNECTED; `probe()` = `TranscriberClient.ping(TRANSCRIBER_WS_URL)`; `status()` = last probe result, CONNECTED if never probed) builds a `ReconnectingTranscriberClient` per session and wraps it in `JotaSttSession` (thin delegation; `close()` during `start()` closes the socket `start()` just opened). `JotaTtsProvider` is an alias of `ReconnectingTTSClient`, which gained `name="jota"`, `probe()` (`TTSClient.ping(self._url)`), `resolve_voice()` (pass-through) and no-op `start()`/`aclose()`. `transcriber_client.py`, `transcriber_reconnecting.py`, `tts_client.py`, `tts_reconnecting.py` did not move. `ReconnectingTranscriberClient.last_transcript_at` is public (the private `_last_transcription_at` alias stays).
+- **Health / admin:** `/ready` calls `app.state.stt.probe()` / `app.state.tts.probe()` (STT or TTS down still gives 200 `degraded`, never 503; only the orchestrator is critical). `GET /admin/transcriber/status` does `await stt.probe()` then returns `stt.status()` in the same shape as before; `/admin/tts/status` unchanged. STT provider state changes are wired (after `start()`) to `ClientRegistry.broadcast_status("transcriber", ...)`, like TTS.
+- **`last_error` change (#228, intended):** both reconnecting wrappers now store `describe_error(e)` (the exception type name, or its `stable_code`) in `last_error` instead of `str(e)`, and the connect-failure WARNING/ERROR logs carry the same, so provider/exception text never reaches `/admin/*/status` or logs.
 
 ### OpenClaw package (`src/services/openclaw/`)
 
