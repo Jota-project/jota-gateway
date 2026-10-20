@@ -72,7 +72,7 @@ def test_pin_websockets_logging_idempotent_and_never_lowers():
         lg.setLevel(old)
 
 
-def test_factory_builds_elevenlabs_tts_and_still_rejects_stt():
+def test_factory_builds_elevenlabs_tts_and_stt():
     from pydantic import SecretStr
 
     from src.core.config import settings
@@ -81,5 +81,6 @@ def test_factory_builds_elevenlabs_tts_and_still_rejects_stt():
     assert build_tts_provider(s, "elevenlabs").name == "elevenlabs"
     from src.services.speech.factory import build_stt_provider
 
-    with pytest.raises(ValueError, match="no implementado"):
-        build_stt_provider(s, "elevenlabs")
+    assert build_stt_provider(s, "elevenlabs").name == "elevenlabs"
+    with pytest.raises(ValueError, match="no soportado"):
+        build_stt_provider(s, "nope")

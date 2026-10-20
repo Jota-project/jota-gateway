@@ -32,8 +32,14 @@ def _build_elevenlabs_tts(settings) -> TextToSpeechProvider:
     return ElevenLabsTtsProvider(settings)
 
 
+def _build_elevenlabs_stt(settings) -> SpeechToTextProvider:
+    from src.services.speech.elevenlabs.stt import ElevenLabsSttProvider
+
+    return ElevenLabsSttProvider(settings)
+
+
 PROVIDER_BUILDERS: dict[str, dict[str, Callable]] = {
-    "stt": {"jota": _build_jota_stt},
+    "stt": {"jota": _build_jota_stt, "elevenlabs": _build_elevenlabs_stt},
     "tts": {"jota": _build_jota_tts, "elevenlabs": _build_elevenlabs_tts},
 }
 
@@ -42,8 +48,6 @@ def _build(kind: str, setting: str, settings, name: str | None):
     name = name or getattr(settings, setting)
     builder = PROVIDER_BUILDERS[kind].get(name)
     if builder is None:
-        if name == "elevenlabs":
-            raise ValueError(f"{setting}=elevenlabs no implementado todavía")
         raise ValueError(f"{setting} no soportado")
     return builder(settings)
 
