@@ -15,7 +15,14 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 ErrorKind = Literal["auth", "capacity", "other"]
 
 _CAPACITY_WORDS = ("limit", "busy", "quota")
-_AUTH_WORDS = ("api key", "unauthorized", "forbidden", "authentication")
+_AUTH_WORDS = (
+    "api key",
+    "unauthorized",
+    "forbidden",
+    "authentication",
+    "invalid key",
+    "permission",
+)
 
 
 def pin_websockets_logging() -> None:
@@ -51,7 +58,9 @@ def classify_close(code: int | None, reason: str | None) -> ErrorKind:
     text = (reason or "").lower()
     if any(w in text for w in _CAPACITY_WORDS):
         return "capacity"
-    if code == 1008 or any(w in text for w in _AUTH_WORDS):
+    # 1008 a secas NO es auth: ElevenLabs también lo usa para timeouts de entrada/inactividad
+    # o voz/modelo inválidos, y "auth" degrada el proveedor entero de forma terminal.
+    if any(w in text for w in _AUTH_WORDS):
         return "auth"
     return "other"
 

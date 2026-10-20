@@ -29,7 +29,10 @@ def test_ws_url_and_https_base():
     ("code", "reason", "kind"),
     [
         (1008, "Invalid API key", "auth"),
-        (1008, "", "auth"),
+        (1008, "", "other"),
+        (1008, "Input timeout exceeded", "other"),
+        (1008, "permission denied", "auth"),
+        (4001, "invalid key", "auth"),
         (1011, "quota_exceeded", "capacity"),
         (1013, "Server busy", "capacity"),
         (1008, "concurrent limit", "capacity"),
