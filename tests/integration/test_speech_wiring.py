@@ -9,7 +9,7 @@ from src.services.speech.ports import SpeechToTextProvider, TextToSpeechProvider
 
 
 def test_app_state_has_stt_and_tts_providers(client):
-    state = client.app.state
+    state = client.app.state.speech
     assert isinstance(state.stt, SpeechToTextProvider)
     assert isinstance(state.tts, TextToSpeechProvider)
     assert (state.stt.name, state.tts.name) == ("jota", "jota")
@@ -35,7 +35,7 @@ def test_stt_provider_state_change_broadcasts_transcriber_status(client):
 
     registry = client.app.state.client_registry
     registry.broadcast_status = AsyncMock()
-    stt = client.app.state.stt
+    stt = client.app.state.speech.stt
 
     async def fire():
         import asyncio
@@ -68,3 +68,39 @@ def test_admin_status_includes_provider(client):
     h = {"X-Admin-Token": "test-admin-token"}
     assert client.get("/admin/transcriber/status", headers=h).json()["provider"] == "jota"
     assert client.get("/admin/tts/status", headers=h).json()["provider"] == "jota"
+
+
+def _fake_builders(monkeypatch):
+    from src.services.speech import factory
+    from tests.unit.test_speech_registry import NamedStt, NamedTts
+
+    monkeypatch.setitem(factory.PROVIDER_BUILDERS["stt"], "fake", lambda s: NamedStt("fake"))
+    monkeypatch.setitem(factory.PROVIDER_BUILDERS["tts"], "fake", lambda s: NamedTts("fake"))
+
+
+def test_admin_speech_requires_token(client):
+    assert client.get("/admin/speech").status_code == 422
+    assert client.put("/admin/speech", json={}).status_code == 422
+    bad = {"X-Admin-Token": "wrong"}
+    assert client.get("/admin/speech", headers=bad).status_code == 401
+    assert client.put("/admin/speech", json={}, headers=bad).status_code == 401
+
+
+def test_admin_speech_get_and_put_swap(client, monkeypatch):
+    _fake_builders(monkeypatch)
+    h = {"X-Admin-Token": "test-admin-token"}
+    body = client.get("/admin/speech", headers=h).json()
+    assert body["stt"]["provider"] == "jota" and body["tts"]["provider"] == "jota"
+    assert body["audio_gate"] == "off"
+    r = client.put("/admin/speech", json={"tts_provider": "fake"}, headers=h)
+    assert r.status_code == 200 and r.json() == {"stt": "jota", "tts": "fake"}
+    assert client.get("/admin/speech", headers=h).json()["tts"]["provider"] == "fake"
+    assert client.app.state.speech.tts.name == "fake"
+
+
+def test_swap_rejected_without_key_returns_422_and_keeps_current(client):
+    h = {"X-Admin-Token": "test-admin-token"}
+    r = client.put("/admin/speech", json={"stt_provider": "elevenlabs"}, headers=h)
+    assert r.status_code == 422
+    assert "ELEVENLABS_API_KEY" in r.text
+    assert client.get("/admin/speech", headers=h).json()["stt"]["provider"] == "jota"

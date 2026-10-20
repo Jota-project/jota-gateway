@@ -30,6 +30,7 @@ from src.services.openclaw.registry import ClientRegistry, TurnRegistry
 from src.services.reconnection import ConnectionState, describe_error, to_wire_state
 from src.services.session_registry import SessionRegistry
 from src.services.speech.factory import build_stt_provider, build_tts_provider
+from src.services.speech.registry import SpeechProviders
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s | %(name)s | %(levelname)s | %(message)s"
@@ -117,8 +118,6 @@ async def _lifespan_body(app: FastAPI):
         _notification_tasks.add(task)
         task.add_done_callback(_notification_tasks.discard)
 
-    tts.on_state_change = _on_tts_state_change
-
     def _on_stt_state_change(state: ConnectionState) -> None:
         task = asyncio.create_task(
             client_registry.broadcast_status("transcriber", to_wire_state(state))
@@ -134,12 +133,12 @@ async def _lifespan_body(app: FastAPI):
         except Exception as e:
             logger.error("Speech provider %s failed to start (%s)", provider.name, describe_error(e))
     # Wired after start() on purpose (same reason as the orchestrator): a first-time
-    # success must not broadcast a spurious "restored".
-    stt.on_state_change = _on_stt_state_change
+    # success must not broadcast a spurious "restored". The holder rewires them on a swap.
+    speech = SpeechProviders(settings, stt, tts)
+    speech.set_state_listeners(_on_stt_state_change, _on_tts_state_change)
 
     app.state.openclaw = openclaw
-    app.state.stt = stt
-    app.state.tts = tts
+    app.state.speech = speech
     app.state.turn_registry = turn_registry
     app.state.client_registry = client_registry
     app.state.session_registry = SessionRegistry()
@@ -163,7 +162,7 @@ async def _lifespan_body(app: FastAPI):
         )
 
         # 1b. Close the speech providers once the sessions that used them are gone.
-        for provider in (stt, tts):
+        for provider in (speech.stt, speech.tts):
             try:
                 await provider.aclose()
             except Exception:

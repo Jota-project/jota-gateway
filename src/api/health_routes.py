@@ -30,12 +30,12 @@ async def _ping_orchestrator(request: Request) -> str:
 
 
 async def _ping_transcriber(request: Request) -> str:
-    ok = await request.app.state.stt.probe()
+    ok = await request.app.state.speech.stt.probe()
     return "ok" if ok else "unavailable"
 
 
 async def _ping_tts(request: Request) -> str:
-    ok = await request.app.state.tts.probe()
+    ok = await request.app.state.speech.tts.probe()
     return "ok" if ok else "unavailable"
 
 

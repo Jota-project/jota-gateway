@@ -27,6 +27,7 @@ from src.services.speech.ports import (
     TextToSpeechProvider,
     TtsStream,
 )
+from src.services.speech.registry import SpeechProviders
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ class JotaBridge:
         default_agent: str,
         sender: OutboundSender | None = None,
         stt: SpeechToTextProvider | None = None,
+        speech: SpeechProviders | None = None,
     ):
         self.client = client
         self.config = config
@@ -82,9 +84,16 @@ class JotaBridge:
         self._sender: OutboundSender = sender or DirectSender(client_ws)
         self.handshake: Handshake = handshake
         self.orchestrator: OrchestratorProtocol = orchestrator  # injected, not created here
-        self.tts = tts
+        # Con `speech` (titular con cambio en caliente) cada turno TTS y cada sesión STT
+        # nueva usa el proveedor VIGENTE; una sesión STT ya abierta conserva el suyo hasta
+        # que termina. Sin `speech` rigen los proveedores fijos inyectados (tests).
+        self._speech = speech
+        self._fixed_tts = tts
         # Sin `stt` (tests, llamadas antiguas) se usa el proveedor por defecto de la factoría.
-        self._stt: SpeechToTextProvider = stt if stt is not None else build_stt_provider(settings)
+        self._fixed_stt: SpeechToTextProvider | None = (
+            stt if stt is not None or speech is not None else build_stt_provider(settings)
+        )
+        self._session_stt: SpeechToTextProvider | None = None  # el que abrió la sesión
         self.tracker: PipelineTracker = tracker
         self._tts_chars = 0  # texto enviado al TTS (normal + push): base del coste por carácter
         self._client_registry = client_registry
@@ -162,13 +171,29 @@ class JotaBridge:
         self._last_audio_at: float | None = None
         self._audio_burst_start: float | None = None
 
+    @property
+    def tts(self) -> TextToSpeechProvider:
+        return self._speech.tts if self._speech is not None else self._fixed_tts
+
+    @tts.setter
+    def tts(self, value: TextToSpeechProvider) -> None:
+        self._fixed_tts = value
+
+    @property
+    def _stt(self) -> SpeechToTextProvider:
+        if self._speech is not None:
+            return self._speech.stt
+        assert self._fixed_stt is not None
+        return self._fixed_stt
+
     async def connect_internal_services(self):
         """Inicializa clientes de microservicios dependiendo del handshake."""
         if self.handshake.input_mode == "audio":
             # Las callbacks se entregan al abrir la sesión (no en run()): el bucle de
             # entrada del cliente arranca antes que run() y el primer evento no puede
             # quedarse sin destinatario.
-            self.transcriber = self._stt.open_session(
+            self._session_stt = self._stt
+            self.transcriber = self._session_stt.open_session(
                 client=self.client,
                 params=SttParams(self.config.stt_language, self.config.stt_vad_thold),
                 callbacks=SttCallbacks(
@@ -365,7 +390,7 @@ class JotaBridge:
     def _speech_usage_meta(self) -> dict[str, Any]:
         """Solo nombres de proveedor y números (nunca texto: el tracker lo persiste)."""
         meta: dict[str, Any] = {
-            "stt_provider": str(getattr(self._stt, "name", "")),
+            "stt_provider": str(getattr(self._session_stt or self._stt, "name", "")),
             "tts_provider": str(getattr(self.tts, "name", "")),
             "tts_chars": self._tts_chars,
         }
@@ -414,7 +439,7 @@ class JotaBridge:
         return {
             "barge_in": bool(self.config.barge_in_enabled)
             and transcriber_live
-            and self._stt.capabilities.partials,
+            and (self._session_stt or self._stt).capabilities.partials,
             "tts": tts_live,
             "transcriber": transcriber_live,
         }

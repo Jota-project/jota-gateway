@@ -27,10 +27,13 @@ import secrets
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from src.api.deps import get_admin_auth
+from src.core.config import effective_audio_gate, settings
+from src.core.startup_checks import SpeechConfigError
 from src.db.database import get_db_session
 from src.db.models import ClientRecord
 from src.models.admin_schemas import ClientCreate, ClientResponse, ClientUpdate
@@ -332,7 +335,7 @@ async def get_transcriber_status(request: Request) -> dict:
     """Transcriber has no process-level connection (one instance per audio
     session) — this reports live readiness via the STT provider's probe, wrapped
     in the same shape as the other two status endpoints for consistency."""
-    stt = request.app.state.stt
+    stt = request.app.state.speech.stt
     await stt.probe()
     s = stt.status()
     return {
@@ -347,7 +350,7 @@ async def get_transcriber_status(request: Request) -> dict:
 
 @router.get("/tts/status")
 async def get_tts_status(request: Request) -> dict:
-    tts = request.app.state.tts
+    tts = request.app.state.speech.tts
     s = tts.status()
     return {
         "name": s.name,
@@ -357,3 +360,39 @@ async def get_tts_status(request: Request) -> dict:
         "reconnect_attempts": s.reconnect_attempts,
         "last_error": s.last_error,
     }
+
+
+# ---------------------------------------------------------------------------
+# Proveedores de voz — estado y cambio en caliente (no se persiste)
+# ---------------------------------------------------------------------------
+
+
+class SpeechSwap(BaseModel):
+    stt_provider: str | None = None
+    tts_provider: str | None = None
+
+
+@router.get("/speech")
+async def get_speech(request: Request) -> dict:
+    speech = request.app.state.speech
+    return {
+        "stt": {"provider": speech.stt.name, "state": speech.stt.state.value},
+        "tts": {"provider": speech.tts.name, "state": speech.tts.state.value},
+        "audio_gate": effective_audio_gate(settings, speech.stt.name),
+    }
+
+
+@router.put("/speech")
+async def put_speech(body: SpeechSwap, request: Request) -> dict:
+    """Cambia el proveedor de STT y/o TTS sin reiniciar. No se persiste: al reiniciar el
+    gateway vuelven a regir STT_PROVIDER/TTS_PROVIDER. Un TTS cambia en el turno
+    siguiente; una sesión STT ya abierta conserva su proveedor hasta cerrarse."""
+    try:
+        return await request.app.state.speech.swap(
+            stt_name=body.stt_provider, tts_name=body.tts_provider
+        )
+    except SpeechConfigError as e:
+        # El mensaje nombra el setting, nunca su valor.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)) from e

@@ -30,11 +30,13 @@ class JotaSttSession:
         params: SttParams,
         callbacks: SttCallbacks,
         token: str,
+        on_closed=None,
     ) -> None:
         self._inner = inner
         self._params = params
         self._callbacks = callbacks
         self._token = token
+        self._on_closed = on_closed
         self._closed = False
 
     @property
@@ -86,7 +88,12 @@ class JotaSttSession:
 
     async def close(self) -> None:
         self._closed = True
-        await self._inner.close()
+        try:
+            await self._inner.close()
+        finally:
+            callback, self._on_closed = self._on_closed, None  # una sola vez
+            if callback is not None:
+                await callback()
 
     def usage(self) -> dict[str, float]:
         return {}  # servicio propio: sin coste por uso que contabilizar
@@ -104,6 +111,8 @@ class JotaSttProvider:
         self.state = ConnectionState.CONNECTED
         self.on_state_change = None
         self._last_probe: bool | None = None
+        self._open_sessions = 0
+        self._retired = False
 
     def open_session(
         self, *, client: Client, params: SttParams, callbacks: SttCallbacks
@@ -116,7 +125,22 @@ class JotaSttProvider:
             max_backoff=s.TRANSCRIBER_RECONNECT_MAX_BACKOFF,
             max_duration=s.TRANSCRIBER_RECONNECT_MAX_DURATION,
         )
-        return JotaSttSession(inner, params, callbacks, token=client.client_key)
+        self._open_sessions += 1
+        return JotaSttSession(
+            inner, params, callbacks, token=client.client_key, on_closed=self._session_closed
+        )
+
+    async def _session_closed(self) -> None:
+        self._open_sessions -= 1
+        if self._retired and self._open_sessions <= 0:
+            await self.aclose()
+
+    async def retire(self) -> None:
+        """Proveedor sustituido en caliente: se cierra al cerrar su última sesión abierta
+        (ya, si no tiene ninguna)."""
+        self._retired = True
+        if self._open_sessions <= 0:
+            await self.aclose()
 
     async def probe(self) -> bool:
         self._last_probe = await TranscriberClient.ping(self._settings.TRANSCRIBER_WS_URL)
