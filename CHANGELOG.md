@@ -1,3 +1,10 @@
+## [1.19.9](https://github.com/Jota-project/jota-gateway/compare/v1.19.8...v1.19.9) (2026-10-20)
+
+
+### Bug Fixes
+
+* no perder el texto final de la respuesta con OpenClaw 2026.10.5 ([#241](https://github.com/Jota-project/jota-gateway/issues/241)) ([#242](https://github.com/Jota-project/jota-gateway/issues/242)) ([0396092](https://github.com/Jota-project/jota-gateway/commit/0396092b5faf3f5135b2569d5af4d6a5d47fcc92))
+
 ## [1.19.8](https://github.com/Jota-project/jota-gateway/compare/v1.19.7...v1.19.8) (2026-10-19)
 
 
