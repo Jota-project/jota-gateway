@@ -88,6 +88,9 @@ class JotaSttSession:
         self._closed = True
         await self._inner.close()
 
+    def usage(self) -> dict[str, float]:
+        return {}  # servicio propio: sin coste por uso que contabilizar
+
 
 class JotaSttProvider:
     """STT propio. La salud real es por sesión, así que el estado de proveedor es siempre

@@ -62,3 +62,9 @@ def test_provider_start_failure_does_not_abort_startup(failing_stt_start, client
     """Solo el orquestador es fatal: un start() de proveedor que falla degrada (#110)."""
     assert client.get("/healthz").status_code == 200
     assert "secret-provider-detail" not in caplog.text
+
+
+def test_admin_status_includes_provider(client):
+    h = {"X-Admin-Token": "test-admin-token"}
+    assert client.get("/admin/transcriber/status", headers=h).json()["provider"] == "jota"
+    assert client.get("/admin/tts/status", headers=h).json()["provider"] == "jota"

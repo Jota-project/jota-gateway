@@ -337,6 +337,7 @@ async def get_transcriber_status(request: Request) -> dict:
     s = stt.status()
     return {
         "name": s.name,
+        "provider": stt.name,
         "state": s.state.value,
         "connected_at": s.connected_at.isoformat() if s.connected_at else None,
         "reconnect_attempts": s.reconnect_attempts,
@@ -346,9 +347,11 @@ async def get_transcriber_status(request: Request) -> dict:
 
 @router.get("/tts/status")
 async def get_tts_status(request: Request) -> dict:
-    s = request.app.state.tts.status()
+    tts = request.app.state.tts
+    s = tts.status()
     return {
         "name": s.name,
+        "provider": tts.name,
         "state": s.state.value,
         "connected_at": s.connected_at.isoformat() if s.connected_at else None,
         "reconnect_attempts": s.reconnect_attempts,

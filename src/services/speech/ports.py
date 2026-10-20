@@ -47,6 +47,7 @@ class SttSession(Protocol):
     async def send_end(self) -> None: ...  # fuerza el final de la frase en curso
     async def run(self) -> None: ...  # supervisa durante la vida de la sesión
     async def close(self) -> None: ...  # idempotente
+    def usage(self) -> dict[str, float]: ...  # contadores numéricos de la sesión ({} si no hay)
 
 
 @runtime_checkable

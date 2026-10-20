@@ -86,6 +86,7 @@ class JotaBridge:
         # Sin `stt` (tests, llamadas antiguas) se usa el proveedor por defecto de la factoría.
         self._stt: SpeechToTextProvider = stt if stt is not None else build_stt_provider(settings)
         self.tracker: PipelineTracker = tracker
+        self._tts_chars = 0  # texto enviado al TTS (normal + push): base del coste por carácter
         self._client_registry = client_registry
         self._default_agent = default_agent
         self.transcriber: SttSession | None = None
@@ -343,6 +344,13 @@ class JotaBridge:
                     )
 
             try:
+                await self.tracker.record("speech_usage", **self._speech_usage_meta())
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug(f"[{self.client_id}] close_all: speech_usage no registrado")
+
+            try:
                 await self.tracker.close(status=status)
             except asyncio.CancelledError:
                 # Same reasoning as above — the session must still be marked
@@ -353,6 +361,23 @@ class JotaBridge:
                     f"durante el cierre del tracker."
                 )
             self._closed = True
+
+    def _speech_usage_meta(self) -> dict[str, Any]:
+        """Solo nombres de proveedor y números (nunca texto: el tracker lo persiste)."""
+        meta: dict[str, Any] = {
+            "stt_provider": str(getattr(self._stt, "name", "")),
+            "tts_provider": str(getattr(self.tts, "name", "")),
+            "tts_chars": self._tts_chars,
+        }
+        try:
+            usage = self.transcriber.usage() if self.transcriber else {}
+        except Exception:
+            usage = {}
+        if isinstance(usage, dict):
+            for k, v in usage.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    meta.setdefault(str(k), v)
+        return meta
 
     async def health_check(self) -> dict[str, bool] | None:
         """Ping each microservice and return a snapshot of live capabilities.
@@ -1037,6 +1062,7 @@ class JotaBridge:
                 pass
             if tts_live:
                 try:
+                    self._tts_chars += len(token_text)
                     await asyncio.wait_for(
                         tts_live.send_text_chunk(token_text),
                         timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S,
@@ -1233,6 +1259,7 @@ class JotaBridge:
         tts = self._push_tts
         if tts:
             try:
+                self._tts_chars += len(delta)
                 await asyncio.wait_for(
                     tts.send_text_chunk(delta), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
                 )
