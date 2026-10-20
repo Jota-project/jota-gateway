@@ -34,12 +34,22 @@ def extract_message_text(message: object) -> str:
     return "".join(parts)
 
 
+_RETRACTED_MSG = "text retracted to a prefix of what was already emitted; nothing to emit"
+
+
+def _is_retraction(emitted: str, text: str) -> bool:
+    """`text` es un prefijo estricto y no vacio de lo ya emitido."""
+    return bool(text) and len(text) < len(emitted) and emitted.startswith(text)
+
+
 def missing_tail(emitted: str, final_text: str) -> str:
     """Parte de `final_text` que aún no se emitió.
 
     1. `final_text` empieza por lo emitido -> el sufijo.
     2. Igual tras quitar espacios iniciales de ambos -> el sufijo del texto sin ellos.
-    3. Diverge de verdad -> el texto final completo (perder la respuesta es peor que
+    3. `final_text` es un prefijo estricto y no vacio de lo emitido (retractacion) ->
+       nada (lo enviado no se retira) y un log fijo sin contenido.
+    4. Diverge de verdad -> el texto final completo (perder la respuesta es peor que
        repetir un fragmento) y un WARNING fijo, sin contenido.
     """
     if final_text.startswith(emitted):
@@ -47,6 +57,9 @@ def missing_tail(emitted: str, final_text: str) -> str:
     e, f = emitted.lstrip(), final_text.lstrip()
     if e.strip() and f.startswith(e):
         return f[len(e):]
+    if _is_retraction(emitted, final_text):
+        logger.info(_RETRACTED_MSG)
+        return ""
     if final_text:
         logger.warning("final text diverges from streamed text; emitting the full final")
     return final_text
@@ -74,6 +87,11 @@ class ChatTextTracker:
 
     def _emit_missing(self) -> str:
         if not self.current:
+            return ""
+        if _is_retraction(self.emitted, self.current):
+            # Lo enviado no se puede retirar: se conserva `emitted` para no duplicar
+            # si el texto vuelve a crecer.
+            logger.info(_RETRACTED_MSG)
             return ""
         out = missing_tail(self.emitted, self.current)
         self.emitted = self.current

@@ -194,13 +194,16 @@ How the gateway responds (`src/services/openclaw/chat_text.py`, used by
 otherwise `current += deltaText`; `final` → `current` = text of the final `message`. After
 each update it emits only `missing_tail(emitted, current)`. In order: current starts with what
 was delivered (including nothing delivered) → the suffix; equal → nothing; equal after
-stripping leading whitespace on both sides → the suffix of the stripped text; otherwise (real
+stripping leading whitespace on both sides → the suffix of the stripped text; a strict,
+non-empty prefix of what was delivered (retraction) → nothing, `emitted` is kept (so regrowth
+does not repeat text) and a fixed INFO line without content is logged; otherwise (real
 divergence, e.g. a non-prefix `replace`, a correction in `final`, or `final.message` holding
 only the last of several assistant messages) → the **full** current text plus a WARNING with a
 fixed reason (no content): losing the reply is worse than repeating a fragment. An empty
 `current` (empty replace or empty snapshot) emits nothing and does not reset `emitted`. The
 tracker resets after every `final` (and per turn / on opening a push turn). Tokens already sent
-cannot be retracted, so a retraction to a shorter text is not reflected to the client.
+cannot be retracted, so a retraction to a shorter text is not reflected to the client (and
+never re-emitted).
 Observation: with 2026.10.5 most of the text arrives at once in `final` (capture: a
 16-character delta, a 409-character final), so TTS starts only when generation ends; fixing
 that latency is an OpenClaw streaming-configuration matter.
