@@ -1,3 +1,10 @@
+## [1.19.10](https://github.com/Jota-project/jota-gateway/compare/v1.19.9...v1.19.10) (2026-10-20)
+
+
+### Bug Fixes
+
+* aplicar la semántica oficial de delta/replace/snapshot de OpenClaw ([#243](https://github.com/Jota-project/jota-gateway/issues/243)) ([#244](https://github.com/Jota-project/jota-gateway/issues/244)) ([f96de19](https://github.com/Jota-project/jota-gateway/commit/f96de195530d631c14119bd0367330eff0ea4a64)), closes [#242](https://github.com/Jota-project/jota-gateway/issues/242)
+
 ## [1.19.9](https://github.com/Jota-project/jota-gateway/compare/v1.19.8...v1.19.9) (2026-10-20)
 
 
