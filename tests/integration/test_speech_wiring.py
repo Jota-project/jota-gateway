@@ -104,3 +104,17 @@ def test_swap_rejected_without_key_returns_422_and_keeps_current(client):
     assert r.status_code == 422
     assert "ELEVENLABS_API_KEY" in r.text
     assert client.get("/admin/speech", headers=h).json()["stt"]["provider"] == "jota"
+
+
+def test_swap_with_failing_start_returns_503_naming_only_provider(client, monkeypatch):
+    from src.services.speech import factory
+    from tests.unit.test_speech_registry import FailingStartTts
+
+    bad = FailingStartTts("bad")
+    monkeypatch.setitem(factory.PROVIDER_BUILDERS["tts"], "bad", lambda s: bad)
+    h = {"X-Admin-Token": "test-admin-token"}
+    r = client.put("/admin/speech", json={"tts_provider": "bad"}, headers=h)
+    assert r.status_code == 503
+    assert "secret-detail" not in r.text and "bad" in r.text
+    assert client.app.state.speech.tts.name == "jota"
+    assert bad.closed == 1

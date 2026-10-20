@@ -79,3 +79,10 @@ def test_gate_short_pause_inside_hangover_keeps_segment():
     for _ in range(25):
         _, ended = gate.feed(_silence())
         assert ended is False
+
+
+def test_energy_gate_ignores_frames_shorter_than_one_sample():
+    gate = EnergyGate()
+    for n in (0, 1, 3):
+        assert gate.feed(b"\x00" * n) == ([], False)
+    assert len(gate._ring) == 0

@@ -11,6 +11,7 @@ import logging
 from src.models.schemas import Client
 from src.services.reconnection import ConnectionState, ServiceStatus
 from src.services.speech.ports import SttCallbacks, SttCapabilities, SttParams
+from src.services.speech.sessions import SessionRefCount
 from src.services.transcriber_client import TranscriberClient
 from src.services.transcriber_reconnecting import ReconnectingTranscriberClient
 from src.services.tts_reconnecting import ReconnectingTTSClient
@@ -111,8 +112,7 @@ class JotaSttProvider:
         self.state = ConnectionState.CONNECTED
         self.on_state_change = None
         self._last_probe: bool | None = None
-        self._open_sessions = 0
-        self._retired = False
+        self._sessions = SessionRefCount()
 
     def open_session(
         self, *, client: Client, params: SttParams, callbacks: SttCallbacks
@@ -125,22 +125,18 @@ class JotaSttProvider:
             max_backoff=s.TRANSCRIBER_RECONNECT_MAX_BACKOFF,
             max_duration=s.TRANSCRIBER_RECONNECT_MAX_DURATION,
         )
-        self._open_sessions += 1
+        self._sessions.opened()
         return JotaSttSession(
             inner, params, callbacks, token=client.client_key, on_closed=self._session_closed
         )
 
     async def _session_closed(self) -> None:
-        self._open_sessions -= 1
-        if self._retired and self._open_sessions <= 0:
-            await self.aclose()
+        await self._sessions.closed()
 
     async def retire(self) -> None:
         """Proveedor sustituido en caliente: se cierra al cerrar su última sesión abierta
         (ya, si no tiene ninguna)."""
-        self._retired = True
-        if self._open_sessions <= 0:
-            await self.aclose()
+        await self._sessions.retire(self.aclose)
 
     async def probe(self) -> bool:
         self._last_probe = await TranscriberClient.ping(self._settings.TRANSCRIBER_WS_URL)

@@ -67,6 +67,8 @@ class EnergyGate:
         self._quiet_s = 0.0
 
     def feed(self, frame_f32: bytes) -> tuple[list[bytes], bool]:
+        if len(frame_f32) < 4:  # ni una muestra: no es audio (y no debe entrar al preroll)
+            return [], False
         dur = (len(frame_f32) // 4) / self._rate
         loud = _rms_dbfs(frame_f32) >= self._threshold
         if not self._in_segment:

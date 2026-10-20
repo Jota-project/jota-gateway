@@ -38,6 +38,7 @@ from src.db.database import get_db_session
 from src.db.models import ClientRecord
 from src.models.admin_schemas import ClientCreate, ClientResponse, ClientUpdate
 from src.services.db_client import db_client
+from src.services.speech.registry import SpeechSwapError
 
 _ROTATE_KEY_ATTEMPTS = 3
 
@@ -394,5 +395,8 @@ async def put_speech(body: SpeechSwap, request: Request) -> dict:
     except SpeechConfigError as e:
         # El mensaje nombra el setting, nunca su valor.
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)) from e
+    except SpeechSwapError as e:
+        # Nombra solo el proveedor, nunca el texto de la excepción original.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)) from None
     except ValueError as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)) from e

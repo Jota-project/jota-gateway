@@ -12,7 +12,8 @@ from src.services.openclaw.registry import ClientRegistry
 from src.services.reconnection import ConnectionState
 from src.services.speech import factory
 from src.services.speech.jota import JotaSttProvider
-from src.services.speech.registry import SpeechProviders
+from src.services.speech.registry import SpeechProviders, SpeechSwapError
+from src.services.speech.sessions import SessionRefCount
 from tests.unit.test_bridge_speech_ports import FakeSession, FakeStt
 
 
@@ -25,6 +26,9 @@ class NamedStt(FakeStt):
 
     async def start(self):
         self.started += 1
+
+    async def retire(self):
+        await self.aclose()
 
     async def aclose(self):
         self.closed += 1
@@ -180,3 +184,112 @@ async def test_swap_unknown_provider_raises_value_error_and_keeps_current(s, fak
     with pytest.raises(ValueError):
         await p.swap(stt_name="nope")
     assert p.tts is tts
+
+
+class RefCountedStt(FakeStt):
+    """Proveedor no-jota cuyo aclose() rompe sus sesiones abiertas."""
+
+    name = "refcounted"
+
+    def __init__(self):
+        super().__init__()
+        self.refs = SessionRefCount()
+        self.closed = 0
+        self.broken = False
+
+    def open_session(self, *, client, params, callbacks):
+        s = super().open_session(client=client, params=params, callbacks=callbacks)
+        self.refs.opened()
+
+        async def close():
+            await self.refs.closed()
+
+        s.close = close
+        return s
+
+    async def retire(self):
+        await self.refs.retire(self.aclose)
+
+    async def aclose(self):
+        self.closed += 1
+        self.broken = True
+
+
+async def test_swap_stt_open_session_survives_until_closed_and_aclose_once(s, fakes):
+    old = RefCountedStt()
+    p = SpeechProviders(s, old, NamedTts("jota"))
+    sess = old.open_session(client=None, params=None, callbacks=None)
+    await p.swap(stt_name="fake")
+    assert old.broken is False and old.closed == 0
+    await sess.close()
+    await sess.close()
+    assert old.closed == 1 and old.broken is True
+
+
+async def test_session_refcount_fires_once_and_immediately_when_idle():
+    calls = []
+
+    async def cb():
+        calls.append(1)
+
+    idle = SessionRefCount()
+    await idle.retire(cb)
+    await idle.retire(cb)
+    assert calls == [1]
+
+    busy = SessionRefCount()
+    busy.opened()
+    await busy.retire(cb)
+    assert calls == [1]
+    await busy.closed()
+    await busy.closed()
+    assert calls == [1, 1]
+
+
+async def test_swap_detaches_listeners_from_replaced_providers(s, fakes):
+    p = _providers(s)
+    old_tts, old_stt = p.tts, p.stt
+    heard = []
+    p.set_state_listeners(heard.append, heard.append)
+    await p.swap(stt_name="fake", tts_name="fake")
+    assert old_tts.on_state_change is None and old_stt.on_state_change is None
+
+
+class FailingStartTts(NamedTts):
+    async def start(self):
+        raise RuntimeError("secret-detail")
+
+
+async def test_swap_failed_start_keeps_current_and_closes_new(s, monkeypatch):
+    made = []
+
+    def build(settings):
+        t = FailingStartTts("bad")
+        made.append(t)
+        return t
+
+    monkeypatch.setitem(factory.PROVIDER_BUILDERS["tts"], "bad", build)
+    p = _providers(s)
+    stt, tts = p.stt, p.tts
+    with pytest.raises(SpeechSwapError) as e:
+        await p.swap(tts_name="bad")
+    assert "secret-detail" not in str(e.value)
+    assert e.value.kind == "tts" and e.value.provider == "bad"
+    assert p.stt is stt and p.tts is tts and tts.closed == 0
+    assert made[0].closed == 1
+
+
+async def test_swap_failed_stt_start_closes_both_new_providers(s, monkeypatch):
+    class BadStt(NamedStt):
+        async def start(self):
+            raise RuntimeError("x")
+
+    new_tts = NamedTts("fake")
+    stt_made = BadStt("bad")
+    monkeypatch.setitem(factory.PROVIDER_BUILDERS["stt"], "bad", lambda settings: stt_made)
+    monkeypatch.setitem(factory.PROVIDER_BUILDERS["tts"], "fake", lambda settings: new_tts)
+    p = _providers(s)
+    tts = p.tts
+    with pytest.raises(SpeechSwapError):
+        await p.swap(stt_name="bad", tts_name="fake")
+    assert p.tts is tts and stt_made.closed == 1 and new_tts.closed == 1

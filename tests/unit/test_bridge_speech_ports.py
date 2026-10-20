@@ -63,6 +63,9 @@ class FakeStt:
     async def start(self):  # pragma: no cover
         pass
 
+    async def retire(self):  # pragma: no cover
+        pass
+
     async def aclose(self):  # pragma: no cover
         pass
 

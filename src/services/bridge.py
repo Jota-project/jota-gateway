@@ -95,7 +95,10 @@ class JotaBridge:
         )
         self._session_stt: SpeechToTextProvider | None = None  # el que abrió la sesión
         self.tracker: PipelineTracker = tracker
-        self._tts_chars = 0  # texto enviado al TTS (normal + push): base del coste por carácter
+        # texto enviado al TTS (normal + push) por proveedor: base del coste por carácter
+        self._tts_chars_by_provider: dict[str, int] = {}
+        self._push_tts_name = ""  # proveedor que abrió el TtsStream del push en curso
+        self._usage_recorded = False  # speech_usage una sola vez aunque close_all se reintente
         self._client_registry = client_registry
         self._default_agent = default_agent
         self.transcriber: SttSession | None = None
@@ -368,12 +371,14 @@ class JotaBridge:
                         f"durante el cierre de microservicios."
                     )
 
-            try:
-                await self.tracker.record("speech_usage", **self._speech_usage_meta())
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                logger.debug(f"[{self.client_id}] close_all: speech_usage no registrado")
+            if not self._usage_recorded:
+                self._usage_recorded = True
+                try:
+                    await self.tracker.record("speech_usage", **self._speech_usage_meta())
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    logger.debug(f"[{self.client_id}] close_all: speech_usage no registrado")
 
             try:
                 await self.tracker.close(status=status)
@@ -387,13 +392,17 @@ class JotaBridge:
                 )
             self._closed = True
 
+    def _count_tts_chars(self, provider: str, n: int) -> None:
+        self._tts_chars_by_provider[provider] = self._tts_chars_by_provider.get(provider, 0) + n
+
     def _speech_usage_meta(self) -> dict[str, Any]:
         """Solo nombres de proveedor y números (nunca texto: el tracker lo persiste)."""
-        meta: dict[str, Any] = {
-            "stt_provider": str(getattr(self._session_stt or self._stt, "name", "")),
-            "tts_provider": str(getattr(self.tts, "name", "")),
-            "tts_chars": self._tts_chars,
-        }
+        meta: dict[str, Any] = {"tts_provider": str(getattr(self.tts, "name", ""))}
+        if self._session_stt is not None:  # solo si se abrió una sesión STT
+            meta["stt_provider"] = str(getattr(self._session_stt, "name", ""))
+        meta["tts_chars"] = sum(self._tts_chars_by_provider.values())
+        for name, chars in self._tts_chars_by_provider.items():
+            meta[f"tts_chars_{name}"] = chars
         try:
             usage = self.transcriber.usage() if self.transcriber else {}
         except Exception:
@@ -1038,7 +1047,9 @@ class JotaBridge:
         needs_audio = "audio" in self.handshake.output_mode
 
         tts: TtsStream | None = None
+        tts_name = ""
         if needs_audio:
+            tts_name = str(getattr(self.tts, "name", ""))
             tts = await self.tts.connect(
                 voice=self.config.tts_voice,
                 speed=self.config.tts_speed,
@@ -1087,7 +1098,7 @@ class JotaBridge:
                 pass
             if tts_live:
                 try:
-                    self._tts_chars += len(token_text)
+                    self._count_tts_chars(tts_name, len(token_text))
                     await asyncio.wait_for(
                         tts_live.send_text_chunk(token_text),
                         timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S,
@@ -1246,12 +1257,14 @@ class JotaBridge:
 
         if "audio" not in self.handshake.output_mode:
             return
+        tts_name = str(getattr(self.tts, "name", ""))
         tts = await self.tts.connect(
             voice=self.config.tts_voice, speed=self.config.tts_speed, client_id=self.client_id
         )
         if tts is None:
             return
         self._push_tts = tts
+        self._push_tts_name = tts_name
 
         async def _pipe_push_audio():
             header = bytes([0xA1]) + self._push_turn_seq.to_bytes(2, "big")
@@ -1284,7 +1297,7 @@ class JotaBridge:
         tts = self._push_tts
         if tts:
             try:
-                self._tts_chars += len(delta)
+                self._count_tts_chars(self._push_tts_name, len(delta))
                 await asyncio.wait_for(
                     tts.send_text_chunk(delta), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
                 )
