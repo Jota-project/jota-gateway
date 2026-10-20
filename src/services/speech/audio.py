@@ -32,6 +32,25 @@ def f32le_to_s16le(frame: bytes) -> bytes:
     return out.tobytes()
 
 
+def s16le_24k_to_f32le_16k(pcm: bytes) -> bytes:
+    """PCM16 LE 24 kHz mono -> Float32 LE 16 kHz mono (remuestreo lineal; para pruebas)."""
+    src = array("h")
+    src.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+    if _BIG:
+        src.byteswap()
+    out = array("f")
+    n = (len(src) * 2) // 3
+    for i in range(n):
+        pos = i * 1.5
+        j = int(pos)
+        frac = pos - j
+        nxt = src[j + 1] if j + 1 < len(src) else src[j]
+        out.append((src[j] * (1.0 - frac) + nxt * frac) / 32768.0)
+    if _BIG:
+        out.byteswap()
+    return out.tobytes()
+
+
 def _rms_dbfs(frame: bytes) -> float:
     samples = _floats(frame)
     if not samples:
