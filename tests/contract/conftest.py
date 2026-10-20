@@ -1,7 +1,7 @@
 """Fixtures de la batería de contrato de proveedores de voz.
 
 Cada adaptador aporta un arnés con la misma forma; los casos solo conocen el arnés.
-`jota` y `elevenlabs` (TTS contra el upstream falso; el STT de ElevenLabs llega en la fase 4).
+`jota` y `elevenlabs` (ambos contra upstreams falsos; en ElevenLabs la puerta de audio va en `off`).
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from src.models.schemas import Client
 from tests.fakes.jota_upstreams import FakeTranscriber, FakeTts
 
 ADAPTERS = ["jota", "elevenlabs"]
-STT_ADAPTERS = ["jota"]
+STT_ADAPTERS = ["jota", "elevenlabs"]
 
 SECRET_KEY = "client-key-SECRET-0123456789"
 SECRET_TTS_TOKEN = "tts-token-SECRET-0123456789"
@@ -49,13 +49,45 @@ class TtsHarness:
 
 @pytest.fixture(params=STT_ADAPTERS)
 async def stt_harness(request):
-    assert request.param == "jota"
+    if request.param == "elevenlabs":
+        async for h in _elevenlabs_stt_harness():
+            yield h
+        return
     from src.services.speech.jota import JotaSttProvider
 
     up = FakeTranscriber()
     await up.start()
     s = settings.model_copy(update={"TRANSCRIBER_WS_URL": f"127.0.0.1:{up.port}"})
     provider = JotaSttProvider(s)
+    await provider.start()
+    yield SttHarness(
+        provider=provider,
+        client=Client(id="c-contract", client_key=SECRET_KEY, is_active=True),
+        upstream=up,
+    )
+    await provider.aclose()
+    await up.stop()
+
+
+async def _elevenlabs_stt_harness():
+    from pydantic import SecretStr
+
+    from src.services.speech.elevenlabs.stt import ElevenLabsSttProvider
+    from tests.fakes.elevenlabs_stt import FakeElevenLabsStt
+
+    key = "el-key-SECRET-0123456789"
+    up = FakeElevenLabsStt(api_key=key)
+    await up.start()
+    provider = ElevenLabsSttProvider(
+        settings.model_copy(
+            update={
+                "ELEVENLABS_API_KEY": SecretStr(key),
+                "ELEVENLABS_BASE_URL": up.url,
+                "STT_AUDIO_GATE": "off",
+                "ELEVENLABS_STT_DRAIN_S": 0.3,
+            }
+        )
+    )
     await provider.start()
     yield SttHarness(
         provider=provider,

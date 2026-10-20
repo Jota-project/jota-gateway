@@ -20,6 +20,12 @@ def _callbacks(events: list):
     return SttCallbacks(on_transcription=on_tr, on_warning=noop, on_status=noop, on_incomplete=noop)
 
 
+async def _speak(session, frames: int = 10):
+    """0,1 s de audio por llamada acumulada: ElevenLabs no envía menos de 0,1 s de una vez."""
+    for _ in range(frames):
+        await session.send_audio(FRAME)
+
+
 async def _open(h, events):
     session = h.provider.open_session(
         client=h.client,
@@ -51,7 +57,7 @@ async def test_partial_then_final_delivered_in_order(stt_harness):
     session = await _open(stt_harness, events)
     runner = asyncio.create_task(session.run())
     try:
-        await session.send_audio(FRAME)
+        await _speak(session)
         assert await _wait_for(lambda: len(events) >= 2)
         assert events[:2] == [("hola", False), ("hola mundo", True)]
     finally:
@@ -64,7 +70,7 @@ async def test_send_end_produces_final(stt_harness):
     session = await _open(stt_harness, events)
     runner = asyncio.create_task(session.run())
     try:
-        await session.send_audio(FRAME)
+        await _speak(session)
         await session.send_end()
         assert await _wait_for(lambda: ("fin de frase", True) in events)
     finally:
@@ -84,7 +90,7 @@ async def test_callbacks_receive_events_before_run_is_awaited_long(stt_harness):
     session = await _open(stt_harness, events)
     runner = asyncio.create_task(session.run())
     try:
-        await session.send_audio(FRAME)
+        await _speak(session)
         assert await _wait_for(lambda: events == [("pronto", False)], timeout=1.0)
         assert not runner.done()
     finally:
@@ -100,7 +106,7 @@ async def test_no_secret_or_text_in_logs(stt_harness, caplog):
         session = await _open(stt_harness, events)
         runner = asyncio.create_task(session.run())
         try:
-            await session.send_audio(FRAME)
+            await _speak(session)
             assert await _wait_for(lambda: events)
         finally:
             await _finish(session, runner)
