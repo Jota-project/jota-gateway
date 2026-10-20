@@ -11,6 +11,7 @@ from websockets.exceptions import ConnectionClosed
 
 from src.core.config import settings
 from src.services.openclaw import frames
+from src.services.openclaw.chat_text import ChatTextTracker
 from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.models import GatewayInfo, ToolCallEvent
 from src.services.openclaw.registry import (
@@ -328,6 +329,7 @@ class OpenClawClient:
             return
         _sent = False
         _finished = False
+        text_tracker = ChatTextTracker()
 
         try:
             try:
@@ -354,7 +356,9 @@ class OpenClawClient:
                     yield OrchestratorEvent(type="error", content="turn_timeout")
                     break
                 if kind == "chat":
-                    delta = data.get("deltaText", "")
+                    # #241: OpenClaw 2026.10.5 sends the full text only in `final`
+                    # (no deltaText); emit just what the deltas did not cover.
+                    delta = text_tracker.feed(data)
                     if delta:
                         yield OrchestratorEvent(type="token", content=delta)
                     if data.get("state") == "final":

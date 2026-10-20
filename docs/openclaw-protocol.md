@@ -136,6 +136,55 @@ While the agent is responding, `chat` events stream:
 breaking change above). `stream_response()` yields `status: "done"` on `state == "final"`; the
 old `res`-based completion path is kept only as a fallback for older server versions.
 
+> Since 2026.10.5 `final` also carries the full reply text and no `deltaText` — see
+> "Breaking change — OpenClaw 2026.10.5" below.
+
+---
+
+## Breaking change — OpenClaw 2026.10.5 (2026-10-20, issue #241)
+
+Captured live against production (2026.10.5) for a one-sentence prompt. Frame order
+(`payload` fields only, text shortened):
+
+```
+chat {state:"status", phase:"preparing_workspace", seq:1}        # no deltaText
+chat {state:"status", phase:"preparing_context",   seq:2}
+chat {state:"status", phase:"starting_model",      seq:4}
+chat {state:"delta",  seq:6, deltaText:"1, 2, 3,",
+      message:{"role":"assistant","content":[{"type":"text","text":"1, 2, 3,"}],"timestamp":...}}
+chat {state:"delta",  seq:9, deltaText:"", replace:true,
+      message:{"role":"assistant","content":[{"type":"text","text":""}],...}}
+chat {state:"final",  seq:11, stopReason:"stop",                  # NO deltaText
+      message:{"role":"assistant","content":[{"type":"text","text":"1, 2, 3, 4, 5"}],...}}
+```
+
+What changed versus 2026.6.11/2026.7.1:
+
+- `state:"final"` carries the **complete** reply in `message` (`content` is a list of typed
+  parts; only `type:"text"` parts matter) and **no `deltaText`**. The deltas received before
+  it can be a strict prefix of the reply (here `'1, 2, 3,'`), so a client that only reads
+  `deltaText` loses the tail (`' 4, 5'`).
+- `delta` events with `replace:true` and an empty `deltaText` may appear. They are not a
+  retraction the gateway can honor: tokens already sent to the client cannot be taken back.
+- New `chat` events with `state:"status"` and a `phase` (`preparing_workspace`,
+  `preparing_context`, `starting_model`, ...). They carry no text and are ignored.
+
+How the gateway responds (`src/services/openclaw/chat_text.py`, used by
+`OpenClawClient.stream_response()` and `JotaBridge.deliver_push()`): it tracks the
+concatenation of delivered `deltaText`; on `final` it extracts the text from `message` and
+emits only the missing suffix before `status done`. In order: final starts with what was
+delivered (including nothing delivered) → the suffix; equal → nothing; equal after stripping
+leading whitespace on both sides → the suffix of the stripped text; otherwise (real
+divergence, e.g. `final.message` holds only the last of several assistant messages) → the
+**full** final text plus a WARNING with a fixed reason (no content): losing the reply is worse
+than repeating a fragment. The tracker resets after every `final`.
+
+Not verified against real traffic: a `delta` with `replace:true` and **non-empty** text. The
+gateway does not retract anything for it (it only appends `deltaText`); an empty one changes
+nothing. Observation: with 2026.10.5 most of the text arrives at once in `final` (capture: a
+16-character delta, a 409-character final), so TTS starts only when generation ends; fixing
+that latency is an OpenClaw streaming-configuration matter.
+
 ---
 
 ## Tool Use (`session.tool` events)
@@ -370,6 +419,7 @@ loggers; keep those at their default level in production.
 
 ## Change log of this file
 
+- **2026-10-20**: added "Breaking change — OpenClaw 2026.10.5" (issue #241): `final` carries the full text without `deltaText`.
 - **2026-10-19**: added "Errors toward clients and handshake failures" (issue #228).
 - **2026-10-18**: added "Frame size, malformed frames and connection end" (issue #213).
 
