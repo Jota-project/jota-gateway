@@ -574,3 +574,35 @@ async def test_watchdog_counts_one_strike_per_poll_tick_not_per_timeout_window(m
     degraded = [c for c in ws.send_json.call_args_list if c[0][0].get("state") == "degraded"]
     assert len(degraded) == 3
     bridge.close_all.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_watchdog_extends_first_window_after_burst_by_stt_warmup(monkeypatch):
+    """Un STT con arranque lento (warmup_s) no recibe strikes en la primera ventana tras abrir
+    ráfaga: solo se cuenta silencio pasado silence_timeout_s + warmup_s. Tiempo real."""
+    from types import SimpleNamespace
+
+    import src.services.bridge as bridge_module
+    from src.services.speech.ports import SttCapabilities
+
+    monkeypatch.setattr(bridge_module, "_WATCHDOG_POLL_S", 0.05)
+    config = ClientConfig(silence_timeout_s=0.05, max_silence_turns=1)
+    bridge, ws, transcriber = _make_bridge(config=config)
+    bridge._session_stt = SimpleNamespace(capabilities=SttCapabilities(partials=True, warmup_s=0.5))
+    t0 = time.monotonic()
+    bridge._first_audio_at = t0
+    bridge._audio_burst_start = t0
+    bridge._last_audio_at = float("inf")
+    transcriber.last_transcript_at = None
+    bridge.close_all = AsyncMock()
+
+    task = asyncio.create_task(bridge._transcription_watchdog())
+    try:
+        await asyncio.sleep(0.35)  # dentro de timeout + warmup (0.55 s)
+        degraded = [c for c in ws.send_json.call_args_list if c[0][0].get("state") == "degraded"]
+        assert degraded == []
+        await asyncio.wait_for(task, timeout=2.0)  # pasada la ventana, los strikes vuelven
+    finally:
+        task.cancel()
+    assert time.monotonic() - t0 >= 0.55
+    bridge.close_all.assert_awaited_once()

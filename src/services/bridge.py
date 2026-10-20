@@ -588,8 +588,13 @@ class JotaBridge:
                 silence_count = 0
                 continue
             elapsed = now - last
+            timeout = self.config.silence_timeout_s
+            if last == burst_start and self._session_stt is not None:
+                # First window after the burst opened: a provider that needs a while to
+                # return its first result (`warmup_s`; jota = 0) isn't blamed for it.
+                timeout += self._session_stt.capabilities.warmup_s
 
-            if elapsed > self.config.silence_timeout_s:
+            if elapsed > timeout:
                 silence_count += 1
                 logger.warning(
                     f"[{self.client_id}] Watchdog: {elapsed:.1f}s sin transcripción "
