@@ -243,7 +243,7 @@ async def test_semaphore_full_busy_then_ok_on_acquire(env):
     await s2.send_audio(frame())
     await s2.send_audio(frame())
     assert rec2.statuses == [("busy", "provider_capacity")]  # una sola vez
-    assert p.counters()["capacity_refusals"] == 2
+    assert p.counters()["capacity_refusals"] == 1  # por episodio, no por frame
     await s1.close()
     await wait_until(lambda: not p._sem.locked())
     await s2.send_audio(frame())
@@ -456,3 +456,121 @@ async def test_probe_hung_handshake_is_failure_not_healthy(monkeypatch):
         assert p.state == ConnectionState.RECONNECTING
     finally:
         server.close()
+
+
+async def test_partial_transcript_updates_last_transcript_at(env):
+    fake, p, s, _r = await env()
+    from src.services.speech.elevenlabs.stt import _Upstream
+
+    up = _Upstream()
+    assert s.last_transcript_at is None
+    await s._on_message(up, {"message_type": "partial_transcript", "text": ""})
+    assert s.last_transcript_at is None  # un parcial vacío no es actividad
+    await s._on_message(up, {"message_type": "partial_transcript", "text": "hola"})
+    assert s.last_transcript_at is not None
+
+
+async def test_bridge_watchdog_not_triggered_by_partials_without_commit(env, monkeypatch):
+    """Habla continua: llegan parciales pero ningún commit; el watchdog no puede dar strikes."""
+    from unittest.mock import AsyncMock
+
+    import src.services.bridge as bridge_module
+    from src.models.schemas import ClientConfig
+    from src.services.speech.elevenlabs.stt import _Upstream
+    from tests.unit.test_bridge_watchdog import _make_bridge
+
+    monkeypatch.setattr(bridge_module, "_WATCHDOG_POLL_S", 0.05)
+    _fake, _p, s, _r = await env()
+    config = ClientConfig(silence_timeout_s=0.1, max_silence_turns=1)
+    bridge, ws, _t = _make_bridge(config=config)
+    bridge.transcriber = s
+    bridge._first_audio_at = time.monotonic()
+    bridge._audio_burst_start = bridge._first_audio_at
+    bridge._last_audio_at = float("inf")
+    bridge.close_all = AsyncMock()
+    up = _Upstream()
+
+    task = asyncio.create_task(bridge._transcription_watchdog())
+    try:
+        end = time.monotonic() + 0.5  # > silence_timeout_s + 2 x poll
+        while time.monotonic() < end:
+            await s._on_message(up, {"message_type": "partial_transcript", "text": "hablando"})
+            await asyncio.sleep(0.02)
+        degraded = [c for c in ws.send_json.call_args_list if c[0][0].get("state") == "degraded"]
+        assert degraded == []
+        bridge.close_all.assert_not_awaited()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_permit_released_before_respawn_no_spurious_busy_at_limit(env):
+    fake, p, s, rec = await env(
+        {"on_audio": [("p", False)], "on_end": [("u1", True)], "commit_delay_s": 0.4},
+        ELEVENLABS_STT_MAX_SESSIONS=1,
+    )
+    await s.send_audio(frame())
+    await wait_until(lambda: fake.commits == 1, 3)  # el reposo inició el drenado
+    await s.send_audio(frame())  # llega mientras drena: queda en el búfer
+    await wait_until(lambda: len(fake.connections) == 2, 3)
+    await wait_until(lambda: fake.connections[1]["audio_bytes"] >= 3200, 3)
+    assert rec.statuses == []
+    assert p.counters()["capacity_refusals"] == 0
+
+
+async def test_concurrent_send_audio_during_reopen_opens_one_upstream(env):
+    fake, p, s, rec = await env(ELEVENLABS_STT_MAX_SESSIONS=2)
+
+    async def slow_status(state, reason):
+        rec.statuses.append((state, reason))
+        await asyncio.sleep(0.05)
+
+    s._cb = SttCallbacks(s._cb.on_transcription, s._cb.on_warning, slow_status, s._cb.on_incomplete)
+    s._busy = True
+    s._busy_cause = "sem"
+    await asyncio.gather(s.send_audio(frame()), s.send_audio(frame()))
+    await wait_until(lambda: fake.connections)
+    await asyncio.sleep(0.2)
+    assert len(fake.connections) == 1
+    assert p._sem._value == 1
+
+
+async def test_reopen_after_exhaustion_restores_session(env):
+    fake, p, s, rec = await env(
+        {"drop_after_n_messages": 2},
+        TRANSCRIBER_RECONNECT_MAX_DURATION=0.1,
+    )
+    await s.send_audio(frame())
+    await wait_until(lambda: len(fake.messages) == 1)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        dead = sock.getsockname()[1]
+    live_base = p._base
+    p._base = f"ws://127.0.0.1:{dead}"
+    await s.send_audio(frame())
+    await wait_until(lambda: s.state == ConnectionState.DEGRADED, 5)
+    p._base = live_base
+    fake2 = await start_fake()
+    try:
+        p._base = fake2.url
+        await s.send_audio(frame())
+        await wait_until(lambda: s.state == ConnectionState.CONNECTED, 3)
+        assert rec.states[-1] == ConnectionState.CONNECTED
+        assert p.state == ConnectionState.CONNECTED
+    finally:
+        await s.close()
+        await fake2.stop()
+
+
+async def test_capacity_refusal_counted_once_per_episode(env):
+    fake, p, s1, _r1 = await env(ELEVENLABS_STT_MAX_SESSIONS=1)
+    s2 = open_session(p, Rec(), "c2")
+    r2 = asyncio.create_task(s2.run())
+    await s1.send_audio(frame())
+    await wait_until(lambda: fake.connections)
+    for _ in range(5):
+        await s2.send_audio(frame())
+    assert p.counters()["capacity_refusals"] == 1
+    assert s2.usage()["stt_capacity_refusals"] == 1
+    await s2.close()
+    await asyncio.gather(r2, return_exceptions=True)

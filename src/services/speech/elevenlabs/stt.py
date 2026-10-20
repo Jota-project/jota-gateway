@@ -83,6 +83,7 @@ class _Upstream:
     reader: asyncio.Task | None = None
     commit_sent: bool = False  # hay una confirmación nuestra sin su committed_transcript
     outcome: str = "other"  # clase de la causa del cierre
+    permit: bool = False  # tiene el permiso del semáforo (se libera exactamente una vez)
 
 
 class _Terminal(Exception):
@@ -240,20 +241,26 @@ class ElevenLabsSttSession:
             self._buf.clear()
             return
         if self._p._sem.locked():
-            self._refusals += 1
-            self._p._counters["capacity_refusals"] += 1
+            if not self._busy:  # una vez por episodio de rechazo, no por frame
+                self._refusals += 1
+                self._p._counters["capacity_refusals"] += 1
             await self._set_busy("sem")
             self._buf.clear()
             self._uncommitted = False
             return
         await self._p._sem.acquire()  # libre: no suspende
-        if self._busy_cause == "sem":
-            await self._clear_busy()
-        up = _Upstream()
-        self._conn = up
+        up = _Upstream(permit=True)
+        self._conn = up  # se reclama antes de cualquier await: un send_audio concurrente no abre otra
         task = asyncio.get_running_loop().create_task(self._life_main(up))
         self._life = task
-        task.add_done_callback(lambda _t: self._p._sem.release())
+        task.add_done_callback(lambda _t: self._release_permit(up))
+        if self._busy_cause == "sem":
+            await self._clear_busy()
+
+    def _release_permit(self, up: _Upstream) -> None:
+        if up.permit:
+            up.permit = False
+            self._p._sem.release()
 
     # --- conexión upstream ---
 
@@ -271,7 +278,7 @@ class ElevenLabsSttSession:
         except Exception as e:
             kind = classify_exception(e)
             self._p._connect_error(kind)
-            if kind == "auth":
+            if kind in ("auth", "quota"):
                 raise _Terminal from None
             raise
         up.ws = ws
@@ -294,6 +301,8 @@ class ElevenLabsSttSession:
         self._opens += 1
         self._p._counters["upstream_opens"] += 1
         self._p._record_success()
+        if not self._p._terminal:
+            self._health.mark_connected()  # tras agotar el backoff, la reapertura restaura la sesión
         if self._busy_cause == "error":
             await self._clear_busy()
 
@@ -351,6 +360,7 @@ class ElevenLabsSttSession:
                 await self._close_ws(ws)
             if self._conn is up:
                 self._conn = None
+            self._release_permit(up)  # antes del respawn: la sesión no compite con su propio permiso
             if respawn and self._buf and not self._closed and not self._p._terminal:
                 # Audio llegado mientras la conexión anterior drenaba: abrir la siguiente.
                 self._spawn(self._ensure_upstream())
@@ -386,8 +396,8 @@ class ElevenLabsSttSession:
         if not up.closing:
             kind = classify_close(ws.close_code, ws.close_reason)
             up.outcome = kind
-            if kind == "auth":
-                self._p._mark_terminal("auth")
+            if kind in ("auth", "quota"):
+                self._p._mark_terminal(kind)
             elif kind == "capacity":
                 await self._on_capacity()
 
@@ -404,6 +414,7 @@ class ElevenLabsSttSession:
             up.ready.set()
         elif mt == "partial_transcript":
             if isinstance(text, str) and text:
+                self.last_transcript_at = time.monotonic()  # como jota: un parcial es actividad
                 await self._cb.on_transcription(text, False)
         elif mt == "committed_transcript":
             # Cubre el audio anterior; el que llegó después (o hace menos de 0,3 s, si la
@@ -710,8 +721,8 @@ class ElevenLabsSttProvider:
             s._on_provider_degraded()
 
     def _connect_error(self, kind: str) -> None:
-        if kind == "auth":
-            self._mark_terminal("auth")
+        if kind in ("auth", "quota"):
+            self._mark_terminal(kind)
         elif kind == "capacity":
             self._counters["provider_429"] += 1
 
@@ -770,8 +781,8 @@ class ElevenLabsSttProvider:
             return self._probe_failed(classify_exception(e), e)
 
     def _probe_failed(self, kind: str, exc: BaseException | None) -> bool:
-        if kind == "auth":
-            self._mark_terminal("auth")
+        if kind in ("auth", "quota"):
+            self._mark_terminal(kind)
             return False
         if kind == "capacity":
             self._counters["provider_429"] += 1
