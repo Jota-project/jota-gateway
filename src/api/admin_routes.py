@@ -353,7 +353,7 @@ async def get_transcriber_status(request: Request) -> dict:
 async def get_tts_status(request: Request) -> dict:
     tts = request.app.state.speech.tts
     s = tts.status()
-    return {
+    body = {
         "name": s.name,
         "provider": tts.name,
         "state": s.state.value,
@@ -361,6 +361,10 @@ async def get_tts_status(request: Request) -> dict:
         "reconnect_attempts": s.reconnect_attempts,
         "last_error": s.last_error,
     }
+    counters = getattr(tts, "counters", None)  # diagnóstico opcional (ElevenLabs)
+    if callable(counters):
+        body["counters"] = counters()
+    return body
 
 
 # ---------------------------------------------------------------------------

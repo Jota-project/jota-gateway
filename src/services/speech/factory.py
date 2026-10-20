@@ -26,9 +26,15 @@ def _build_jota_tts(settings) -> TextToSpeechProvider:
     )
 
 
+def _build_elevenlabs_tts(settings) -> TextToSpeechProvider:
+    from src.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
+
+    return ElevenLabsTtsProvider(settings)
+
+
 PROVIDER_BUILDERS: dict[str, dict[str, Callable]] = {
     "stt": {"jota": _build_jota_stt},
-    "tts": {"jota": _build_jota_tts},
+    "tts": {"jota": _build_jota_tts, "elevenlabs": _build_elevenlabs_tts},
 }
 
 

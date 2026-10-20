@@ -118,3 +118,18 @@ def test_swap_with_failing_start_returns_503_naming_only_provider(client, monkey
     assert "secret-detail" not in r.text and "bad" in r.text
     assert client.app.state.speech.tts.name == "jota"
     assert bad.closed == 1
+
+
+def test_admin_tts_status_exposes_counters_only_for_providers_that_have_them(client, monkeypatch):
+    from pydantic import SecretStr
+
+    h = {"X-Admin-Token": "test-admin-token"}
+    assert "counters" not in client.get("/admin/tts/status", headers=h).json()
+    monkeypatch.setattr(settings, "ELEVENLABS_API_KEY", SecretStr("k"))
+    monkeypatch.setattr(settings, "ELEVENLABS_TTS_DEFAULT_VOICE", "gc61tTk93h3LBXPxew2V")
+    monkeypatch.setattr(settings, "ELEVENLABS_BASE_URL", "ws://127.0.0.1:1")  # nada escucha
+    r = client.put("/admin/speech", json={"tts_provider": "elevenlabs"}, headers=h)
+    assert r.status_code == 200
+    body = client.get("/admin/tts/status", headers=h).json()
+    assert body["provider"] == "elevenlabs"
+    assert body["counters"] == {"capacity_refusals": 0, "provider_429": 0, "auth_errors": 0}

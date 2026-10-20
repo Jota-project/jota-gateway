@@ -1051,7 +1051,7 @@ class JotaBridge:
         if needs_audio:
             tts_name = str(getattr(self.tts, "name", ""))
             tts = await self.tts.connect(
-                voice=self.config.tts_voice,
+                voice=self.tts.resolve_voice(self.config.tts_voice),
                 speed=self.config.tts_speed,
                 client_id=self.client_id,
             )
@@ -1259,7 +1259,9 @@ class JotaBridge:
             return
         tts_name = str(getattr(self.tts, "name", ""))
         tts = await self.tts.connect(
-            voice=self.config.tts_voice, speed=self.config.tts_speed, client_id=self.client_id
+            voice=self.tts.resolve_voice(self.config.tts_voice),
+            speed=self.config.tts_speed,
+            client_id=self.client_id,
         )
         if tts is None:
             return
