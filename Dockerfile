@@ -24,6 +24,8 @@ RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin app 
     && chown -R app:app /app/data
 USER app
 
+ENV LOG_FORMAT=json
+
 EXPOSE 8004
 
 # /healthz es liveness pura (siempre 200 si el proceso responde). La imagen slim no trae curl.
