@@ -18,6 +18,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -76,7 +77,7 @@ _OTHER_ERRORS = {
 
 @dataclass
 class _Upstream:
-    ws: object = None
+    ws: Any = None
     ready: asyncio.Event = field(default_factory=asyncio.Event)
     final: asyncio.Event = field(default_factory=asyncio.Event)  # committed_transcript recibido
     closing: bool = False  # cierre iniciado por nosotros: no se le manda más audio
@@ -328,7 +329,8 @@ class ElevenLabsSttSession:
                 return
             while True:
                 await self._pump()
-                await up.reader
+                if up.reader is not None:
+                    await up.reader
                 up.ready.clear()
                 await self._close_ws(up.ws)
                 if self._closed or self._p._terminal:

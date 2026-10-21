@@ -45,6 +45,11 @@ jobs:
         env:
           PYTHONPATH: .
 
+      - name: Contract tests (proveedores de voz)
+        run: pytest tests/contract/ -v --cov=src --cov-append --cov-report=
+        env:
+          PYTHONPATH: .
+
       - name: Integration tests
         run: pytest tests/integration/ -v --cov=src --cov-append --cov-report=term-missing
         env:

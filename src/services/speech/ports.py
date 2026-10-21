@@ -40,7 +40,8 @@ class SttSession(Protocol):
 
     state: ConnectionState
     on_state_change: Callable[[ConnectionState], None] | None
-    last_transcript_at: float | None  # monotonic
+    @property
+    def last_transcript_at(self) -> float | None: ...  # monotonic; solo lectura
 
     async def start(self) -> None: ...  # nunca lanza
     async def send_audio(self, frame: bytes) -> None: ...  # Float32 LE 16 kHz mono

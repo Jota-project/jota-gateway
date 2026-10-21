@@ -35,7 +35,7 @@ def pin_websockets_logging() -> None:
         lg.setLevel(max(lg.level, logging.INFO))
 
 
-def ws_url(base: str, path: str, params: dict[str, str | int] | None = None) -> str:
+def ws_url(base: str, path: str, params: dict[str, str | int | float] | None = None) -> str:
     """`base` (con o sin esquema y sin barra final) + `path` + query. Sin esquema -> wss."""
     base = base.strip().rstrip("/")
     if "://" not in base:

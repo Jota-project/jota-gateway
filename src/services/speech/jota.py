@@ -7,6 +7,7 @@ sitio ni de contrato; aquí solo se les pone la forma del puerto.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from src.models.schemas import Client
 from src.services.reconnection import ConnectionState, ServiceStatus
@@ -49,11 +50,11 @@ class JotaSttSession:
         self._inner.state = value
 
     @property
-    def on_state_change(self):
+    def on_state_change(self) -> Callable[[ConnectionState], None] | None:
         return self._inner.on_state_change
 
     @on_state_change.setter
-    def on_state_change(self, value) -> None:
+    def on_state_change(self, value: Callable[[ConnectionState], None] | None) -> None:
         self._inner.on_state_change = value
 
     @property
@@ -110,7 +111,7 @@ class JotaSttProvider:
     def __init__(self, settings) -> None:
         self._settings = settings
         self.state = ConnectionState.CONNECTED
-        self.on_state_change = None
+        self.on_state_change: Callable[[ConnectionState], None] | None = None
         self._last_probe: bool | None = None
         self._sessions = SessionRefCount()
 

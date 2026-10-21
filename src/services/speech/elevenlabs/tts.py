@@ -20,6 +20,7 @@ import logging
 import re
 import time
 from collections.abc import AsyncIterator
+from typing import Any
 
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -106,7 +107,7 @@ class ElevenLabsTtsStream:
         self._out: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._buffered = 0
         self._carry = b""
-        self._ws = None
+        self._ws: Any = None
         self._closed = False
         self._end_requested = False
         self._end_sent = False
@@ -168,10 +169,9 @@ class ElevenLabsTtsStream:
         # (en ese caso su `finally` no corre): libera el hueco y termina el iterador de audio.
         self._p._sem.release()
         self._out.put_nowait(None)
-        if not task.cancelled() and task.exception() is not None:
-            logger.warning(
-                "ElevenLabs TTS stream failed (%s)", describe_error(task.exception())
-            )
+        exc = None if task.cancelled() else task.exception()
+        if exc is not None:
+            logger.warning("ElevenLabs TTS stream failed (%s)", describe_error(exc))
 
     def _init_message(self) -> dict:
         return {
@@ -214,7 +214,8 @@ class ElevenLabsTtsStream:
         """Escribe hasta el final de la entrada; devuelve "reopen" si procede reabrir."""
         reader = asyncio.get_running_loop().create_task(self._read(ws))
         try:
-            last_sent = last_text = time.monotonic()
+            last_text = time.monotonic()
+            last_sent: float | None = last_text
             try:
                 await ws.send(json.dumps(self._init_message()))
             except ConnectionClosed:
