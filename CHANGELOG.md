@@ -1,3 +1,10 @@
+# [1.20.0](https://github.com/Jota-project/jota-gateway/compare/v1.19.10...v1.20.0) (2026-10-21)
+
+
+### Features
+
+* capa de proveedores de voz (STT/TTS) con ElevenLabs ([#246](https://github.com/Jota-project/jota-gateway/issues/246)) ([#247](https://github.com/Jota-project/jota-gateway/issues/247)) ([1d36cb5](https://github.com/Jota-project/jota-gateway/commit/1d36cb55467b2d68b0e6a1064171110eabb22777))
+
 ## [1.19.10](https://github.com/Jota-project/jota-gateway/compare/v1.19.9...v1.19.10) (2026-10-20)
 
 
