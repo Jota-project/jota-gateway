@@ -73,6 +73,13 @@ class PipelineTracker:
             ts_ms,
             elapsed_ms,
             meta,
+            extra={
+                "session_id": self.session_id,
+                "client_id": self.client_id,
+                "stage": stage,
+                "turn": self._turn,
+                "meta": meta,
+            },
         )
 
         if "status" in self.output_mode:
@@ -90,11 +97,13 @@ class PipelineTracker:
 
         return event
 
-    async def close(self, status: "SessionStatus" = "completed") -> None:
+    async def close(self, status: "SessionStatus" = "completed", **end_meta) -> None:
         if not self._session_end_recorded:
             self._session_end_recorded = True
             duration_s = round(time.monotonic() - self._started_at, 2)
-            await self.record("session_end", turn_count=self._turn, duration_s=duration_s)
+            await self.record(
+                "session_end", turn_count=self._turn, duration_s=duration_s, **end_meta
+            )
         if not self._registry_closed:
             self._registry_closed = True
             self._registry.close(self.session_id, status)

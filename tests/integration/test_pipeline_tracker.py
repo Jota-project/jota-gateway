@@ -163,3 +163,49 @@ async def test_close_with_error_status():
     tracker, _, registry = _make_tracker()
     await tracker.close("error")
     registry.close.assert_called_once_with("test:123", "error")
+
+
+async def test_record_logs_structured_fields(caplog):
+    tracker, _, _ = _make_tracker()
+    with caplog.at_level("INFO", logger="src.services.pipeline_tracker"):
+        await tracker.record("llm_done", token_count=2)
+    rec = next(r for r in caplog.records if getattr(r, "stage", None) == "llm_done")
+    assert rec.session_id == "test:123"
+    assert rec.client_id == "test"
+    assert rec.turn == 0
+    assert rec.meta == {"token_count": 2}
+
+
+async def test_close_merges_end_meta():
+    tracker, _, _ = _make_tracker()
+    await tracker.close("completed", reason="idle_timeout", turn_in_flight=False)
+    last = tracker.events[-1]
+    assert last.stage == "session_end"
+    assert last.meta["reason"] == "idle_timeout"
+    assert last.meta["turn_in_flight"] is False
+    assert "turn_count" in last.meta and "duration_s" in last.meta
+
+
+async def test_json_log_line_has_no_user_text():
+    import io
+    import logging
+
+    from src.core.logging import JsonFormatter
+
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    handler.setFormatter(JsonFormatter())
+    lg = logging.getLogger("src.services.pipeline_tracker")
+    lg.addHandler(handler)
+    old = lg.level
+    lg.setLevel(logging.INFO)
+    try:
+        tracker, _, _ = _make_tracker()
+        await tracker.record("transcription_final", text_len=len("MARCADOR-6g"))
+    finally:
+        lg.removeHandler(handler)
+        lg.setLevel(old)
+    out = buf.getvalue()
+    assert "MARCADOR-6g" not in out
+    assert '"stage": "transcription_final"' in out
+    assert '"text_len": 11' in out
