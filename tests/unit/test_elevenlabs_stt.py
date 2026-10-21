@@ -137,9 +137,17 @@ async def test_query_params_and_header_without_key_in_url(env):
     assert q["commit_strategy"] == "vad"
     assert q["vad_silence_threshold_secs"] == "1.0"
     assert q["include_timestamps"] == "false"
-    assert q["enable_logging"] == "false"
+    # Sin valor explícito no se envía: `false` solo vale en enterprise/trial (visto en real).
+    assert "enable_logging" not in q
     assert c["headers"]["xi-api-key"] == KEY
     assert KEY not in c["raw_path"]
+
+
+async def test_enable_logging_sent_only_when_configured(env):
+    fake, _p, s, _r = await env(ELEVENLABS_STT_ENABLE_LOGGING=False)
+    await s.send_audio(frame())
+    await wait_until(lambda: fake.connections)
+    assert fake.connections[0]["query"]["enable_logging"] == "false"
 
 
 async def test_audio_converted_to_pcm16_base64_and_chunked_at_least_100ms(env):
@@ -574,3 +582,19 @@ async def test_capacity_refusal_counted_once_per_episode(env):
     assert s2.usage()["stt_capacity_refusals"] == 1
     await s2.close()
     await asyncio.gather(r2, return_exceptions=True)
+
+
+async def test_provider_warning_is_not_forwarded_as_degradation(env, caplog):
+    """En real, ElevenLabs avisa en cada sesión (p. ej. zero retention no aplicado): no es
+    una degradación del servicio, así que no llega al cliente."""
+    import src.services.speech.elevenlabs.stt as stt_mod
+
+    stt_mod._warning_logged[0] = False
+    caplog.set_level(logging.INFO, logger=stt_mod.__name__)
+    fake, _p, s, rec = await env(fake_kw={"error_type": "warning", "close_after_error": False})
+    await s.send_audio(frame())
+    await wait_until(lambda: fake.audio_bytes > 0)
+    await asyncio.sleep(0.1)
+    assert rec.warnings == []
+    assert rec.statuses == []
+    assert "aviso informativo del proveedor" in caplog.text

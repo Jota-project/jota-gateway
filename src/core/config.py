@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     ELEVENLABS_STT_CONNECT_BUFFER_S: float = Field(default=2.0, ge=0)
     ELEVENLABS_STT_WARM_HOLD_S: float = Field(default=0.0, ge=0)
     ELEVENLABS_STT_MAX_SESSIONS: int = Field(default=15, gt=0)
-    ELEVENLABS_STT_ENABLE_LOGGING: bool = False
+    ELEVENLABS_STT_ENABLE_LOGGING: bool | None = None  # None = no se envía (ver stt.py)
     ELEVENLABS_TTS_MODEL: str = "eleven_flash_v2_5"
     ELEVENLABS_TTS_DEFAULT_VOICE: str | None = "gc61tTk93h3LBXPxew2V"  # voz en español (no es secreto)
     ELEVENLABS_TTS_CHUNK_SCHEDULE: list[int] = [120, 160, 250, 290]

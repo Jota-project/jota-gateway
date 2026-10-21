@@ -43,6 +43,7 @@ from src.services.speech.ports import SttCallbacks, SttCapabilities, SttParams
 from src.services.speech.sessions import SessionRefCount
 
 logger = logging.getLogger(__name__)
+_warning_logged = [False]  # un único INFO por proceso para los avisos del proveedor
 
 MODEL_ID = "scribe_v2_realtime"
 AUDIO_FORMAT = "pcm_16000"
@@ -430,7 +431,13 @@ class ElevenLabsSttSession:
                 await self._cb.on_transcription(text, True)
             up.final.set()
         elif mt == "warning":
-            await self._cb.on_warning("provider_warning", "")
+            # Avisos informativos del proveedor (p. ej. «zero retention no aplicado» en
+            # cada sesión con planes no enterprise, visto en real el 2026-10-21): no son
+            # degradación del servicio, así que no llegan al cliente. Solo el tipo, nunca
+            # su texto, y una vez por proceso.
+            if not _warning_logged[0]:
+                _warning_logged[0] = True
+                logger.info("ElevenLabs STT: aviso informativo del proveedor (no se reenvía)")
         elif mt in _IGNORED_ERRORS:
             logger.debug("ElevenLabs STT: aviso del proveedor ignorado (%s)", mt)
         elif mt in _AUTH_ERRORS:
@@ -673,8 +680,11 @@ class ElevenLabsSttProvider:
             "language_code": language,
             "commit_strategy": s.ELEVENLABS_STT_COMMIT,
             "include_timestamps": "false",
-            "enable_logging": "true" if s.ELEVENLABS_STT_ENABLE_LOGGING else "false",
         }
+        # Sin valor explícito no se envía: `false` (zero retention) solo lo aplican los
+        # planes enterprise/trial y en el resto el proveedor avisa en cada sesión.
+        if s.ELEVENLABS_STT_ENABLE_LOGGING is not None:
+            params["enable_logging"] = "true" if s.ELEVENLABS_STT_ENABLE_LOGGING else "false"
         if s.ELEVENLABS_STT_COMMIT == "vad":
             params["vad_silence_threshold_secs"] = s.ELEVENLABS_STT_VAD_SILENCE_S
         return ws_url(self._base, "/v1/speech-to-text/realtime", params)
