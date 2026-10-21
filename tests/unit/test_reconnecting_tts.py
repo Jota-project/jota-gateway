@@ -30,7 +30,7 @@ async def test_failed_connect_returns_none_and_records_failure():
     assert result is None
     assert w.state == ConnectionState.RECONNECTING
     assert w._reconnect_attempts == 1
-    assert w._last_error == "refused"
+    assert w._last_error == "OSError"
 
 
 @pytest.mark.asyncio
@@ -94,7 +94,7 @@ async def test_record_success_clears_last_error_after_prior_failure():
         failing_client.connect.side_effect = OSError("refused")
         MockTTS.return_value = failing_client
         await w.connect(voice=None, speed=None, client_id="c1")
-        assert w.status().last_error == "refused"
+        assert w.status().last_error == "OSError"
 
         time.sleep(0.1)  # let the backoff window elapse
 

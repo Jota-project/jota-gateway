@@ -69,7 +69,7 @@ def _make_app_state(orchestrator_ping_result=True):
     orchestrator.gateway_info = None
     return SimpleNamespace(
         openclaw=orchestrator,
-        tts=AsyncMock(),
+        speech=SimpleNamespace(tts=AsyncMock(), stt=AsyncMock()),
         client_registry=ClientRegistry(),
         session_registry=SessionRegistry(),
     ), orchestrator

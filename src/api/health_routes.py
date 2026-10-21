@@ -13,10 +13,6 @@ import asyncio
 
 from fastapi import APIRouter, Request, Response
 
-from src.core.config import settings
-from src.services.transcriber_client import TranscriberClient
-from src.services.tts_client import TTSClient
-
 router = APIRouter()
 
 
@@ -33,13 +29,13 @@ async def _ping_orchestrator(request: Request) -> str:
         return "unavailable"
 
 
-async def _ping_transcriber() -> str:
-    ok = await TranscriberClient.ping(settings.TRANSCRIBER_WS_URL)
+async def _ping_transcriber(request: Request) -> str:
+    ok = await request.app.state.speech.stt.probe()
     return "ok" if ok else "unavailable"
 
 
-async def _ping_tts() -> str:
-    ok = await TTSClient.ping(settings.TTS_WS_URL)
+async def _ping_tts(request: Request) -> str:
+    ok = await request.app.state.speech.tts.probe()
     return "ok" if ok else "unavailable"
 
 
@@ -47,8 +43,8 @@ async def _ping_tts() -> str:
 async def ready(request: Request, response: Response) -> dict:
     results = await asyncio.gather(
         _ping_orchestrator(request),
-        _ping_transcriber(),
-        _ping_tts(),
+        _ping_transcriber(request),
+        _ping_tts(request),
         return_exceptions=True,
     )
 

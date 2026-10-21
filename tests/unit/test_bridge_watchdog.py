@@ -32,7 +32,7 @@ def _make_bridge(config=None):
     from src.services.reconnection import ConnectionState
 
     transcriber.state = ConnectionState.CONNECTED
-    transcriber._last_transcription_at = None
+    transcriber.last_transcript_at = None
     bridge = JotaBridge(
         client=_CLIENT,
         config=config or _CONFIG,
@@ -55,7 +55,7 @@ async def test_watchdog_notifies_client_after_silence_timeout():
     bridge, ws, transcriber = _make_bridge(config=config)
     bridge._first_audio_at = time.monotonic() - 2
     bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
-    transcriber._last_transcription_at = None
+    transcriber.last_transcript_at = None
     bridge.close_all = AsyncMock()
 
     with patch("src.services.bridge.asyncio.sleep", new=AsyncMock(return_value=None)):
@@ -88,7 +88,7 @@ async def test_watchdog_closes_session_after_max_silence_turns():
     bridge, ws, transcriber = _make_bridge(config=config)
     bridge._first_audio_at = time.monotonic() - 2
     bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
-    transcriber._last_transcription_at = None
+    transcriber.last_transcript_at = None
 
     close_called = []
 
@@ -111,7 +111,7 @@ async def test_watchdog_resets_count_when_transcription_arrives():
     bridge, ws, transcriber = _make_bridge(config=config)
     bridge._first_audio_at = time.monotonic() - 2
     bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
-    transcriber._last_transcription_at = None
+    transcriber.last_transcript_at = None
 
     close_called = []
 
@@ -126,7 +126,7 @@ async def test_watchdog_resets_count_when_transcription_arrives():
         ticks["n"] += 1
         # Tras el primer ciclo (1 silencio), simular que llega una transcripción
         if ticks["n"] == 2:
-            transcriber._last_transcription_at = time.monotonic()
+            transcriber.last_transcript_at = time.monotonic()
         elif ticks["n"] == 4:
             from src.services.reconnection import ConnectionState
 
@@ -155,7 +155,7 @@ async def test_watchdog_pauses_but_does_not_exit_when_reconnecting():
     bridge, ws, transcriber = _make_bridge(config=config)
     bridge._first_audio_at = time.monotonic() - 2
     bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
-    transcriber._last_transcription_at = time.monotonic()  # fresh, no silence yet
+    transcriber.last_transcript_at = time.monotonic()  # fresh, no silence yet
 
     ticks = {"n": 0}
 
@@ -165,7 +165,7 @@ async def test_watchdog_pauses_but_does_not_exit_when_reconnecting():
             transcriber.state = ConnectionState.RECONNECTING  # transient drop
         elif ticks["n"] == 2:
             transcriber.state = ConnectionState.CONNECTED  # recovered
-            transcriber._last_transcription_at = time.monotonic()
+            transcriber.last_transcript_at = time.monotonic()
         elif ticks["n"] == 4:
             transcriber.state = ConnectionState.DEGRADED  # stop the loop cleanly
 
@@ -187,7 +187,7 @@ async def test_watchdog_pauses_but_does_not_exit_when_reconnecting():
 
 @pytest.mark.asyncio
 async def test_watchdog_does_not_close_immediately_after_reconnect_with_stale_timestamp():
-    """Issue #149: TranscriberClient.connect() never resets _last_transcription_at,
+    """Issue #149: TranscriberClient.connect() never resets last_transcript_at,
     so after a real reconnect it stays at whatever it was before the outage. The
     watchdog must not blame the client for the outage duration and force-close the
     session the moment it observes CONNECTED again — it should grant a fresh
@@ -200,7 +200,7 @@ async def test_watchdog_does_not_close_immediately_after_reconnect_with_stale_ti
     bridge._first_audio_at = time.monotonic() - 10
     bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
     # A real transcription happened a while ago, then the transcriber dropped.
-    transcriber._last_transcription_at = time.monotonic() - 10
+    transcriber.last_transcript_at = time.monotonic() - 10
 
     ticks = {"n": 0}
 
@@ -210,7 +210,7 @@ async def test_watchdog_does_not_close_immediately_after_reconnect_with_stale_ti
             transcriber.state = ConnectionState.RECONNECTING  # transient drop
         elif ticks["n"] == 2:
             transcriber.state = ConnectionState.CONNECTED  # recovered
-            # Deliberately NOT touching _last_transcription_at here — production's
+            # Deliberately NOT touching last_transcript_at here — production's
             # TranscriberClient.connect() doesn't reset it either.
         elif ticks["n"] == 4:
             transcriber.state = ConnectionState.DEGRADED  # stop the loop cleanly
@@ -566,11 +566,43 @@ async def test_watchdog_counts_one_strike_per_poll_tick_not_per_timeout_window(m
     bridge, ws, transcriber = _make_bridge(config=config)
     bridge._first_audio_at = time.monotonic() - 1
     bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
-    transcriber._last_transcription_at = None
+    transcriber.last_transcript_at = None
     bridge.close_all = AsyncMock()
 
     await asyncio.wait_for(bridge._transcription_watchdog(), timeout=3.0)
 
     degraded = [c for c in ws.send_json.call_args_list if c[0][0].get("state") == "degraded"]
     assert len(degraded) == 3
+    bridge.close_all.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_watchdog_extends_first_window_after_burst_by_stt_warmup(monkeypatch):
+    """Un STT con arranque lento (warmup_s) no recibe strikes en la primera ventana tras abrir
+    ráfaga: solo se cuenta silencio pasado silence_timeout_s + warmup_s. Tiempo real."""
+    from types import SimpleNamespace
+
+    import src.services.bridge as bridge_module
+    from src.services.speech.ports import SttCapabilities
+
+    monkeypatch.setattr(bridge_module, "_WATCHDOG_POLL_S", 0.05)
+    config = ClientConfig(silence_timeout_s=0.05, max_silence_turns=1)
+    bridge, ws, transcriber = _make_bridge(config=config)
+    bridge._session_stt = SimpleNamespace(capabilities=SttCapabilities(partials=True, warmup_s=0.5))
+    t0 = time.monotonic()
+    bridge._first_audio_at = t0
+    bridge._audio_burst_start = t0
+    bridge._last_audio_at = float("inf")
+    transcriber.last_transcript_at = None
+    bridge.close_all = AsyncMock()
+
+    task = asyncio.create_task(bridge._transcription_watchdog())
+    try:
+        await asyncio.sleep(0.35)  # dentro de timeout + warmup (0.55 s)
+        degraded = [c for c in ws.send_json.call_args_list if c[0][0].get("state") == "degraded"]
+        assert degraded == []
+        await asyncio.wait_for(task, timeout=2.0)  # pasada la ventana, los strikes vuelven
+    finally:
+        task.cancel()
+    assert time.monotonic() - t0 >= 0.55
     bridge.close_all.assert_awaited_once()

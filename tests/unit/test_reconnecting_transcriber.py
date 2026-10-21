@@ -25,7 +25,7 @@ async def test_initial_connect_failure_does_not_raise_and_sets_reconnecting():
     with patch.object(w._client, "connect", new=AsyncMock(side_effect=OSError("refused"))):
         await w.connect(language="es", token="k", vad_thold=0.0)  # must not raise
     assert w.state == ConnectionState.RECONNECTING
-    assert w._last_error == "refused"
+    assert w._last_error == "OSError"
 
 
 @pytest.mark.asyncio
@@ -186,7 +186,7 @@ async def test_run_unexpected_exception_degrades_and_notifies():
 
     assert w.state == ConnectionState.DEGRADED
     assert seen == [ConnectionState.DEGRADED]
-    assert "callback bug" in (w.status().last_error or "")
+    assert "RuntimeError" in (w.status().last_error or "")
     connect_spy.assert_not_awaited()
 
 

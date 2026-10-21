@@ -1,4 +1,6 @@
-from pydantic import Field
+from typing import Literal
+
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,6 +33,32 @@ class Settings(BaseSettings):
     TRANSCRIBER_WS_URL: str = "localhost:9000"
     TTS_WS_URL: str = "localhost:8005"
     TTS_TOKEN: str = "gateway"
+
+    # Proveedores de voz (src/services/speech/). El valor de arranque se puede cambiar en
+    # caliente con PUT /admin/speech (no se persiste: al reiniciar rigen estos).
+    STT_PROVIDER: Literal["jota", "elevenlabs"] = "jota"
+    TTS_PROVIDER: Literal["jota", "elevenlabs"] = "jota"
+    ELEVENLABS_API_KEY: SecretStr | None = None
+    ELEVENLABS_BASE_URL: str = "wss://api.elevenlabs.io"
+    ELEVENLABS_HEALTH_TTL_S: float = Field(default=60.0, gt=0)
+    ELEVENLABS_STT_COMMIT: Literal["vad", "manual"] = "vad"
+    ELEVENLABS_STT_VAD_SILENCE_S: float = Field(default=1.0, gt=0)
+    ELEVENLABS_STT_IDLE_CLOSE_S: float = Field(default=5.0, gt=0)
+    ELEVENLABS_STT_DRAIN_S: float = Field(default=1.5, ge=0)
+    ELEVENLABS_STT_CONNECT_BUFFER_S: float = Field(default=2.0, ge=0)
+    ELEVENLABS_STT_WARM_HOLD_S: float = Field(default=0.0, ge=0)
+    ELEVENLABS_STT_MAX_SESSIONS: int = Field(default=15, gt=0)
+    ELEVENLABS_STT_ENABLE_LOGGING: bool | None = None  # None = no se envía (ver stt.py)
+    ELEVENLABS_TTS_MODEL: str = "eleven_flash_v2_5"
+    ELEVENLABS_TTS_DEFAULT_VOICE: str | None = "gc61tTk93h3LBXPxew2V"  # voz en español (no es secreto)
+    ELEVENLABS_TTS_CHUNK_SCHEDULE: list[int] = [120, 160, 250, 290]
+    ELEVENLABS_TTS_MAX_STREAMS: int = Field(default=10, gt=0)
+    ELEVENLABS_TTS_MAX_BUFFER_BYTES: int = Field(default=10485760, gt=0)
+    # voz configurada en el cliente (p. ej. "af_heart") -> id de voz del proveedor (JSON)
+    TTS_VOICE_MAP: dict[str, str] = {}
+    # Puerta de audio hacia el STT: "auto" = energía para proveedores de pago, off para jota.
+    STT_AUDIO_GATE: Literal["auto", "off", "energy"] = "auto"
+    STT_GATE_RMS_DBFS: float = -45.0
     OPENCLAW_HOST: str = "127.0.0.1"
     OPENCLAW_PORT: int = 18789
     OPENCLAW_TOKEN: str = ""
@@ -66,6 +94,16 @@ class Settings(BaseSettings):
     # consumidor se atrasa y se llena, el turno se aborta (chat.abort + TURN_ERROR
     # "turn_overflow") en vez de bloquear _listen y a las demás sesiones.
     TURN_QUEUE_MAX: int = Field(default=1000, gt=0)
+
+
+_PAID_STT_PROVIDERS = frozenset({"elevenlabs"})
+
+
+def effective_audio_gate(settings: Settings, provider_name: str) -> Literal["off", "energy"]:
+    """Resuelve `STT_AUDIO_GATE=auto`: energía para proveedores de pago, off para jota."""
+    if settings.STT_AUDIO_GATE == "auto":
+        return "energy" if provider_name in _PAID_STT_PROVIDERS else "off"
+    return settings.STT_AUDIO_GATE
 
 
 settings = Settings()
