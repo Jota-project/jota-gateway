@@ -1,3 +1,10 @@
+## [1.20.1](https://github.com/Jota-project/jota-gateway/compare/v1.20.0...v1.20.1) (2026-10-21)
+
+
+### Bug Fixes
+
+* los logs INFO de la aplicación no salen en producción ([#249](https://github.com/Jota-project/jota-gateway/issues/249)) ([#251](https://github.com/Jota-project/jota-gateway/issues/251)) ([01f11ee](https://github.com/Jota-project/jota-gateway/commit/01f11eedae3a19a3afa2d403dc8720893fa9045b)), closes [#156](https://github.com/Jota-project/jota-gateway/issues/156) [#219](https://github.com/Jota-project/jota-gateway/issues/219)
+
 # [1.20.0](https://github.com/Jota-project/jota-gateway/compare/v1.19.10...v1.20.0) (2026-10-21)
 
 
