@@ -10,8 +10,12 @@ from src.db.database import get_engine
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
-if config.config_file_name is not None:
-    # disable_existing_loggers=False: the default (True) disables every
+# La app llama a run_migrations() con cfg.attributes["configure_logger"] = False:
+# el [logger_root] level = WARNING de alembic.ini dejaría el root de la app en
+# WARNING y ningún INFO de src.* saldría en producción (#249). La CLI `alembic`
+# no pone el atributo, así que conserva la config de logging de alembic.ini.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
+    # disable_existing_loggers=False (#156): the default (True) disables every
     # already-created logger not listed in alembic.ini's [loggers] section
     # (root/sqlalchemy/alembic) — including every src.* module logger, since
     # main.py imports them all before lifespan() calls run_migrations(). That
