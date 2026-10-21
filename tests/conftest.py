@@ -18,6 +18,16 @@ def _disable_single_process_lock(monkeypatch):
     monkeypatch.setattr(settings, "ELEVENLABS_API_KEY", None)
 
 
+@pytest.fixture(autouse=True)
+def _reset_gateway_stats():
+    """Los contadores globales (#219) no deben filtrarse entre tests."""
+    from src.services.stats import gateway_stats
+
+    gateway_stats.reset()
+    yield
+    gateway_stats.reset()
+
+
 @pytest.fixture
 def test_client():
     """FastAPI TestClient con lifespan (conecta/cierra db_client)."""
