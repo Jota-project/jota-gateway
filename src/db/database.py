@@ -56,7 +56,10 @@ def dispose_engine() -> None:
 
 
 def _alembic_config() -> Config:
-    return Config(str(_ALEMBIC_INI))
+    cfg = Config(str(_ALEMBIC_INI))
+    # Desde la app no se aplica la config de logging de alembic.ini (#249).
+    cfg.attributes["configure_logger"] = False
+    return cfg
 
 
 def run_migrations() -> None:
