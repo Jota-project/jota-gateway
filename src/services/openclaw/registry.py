@@ -62,6 +62,9 @@ class TurnRegistry:
         # session_key -> monotonic deadline; see TURN_ABORT_TOMBSTONE_S.
         self._tombstones: dict[str, float] = {}
         self._sessions: dict[str, asyncio.Queue] = {}
+        # session_key -> max queue depth seen; not cleared by unregister (the bridge
+        # reads it after the turn and calls pop_peak) (#219).
+        self._peak: dict[str, int] = {}
         self._req_to_session: dict[str, str] = {}
         # session_key -> req_id of the turn that currently owns it. Lets
         # unregister() tell an in-flight turn's belated cleanup apart from a
@@ -88,6 +91,14 @@ class TurnRegistry:
             self._session_owner.pop(session_key, None)
             self._overflowed.discard(session_key)
         self._req_to_session.pop(req_id, None)
+
+    def depth(self, session_key: str) -> tuple[int, int]:
+        """(current qsize or 0, max seen)."""
+        q = self._sessions.get(session_key)
+        return (q.qsize() if q else 0, self._peak.get(session_key, 0))
+
+    def pop_peak(self, session_key: str) -> int:
+        return self._peak.pop(session_key, 0)
 
     def get_queue_by_session(self, session_key: str) -> asyncio.Queue | None:
         return self._sessions.get(session_key)
@@ -116,6 +127,7 @@ class TurnRegistry:
             return  # turn already flagged for abort: drop
         try:
             queue.put_nowait(item)
+            self._peak[session_key] = max(self._peak.get(session_key, 0), queue.qsize())
         except asyncio.QueueFull:
             logger.warning(
                 "turn queue overflow for sk=%s (max=%d): aborting turn", session_key, queue.maxsize

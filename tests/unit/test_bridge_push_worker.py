@@ -266,3 +266,18 @@ async def test_run_ends_when_client_disconnects_even_if_push_worker_spawned_firs
 
     assert loop.time() - started < 1.0
     assert bridge._closed is True
+
+
+@pytest.mark.asyncio
+async def test_push_pending_peak():
+    bridge = make_bridge()
+
+    async def idle():
+        await asyncio.Event().wait()
+
+    bridge._push_worker_loop = idle  # el worker no consume
+    for _ in range(3):
+        bridge.enqueue_push("chat", {"deltaText": "x"})
+    assert bridge._push_pending_peak == 3
+    for t in list(bridge.tasks):
+        t.cancel()

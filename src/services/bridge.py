@@ -148,6 +148,7 @@ class JotaBridge:
         # Events enqueued and not yet finished, and since when the backlog is
         # non-empty: _idle_watchdog() counts a bounded pending backlog as in flight.
         self._push_pending: int = 0
+        self._push_pending_peak: int = 0
         self._push_pending_since: float | None = None
         # Guards close_all() so it's safe to call more than once (issue #101):
         # routes.py's outer try/finally always calls it on the way out, even
@@ -1425,6 +1426,7 @@ class JotaBridge:
         if self._push_pending == 0:
             self._push_pending_since = time.monotonic()
         self._push_pending += 1
+        self._push_pending_peak = max(self._push_pending_peak, self._push_pending)
         self._push_queue.put_nowait((kind, arg))
 
     async def push_idle(self) -> None:
