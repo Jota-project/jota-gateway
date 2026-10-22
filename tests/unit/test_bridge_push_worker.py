@@ -276,8 +276,10 @@ async def test_push_pending_peak():
         await asyncio.Event().wait()
 
     bridge._push_worker_loop = idle  # el worker no consume
-    for _ in range(3):
-        bridge.enqueue_push("chat", {"deltaText": "x"})
-    assert bridge._push_pending_peak == 3
-    for t in list(bridge.tasks):
-        t.cancel()
+    try:
+        for _ in range(3):
+            bridge.enqueue_push("chat", {"deltaText": "x"})
+        assert bridge._push_pending_peak == 3
+    finally:
+        for t in list(bridge.tasks):
+            t.cancel()

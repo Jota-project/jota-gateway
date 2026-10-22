@@ -95,7 +95,7 @@ class TurnRegistry:
     def depth(self, session_key: str) -> tuple[int, int]:
         """(current qsize or 0, max seen)."""
         q = self._sessions.get(session_key)
-        return (q.qsize() if q else 0, self._peak.get(session_key, 0))
+        return (q.qsize() if q is not None else 0, self._peak.get(session_key, 0))
 
     def pop_peak(self, session_key: str) -> int:
         return self._peak.pop(session_key, 0)

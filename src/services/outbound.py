@@ -122,6 +122,7 @@ class QueuedSender:
         self._peak_msgs = max(self._peak_msgs, self._pending_msgs)
         self._peak_bytes = max(self._peak_bytes, self._pending_bytes)
 
+    # El mensaje que el writer está escribiendo ya no cuenta como pendiente.
     def _count_out(self, kind: str, item) -> None:
         self._pending_msgs -= 1
         if kind == "bytes":
