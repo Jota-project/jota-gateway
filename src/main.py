@@ -13,6 +13,7 @@ from src.api.health_routes import router as health_router
 from src.api.openai_routes import router as openai_router
 from src.api.routes import router as stream_router
 from src.core.config import settings
+from src.core.logging import configure_logging
 from src.core.network import warn_if_open_proxy_config
 from src.core.request_id import RequestIdMiddleware
 from src.core.startup_checks import (
@@ -32,9 +33,7 @@ from src.services.session_registry import SessionRegistry
 from src.services.speech.factory import build_stt_provider, build_tts_provider
 from src.services.speech.registry import SpeechProviders
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s | %(name)s | %(levelname)s | %(message)s"
-)
+configure_logging(settings.LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
 

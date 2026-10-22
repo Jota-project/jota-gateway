@@ -44,6 +44,8 @@ class OutboundSender(Protocol):
 
     async def aclose(self, timeout: float) -> None: ...
 
+    def queue_stats(self) -> dict: ...
+
 
 class DirectSender:
     """Passthrough: writes straight to the socket. Default for bridge/tracker."""
@@ -62,6 +64,9 @@ class DirectSender:
 
     async def aclose(self, timeout: float) -> None:
         return None
+
+    def queue_stats(self) -> dict:
+        return {"pending_msgs": 0, "pending_bytes": 0, "peak_msgs": 0, "peak_bytes": 0}
 
 
 class QueuedSender:
@@ -87,6 +92,12 @@ class QueuedSender:
         self._queue: asyncio.Queue = asyncio.Queue()
         self._failure: Exception | None = None
         self._closing = False
+        # Contadores O(1) de lo encolado y aún no sacado (solo json/bytes; los bytes
+        # cuentan solo payloads binarios) y sus máximos (#219).
+        self._pending_msgs = 0
+        self._pending_bytes = 0
+        self._peak_msgs = 0
+        self._peak_bytes = 0
         # Not part of JotaBridge.tasks on purpose: close_all() must not cancel it
         # before the final messages (session_end, turn_end) are drained.
         self._writer = asyncio.create_task(self._run(), name="outbound_writer")
@@ -98,10 +109,32 @@ class QueuedSender:
     async def send_json(self, payload: dict) -> None:
         self._check_open()
         self._queue.put_nowait(("json", payload))
+        self._count_in(0)
 
     async def send_bytes(self, data: bytes) -> None:
         self._check_open()
         self._queue.put_nowait(("bytes", data))
+        self._count_in(len(data))
+
+    def _count_in(self, nbytes: int) -> None:
+        self._pending_msgs += 1
+        self._pending_bytes += nbytes
+        self._peak_msgs = max(self._peak_msgs, self._pending_msgs)
+        self._peak_bytes = max(self._peak_bytes, self._pending_bytes)
+
+    # El mensaje que el writer está escribiendo ya no cuenta como pendiente.
+    def _count_out(self, kind: str, item) -> None:
+        self._pending_msgs -= 1
+        if kind == "bytes":
+            self._pending_bytes -= len(item)
+
+    def queue_stats(self) -> dict:
+        return {
+            "pending_msgs": self._pending_msgs,
+            "pending_bytes": self._pending_bytes,
+            "peak_msgs": self._peak_msgs,
+            "peak_bytes": self._peak_bytes,
+        }
 
     async def flush(self) -> None:
         """Wait until everything enqueued so far has been written; re-raise failure."""
@@ -134,6 +167,7 @@ class QueuedSender:
                 if not item.done():
                     item.set_result(None)
                 continue
+            self._count_out(kind, item)
             timeout = asyncio.timeout(settings.CLIENT_SEND_TIMEOUT_S)
             try:
                 async with timeout:
@@ -172,5 +206,7 @@ class QueuedSender:
         """Drop queued messages; fail any flush() still waiting on them."""
         while not self._queue.empty():
             kind, item = self._queue.get_nowait()
+            if kind in ("json", "bytes"):
+                self._count_out(kind, item)
             if kind == "flush" and not item.done():
                 item.set_exception(ClientGone("cliente no disponible"))

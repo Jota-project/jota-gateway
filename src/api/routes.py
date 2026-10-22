@@ -17,6 +17,7 @@ from src.services.bridge import JotaBridge
 from src.services.db_client import db_client
 from src.services.outbound import ClientGone, QueuedSender
 from src.services.pipeline_tracker import PipelineTracker
+from src.services.stats import gateway_stats
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ async def gateway_websocket(websocket: WebSocket):
             logger.warning(
                 f"Handshake rechazado: {len(raw_msg)} caracteres > HANDSHAKE_MAX_BYTES."
             )
+            gateway_stats.handshake_rejected("too_large")
             await websocket.close(code=1008, reason="Handshake too large")
             return
         msg_data = json.loads(raw_msg)
@@ -53,18 +55,21 @@ async def gateway_websocket(websocket: WebSocket):
         else:
             detail = f"JSON inválido ({e.msg})"
         logger.error(f"Payload inicial inválido de handshake. {detail}")
+        gateway_stats.handshake_rejected("invalid")
         await websocket.close(
             code=1008, reason="Handshake invalido. Se esperaba JSON de configuración."
         )
         return
     except TimeoutError:
         logger.warning("Handshake no recibido dentro de HANDSHAKE_TIMEOUT_S.")
+        gateway_stats.handshake_rejected("timeout")
         await websocket.close(code=1008, reason="Handshake timeout")
         return
     except KeyError:
         # #232: starlette's receive_text() lee message["text"]; un primer frame binario
         # (o cualquier mensaje sin "text") lanza KeyError. Sin contenido en el log.
         logger.warning("Handshake rechazado: el primer mensaje no es texto.")
+        gateway_stats.handshake_rejected("not_text")
         await websocket.close(code=1008, reason="Handshake invalido. Se esperaba texto.")
         return
     except WebSocketDisconnect:
@@ -81,6 +86,7 @@ async def gateway_websocket(websocket: WebSocket):
             f"request_id={request_id} source_ip={resolve_client_ip(websocket)} "
             f"fp={key_fingerprint} Handshake rechazado: key inválida o cliente inactivo."
         )
+        gateway_stats.handshake_rejected("invalid_key")
         await websocket.close(code=1008, reason="Clave de cliente invalida o inactiva.")
         return
 
@@ -104,6 +110,7 @@ async def gateway_websocket(websocket: WebSocket):
         )
     except AgentPolicyError as e:
         logger.warning(f"[{client.id}] Agent policy rejected: {e}")
+        gateway_stats.handshake_rejected("agent")
         await websocket.close(code=1008, reason=str(e))
         return
 
@@ -115,6 +122,7 @@ async def gateway_websocket(websocket: WebSocket):
     async def _on_slow_client() -> None:
         # `tracker` is created right below; this only runs when the writer's send times
         # out, long after the session is fully constructed.
+        bridge.note_close_reason("slow_client")
         await drop_slow_client(
             websocket,
             record=lambda: tracker.record("client_slow", timeout_s=settings.CLIENT_SEND_TIMEOUT_S),
@@ -144,6 +152,7 @@ async def gateway_websocket(websocket: WebSocket):
         client_registry=app_state.client_registry,
         default_agent=resolved_agent,
         sender=sender,
+        turn_registry=getattr(app_state, "turn_registry", None),
     )
 
     # One single try/finally covers setup (connect_internal_services, health
@@ -171,9 +180,11 @@ async def gateway_websocket(websocket: WebSocket):
             # #205: el cliente se fue durante el arranque; es una desconexión normal.
             # El `finally` de abajo hace close_all / sender.aclose.
             logger.info(f"[{client.id}] Cliente desconectado durante el health check.")
+            bridge.note_close_reason("client_disconnect")
             return
         if live_capabilities is None:
             logger.warning(f"[{client.id}] Health check falló. Cerrando sesión.")
+            bridge.note_close_reason("error")
             try:
                 await sender.flush()  # deliver the queued `status` before the 1011 close
             except ClientGone:
@@ -202,6 +213,7 @@ async def gateway_websocket(websocket: WebSocket):
             await sender.flush()
         except Exception as e:
             logger.warning(f"[{client.id}] Failed to send ready: {e}")
+            bridge.note_close_reason("client_disconnect" if isinstance(e, ClientGone) else "error")
             return
 
         # 4. LANZAR LOOPS CONCURRENTES

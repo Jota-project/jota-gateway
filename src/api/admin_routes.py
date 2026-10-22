@@ -20,13 +20,20 @@ Observabilidad:
   POST   /admin/orchestrators/{name}/reconnect  (202)
   GET    /admin/transcriber/status
   GET    /admin/tts/status
+  GET    /admin/state                — instantánea viva (gateway, servicios, totales, sesiones)
+  GET    /admin/state/stream         — la misma instantánea por SSE cada STATE_STREAM_INTERVAL_S
 """
 
+import asyncio
 import json
+import logging
 import secrets
+import time
 from collections import defaultdict
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
@@ -38,9 +45,17 @@ from src.db.database import get_db_session
 from src.db.models import ClientRecord
 from src.models.admin_schemas import ClientCreate, ClientResponse, ClientUpdate
 from src.services.db_client import db_client
+from src.services.reconnection import ServiceStatus
 from src.services.speech.registry import SpeechSwapError
+from src.services.stats import gateway_stats
 
 _ROTATE_KEY_ATTEMPTS = 3
+STATE_STREAM_INTERVAL_S = 1.0
+# Vida máxima de cada stream: por debajo del --timeout-graceful-shutdown (35 s) de la
+# imagen, para que un panel abierto no bloquee el apagado; el panel reconecta.
+STATE_STREAM_MAX_S = 25.0
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(get_admin_auth)])
 
@@ -404,3 +419,58 @@ async def put_speech(body: SpeechSwap, request: Request) -> dict:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)) from None
     except ValueError as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)) from e
+
+
+# ---------------------------------------------------------------------------
+# Estado vivo (#219) — barato cada segundo: estado en memoria, sin probe()
+# ---------------------------------------------------------------------------
+
+
+def _service_state(s: ServiceStatus) -> dict[str, Any]:
+    return {"state": s.state.value, "last_error": s.last_error}
+
+
+def _build_state(app: FastAPI) -> dict[str, Any]:
+    speech = app.state.speech
+    sessions = []
+    for bridge in app.state.client_registry.bridges():
+        try:
+            row = bridge.snapshot()
+            record = app.state.session_registry.get(row["session_id"])
+            if record is not None:
+                summary = _session_summary(record)
+                row["started_at"] = summary["started_at"]
+                row["last_latencies"] = summary["last_latencies"]
+        except Exception as e:  # una sesión rota no tumba la instantánea entera
+            logger.debug("snapshot de sesión omitido: %s", type(e).__name__)
+            continue
+        sessions.append(row)
+    return {
+        "gateway": {
+            "started_at": gateway_stats.started_at.isoformat(),
+            "uptime_s": round(time.monotonic() - gateway_stats.started_monotonic, 3),
+        },
+        "services": {
+            "orchestrator": _service_state(app.state.openclaw.status()),
+            "stt": {"provider": speech.stt.name, **_service_state(speech.stt.status())},
+            "tts": {"provider": speech.tts.name, **_service_state(speech.tts.status())},
+        },
+        "totals": {**gateway_stats.snapshot(), "sessions_active": len(sessions)},
+        "sessions": sessions,
+    }
+
+
+@router.get("/state")
+async def get_state(request: Request) -> dict:
+    return _build_state(request.app)
+
+
+@router.get("/state/stream")
+async def get_state_stream(request: Request) -> StreamingResponse:
+    async def state_stream():
+        deadline = time.monotonic() + STATE_STREAM_MAX_S
+        while time.monotonic() < deadline and not await request.is_disconnected():
+            yield f"data: {json.dumps(_build_state(request.app))}\n\n"
+            await asyncio.sleep(STATE_STREAM_INTERVAL_S)
+
+    return StreamingResponse(state_stream(), media_type="text/event-stream")

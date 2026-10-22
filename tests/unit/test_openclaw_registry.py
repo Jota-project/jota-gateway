@@ -209,8 +209,8 @@ async def test_close_all_sessions_awaits_each_bridge_with_status():
 
     await reg.close_all_sessions(status="shutdown", timeout=1.0)
 
-    bridge_a.close_all.assert_awaited_once_with(status="shutdown")
-    bridge_b.close_all.assert_awaited_once_with(status="shutdown")
+    bridge_a.close_all.assert_awaited_once_with(status="shutdown", reason="shutdown")
+    bridge_b.close_all.assert_awaited_once_with(status="shutdown", reason="shutdown")
 
 
 async def test_close_all_sessions_empty_registry_returns_immediately():
@@ -224,7 +224,7 @@ async def test_close_all_sessions_bounds_a_hanging_bridge_and_still_drains_other
     reg = ClientRegistry()
     gate = asyncio.Event()
 
-    async def _hang(status):
+    async def _hang(status, reason=None):
         await gate.wait()
 
     hanging_bridge = AsyncMock()
@@ -238,7 +238,7 @@ async def test_close_all_sessions_bounds_a_hanging_bridge_and_still_drains_other
     elapsed = time.monotonic() - start
 
     assert elapsed < 0.5, f"close_all_sessions took {elapsed:.2f}s — timeout not applied per-bridge"
-    fast_bridge.close_all.assert_awaited_once_with(status="shutdown")
+    fast_bridge.close_all.assert_awaited_once_with(status="shutdown", reason="shutdown")
 
 
 async def test_close_all_sessions_one_failure_does_not_block_others():
@@ -251,4 +251,4 @@ async def test_close_all_sessions_one_failure_does_not_block_others():
 
     await reg.close_all_sessions(status="shutdown", timeout=1.0)  # must not raise
 
-    ok_bridge.close_all.assert_awaited_once_with(status="shutdown")
+    ok_bridge.close_all.assert_awaited_once_with(status="shutdown", reason="shutdown")

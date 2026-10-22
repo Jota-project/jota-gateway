@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     TURN_TIMEOUT_S: float = 120.0
     IDLE_TIMEOUT_S: float = 300.0
     SHUTDOWN_DRAIN_S: float = 30.0
+    LOG_FORMAT: Literal["text", "json"] = "text"
 
     # Drenado del audio TTS de un push al cerrar su turno (issue #130 S3a)
     PUSH_TTS_DRAIN_TIMEOUT_S: float = 30.0

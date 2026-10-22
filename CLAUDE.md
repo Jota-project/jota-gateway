@@ -90,6 +90,7 @@ TURN_QUEUE_MAX=1000                      # events per OpenClaw turn queue; overf
 SINGLE_PROCESS_LOCK=true                 # flock on gateway.lock next to the DB: one process per DB (#218)
 SESSION_REVALIDATE_INTERVAL_S=10.0       # live sessions re-checked against the DB; revoked client → 1008 "revoked" (G-06)
 SESSION_CACHE_TTL_S=10.0                 # db_client session cache TTL (was 60)
+LOG_FORMAT=text                          # text | json (one JSON line per record, `extra` as top-level fields); the Docker image sets ENV LOG_FORMAT=json (#219)
 ```
 
 All service addresses are `host:port` **without protocol**. Each client injects the protocol itself (`http://`, `ws://`).
@@ -459,6 +460,16 @@ Skipping this is how the same drift gets silently re-discovered (and re-debugged
 in a future session.
 
 ---
+
+## Gateway observation (issue #219)
+
+- **Counters:** `gateway_stats` (`src/services/stats.py`, singleton, no locks, event loop only) counts `sessions_opened`, `sessions_closed` by reason, `handshake_rejected` by reason (`too_large`/`invalid`/`timeout`/`not_text`/`invalid_key`/`agent`), `turns` (`normal`/`push`) and `turn_errors` (stable codes only). In-process, reset on restart.
+- **`session_end` meta:** besides `duration_s`, carries `reason` (`CloseReason`: `client_disconnect`/`idle_timeout`/`silence_timeout`/`slow_client`/`revoked`/`shutdown`/`error`/`unknown`; first `note_close_reason()` wins), `turn_in_flight`, `sender_peak_msgs`, `sender_peak_bytes`, `turn_queue_peak`, `push_backlog_peak`. `SessionRecord.status` keeps its five values; `reason` is the finer detail. A WS disconnect with code 1012 (uvicorn closing every socket before the lifespan drain) is recorded as `reason=shutdown`; on a real restart sessions mostly end through that path, so they get `status=completed, reason=shutdown`, not `status=shutdown`. `sessions_opened` is counted in `JotaBridge.__init__`, so every closed session was counted opened.
+- **Queue depths:** `QueuedSender.queue_stats()` (`pending_msgs/bytes`, `peak_msgs/bytes`; `DirectSender` gives zeros), `TurnRegistry.depth(session_key) -> (current, peak)`, bridge `_push_pending`/`_push_pending_peak`. O(1) per message, no new locks.
+- **Tracker stage `push_tts`:** recorded at a push turn's end when it had TTS, meta `send_ms`, `end_ms`, `drain_ms`, `close_ms`, `dropped`, `chars` (numbers only).
+- **Logging:** `LOG_FORMAT=json` (`configure_logging`, `src/core/logging.py`) switches app and uvicorn loggers to `JsonFormatter`; `/healthz` is filtered out of the uvicorn access log in both formats.
+- **`GET /admin/state`** (admin token): gateway uptime, service states, `gateway_stats` totals + `sessions_active`, and one row per session (`JotaBridge.snapshot()` + `started_at`/`last_latencies` from the `SessionRecord`); shape in `_build_state` (`admin_routes.py`), test `tests/integration/test_admin_state.py`. Services use the in-memory `status()`, never `probe()`. Rows come from `ClientRegistry.bridges()`, keyed by `client_id`: a reconnect overlap shows only the newest bridge; a row whose `snapshot()` raises is skipped. No user text and no `client_key`.
+- **`GET /admin/state/stream`** (admin token): SSE, `data: <same JSON>\n\n` every `STATE_STREAM_INTERVAL_S` (1.0). Each stream ends by itself after `STATE_STREAM_MAX_S` (25 s, below the image's 35 s graceful-shutdown timeout, so an open dashboard never blocks shutdown) or on disconnect: **the dashboard must reconnect** (`EventSource` does it automatically).
 
 ## Admin API authentication
 
