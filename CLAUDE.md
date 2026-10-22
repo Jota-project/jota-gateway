@@ -90,6 +90,7 @@ TURN_QUEUE_MAX=1000                      # events per OpenClaw turn queue; overf
 SINGLE_PROCESS_LOCK=true                 # flock on gateway.lock next to the DB: one process per DB (#218)
 SESSION_REVALIDATE_INTERVAL_S=10.0       # live sessions re-checked against the DB; revoked client → 1008 "revoked" (G-06)
 SESSION_CACHE_TTL_S=10.0                 # db_client session cache TTL (was 60)
+LOG_FORMAT=text                          # text | json (one JSON line per record, `extra` as top-level fields); the Docker image sets ENV LOG_FORMAT=json (#219)
 ```
 
 All service addresses are `host:port` **without protocol**. Each client injects the protocol itself (`http://`, `ws://`).
@@ -459,6 +460,16 @@ Skipping this is how the same drift gets silently re-discovered (and re-debugged
 in a future session.
 
 ---
+
+## Gateway observation (issue #219)
+
+- **Counters:** `gateway_stats` (`src/services/stats.py`, singleton, no locks, event loop only) counts `sessions_opened`, `sessions_closed` by reason, `handshake_rejected` by reason (`too_large`/`invalid`/`timeout`/`not_text`/`invalid_key`/`agent`), `turns` (`normal`/`push`) and `turn_errors` (stable codes only). In-process, reset on restart.
+- **`session_end` meta:** besides `duration_s`, carries `reason` (`CloseReason`: `client_disconnect`/`idle_timeout`/`silence_timeout`/`slow_client`/`revoked`/`shutdown`/`error`/`unknown`; first `note_close_reason()` wins), `turn_in_flight`, `sender_peak_msgs`, `sender_peak_bytes`, `turn_queue_peak`, `push_backlog_peak`. `SessionRecord.status` keeps its five values; `reason` is the finer detail.
+- **Queue depths:** `QueuedSender.queue_stats()` (`pending_msgs/bytes`, `peak_msgs/bytes`; `DirectSender` gives zeros), `TurnRegistry.depth(session_key) -> (current, peak)`, bridge `_push_pending`/`_push_pending_peak`. O(1) per message, no new locks.
+- **Tracker stage `push_tts`:** recorded at a push turn's end when it had TTS, meta `send_ms`, `end_ms`, `drain_ms`, `close_ms`, `dropped`, `chars` (numbers only).
+- **Logging:** `LOG_FORMAT=json` (`configure_logging`, `src/core/logging.py`) switches app and uvicorn loggers to `JsonFormatter`; `/healthz` is filtered out of the uvicorn access log in both formats.
+- **`GET /admin/state`** (admin token): `{"gateway": {"started_at","uptime_s"}, "services": {"orchestrator": {"state","last_error"}, "stt"/"tts": {"provider","state","last_error"}}, "totals": gateway_stats.snapshot() + "sessions_active", "sessions": [...]}`. Services use the in-memory `status()`, never `probe()` (cheap every second; STT jota's `status()` is its last probe). One row per bridge in `ClientRegistry.bridges()` = `JotaBridge.snapshot()` (`session_id`, `client_id`, `client_name` from the `Client`, never the key, `input_mode`, `output_mode`, `age_s`, `turn` `{"kind": idle|normal|push, "since_s"}`, `turn_count`, `sender`, `turn_queue` `{"depth","peak"}`, `push_backlog` `{"pending","peak"}`, `last_activity_s`, `stt_state`) plus `started_at`/`last_latencies` filled by the route from the `SessionRecord` via `_session_summary` (None if evicted). A reconnect overlap of the same `client_id` shows only the newest bridge (the registry is keyed by `client_id`). No user text and no `client_key` anywhere.
+- **`GET /admin/state/stream`** (admin token): SSE, `data: <same JSON>\n\n` every `STATE_STREAM_INTERVAL_S` (1.0, constant in `admin_routes.py`); the generator stops when `request.is_disconnected()`. Test: `tests/integration/test_admin_state.py`.
 
 ## Admin API authentication
 

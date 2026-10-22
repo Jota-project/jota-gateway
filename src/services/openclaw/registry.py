@@ -200,6 +200,10 @@ class ClientRegistry:
     def get(self, client_id: str) -> Any | None:
         return self._clients.get(client_id)
 
+    def bridges(self) -> list[Any]:
+        # Un solapamiento de reconexión del mismo client_id solo deja el bridge más nuevo.
+        return list(self._clients.values())
+
     async def broadcast_status(self, service: str, state: str) -> None:
         for bridge in list(self._clients.values()):
             try:

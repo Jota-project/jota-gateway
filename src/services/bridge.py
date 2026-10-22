@@ -126,6 +126,7 @@ class JotaBridge:
         # loop's weak reference doesn't let them get GC'd mid-flight.
         self._notification_tasks: set[asyncio.Task] = set()
         self._active_turn: asyncio.Task | None = None
+        self._active_turn_started_at: float | None = None  # para snapshot() (#219)
         # True while the transcriber reports `status busy` (GPU saturated, #143).
         self._transcriber_busy: bool = False
         self._session_start: float = 0.0
@@ -233,6 +234,46 @@ class JotaBridge:
 
         self._client_registry.register(self.client_id, self)
 
+    def _session_key(self) -> str:
+        from src.core.session_key import make_session_key
+
+        return make_session_key(self.handshake.agent or self._default_agent, self.client_id)
+
+    def snapshot(self) -> dict[str, Any]:
+        """Estado vivo de la sesión para /admin/state (#219): solo números, estados e
+        IDs, nunca texto ni client_key. `started_at` y `last_latencies` los añade la ruta
+        desde el SessionRecord (aquí van a None)."""
+        now = time.monotonic()
+        kind, since = "idle", None
+        if self._active_turn is not None and not self._active_turn.done():
+            kind, since = "normal", self._active_turn_started_at
+        elif self._push_turn_open:
+            kind, since = "push", self._push_turn_opened_at
+        depth, peak = (
+            self._turn_registry.depth(self._session_key())
+            if self._turn_registry is not None
+            else (0, 0)
+        )
+        return {
+            "session_id": self.tracker.session_id,
+            "client_id": self.client_id,
+            "client_name": self.client.name,
+            "input_mode": self.handshake.input_mode,
+            "output_mode": list(self.handshake.output_mode),
+            "started_at": None,
+            "age_s": round(now - self._session_start, 3) if self._session_start else 0.0,
+            "turn": {"kind": kind, "since_s": round(now - since, 3) if since else None},
+            "turn_count": self.tracker.turn_count,
+            "sender": self._sender.queue_stats(),
+            "turn_queue": {"depth": depth, "peak": peak},
+            "push_backlog": {"pending": self._push_pending, "peak": self._push_pending_peak},
+            "last_activity_s": (
+                round(now - self._last_client_activity, 3) if self._last_client_activity else None
+            ),
+            "stt_state": self.transcriber.state.value if self.transcriber is not None else None,
+            "last_latencies": None,
+        }
+
     def note_close_reason(self, reason: CloseReason | None) -> None:
         """Anota por qué se cierra la sesión; la primera llamada gana (#219)."""
         if self._close_reason is None:
@@ -258,12 +299,7 @@ class JotaBridge:
             logger.debug(f"[{self.client_id}] sender_peak no disponible: {type(e).__name__}")
         if self._turn_registry is not None:
             try:
-                from src.core.session_key import make_session_key
-
-                agent = self.handshake.agent or self._default_agent
-                meta["turn_queue_peak"] = self._turn_registry.pop_peak(
-                    make_session_key(agent, self.client_id)
-                )
+                meta["turn_queue_peak"] = self._turn_registry.pop_peak(self._session_key())
             except Exception as e:
                 logger.debug(f"[{self.client_id}] turn_queue_peak no disponible: {type(e).__name__}")
         return meta
@@ -565,6 +601,7 @@ class JotaBridge:
             task = asyncio.create_task(self._call_orchestrator(text), name="turn")
             self._supervise(task)
             self._active_turn = task
+            self._active_turn_started_at = time.monotonic()
 
     def _turn_in_flight(self) -> bool:
         """A normal turn is running, or a push turn is open (bounded by TURN_TIMEOUT_S
@@ -1125,7 +1162,6 @@ class JotaBridge:
                 pass
 
     async def _run_turn(self, text: str, turn_id: str, turn_seq: int) -> None:
-        from src.core.session_key import make_session_key
         from src.services.orchestration import call_orchestrator
 
         needs_audio = "audio" in self.handshake.output_mode
@@ -1153,8 +1189,7 @@ class JotaBridge:
                         pass
                     raise
 
-        agent = self.handshake.agent or self._default_agent
-        session_key = make_session_key(agent, self.client_id)
+        session_key = self._session_key()
 
         # Issue #214 (G-02): every TTS wait of the turn is bounded by
         # PUSH_TTS_DRAIN_TIMEOUT_S, same mechanism as push (#199). A dead/hung TTS is
