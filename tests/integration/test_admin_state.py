@@ -79,7 +79,7 @@ def test_state_shape_with_active_session(client, admin_headers):
     assert VALID_KEY not in r.text
 
 
-async def test_state_stream_emits_and_stops_on_disconnect(client, monkeypatch):
+async def test_state_stream_emits_and_stops_when_request_reports_disconnect(client, monkeypatch):
     import src.api.admin_routes as admin_routes
     from src.main import app
 
@@ -104,3 +104,37 @@ async def test_state_stream_emits_and_stops_on_disconnect(client, monkeypatch):
         and ("state_stream" in t.get_name() or "state_stream" in repr(t.get_coro()))
     ]
     assert leftovers == []
+
+
+async def test_state_stream_ends_by_itself_after_max_lifetime(client, monkeypatch):
+    """Sin desconexión: el stream termina solo tras STATE_STREAM_MAX_S (no bloquea el apagado)."""
+    import src.api.admin_routes as admin_routes
+    from src.main import app
+
+    monkeypatch.setattr(admin_routes, "STATE_STREAM_INTERVAL_S", 0.01)
+    monkeypatch.setattr(admin_routes, "STATE_STREAM_MAX_S", 0.05)
+    request = SimpleNamespace(app=app, is_disconnected=AsyncMock(return_value=False))
+
+    resp = await admin_routes.get_state_stream(request)
+
+    async def drain():
+        return [c async for c in resp.body_iterator]
+
+    chunks = await asyncio.wait_for(drain(), timeout=2.0)
+    assert len(chunks) >= 1
+
+
+def test_state_skips_bridge_whose_snapshot_fails(client, admin_headers):
+    from src.main import app
+
+    class _Bad:
+        def snapshot(self):
+            raise RuntimeError("boom")
+
+    app.state.client_registry.register("bad", _Bad())
+    try:
+        r = client.get("/admin/state", headers=admin_headers)
+    finally:
+        app.state.client_registry.unregister("bad", app.state.client_registry.get("bad"))
+    assert r.status_code == 200
+    assert r.json()["sessions"] == []
