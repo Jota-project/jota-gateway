@@ -196,3 +196,82 @@ async def test_worker_exits_when_not_accepting():
     await asyncio.wait_for(bridge._push_worker, timeout=2.0)
     assert bridge._push_worker.done()
     await bridge.close_all()
+
+
+def _push_events(bridge):
+    return [c for c in bridge.tracker.record.await_args_list if c.args[0] == "push_tts"]
+
+
+async def _open_push(bridge, tts):
+    bridge.tts.connect = AsyncMock(return_value=tts)
+    bridge.tts.resolve_voice = lambda v: v
+    await bridge.on_push_turn_start("sk")
+
+
+@pytest.mark.asyncio
+async def test_push_tts_event_records_durations():
+    bridge = make_bridge()
+    tts = AsyncMock()
+
+    async def slow_end():
+        await asyncio.sleep(0.05)
+
+    tts.end = slow_end
+
+    async def no_audio():
+        return
+        yield
+
+    tts.get_audio_stream = no_audio
+    await _open_push(bridge, tts)
+    await bridge.deliver_push({"deltaText": "hola "})
+    await bridge.deliver_push({"deltaText": "mundo"})
+    await bridge.on_push_turn_end("sk")
+
+    (ev,) = _push_events(bridge)
+    meta = ev.kwargs
+    assert meta["end_ms"] >= 40
+    assert meta["dropped"] is False
+    assert meta["chars"] == len("hola mundo")
+    assert {"send_ms", "drain_ms", "close_ms"} <= meta.keys()
+
+
+@pytest.mark.asyncio
+async def test_push_tts_event_marks_dropped():
+    bridge = make_bridge()
+    tts = AsyncMock()
+    tts.send_text_chunk = AsyncMock(side_effect=ConnectionError("boom"))
+    await _open_push(bridge, tts)
+    await bridge.deliver_push({"deltaText": "a"})
+    await bridge.on_push_turn_end("sk")
+
+    (ev,) = _push_events(bridge)
+    assert ev.kwargs["dropped"] is True
+
+
+@pytest.mark.asyncio
+async def test_no_push_tts_event_without_tts():
+    bridge = make_bridge()
+    await _open_push(bridge, None)
+    await bridge.on_push_turn_end("sk")
+    assert _push_events(bridge) == []
+
+
+@pytest.mark.asyncio
+async def test_turn_counters(monkeypatch):
+    from src.services import orchestration
+    from src.services.stats import gateway_stats
+
+    bridge = make_bridge(output_mode=("text",))
+    bridge.tracker.start_turn = lambda: None
+    monkeypatch.setattr(orchestration, "call_orchestrator", AsyncMock())
+    await bridge._call_orchestrator("hola")
+    await _open_push(bridge, None)
+    monkeypatch.setattr(
+        orchestration, "call_orchestrator", AsyncMock(side_effect=RuntimeError("orchestrator_error"))
+    )
+    await bridge._call_orchestrator("otra")
+
+    snap = gateway_stats.snapshot()
+    assert snap["turns"] == {"normal": 2, "push": 1}
+    assert snap["turn_errors"]["orchestrator_error"] == 1

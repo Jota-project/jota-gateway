@@ -113,6 +113,8 @@ class JotaBridge:
         self._default_agent = default_agent
         self.transcriber: SttSession | None = None
         self._push_tts: TtsStream | None = None
+        # Tiempos del TTS del push en curso (ms); None si el turno no tuvo TTS.
+        self._push_tts_stats: dict[str, Any] | None = None
         self._push_audio_task: asyncio.Task | None = None
 
         self.tasks: list[asyncio.Task] = []
@@ -1089,6 +1091,7 @@ class JotaBridge:
             )
         except Exception:
             return
+        gateway_stats.turn_started("normal")
 
         # From here a client has seen `turn_start`: exactly one `turn_end` must follow
         # on every path — normal, error, cancel, barge-in, override (G-10).
@@ -1099,6 +1102,7 @@ class JotaBridge:
             if not isinstance(e, ClientGone):
                 # Type name only: the message may carry user text.
                 logger.error(f"[{self.client_id}] Turno falló: {type(e).__name__}")
+                gateway_stats.turn_error("internal_error")
                 try:
                     await self._sender.send_json(
                         {
@@ -1224,6 +1228,7 @@ class JotaBridge:
                 logger.info(f"[{self.client_id}] Cliente no disponible: turno abortado.")
             except RuntimeError as e:
                 logger.error(f"[{self.client_id}] Orchestrator error: {e}")
+                gateway_stats.turn_error(str(e))
                 try:
                     await self._sender.send_json(
                         {
@@ -1333,6 +1338,8 @@ class JotaBridge:
         self._push_turn_open = True
         self._push_text.reset()
         self._push_turn_opened_at = time.monotonic()
+        self._push_tts_stats = None
+        gateway_stats.turn_started("push")
 
         try:
             await self._sender.send_json(
@@ -1357,6 +1364,10 @@ class JotaBridge:
             return
         self._push_tts = tts
         self._push_tts_name = tts_name
+        self._push_tts_stats = {
+            "send_ms": 0.0, "end_ms": 0.0, "drain_ms": 0.0, "close_ms": 0.0,
+            "dropped": False, "chars": 0,
+        }  # fmt: skip
 
         async def _pipe_push_audio():
             header = bytes([0xA1]) + self._push_turn_seq.to_bytes(2, "big")
@@ -1388,8 +1399,11 @@ class JotaBridge:
                 pass
         tts = self._push_tts
         if tts:
+            t0 = time.monotonic()
             try:
                 self._count_tts_chars(self._push_tts_name, len(delta))
+                if self._push_tts_stats is not None:
+                    self._push_tts_stats["chars"] += len(delta)
                 await asyncio.wait_for(
                     tts.send_text_chunk(delta), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
                 )
@@ -1397,6 +1411,12 @@ class JotaBridge:
                 # Issue #199: a hung/failed push TTS must not wedge the worker nor
                 # log one warning per token. Drop it; the turn continues text-only.
                 await self._drop_push_tts(f"send_text_chunk {type(e).__name__}")
+            finally:
+                self._add_push_ms("send_ms", t0)
+
+    def _add_push_ms(self, key: str, t0: float) -> None:
+        if self._push_tts_stats is not None:
+            self._push_tts_stats[key] += (time.monotonic() - t0) * 1000
 
     async def _drop_push_tts(self, reason: str) -> None:
         """Abandon this turn's push TTS (issue #199). Every wait is bounded by
@@ -1405,6 +1425,8 @@ class JotaBridge:
         if tts is None:
             return
         self._push_tts = None
+        if self._push_tts_stats is not None:
+            self._push_tts_stats["dropped"] = True
         logger.warning(
             f"[{self.client_id}] TTS de push abandonado ({reason}); "
             f"el turno sigue solo con texto."
@@ -1440,11 +1462,15 @@ class JotaBridge:
 
         tts = self._push_tts
         if tts:
+            t0 = time.monotonic()
             try:
                 await asyncio.wait_for(tts.end(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
             except Exception as e:
                 # Issue #199: end() hung or failed — no audio to wait for.
                 await self._drop_push_tts(f"end {type(e).__name__}")
+            finally:
+                self._add_push_ms("end_ms", t0)
+        t0 = time.monotonic()
         audio_task = self._push_audio_task
         if self._push_tts is not None and audio_task is not None:
             if not audio_task.done():
@@ -1468,7 +1494,9 @@ class JotaBridge:
                 # Retrieves the outcome so nothing is reported as "never retrieved".
                 await asyncio.gather(audio_task, return_exceptions=True)
         self._push_audio_task = None
+        self._add_push_ms("drain_ms", t0)
         if self._push_tts is not None:
+            t0 = time.monotonic()
             try:
                 await asyncio.wait_for(
                     self._push_tts.close(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
@@ -1476,7 +1504,14 @@ class JotaBridge:
             except Exception:
                 pass
             self._push_tts = None
+            self._add_push_ms("close_ms", t0)
 
+        stats, self._push_tts_stats = self._push_tts_stats, None
+        if stats is not None:
+            await self.tracker.record(
+                "push_tts",
+                **{k: round(v, 1) if isinstance(v, float) else v for k, v in stats.items()},
+            )
         try:
             await self._sender.send_json({"type": "turn_end", "turn_id": self._push_turn_id})
         except Exception:
