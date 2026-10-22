@@ -1,0 +1,100 @@
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict
+
+# Modos de salida conocidos. Compartido por el handshake WS y la API admin (#122).
+OutputMode = Literal["audio", "text", "status"]
+
+# =====================================================================
+# jota-db — modelos que el gateway recibe de GET /auth/session
+# =====================================================================
+
+
+class Client(BaseModel):
+    """Registro de cliente resuelto desde la BD local."""
+
+    id: str
+    client_key: str
+    is_active: bool
+    name: str = ""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class ClientConfig(BaseModel):
+    """Configuración por cliente leída desde la BD local."""
+
+    stt_language: str = "es"
+    stt_vad_thold: float = 0.0
+    tts_voice: str = "af_heart"
+    tts_speed: float = 1.0
+    barge_in_enabled: bool = True
+    barge_in_min_chars: int = 5
+    silence_timeout_s: float = 2.0
+    max_silence_turns: int = 3
+    push_enabled: bool = True
+    tool_calls_enabled: bool = False
+    default_agent: str | None = None
+    allowed_agents: list[str] | None = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+class SessionResponse(BaseModel):
+    """Respuesta de GET /auth/session en jota-db."""
+
+    client: Client
+    config: ClientConfig
+
+
+# =====================================================================
+# Gateway (Client <-> Gateway)
+# =====================================================================
+
+
+class Handshake(BaseModel):
+    """
+    Configuración inicial que el ESP32 o la Web envían al Gateway al conectar
+    por WebSocket. Define qué patas internas del ecosistema se deben encender.
+    """
+
+    client_key: str
+    input_mode: Literal["audio", "text"]
+    output_mode: list[OutputMode]
+    agent: str | None = None  # OpenClaw agent name; None → gateway default
+
+    model_config = ConfigDict(extra="allow")
+
+
+# =====================================================================
+# Transcriber (Gateway <-> JotaTranscriber)
+# =====================================================================
+
+
+class TranscriberConfig(BaseModel):
+    """
+    Mensaje de handshake inicial requerido por el servidor de transcripción (C++)
+    antes de aceptar recibir ráfagas de audio PCM float32.
+    """
+
+    type: Literal["config"] = "config"
+    language: str = "es"
+    token: str = ""
+    vad_thold: float = 0.0
+
+
+class TranscriberMessage(BaseModel):
+    """
+    Formato de salida proveniente del Transcriptor C++.
+    Tipos posibles: "transcription", "ready", "warning", "error", "status".
+    """
+
+    type: str
+    text: str | None = None
+    is_final: bool | None = None
+    message: str | None = None  # descripción legible en warning/error
+    code: str | None = None  # código de error/warning: AUTH_FAILED, buffer_full, etc.
+    session_id: str | None = None  # presente en el mensaje "ready"
+    state: str | None = None  # "busy"/"ok" en mensajes type="status" (capacidad, #143)
+    reason: str | None = None  # motivo en status busy / final con complete=false
+    complete: bool | None = None  # False en un final truncado por saturación de GPU

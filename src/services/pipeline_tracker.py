@@ -123,14 +123,30 @@ class PipelineTracker:
             return None
         return round(first_chunk.ts_ms - start.ts_ms, 1)
 
+    def turn_e2e_latencies(self) -> dict[int, float]:
+        """`tts_done` minus the final transcription that triggered it, per turn.
+
+        The final is recorded before its turn starts (the client sends `send` after
+        it), so the utterance behind turn N carries turn N-1 (#250).
+        """
+        finals: dict[int, PipelineEvent] = {}
+        dones: dict[int, PipelineEvent] = {}
+        for e in self.events:
+            if e.stage == "transcription_final":
+                finals[e.turn + 1] = e
+            elif e.stage == "tts_done":
+                dones[e.turn] = e
+        return {
+            turn: round(done.ts_ms - finals[turn].ts_ms, 1)
+            for turn, done in dones.items()
+            if turn in finals
+        }
+
     def turn_e2e_ms(self) -> float | None:
         done = self._find_last("tts_done")
         if done is None:
             return None
-        final = self._find_last("transcription_final", turn=done.turn)
-        if final is None:
-            return None
-        return round(done.ts_ms - final.ts_ms, 1)
+        return self.turn_e2e_latencies().get(done.turn)
 
 
 class _NullWS:

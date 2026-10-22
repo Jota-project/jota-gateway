@@ -116,9 +116,32 @@ async def test_tts_first_chunk_ms_computes_correctly():
 async def test_turn_e2e_ms_computes_correctly():
     tracker, _, _ = _make_tracker()
     await tracker.record("transcription_final")
+    tracker.start_turn()  # the bridge starts the turn after the final (#250)
     await asyncio.sleep(0.05)
     await tracker.record("tts_done")
     assert tracker.turn_e2e_ms() >= 40
+
+
+async def test_turn_e2e_pairs_each_turn_with_the_final_that_triggered_it():
+    """Regression #250: the final of turn 2 was paired with turn 1's tts_done (negative)."""
+    tracker, _, _ = _make_tracker()
+    for _ in range(2):
+        await tracker.record("transcription_final")
+        tracker.start_turn()
+        await asyncio.sleep(0.05)
+        await tracker.record("tts_done")
+        await asyncio.sleep(0.05)
+    latencies = tracker.turn_e2e_latencies()
+    assert set(latencies) == {1, 2}
+    assert all(40 <= ms < 100 for ms in latencies.values())
+    assert tracker.turn_e2e_ms() == latencies[2]
+
+
+async def test_turn_e2e_ignores_text_turn_without_final():
+    tracker, _, _ = _make_tracker()
+    tracker.start_turn()
+    await tracker.record("tts_done")
+    assert tracker.turn_e2e_ms() is None
 
 
 async def test_turn_e2e_ms_returns_none_without_tts_done():

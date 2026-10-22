@@ -257,11 +257,7 @@ def _session_detail(record) -> dict:
         round(sum(llm_latencies) / len(llm_latencies), 1) if llm_latencies else None
     )
 
-    e2e_latencies = [
-        round(turn_events["tts_done"].ts_ms - turn_events["transcription_final"].ts_ms, 1)
-        for turn_events in by_turn.values()
-        if "transcription_final" in turn_events and "tts_done" in turn_events
-    ]
+    e2e_latencies = list(t.turn_e2e_latencies().values())
     avg_turn_e2e_ms = round(sum(e2e_latencies) / len(e2e_latencies), 1) if e2e_latencies else None
 
     return {

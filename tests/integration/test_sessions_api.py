@@ -109,8 +109,8 @@ async def test_get_session_avg_latencies_computed_correctly(client, admin_header
         client_ws=ws,
         registry=registry_mock,
     )
-    tracker.start_turn()
     await tracker.record("transcription_final")
+    tracker.start_turn()
     await tracker.record("llm_start")
     await asyncio.sleep(0.05)
     await tracker.record("llm_first_token")
@@ -142,12 +142,12 @@ async def test_get_session_avg_latencies_exclude_cancelled_turns(client, admin_h
         client_ws=ws,
         registry=registry_mock,
     )
-    tracker.start_turn()
     await tracker.record("transcription_final")
+    tracker.start_turn()
     await tracker.record("llm_start")
 
-    tracker.start_turn()
     await tracker.record("transcription_final")
+    tracker.start_turn()
     await tracker.record("llm_start")
     await asyncio.sleep(0.05)
     await tracker.record("llm_first_token")
