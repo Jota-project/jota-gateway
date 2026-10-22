@@ -103,6 +103,22 @@ async def test_client_disconnect_reason():
     assert gateway_stats.snapshot()["sessions_opened"] == 1
 
 
+async def test_input_loop_exception_reason_is_error():
+    bridge = _make_bridge()
+    bridge.client_ws.receive = AsyncMock(side_effect=ValueError("boom"))
+    await asyncio.wait_for(bridge.run(), timeout=2.0)
+    assert _end_meta(bridge)["reason"] == "error"
+    assert _closed() == {"error": 1}
+
+
+async def test_session_counted_opened_without_run():
+    bridge = _make_bridge()
+    await bridge.close_all(status="error")
+    snap = gateway_stats.snapshot()
+    assert snap["sessions_opened"] == 1
+    assert snap["sessions_closed"] == {"error": 1}
+
+
 async def test_shutdown_reason():
     bridge = _make_bridge()
     await bridge._client_registry.close_all_sessions(status="shutdown", timeout=1.0)

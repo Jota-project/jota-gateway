@@ -95,6 +95,7 @@ async def test_state_stream_emits_and_stops_when_request_reports_disconnect(clie
         text = c if isinstance(c, str) else c.decode()
         assert text.startswith("data: ") and text.endswith("\n\n")
         assert "sessions" in json.loads(text[len("data: ") :])
+        assert "MARCADOR-6g" not in text and VALID_KEY not in text
 
     await asyncio.sleep(0.05)
     leftovers = [

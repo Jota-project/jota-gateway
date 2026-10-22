@@ -85,6 +85,9 @@ class JotaBridge:
         speech: SpeechProviders | None = None,
         turn_registry: TurnRegistry | None = None,
     ):
+        # Contada al crearse: toda sesión que luego cierra close_all() cuenta como abierta,
+        # también la que falla antes de run() (1011, ready fallido…).
+        gateway_stats.session_opened()
         self.client = client
         self.config = config
         self.client_id = client.id  # nombre legible del cliente (hab_sito, jota_desktop…)
@@ -851,7 +854,6 @@ class JotaBridge:
             input_mode=self.handshake.input_mode,
             output_mode=self.handshake.output_mode,
         )
-        gateway_stats.session_opened()
 
         # Loop principal de lectura del cliente
         # Handle kept directly: the push worker may already sit in self.tasks[0]
@@ -879,6 +881,7 @@ class JotaBridge:
         except asyncio.CancelledError:
             pass
         except Exception as e:
+            self.note_close_reason("error")
             logger.error(f"[{self.client_id}] client_input_loop crasheó: {e}")
         finally:
             try:
@@ -965,6 +968,7 @@ class JotaBridge:
             self._client_gone = True
             self._note_disconnect_code(e.code)
         except Exception as e:
+            self.note_close_reason("error")
             logger.error(f"[{self.client_id}] Error en input loop: {e}")
 
     def _note_disconnect_code(self, code: Any) -> None:

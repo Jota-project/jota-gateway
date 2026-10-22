@@ -61,6 +61,7 @@ def test_error_reason_on_health_check_1011(client, mock_orchestrator):
     assert exc.value.code == 1011
     assert _session_end_meta()["reason"] == "error"
     assert gateway_stats.snapshot()["sessions_closed"] == {"error": 1}
+    assert gateway_stats.snapshot()["sessions_opened"] == 1
 
 
 def test_slow_client_reason(client, monkeypatch):

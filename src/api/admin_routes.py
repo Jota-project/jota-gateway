@@ -436,14 +436,14 @@ def _build_state(app: FastAPI) -> dict[str, Any]:
     for bridge in app.state.client_registry.bridges():
         try:
             row = bridge.snapshot()
+            record = app.state.session_registry.get(row["session_id"])
+            if record is not None:
+                summary = _session_summary(record)
+                row["started_at"] = summary["started_at"]
+                row["last_latencies"] = summary["last_latencies"]
         except Exception as e:  # una sesión rota no tumba la instantánea entera
             logger.debug("snapshot de sesión omitido: %s", type(e).__name__)
             continue
-        record = app.state.session_registry.get(row["session_id"])
-        if record is not None:
-            summary = _session_summary(record)
-            row["started_at"] = summary["started_at"]
-            row["last_latencies"] = summary["last_latencies"]
         sessions.append(row)
     return {
         "gateway": {

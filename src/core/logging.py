@@ -14,7 +14,7 @@ def fingerprint_key(value: str) -> str:
 
 _STD_ATTRS = frozenset(
     logging.LogRecord("", 0, "", 0, "", None, None).__dict__
-) | {"message", "asctime", "taskName"}
+) | {"message", "asctime", "taskName", "color_message"}
 _TEXT_FORMAT = "%(asctime)s | %(name)s | %(levelname)s | %(message)s"
 _UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")
 

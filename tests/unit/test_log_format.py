@@ -39,6 +39,11 @@ def test_json_formatter_emits_one_valid_json_line():
     assert "\n" not in line
 
 
+def test_json_formatter_drops_uvicorn_color_message():
+    line = JsonFormatter().format(_record(color_message="\x1b[32mhola\x1b[0m"))
+    assert "color_message" not in json.loads(line)
+
+
 def test_json_formatter_includes_exception_in_single_line():
     try:
         raise ValueError("boom")

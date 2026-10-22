@@ -16,6 +16,7 @@ CloseReason = Literal[
     "unknown",
 ]
 
+
 class GatewayStats:
     # Sin locks: todo se llama desde el event loop (medir es O(1)).
     def __init__(self) -> None:

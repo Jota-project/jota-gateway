@@ -77,12 +77,12 @@ class Settings(BaseSettings):
     # 5 s (antes 10, #216): un handshake es un único mensaje pequeño; el margen largo solo
     # sirve a quien conecta y se queda callado, reteniendo la conexión sin autenticar.
     HANDSHAKE_TIMEOUT_S: float = 5.0
-    LOG_FORMAT: Literal["text", "json"] = "text"
     # Tope (caracteres) del primer mensaje, comprobado antes de parsear/autenticar (#216).
     HANDSHAKE_MAX_BYTES: int = Field(default=4096, gt=0)
     TURN_TIMEOUT_S: float = 120.0
     IDLE_TIMEOUT_S: float = 300.0
     SHUTDOWN_DRAIN_S: float = 30.0
+    LOG_FORMAT: Literal["text", "json"] = "text"
 
     # Drenado del audio TTS de un push al cerrar su turno (issue #130 S3a)
     PUSH_TTS_DRAIN_TIMEOUT_S: float = 30.0
