@@ -13,6 +13,7 @@ from src.services.db_client import db_client
 from src.services.openclaw.chat_text import ChatTextTracker
 from src.services.openclaw.models import ToolCallEvent
 from src.services.openclaw.registry import ClientRegistry, TurnRegistry
+from src.services.orchestration import OrchestratorError
 from src.services.outbound import ClientGone, DirectSender, OutboundSender
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.protocol import OrchestratorProtocol
@@ -1228,7 +1229,7 @@ class JotaBridge:
                 logger.info(f"[{self.client_id}] Cliente no disponible: turno abortado.")
             except RuntimeError as e:
                 logger.error(f"[{self.client_id}] Orchestrator error: {e}")
-                gateway_stats.turn_error(str(e))
+                gateway_stats.turn_error(str(e) if isinstance(e, OrchestratorError) else "internal_error")
                 try:
                     await self._sender.send_json(
                         {

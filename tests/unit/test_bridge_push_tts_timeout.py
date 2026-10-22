@@ -268,10 +268,41 @@ async def test_turn_counters(monkeypatch):
     await bridge._call_orchestrator("hola")
     await _open_push(bridge, None)
     monkeypatch.setattr(
-        orchestration, "call_orchestrator", AsyncMock(side_effect=RuntimeError("orchestrator_error"))
+        orchestration, "call_orchestrator", AsyncMock(side_effect=orchestration.OrchestratorError("orchestrator_error"))
     )
     await bridge._call_orchestrator("otra")
 
     snap = gateway_stats.snapshot()
     assert snap["turns"] == {"normal": 2, "push": 1}
     assert snap["turn_errors"]["orchestrator_error"] == 1
+
+
+@pytest.mark.asyncio
+async def test_plain_runtime_error_counts_as_internal_error(monkeypatch):
+    from src.services import orchestration
+    from src.services.stats import gateway_stats
+
+    bridge = make_bridge(output_mode=("text",))
+    bridge.tracker.start_turn = lambda: None
+    monkeypatch.setattr(
+        orchestration, "call_orchestrator", AsyncMock(side_effect=RuntimeError("texto-arbitrario"))
+    )
+    await bridge._call_orchestrator("hola")
+
+    errors = gateway_stats.snapshot()["turn_errors"]
+    assert errors == {"internal_error": 1}
+    assert "texto-arbitrario" not in errors
+
+
+@pytest.mark.asyncio
+async def test_unexpected_exception_counts_as_internal_error(monkeypatch):
+    from src.services import orchestration
+    from src.services.stats import gateway_stats
+
+    bridge = make_bridge(output_mode=("text",))
+    bridge.tracker.start_turn = lambda: None
+    monkeypatch.setattr(
+        orchestration, "call_orchestrator", AsyncMock(side_effect=ValueError("x"))
+    )
+    await bridge._call_orchestrator("hola")
+    assert gateway_stats.snapshot()["turn_errors"] == {"internal_error": 1}
