@@ -5,6 +5,16 @@ from collections import Counter
 from datetime import UTC, datetime
 from typing import Literal
 
+CloseReason = Literal[
+    "client_disconnect",
+    "idle_timeout",
+    "silence_timeout",
+    "slow_client",
+    "revoked",
+    "shutdown",
+    "error",
+    "unknown",
+]
 
 class GatewayStats:
     # Sin locks: todo se llama desde el event loop (medir es O(1)).
@@ -23,7 +33,7 @@ class GatewayStats:
     def session_opened(self) -> None:
         self._sessions_opened += 1
 
-    def session_closed(self, reason: str) -> None:
+    def session_closed(self, reason: CloseReason) -> None:
         self._sessions_closed[reason] += 1
 
     def handshake_rejected(self, reason: str) -> None:

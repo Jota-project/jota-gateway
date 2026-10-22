@@ -37,7 +37,7 @@ def test_lifespan_shutdown_drains_bridges_closes_openclaw_and_disposes_engine(
         app.state.client_registry.register("fake-client", fake_bridge)
         # __exit__ below triggers the real ASGI lifespan shutdown sequence.
 
-    fake_bridge.close_all.assert_awaited_once_with(status="shutdown")
+    fake_bridge.close_all.assert_awaited_once_with(status="shutdown", reason="shutdown")
     mock_registry.close.assert_awaited_once()
     dispose_mock.assert_called_once()
     assert openclaw_close_count_during_drain == 0, (

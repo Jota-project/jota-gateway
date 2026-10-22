@@ -12,7 +12,7 @@ from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.db_client import db_client
 from src.services.openclaw.chat_text import ChatTextTracker
 from src.services.openclaw.models import ToolCallEvent
-from src.services.openclaw.registry import ClientRegistry
+from src.services.openclaw.registry import ClientRegistry, TurnRegistry
 from src.services.outbound import ClientGone, DirectSender, OutboundSender
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.protocol import OrchestratorProtocol
@@ -28,6 +28,7 @@ from src.services.speech.ports import (
     TtsStream,
 )
 from src.services.speech.registry import SpeechProviders
+from src.services.stats import CloseReason, gateway_stats
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,13 @@ def _tool_call_message(turn_id: str | None, tool_call: ToolCallEvent) -> dict:
     }
 
 
+_REASON_BY_STATUS: dict[str, CloseReason] = {
+    "shutdown": "shutdown",
+    "revoked": "revoked",
+    "error": "error",
+}
+
+
 class JotaBridge:
     """
     Titiritero principal. Gestiona la conexión de un cliente físico
@@ -74,6 +82,7 @@ class JotaBridge:
         sender: OutboundSender | None = None,
         stt: SpeechToTextProvider | None = None,
         speech: SpeechProviders | None = None,
+        turn_registry: TurnRegistry | None = None,
     ):
         self.client = client
         self.config = config
@@ -100,6 +109,7 @@ class JotaBridge:
         self._push_tts_name = ""  # proveedor que abrió el TtsStream del push en curso
         self._usage_recorded = False  # speech_usage una sola vez aunque close_all se reintente
         self._client_registry = client_registry
+        self._turn_registry = turn_registry  # solo para el máximo de la cola de turno (#219)
         self._default_agent = default_agent
         self.transcriber: SttSession | None = None
         self._push_tts: TtsStream | None = None
@@ -163,6 +173,10 @@ class JotaBridge:
         # start (G-09, #215). Distinct from `_closed`, which only flips once teardown
         # completes so an interrupted close_all() can be retried (#101).
         self._closing: bool = False
+        # Motivo de cierre (#219): la primera nota gana; se fija en session_end una vez.
+        self._close_reason: CloseReason | None = None
+        self._turn_in_flight_at_close: bool | None = None
+        self._close_counted: bool = False
         # Serializes turn cancel/start (G-08, #201).
         self._turn_lock = asyncio.Lock()
         # Id of the turn currently running (set after its turn_start is enqueued).
@@ -216,7 +230,44 @@ class JotaBridge:
 
         self._client_registry.register(self.client_id, self)
 
-    async def close_all(self, status: SessionStatus = "completed"):
+    def note_close_reason(self, reason: CloseReason | None) -> None:
+        """Anota por qué se cierra la sesión; la primera llamada gana (#219)."""
+        if self._close_reason is None:
+            self._close_reason = reason
+
+    def _session_end_meta(self, status: SessionStatus) -> dict[str, Any]:
+        """Motivo y máximos de las colas para session_end; solo números y literales."""
+        reason = self._close_reason or _REASON_BY_STATUS.get(status, "unknown")
+        meta: dict[str, Any] = {
+            "reason": reason,
+            "turn_in_flight": bool(self._turn_in_flight_at_close),
+            "sender_peak_msgs": 0,
+            "sender_peak_bytes": 0,
+            "turn_queue_peak": 0,
+            "push_backlog_peak": self._push_pending_peak,
+        }
+        # Una métrica nunca debe impedir el cierre.
+        try:
+            q = self._sender.queue_stats()
+            meta["sender_peak_msgs"] = int(q["peak_msgs"])
+            meta["sender_peak_bytes"] = int(q["peak_bytes"])
+        except Exception:
+            pass
+        if self._turn_registry is not None:
+            try:
+                from src.core.session_key import make_session_key
+
+                agent = self.handshake.agent or self._default_agent
+                meta["turn_queue_peak"] = self._turn_registry.pop_peak(
+                    make_session_key(agent, self.client_id)
+                )
+            except Exception:
+                pass
+        return meta
+
+    async def close_all(
+        self, status: SessionStatus = "completed", reason: CloseReason | None = None
+    ):
         """Tear down every microservice client and mark the session closed.
 
         Idempotent — the second call in a row is a no-op, and the *first
@@ -235,6 +286,9 @@ class JotaBridge:
         # Before taking the lock, so a `send` arriving while another close_all() is
         # draining the turn is already refused (G-09).
         self._closing = True
+        self.note_close_reason(reason)
+        if self._turn_in_flight_at_close is None:
+            self._turn_in_flight_at_close = self._turn_in_flight()
         async with self._close_lock:
             if self._closed:
                 return
@@ -381,8 +435,12 @@ class JotaBridge:
                 except Exception:
                     logger.debug(f"[{self.client_id}] close_all: speech_usage no registrado")
 
+            end_meta = self._session_end_meta(status)
+            if not self._close_counted:
+                self._close_counted = True
+                gateway_stats.session_closed(end_meta["reason"])
             try:
-                await self.tracker.close(status=status)
+                await self.tracker.close(status=status, **end_meta)
             except asyncio.CancelledError:
                 # Same reasoning as above — the session must still be marked
                 # closed so the routes.py outer-finally safety net (issue #101)
@@ -603,6 +661,7 @@ class JotaBridge:
                 )
                 await self.notify_service_status("transcriber", "degraded")
                 if silence_count >= self.config.max_silence_turns:
+                    self.note_close_reason("silence_timeout")
                     await self.close_all()
                     return
 
@@ -664,6 +723,7 @@ class JotaBridge:
                     await asyncio.sleep(2)
                     continue
                 logger.info(f"[{self.client_id}] Idle timeout — cerrando sesión.")
+                self.note_close_reason("idle_timeout")
                 await self.close_all()
                 return
             await asyncio.sleep(remaining)
@@ -696,6 +756,8 @@ class JotaBridge:
 
     async def _revoke_session(self) -> None:
         """Cierra la sesión con 1008 «revoked» por el camino de cierre existente."""
+        # Antes del close 1008: el bucle de entrada lo verá como desconexión del cliente.
+        self.note_close_reason("revoked")
         logger.warning(f"[{self.client_id}] Cliente revocado (borrado/desactivado/clave rotada).")
         await self.tracker.record("session_revoked")
         # Nadie autorizado escucha ya: el turno en curso se cancela, no se drena (G-18).
@@ -707,7 +769,7 @@ class JotaBridge:
             )
         except Exception as e:
             logger.debug(f"[{self.client_id}] close 1008 revoked falló: {type(e).__name__}")
-        await self.close_all(status="revoked")
+        await self.close_all(status="revoked", reason="revoked")
 
     def _spawn(self, coro, name: str) -> asyncio.Task:
         """Create a supervised session task and track it in self.tasks."""
@@ -734,6 +796,7 @@ class JotaBridge:
                 exc_info=exc,
             )
             if t.get_name() == "idle_watchdog":
+                self.note_close_reason("error")
                 closer = asyncio.create_task(self.close_all(), name="idle_watchdog_close")
                 self._supervision_tasks.add(closer)
                 closer.add_done_callback(self._supervision_tasks.discard)
@@ -748,6 +811,7 @@ class JotaBridge:
             input_mode=self.handshake.input_mode,
             output_mode=self.handshake.output_mode,
         )
+        gateway_stats.session_opened()
 
         # Loop principal de lectura del cliente
         # Handle kept directly: the push worker may already sit in self.tasks[0]
@@ -770,6 +834,8 @@ class JotaBridge:
         # listen_loop y watchdog corren en background y terminan solos sin cerrar la sesión.
         try:
             await client_task
+            # Terminó sola (no la canceló un watchdog ni el shutdown): el cliente se fue.
+            self.note_close_reason("client_disconnect")
         except asyncio.CancelledError:
             pass
         except Exception as e:

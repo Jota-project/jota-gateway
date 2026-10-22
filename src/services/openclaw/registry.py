@@ -224,7 +224,12 @@ class ClientRegistry:
 
         async def _drain(client_id: str, bridge: Any) -> None:
             try:
-                await asyncio.wait_for(bridge.close_all(status=status), timeout=timeout)
+                # El motivo se anota a la entrada de close_all (#219): gana a una
+                # desconexión del cliente que llegue durante el drenaje.
+                reason = "shutdown" if status == "shutdown" else None
+                await asyncio.wait_for(
+                    bridge.close_all(status=status, reason=reason), timeout=timeout
+                )
             except TimeoutError:
                 logger.warning(
                     "ClientRegistry.close_all_sessions: client_id=%s did not close "
