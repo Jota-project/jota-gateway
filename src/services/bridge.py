@@ -251,8 +251,8 @@ class JotaBridge:
             q = self._sender.queue_stats()
             meta["sender_peak_msgs"] = int(q["peak_msgs"])
             meta["sender_peak_bytes"] = int(q["peak_bytes"])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[{self.client_id}] sender_peak no disponible: {type(e).__name__}")
         if self._turn_registry is not None:
             try:
                 from src.core.session_key import make_session_key
@@ -261,8 +261,8 @@ class JotaBridge:
                 meta["turn_queue_peak"] = self._turn_registry.pop_peak(
                     make_session_key(agent, self.client_id)
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[{self.client_id}] turn_queue_peak no disponible: {type(e).__name__}")
         return meta
 
     async def close_all(
@@ -864,6 +864,7 @@ class JotaBridge:
                 if message.get("type") == "websocket.disconnect":
                     logger.info(f"[{self.client_id}] Cliente físico desconectado.")
                     self._client_gone = True
+                    self._note_disconnect_code(message.get("code"))
                     break
 
                 # AUDIO → Transcriber
@@ -919,11 +920,17 @@ class JotaBridge:
                                 logger.info(f"[{self.client_id}] send recibido: len={len(text)}")
                                 await self._start_turn(text)
 
-        except WebSocketDisconnect:
+        except WebSocketDisconnect as e:
             logger.info(f"[{self.client_id}] Cliente físico desconectado.")
             self._client_gone = True
+            self._note_disconnect_code(e.code)
         except Exception as e:
             logger.error(f"[{self.client_id}] Error en input loop: {e}")
+
+    def _note_disconnect_code(self, code: Any) -> None:
+        # uvicorn cierra cada WS con 1012 antes del shutdown del lifespan: no es el cliente.
+        if code == 1012:
+            self.note_close_reason("shutdown")
 
     def _audio_gap_s(self) -> float:
         """Silence in the audio stream after which the client counts as idle (#227).

@@ -213,6 +213,7 @@ async def gateway_websocket(websocket: WebSocket):
             await sender.flush()
         except Exception as e:
             logger.warning(f"[{client.id}] Failed to send ready: {e}")
+            bridge.note_close_reason("client_disconnect" if isinstance(e, ClientGone) else "error")
             return
 
         # 4. LANZAR LOOPS CONCURRENTES

@@ -189,3 +189,34 @@ async def test_queue_peaks_default_to_zero_without_turn_registry():
     bridge = _make_bridge()
     await bridge.close_all()
     assert _end_meta(bridge)["turn_queue_peak"] == 0
+
+
+async def test_server_shutdown_disconnect_1012_records_shutdown():
+    """uvicorn cierra cada WS con 1012 antes del shutdown del lifespan."""
+    from fastapi import WebSocketDisconnect
+
+    bridge = _make_bridge()
+    bridge.client_ws.receive = AsyncMock(side_effect=WebSocketDisconnect(code=1012))
+    await asyncio.wait_for(bridge.run(), timeout=2.0)
+    assert _end_meta(bridge)["reason"] == "shutdown"
+    assert _closed() == {"shutdown": 1}
+
+
+async def test_server_shutdown_disconnect_message_1012_records_shutdown():
+    bridge = _make_bridge()
+    bridge.client_ws.receive = AsyncMock(
+        return_value={"type": "websocket.disconnect", "code": 1012}
+    )
+    await asyncio.wait_for(bridge.run(), timeout=2.0)
+    assert _end_meta(bridge)["reason"] == "shutdown"
+
+
+async def test_normal_disconnect_codes_record_client_disconnect():
+    from fastapi import WebSocketDisconnect
+
+    for code in (1000, 1001):
+        bridge = _make_bridge()
+        bridge.client_ws.receive = AsyncMock(side_effect=WebSocketDisconnect(code=code))
+        await asyncio.wait_for(bridge.run(), timeout=2.0)
+        assert _end_meta(bridge)["reason"] == "client_disconnect"
+    assert _closed() == {"client_disconnect": 2}
