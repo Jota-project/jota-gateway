@@ -1,3 +1,10 @@
+## [1.20.2](https://github.com/Jota-project/jota-gateway/compare/v1.20.1...v1.20.2) (2026-10-22)
+
+
+### Bug Fixes
+
+* turn_e2e_ms empareja cada turno con su transcripción final ([#250](https://github.com/Jota-project/jota-gateway/issues/250)) ([#252](https://github.com/Jota-project/jota-gateway/issues/252)) ([5f2749d](https://github.com/Jota-project/jota-gateway/commit/5f2749da33e30ea888268538fc34a7078353822e))
+
 ## [1.20.1](https://github.com/Jota-project/jota-gateway/compare/v1.20.0...v1.20.1) (2026-10-21)
 
 
