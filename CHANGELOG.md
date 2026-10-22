@@ -1,3 +1,10 @@
+# [1.21.0](https://github.com/Jota-project/jota-gateway/compare/v1.20.2...v1.21.0) (2026-10-22)
+
+
+### Features
+
+* observación del gateway — /admin/state, SSE, logs JSON y motivo de cierre ([#219](https://github.com/Jota-project/jota-gateway/issues/219)) ([#253](https://github.com/Jota-project/jota-gateway/issues/253)) ([10af31c](https://github.com/Jota-project/jota-gateway/commit/10af31ccbe30744d0140e0749dd7d38d7e45771d)), closes [#252](https://github.com/Jota-project/jota-gateway/issues/252)
+
 ## [1.20.2](https://github.com/Jota-project/jota-gateway/compare/v1.20.1...v1.20.2) (2026-10-22)
 
 
