@@ -448,10 +448,42 @@ are never read.
 Note: the `websockets` library itself logs raw frames at DEBUG on its own `websockets.*`
 loggers; keep those at their default level in production.
 
+## `runId`, `chat.abort` and a concurrent `chat.send` (2026-10-22/23, server 2026.10.5, issue #219)
+
+Observed live on green-house with throwaway session keys; structure only (no text recorded).
+Full notes in the vault (`JGW Observaciones 2026-10 - OpenClaw y cliente lento en Linux`).
+
+- **Every `chat` and `agent` event carries `runId`** (and `seq`), including `chat` `aborted`.
+  The `chat.send` ack arrives in 30–60 ms as `res ok` with `payload {runId, status}`, so the
+  run id is known before any event of the run.
+- **Non-terminal `chat` states exist:** `state:"status"` with `phase`
+  (`preparing_workspace`, `preparing_context`, `starting_model`). Terminal states seen:
+  `final` (with `stopReason`) and `aborted`; `error` was not observed here. Do **not** treat
+  "anything but `delta`" as terminal.
+- **`chat.abort`:** `chat` `state:"aborted"` (+ `stopReason`, and `message` if text had
+  started) arrives 9–28 ms after the abort, then `agent` `lifecycle end` and the
+  `res ok` `payload {ok, aborted, runIds}`. **No late `delta`/`final`** in the next 10 s; only
+  `sessions.changed`/`session.message` bookkeeping. Same if the abort lands before the model
+  starts.
+- **`chat.send` while another run is active on the same `sessionKey`:** accepted (`res ok`,
+  new `runId`), no error. The new run gets **no lifecycle/status/delta events of its own**;
+  it ends with a `chat` `final` carrying its `runId` while the original run keeps streaming
+  and later sends its own `final` (OpenClaw appears to fold the message into the running run;
+  not verified, no text recorded).
+- Events the gateway ignores today: `agent` streams `run_status`, `assistant`, `thinking`,
+  `usage`; `sessions.changed`, `session.message`.
+
+**Breaking for jota-gateway as of v1.21.0:** `stream_response()` ends a turn on the first
+`chat` `final` of its `sessionKey` and its queue receives every `chat` event of that key,
+regardless of `runId`. With a push in flight, a user `send` therefore receives the push's
+deltas and is closed by whichever `final` comes first, and the rest of the other run is
+lost. Fix belongs to M9 (correlate by `runId`; issue #202).
+
 ---
 
 ## Change log of this file
 
+- **2026-10-23**: added "`runId`, `chat.abort` and a concurrent `chat.send`" (issue #219).
 - **2026-10-20**: documented the official delta/replace/snapshot semantics (issue #243).
 - **2026-10-20**: added "Breaking change — OpenClaw 2026.10.5" (issue #241): `final` carries the full text without `deltaText`.
 - **2026-10-19**: added "Errors toward clients and handshake failures" (issue #228).
