@@ -1,3 +1,10 @@
+## [1.21.1](https://github.com/Jota-project/jota-gateway/compare/v1.21.0...v1.21.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* errores estables en cliente, last_error y logs + /v1 y session key (S0, [#238](https://github.com/Jota-project/jota-gateway/issues/238)) ([#260](https://github.com/Jota-project/jota-gateway/issues/260)) ([5877b20](https://github.com/Jota-project/jota-gateway/commit/5877b207b6c03206ddae2a3e07f70a14006e5622))
+
 # [1.21.0](https://github.com/Jota-project/jota-gateway/compare/v1.20.2...v1.21.0) (2026-10-22)
 
 
