@@ -1,4 +1,4 @@
-"""#238: ningún texto crudo de excepción llega al cliente WS, a `last_error` ni a logs INFO+.
+"""#238: ningún texto crudo de excepción llega al cliente WS, a `last_error` ni a ningún log.
 
 Cada prueba inyecta el marcador `SECRET-INTERNAL` en una excepción/frame y comprueba que no
 aparece en lo que sale del gateway.
@@ -19,7 +19,7 @@ from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
 from src.services.openclaw.registry import ClientRegistry
 from src.services.protocol import OrchestratorEvent
-from src.services.reconnection import ConnectionState
+from src.services.reconnection import ConnectionState, describe_error
 from src.services.transcriber_client import TranscriberClient
 from src.services.transcriber_reconnecting import ReconnectingTranscriberClient
 from src.services.tts_client import TTSClient
@@ -28,10 +28,10 @@ from tests.unit.test_bridge_m6c_turns import _bridge
 SECRET = "SECRET-INTERNAL"
 
 
-def _info_plus(caplog) -> str:
-    # format() incluye el traceback de exc_info, que lleva el mensaje de la excepción.
+def _logged(caplog) -> str:
+    # Todos los niveles; format() incluye el traceback de exc_info, que lleva el mensaje.
     fmt = logging.Formatter()
-    return "\n".join(fmt.format(r) for r in caplog.records if r.levelno >= logging.INFO)
+    return "\n".join(fmt.format(r) for r in caplog.records if r.levelno >= logging.DEBUG)
 
 
 async def test_turn_error_from_raw_runtime_error_is_internal_error(caplog):
@@ -47,8 +47,9 @@ async def test_turn_error_from_raw_runtime_error_is_internal_error(caplog):
 
     err = ws.of("error")[0]
     assert err["code"] == "TURN_ERROR" and err["message"] == "internal_error"
+    assert "RuntimeError at " in _logged(caplog)  # traceback sin mensaje a DEBUG
     assert SECRET not in json.dumps(ws.sent, default=str)
-    assert SECRET not in _info_plus(caplog)
+    assert SECRET not in _logged(caplog)
 
 
 async def test_turn_error_relays_orchestrator_error_code():
@@ -87,7 +88,7 @@ async def test_openclaw_slow_retry_last_error_has_no_raw_text(caplog):
     assert inner.connect.call_count > before
 
     assert roc.status().last_error == "RuntimeError"
-    assert SECRET not in _info_plus(caplog)
+    assert SECRET not in _logged(caplog)
     await roc.close()
 
 
@@ -121,7 +122,30 @@ async def test_transcriber_handshake_error_does_not_leak_message(monkeypatch, ca
         await TranscriberClient("x:1", "u").connect()
 
     assert SECRET not in str(exc_info.value)
-    assert SECRET not in _info_plus(caplog)
+    assert SECRET not in _logged(caplog)
+    # Texto estable y útil para depurar, no un "Exception" pelado.
+    assert describe_error(exc_info.value) == "transcriber_handshake_failed[AUTH_FAILED]"
+    assert "transcriber_handshake_failed[AUTH_FAILED]" in _logged(caplog)
+
+
+async def test_transcriber_handshake_code_is_sanitized(monkeypatch):
+    frame = json.dumps({"type": "error", "code": f"{SECRET} x", "message": "m"})
+    monkeypatch.setattr(
+        tc_mod.websockets, "connect", AsyncMock(return_value=_FakeWS(recv=lambda: frame))
+    )
+    with pytest.raises(Exception) as exc_info:
+        await TranscriberClient("x:1", "u").connect()
+    assert describe_error(exc_info.value) == "transcriber_handshake_failed[unknown]"
+
+
+async def test_transcriber_unexpected_handshake_frame_is_stable(monkeypatch):
+    frame = json.dumps({"type": SECRET})
+    monkeypatch.setattr(
+        tc_mod.websockets, "connect", AsyncMock(return_value=_FakeWS(recv=lambda: frame))
+    )
+    with pytest.raises(Exception) as exc_info:
+        await TranscriberClient("x:1", "u").connect()
+    assert describe_error(exc_info.value) == "transcriber_handshake_failed[unexpected_frame]"
 
 
 async def test_transcriber_error_and_warning_frames_do_not_log_message(caplog):
@@ -136,7 +160,7 @@ async def test_transcriber_error_and_warning_frames_do_not_log_message(caplog):
     t._is_ready = True
     await t.listen_loop(AsyncMock())
 
-    assert SECRET not in _info_plus(caplog)
+    assert SECRET not in _logged(caplog)
 
 
 async def test_tts_close_during_auth_does_not_leak_close_reason(monkeypatch, caplog):
@@ -153,7 +177,7 @@ async def test_tts_close_during_auth_does_not_leak_close_reason(monkeypatch, cap
         await TTSClient("x:1", "tok", "u").connect()
 
     assert SECRET not in str(exc_info.value)
-    assert SECRET not in _info_plus(caplog)
+    assert SECRET not in _logged(caplog)
 
 
 async def test_tts_error_frame_does_not_log_message(caplog):
@@ -163,7 +187,7 @@ async def test_tts_error_frame_does_not_log_message(caplog):
     async for _ in t.get_audio_stream():
         pass
 
-    assert SECRET not in _info_plus(caplog)
+    assert SECRET not in _logged(caplog)
 
 
 def _boom(*a, **k):
@@ -179,7 +203,8 @@ async def test_bridge_input_loop_error_logs_type_only(caplog):
     bridge, ws = _bridge()
     ws.receive = _raise_secret
     await bridge._client_input_loop()
-    assert SECRET not in _info_plus(caplog)
+    assert SECRET not in _logged(caplog)
+    assert "RuntimeError at " in _logged(caplog)
 
 
 async def test_bridge_supervised_task_crash_logs_type_only(caplog):
@@ -188,8 +213,8 @@ async def test_bridge_supervised_task_crash_logs_type_only(caplog):
     task = bridge._spawn(_raise_secret(), "some_task")
     await asyncio.gather(task, return_exceptions=True)
     await asyncio.sleep(0)  # done-callback
-    assert "RuntimeError" in _info_plus(caplog)
-    assert SECRET not in _info_plus(caplog)
+    assert "RuntimeError" in _logged(caplog)
+    assert SECRET not in _logged(caplog)
 
 
 async def test_bridge_transcription_send_failure_logs_type_only(caplog):
@@ -198,7 +223,7 @@ async def test_bridge_transcription_send_failure_logs_type_only(caplog):
     bridge._sender = AsyncMock()
     bridge._sender.send_json.side_effect = _boom
     await bridge._on_transcription("hola", True)
-    assert SECRET not in _info_plus(caplog)
+    assert SECRET not in _logged(caplog)
 
 
 async def test_bridge_close_all_failed_active_turn_logs_type_only(caplog):
@@ -211,7 +236,7 @@ async def test_bridge_close_all_failed_active_turn_logs_type_only(caplog):
 
     bridge._active_turn = asyncio.create_task(_turn())
     await bridge.close_all()
-    assert SECRET not in _info_plus(caplog)
+    assert SECRET not in _logged(caplog)
 
 
 async def test_transcriber_listen_crash_logs_no_message(caplog):
@@ -225,7 +250,7 @@ async def test_transcriber_listen_crash_logs_no_message(caplog):
     w._client.listen_loop = boom
     await w.run(on_transcription_callback=AsyncMock())
     assert w.state == ConnectionState.DEGRADED
-    assert SECRET not in _info_plus(caplog)
+    assert SECRET not in _logged(caplog)
 
 
 async def test_registry_shutdown_drain_failure_logs_type_only(caplog):
@@ -235,5 +260,5 @@ async def test_registry_shutdown_drain_failure_logs_type_only(caplog):
     bridge.close_all.side_effect = _boom
     reg.register("u", bridge)
     await reg.close_all_sessions(status="shutdown", timeout=1.0)
-    assert SECRET not in _info_plus(caplog)
+    assert SECRET not in _logged(caplog)
 

@@ -9,6 +9,7 @@ from src.services.reconnection import (
     describe_error,
     health_attr,
     reconnect_with_backoff,
+    traceback_no_message,
 )
 from src.services.transcriber_client import TranscriberClient
 
@@ -134,7 +135,7 @@ class ReconnectingTranscriberClient:
                     self._client_id,
                     self._last_error,
                 )
-                logger.debug("[%s] traceback del listen loop", self._client_id, exc_info=True)
+                logger.debug("[%s] listen loop: %s", self._client_id, traceback_no_message(e))
                 self._set_state(ConnectionState.DEGRADED)
                 return
 

@@ -17,7 +17,7 @@ from src.services.bridge import JotaBridge
 from src.services.db_client import db_client
 from src.services.outbound import ClientGone, QueuedSender
 from src.services.pipeline_tracker import PipelineTracker
-from src.services.reconnection import describe_error
+from src.services.reconnection import describe_error, traceback_no_message
 from src.services.stats import gateway_stats
 
 logger = logging.getLogger(__name__)
@@ -172,6 +172,7 @@ async def gateway_websocket(websocket: WebSocket):
             logger.error(
                 f"[{client.id}] Fallo al inicializar puentes internos: {describe_error(e)}"
             )
+            logger.debug(f"[{client.id}] puentes internos: {traceback_no_message(e)}")
             await websocket.close(
                 code=1011, reason="Problema estableciendo microservicios internos del hub."
             )
@@ -228,6 +229,7 @@ async def gateway_websocket(websocket: WebSocket):
                 f"[{client.id}] Error crítico de Runtime en el Puente Principal: "
                 f"{describe_error(e)}"
             )
+            logger.debug(f"[{client.id}] puente principal: {traceback_no_message(e)}")
     finally:
         await bridge.close_all(status="error")
         # close_all() queued session_end; drain it before the socket goes away.

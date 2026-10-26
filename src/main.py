@@ -28,7 +28,12 @@ from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
 from src.services.openclaw.registry import ClientRegistry, TurnRegistry
-from src.services.reconnection import ConnectionState, describe_error, to_wire_state
+from src.services.reconnection import (
+    ConnectionState,
+    describe_error,
+    to_wire_state,
+    traceback_no_message,
+)
 from src.services.session_registry import SessionRegistry
 from src.services.speech.factory import build_stt_provider, build_tts_provider
 from src.services.speech.registry import SpeechProviders
@@ -85,6 +90,7 @@ async def _lifespan_body(app: FastAPI):
         await openclaw.connect()
     except Exception as e:
         logger.error(f"Initial OpenClaw connect failed: {describe_error(e)}")
+        logger.debug(f"Initial OpenClaw connect: {traceback_no_message(e)}")
 
     # Wired *after* the initial connect on purpose: on_state_change firing
     # CONNECTED on a normal first-time success would send a spurious
@@ -166,14 +172,14 @@ async def _lifespan_body(app: FastAPI):
                 await provider.aclose()
             except Exception as e:
                 logger.error(f"Error closing speech provider during shutdown: {describe_error(e)}")
-                logger.debug("speech provider close traceback", exc_info=True)
+                logger.debug(f"speech provider close: {traceback_no_message(e)}")
 
         # 2. Close OpenClaw now that active turns have drained.
         try:
             await openclaw.close()
         except Exception as e:
             logger.error(f"Error closing OpenClaw client during shutdown: {describe_error(e)}")
-            logger.debug("OpenClaw close traceback", exc_info=True)
+            logger.debug(f"OpenClaw close: {traceback_no_message(e)}")
 
         # 3. Cancel/await the orchestrator/TTS state-change broadcast tasks
         #    created via on_state_change above. Done *after* closing
