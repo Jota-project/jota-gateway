@@ -240,7 +240,9 @@ class JotaBridge:
     def _session_key(self) -> str:
         from src.core.session_key import make_session_key
 
-        return make_session_key(self.handshake.agent or self._default_agent, self.client_id)
+        # _default_agent es el agente ya resuelto y normalizado por resolve_agent (incluye
+        # handshake.agent sin espacios): " main" debe ser la misma sesión que "main".
+        return make_session_key(self._default_agent, self.client_id)
 
     def snapshot(self) -> dict[str, Any]:
         """Estado vivo de la sesión para /admin/state (#219): solo números, estados e

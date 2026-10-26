@@ -283,7 +283,7 @@ async def chat_completions(
         _log_unexpected_error(e)
         orchestrator_error = RuntimeError("internal_error")
     finally:
-        await tracker.close()
+        await tracker.close(status="error" if orchestrator_error is not None else "completed")
 
     if orchestrator_error:
         if str(orchestrator_error) == TURN_IN_PROGRESS_ERROR:
