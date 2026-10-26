@@ -17,7 +17,7 @@ from src.services.orchestration import OrchestratorError
 from src.services.outbound import ClientGone, DirectSender, OutboundSender
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.protocol import OrchestratorProtocol
-from src.services.reconnection import ConnectionState, to_wire_state
+from src.services.reconnection import ConnectionState, describe_error, to_wire_state
 from src.services.session_registry import SessionStatus
 from src.services.speech.factory import build_stt_provider
 from src.services.speech.ports import (
@@ -374,7 +374,7 @@ class JotaBridge:
                         f"SHUTDOWN_DRAIN_S={settings.SHUTDOWN_DRAIN_S}s — forzando cierre."
                     )
                 except Exception as e:
-                    logger.error(f"[{self.client_id}] _active_turn falló: {e}")
+                    logger.error(f"[{self.client_id}] _active_turn falló: {describe_error(e)}")
 
             # Stop push intake and the worker *before* touching _push_tts / the audio
             # task it may be driving (issue #130 S3a). The worker is also in
@@ -836,10 +836,11 @@ class JotaBridge:
             exc = t.exception()  # always retrieved: no "never retrieved" warning
             if exc is None:
                 return
+            # Solo el tipo a ERROR; el traceback (lleva el mensaje) solo a DEBUG (#238).
             logger.error(
-                f"[{self.client_id}] Tarea de sesión '{t.get_name()}' falló: {exc!r}",
-                exc_info=exc,
+                f"[{self.client_id}] Tarea de sesión '{t.get_name()}' falló: {describe_error(exc)}"
             )
+            logger.debug(f"[{self.client_id}] traceback de '{t.get_name()}'", exc_info=exc)
             if t.get_name() == "idle_watchdog":
                 self.note_close_reason("error")
                 closer = asyncio.create_task(self.close_all(), name="idle_watchdog_close")
@@ -884,7 +885,7 @@ class JotaBridge:
             pass
         except Exception as e:
             self.note_close_reason("error")
-            logger.error(f"[{self.client_id}] client_input_loop crasheó: {e}")
+            logger.error(f"[{self.client_id}] client_input_loop crasheó: {describe_error(e)}")
         finally:
             try:
                 await self.close_all()
@@ -971,7 +972,7 @@ class JotaBridge:
             self._note_disconnect_code(e.code)
         except Exception as e:
             self.note_close_reason("error")
-            logger.error(f"[{self.client_id}] Error en input loop: {e}")
+            logger.error(f"[{self.client_id}] Error en input loop: {describe_error(e)}")
 
     def _note_disconnect_code(self, code: Any) -> None:
         # uvicorn cierra cada WS con 1012 antes del shutdown del lifespan: no es el cliente.
@@ -1111,7 +1112,9 @@ class JotaBridge:
         try:
             await self._sender.send_json({"type": "transcription", "text": text})
         except Exception as e:
-            logger.warning(f"[{self.client_id}] send_json(transcription) falló: {e}")
+            logger.warning(
+                f"[{self.client_id}] send_json(transcription) falló: {describe_error(e)}"
+            )
 
     async def _call_orchestrator(self, text: str):
         """

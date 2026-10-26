@@ -4,6 +4,7 @@ import time
 from typing import Any
 
 from src.core.config import settings
+from src.services.reconnection import describe_error
 from src.services.session_registry import SessionStatus
 
 logger = logging.getLogger(__name__)
@@ -241,10 +242,13 @@ class ClientRegistry:
                     client_id,
                     timeout,
                 )
-            except Exception:
-                logger.exception(
-                    "ClientRegistry.close_all_sessions: error closing client_id=%s during shutdown",
+            except Exception as e:
+                logger.error(
+                    "ClientRegistry.close_all_sessions: error closing client_id=%s during "
+                    "shutdown (%s)",
                     client_id,
+                    describe_error(e),
                 )
+                logger.debug("close_all_sessions traceback", exc_info=True)
 
         await asyncio.gather(*(_drain(client_id, bridge) for client_id, bridge in bridges))

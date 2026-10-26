@@ -17,9 +17,11 @@ from src.services import transcriber_client as tc_mod
 from src.services import tts_client as tts_mod
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
+from src.services.openclaw.registry import ClientRegistry
 from src.services.protocol import OrchestratorEvent
 from src.services.reconnection import ConnectionState
 from src.services.transcriber_client import TranscriberClient
+from src.services.transcriber_reconnecting import ReconnectingTranscriberClient
 from src.services.tts_client import TTSClient
 from tests.unit.test_bridge_m6c_turns import _bridge
 
@@ -27,7 +29,9 @@ SECRET = "SECRET-INTERNAL"
 
 
 def _info_plus(caplog) -> str:
-    return "\n".join(r.getMessage() for r in caplog.records if r.levelno >= logging.INFO)
+    # format() incluye el traceback de exc_info, que lleva el mensaje de la excepción.
+    fmt = logging.Formatter()
+    return "\n".join(fmt.format(r) for r in caplog.records if r.levelno >= logging.INFO)
 
 
 async def test_turn_error_from_raw_runtime_error_is_internal_error(caplog):
@@ -159,5 +163,77 @@ async def test_tts_error_frame_does_not_log_message(caplog):
     async for _ in t.get_audio_stream():
         pass
 
+    assert SECRET not in _info_plus(caplog)
+
+
+def _boom(*a, **k):
+    raise RuntimeError(SECRET)
+
+
+async def _raise_secret():
+    raise RuntimeError(SECRET)
+
+
+async def test_bridge_input_loop_error_logs_type_only(caplog):
+    caplog.set_level(logging.DEBUG)
+    bridge, ws = _bridge()
+    ws.receive = _raise_secret
+    await bridge._client_input_loop()
+    assert SECRET not in _info_plus(caplog)
+
+
+async def test_bridge_supervised_task_crash_logs_type_only(caplog):
+    caplog.set_level(logging.DEBUG)
+    bridge, _ = _bridge()
+    task = bridge._spawn(_raise_secret(), "some_task")
+    await asyncio.gather(task, return_exceptions=True)
+    await asyncio.sleep(0)  # done-callback
+    assert "RuntimeError" in _info_plus(caplog)
+    assert SECRET not in _info_plus(caplog)
+
+
+async def test_bridge_transcription_send_failure_logs_type_only(caplog):
+    caplog.set_level(logging.DEBUG)
+    bridge, _ = _bridge()
+    bridge._sender = AsyncMock()
+    bridge._sender.send_json.side_effect = _boom
+    await bridge._on_transcription("hola", True)
+    assert SECRET not in _info_plus(caplog)
+
+
+async def test_bridge_close_all_failed_active_turn_logs_type_only(caplog):
+    caplog.set_level(logging.DEBUG)
+    bridge, _ = _bridge()
+
+    async def _turn():
+        await asyncio.sleep(0.01)
+        raise RuntimeError(SECRET)
+
+    bridge._active_turn = asyncio.create_task(_turn())
+    await bridge.close_all()
+    assert SECRET not in _info_plus(caplog)
+
+
+async def test_transcriber_listen_crash_logs_no_message(caplog):
+    caplog.set_level(logging.DEBUG)
+    w = ReconnectingTranscriberClient(url="test:1", client_id="c1")
+    w.state = ConnectionState.CONNECTED
+
+    async def boom(*a, **k):
+        raise RuntimeError(SECRET)
+
+    w._client.listen_loop = boom
+    await w.run(on_transcription_callback=AsyncMock())
+    assert w.state == ConnectionState.DEGRADED
+    assert SECRET not in _info_plus(caplog)
+
+
+async def test_registry_shutdown_drain_failure_logs_type_only(caplog):
+    caplog.set_level(logging.DEBUG)
+    reg = ClientRegistry()
+    bridge = AsyncMock()
+    bridge.close_all.side_effect = _boom
+    reg.register("u", bridge)
+    await reg.close_all_sessions(status="shutdown", timeout=1.0)
     assert SECRET not in _info_plus(caplog)
 

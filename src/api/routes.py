@@ -17,6 +17,7 @@ from src.services.bridge import JotaBridge
 from src.services.db_client import db_client
 from src.services.outbound import ClientGone, QueuedSender
 from src.services.pipeline_tracker import PipelineTracker
+from src.services.reconnection import describe_error
 from src.services.stats import gateway_stats
 
 logger = logging.getLogger(__name__)
@@ -109,7 +110,8 @@ async def gateway_websocket(websocket: WebSocket):
             gateway_info=openclaw.gateway_info,
         )
     except AgentPolicyError as e:
-        logger.warning(f"[{client.id}] Agent policy rejected: {e}")
+        # Solo el tipo de rechazo; el reason del 1008 sí lleva el texto (protocolo, §1).
+        logger.warning(f"[{client.id}] Agent policy rejected: {e.kind}")
         gateway_stats.handshake_rejected("agent")
         await websocket.close(code=1008, reason=str(e))
         return
@@ -167,7 +169,9 @@ async def gateway_websocket(websocket: WebSocket):
         try:
             await bridge.connect_internal_services()
         except Exception as e:
-            logger.error(f"[{client.id}] Fallo al inicializar puentes internos. {e}")
+            logger.error(
+                f"[{client.id}] Fallo al inicializar puentes internos: {describe_error(e)}"
+            )
             await websocket.close(
                 code=1011, reason="Problema estableciendo microservicios internos del hub."
             )
@@ -212,7 +216,7 @@ async def gateway_websocket(websocket: WebSocket):
             )
             await sender.flush()
         except Exception as e:
-            logger.warning(f"[{client.id}] Failed to send ready: {e}")
+            logger.warning(f"[{client.id}] Failed to send ready: {describe_error(e)}")
             bridge.note_close_reason("client_disconnect" if isinstance(e, ClientGone) else "error")
             return
 
@@ -220,7 +224,10 @@ async def gateway_websocket(websocket: WebSocket):
         try:
             await bridge.run()
         except Exception as e:
-            logger.error(f"[{client.id}] Error crítico de Runtime en el Puente Principal: {e}")
+            logger.error(
+                f"[{client.id}] Error crítico de Runtime en el Puente Principal: "
+                f"{describe_error(e)}"
+            )
     finally:
         await bridge.close_all(status="error")
         # close_all() queued session_end; drain it before the socket goes away.

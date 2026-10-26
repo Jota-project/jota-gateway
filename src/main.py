@@ -164,14 +164,16 @@ async def _lifespan_body(app: FastAPI):
         for provider in (speech.stt, speech.tts):
             try:
                 await provider.aclose()
-            except Exception:
-                logger.exception("Error closing speech provider during shutdown")
+            except Exception as e:
+                logger.error(f"Error closing speech provider during shutdown: {describe_error(e)}")
+                logger.debug("speech provider close traceback", exc_info=True)
 
         # 2. Close OpenClaw now that active turns have drained.
         try:
             await openclaw.close()
-        except Exception:
-            logger.exception("Error closing OpenClaw client during shutdown")
+        except Exception as e:
+            logger.error(f"Error closing OpenClaw client during shutdown: {describe_error(e)}")
+            logger.debug("OpenClaw close traceback", exc_info=True)
 
         # 3. Cancel/await the orchestrator/TTS state-change broadcast tasks
         #    created via on_state_change above. Done *after* closing
