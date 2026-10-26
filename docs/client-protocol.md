@@ -520,7 +520,7 @@ El cliente no necesita distinguirlos de los turnos normales — el `turn_id` y `
 { "type": "turn_end", "turn_id": "t-1" }
 ```
 
-### Asistente de voz completo (ESP32, app móvil)
+### Asistente de voz completo (jota-voice, app móvil; ESP32 planificado)
 
 ```json
 // Handshake
