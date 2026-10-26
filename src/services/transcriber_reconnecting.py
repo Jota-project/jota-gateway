@@ -9,6 +9,7 @@ from src.services.reconnection import (
     describe_error,
     health_attr,
     reconnect_with_backoff,
+    traceback_no_message,
 )
 from src.services.transcriber_client import TranscriberClient
 
@@ -130,10 +131,11 @@ class ReconnectingTranscriberClient:
                 # so the client gets `status unavailable` via on_state_change (#131).
                 self._last_error = describe_error(e)
                 logger.error(
-                    "[%s] transcriber listen loop crashed — DEGRADED.",
+                    "[%s] transcriber listen loop crashed (%s) — DEGRADED.",
                     self._client_id,
-                    exc_info=True,
+                    self._last_error,
                 )
+                logger.debug("[%s] listen loop: %s", self._client_id, traceback_no_message(e))
                 self._set_state(ConnectionState.DEGRADED)
                 return
 

@@ -615,3 +615,24 @@ def test_chat_completions_ignores_x_real_ip_from_untrusted_peer(client_untrusted
         headers={"x-real-ip": "127.0.0.1"},
     )
     assert r.status_code == 401
+
+
+def test_non_streaming_orchestrator_error_records_session_as_error(client, mock_orchestrator):
+    """Hallazgo 4 de la auditoría: un no-streaming fallido no queda como 'completed'."""
+
+    async def _error_stream(*args, **kwargs):
+        yield OrchestratorEvent(type="error", content="orchestrator_unavailable")
+
+    mock_orchestrator.stream_response = _error_stream
+
+    r = client.post(
+        "/v1/chat/completions",
+        json={"model": "openclaw", "messages": [{"role": "user", "content": "Hola"}]},
+    )
+
+    assert r.status_code == 502
+    http_sessions = [
+        s for s in app.state.session_registry.get_all() if s.session_id.startswith("http:")
+    ]
+    assert len(http_sessions) == 1
+    assert http_sessions[0].status == "error"

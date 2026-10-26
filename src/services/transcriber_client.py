@@ -12,8 +12,20 @@ from websockets.exceptions import ConnectionClosed
 
 from src.core.config import settings
 from src.models.schemas import TranscriberConfig, TranscriberMessage
+from src.services.reconnection import describe_error
 
 logger = logging.getLogger(__name__)
+
+
+class TranscriberHandshakeError(RuntimeError):
+    """El handshake con el transcriber falló. `stable_code` lleva solo el código del
+    frame (saneado), nunca su `message` (#238); describe_error lo usa en logs y last_error."""
+
+    def __init__(self, code: object) -> None:
+        if not (isinstance(code, str) and code.isidentifier() and len(code) <= 40):
+            code = "unknown"
+        self.stable_code = f"transcriber_handshake_failed[{code}]"
+        super().__init__(self.stable_code)
 
 
 class TranscriberClient:
@@ -57,12 +69,13 @@ class TranscriberClient:
                     f"[{self.client_id}] Transcriber listo. session_id={self._session_id!r}"
                 )
             elif msg.type == "error":
-                raise Exception(f"Transcriber auth/config error [{msg.code}]: {msg.message}")
+                # Solo el código: el `message` del transcriber no sale a logs ni a last_error (#238).
+                raise TranscriberHandshakeError(msg.code)
             else:
-                raise Exception(f"Respuesta inesperada del transcriber en handshake: {msg.type!r}")
+                raise TranscriberHandshakeError("unexpected_frame")
 
         except Exception as e:
-            logger.error(f"[{self.client_id}] Error conectando a Transcriber: {e}")
+            logger.error(f"[{self.client_id}] Error conectando a Transcriber: {describe_error(e)}")
             if self.ws is not None:
                 try:
                     await self.ws.close()
@@ -141,16 +154,12 @@ class TranscriberClient:
                         await on_status_callback(t_msg.state, t_msg.reason)
 
                 elif t_msg.type == "warning":
-                    logger.warning(
-                        f"[{self.client_id}] Transcriber warning [{t_msg.code}]: {t_msg.message}"
-                    )
+                    logger.warning(f"[{self.client_id}] Transcriber warning [{t_msg.code}]")
                     if on_warning_callback:
                         await on_warning_callback(t_msg.code or "unknown", t_msg.message)
 
                 elif t_msg.type == "error":
-                    logger.error(
-                        f"[{self.client_id}] Transcriber error [{t_msg.code}]: {t_msg.message}"
-                    )
+                    logger.error(f"[{self.client_id}] Transcriber error [{t_msg.code}]")
         except ConnectionClosed as e:
             clean_close = e.rcvd is not None and e.rcvd.code == 1000
             if self._is_ready and not clean_close:

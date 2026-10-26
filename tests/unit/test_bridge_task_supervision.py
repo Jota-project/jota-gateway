@@ -38,7 +38,9 @@ async def test_crashed_session_task_is_logged_with_its_name(bridge, caplog):
         await asyncio.sleep(0)
 
     msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
-    assert any("boom-task" in m and "kaboom" in m for m in msgs)
+    # #238: nombre de la tarea y tipo de la excepción, nunca su mensaje.
+    assert any("boom-task" in m and "RuntimeError" in m for m in msgs)
+    assert not any("kaboom" in m for m in msgs)
 
 
 async def test_cancelled_session_task_is_not_logged_as_error(bridge, caplog):
