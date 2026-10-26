@@ -356,7 +356,7 @@ async for msg in ws:
             audio_player.stop()
 ```
 
-> Si el TTS no está disponible, el gateway continúa sin audio — los `token` siguen llegando igualmente. `capabilities.tts` en el `ready` te avisa de antemano.
+> Si el TTS no está disponible, el gateway continúa sin audio — los `token` siguen llegando igualmente. `live_capabilities.tts` en el `ready` te avisa de antemano.
 
 ---
 
@@ -364,7 +364,7 @@ async for msg in ws:
 
 El barge-in ocurre cuando el usuario empieza a hablar mientras el orquestador aún está respondiendo.
 
-El gateway detecta la parcial de transcripción y cancela el turno activo si supera el umbral mínimo de caracteres (`capabilities.barge_in`). El cliente recibe:
+El gateway detecta la parcial de transcripción y cancela el turno activo si el barge-in está habilitado (`requested_capabilities.barge_in`; `live_capabilities.barge_in` indica si está operativo) y la parcial supera el umbral mínimo de caracteres. El cliente recibe:
 
 ```json
 { "type": "interrupted", "turn_id": "t-1" }
@@ -574,7 +574,7 @@ El cliente escribe; el gateway sintetiza audio con el texto de la respuesta.
 | `tool_call` | `{"type":"tool_call","turn_id":"t-N","phase":"start"\|"result","name":"...","tool_call_id":"...","args":{...}\|null,"result":"..."\|null,"is_error":bool\|null}` | Solo si `tool_calls_enabled=True` para el cliente — uso de herramientas del agente |
 | `transcription_partial` | `{"type":"transcription_partial","text":"..."}` | `input_mode="audio"` — parciales en tiempo real |
 | `transcription` | `{"type":"transcription","text":"..."}` | `input_mode="audio"` — transcripción final, espera `send` |
-| `interrupted` | `{"type":"interrupted"}` | Barge-in confirmado, turno anterior cancelado |
+| `interrupted` | `{"type":"interrupted","turn_id":"t-N"}` | Barge-in confirmado, turno anterior cancelado (`turn_id` puede faltar si el turno aún no había enviado su `turn_start`; ver §7) |
 | `status` | `{"type":"status","service":"...","state":"..."}` | Cambio de estado de un microservicio |
 | `error` | `{"type":"error","code":"...","message":"...","fatal":bool,"turn_id":"..."}` | Error (turno o sesión) |
 
