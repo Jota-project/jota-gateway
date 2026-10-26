@@ -1,9 +1,9 @@
 # jota-gateway
 
-BFF (Backend For Frontend) del ecosistema Jota IA. Punto de entrada único para todos los clientes: ESP32, web, app, Home Assistant.
+BFF (Backend For Frontend) del ecosistema Jota IA. Punto de entrada único para todos los clientes: Jota-Screen (tele), jota-voice (Mac y Android), la app de iPhone (fase inicial) y Home Assistant. Un cliente ESP32 está planificado (*planned*) y sin desarrollar.
 
 ```
-ESP32 / Web / App / Home Assistant
+Jota-Screen / jota-voice / App iPhone / Home Assistant
         │
         ▼
   jota-gateway (FastAPI :8004)
@@ -18,7 +18,7 @@ ESP32 / Web / App / Home Assistant
   │             Microservicios               │
   │  OpenClaw         WebSocket v4           │
   │  jota-transcriber WebSocket              │
-  │  jota-tts         WebSocket              │
+  │  jota-speaker     WebSocket              │
   └──────────────────────────────────────────┘
 ```
 
@@ -147,8 +147,8 @@ Variables en `.env` (formato `host:port` sin protocolo para todos los URLs):
 |----------|---------|-------------|
 | `DATABASE_URL` | `sqlite:///data/gateway.db` | Ruta a la base de datos SQLite local (identidad y configuración de clientes) |
 | `TRANSCRIBER_WS_URL` | `localhost:9000` | jota-transcriber |
-| `TTS_WS_URL` | `localhost:8005` | jota-tts |
-| `TTS_TOKEN` | `gateway` | Token de auth para jota-tts |
+| `TTS_WS_URL` | `localhost:8005` | jota-speaker |
+| `TTS_TOKEN` | `gateway` | Token de auth para jota-speaker |
 | `OPENCLAW_HOST` | `127.0.0.1` | Host de OpenClaw |
 | `OPENCLAW_PORT` | `18789` | Puerto de OpenClaw |
 | `OPENCLAW_TOKEN` | — | Token de auth para OpenClaw (obligatorio) |
@@ -172,7 +172,7 @@ El STT y el TTS pasan por una capa de proveedores (`src/services/speech/`). Los 
 | Variable | Default | Descripción |
 |----------|---------|-------------|
 | `STT_PROVIDER` | `jota` | `jota` (jota-transcriber) o `elevenlabs` (Scribe v2 Realtime) |
-| `TTS_PROVIDER` | `jota` | `jota` (jota-tts) o `elevenlabs` (stream-input, `eleven_flash_v2_5`) |
+| `TTS_PROVIDER` | `jota` | `jota` (jota-speaker) o `elevenlabs` (stream-input, `eleven_flash_v2_5`) |
 | `ELEVENLABS_API_KEY` | — | Obligatoria si algún proveedor es `elevenlabs` (permisos Text to Speech y Speech to Text) |
 | `ELEVENLABS_TTS_DEFAULT_VOICE` | `gc61tTk93h3LBXPxew2V` | Voz por defecto; las voces de clientes que no son de ElevenLabs (p. ej. `af_heart`) caen en ella o se traducen con `TTS_VOICE_MAP` |
 | `STT_AUDIO_GATE` | `auto` | `auto` = puerta de energía con proveedores de pago (solo se envía audio mientras se habla), `off` con jota; también `off`/`energy` |
@@ -271,7 +271,7 @@ src/
     ├── reconnection.py      ConnectionState / ServiceStatus / to_wire_state() — compartido por los 3 wrappers
     ├── transcriber_client.py       WebSocket → jota-transcriber, protocolo puro (sin reconexión)
     ├── transcriber_reconnecting.py ReconnectingTranscriberClient — uno por sesión de audio, backoff en background
-    ├── tts_client.py                WebSocket → jota-tts, protocolo puro, creado por turno
+    ├── tts_client.py                WebSocket → jota-speaker, protocolo puro, creado por turno
     ├── tts_reconnecting.py          ReconnectingTTSClient — singleton, backoff perezoso por turno
     ├── orchestration.py     call_orchestrator() — helper compartido WS+HTTP
     ├── pipeline_tracker.py  PipelineTracker — latencias por turno
