@@ -50,8 +50,10 @@ class TTSClient:
                     timeout=settings.TTS_AUTH_TIMEOUT_S,
                 )
             except ConnectionClosed as exc:
+                # Sin `exc`: el motivo de cierre lo pone el servidor (#238).
+                close_code = exc.rcvd.code if exc.rcvd else "none"
                 raise RuntimeError(
-                    f"[{self.client_id}] TTS connection closed during auth: {exc}"
+                    f"[{self.client_id}] TTS connection closed during auth (code={close_code})"
                 ) from exc
 
             try:
@@ -136,12 +138,7 @@ class TTSClient:
                     if msg_type == "done":
                         break
                     elif msg_type == "error":
-                        logger.warning(
-                            "[%s] TTS error: %s — %s",
-                            self.client_id,
-                            data.get("code"),
-                            data.get("message"),
-                        )
+                        logger.warning("[%s] TTS error: %s", self.client_id, data.get("code"))
                         break
                     else:
                         logger.debug("[%s] TTS control frame: %s", self.client_id, msg_type)

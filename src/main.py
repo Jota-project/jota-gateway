@@ -84,7 +84,7 @@ async def _lifespan_body(app: FastAPI):
     try:
         await openclaw.connect()
     except Exception as e:
-        logger.error(f"Initial OpenClaw connect failed: {e}")
+        logger.error(f"Initial OpenClaw connect failed: {describe_error(e)}")
 
     # Wired *after* the initial connect on purpose: on_state_change firing
     # CONNECTED on a normal first-time success would send a spurious

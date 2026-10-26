@@ -57,12 +57,15 @@ class TranscriberClient:
                     f"[{self.client_id}] Transcriber listo. session_id={self._session_id!r}"
                 )
             elif msg.type == "error":
-                raise Exception(f"Transcriber auth/config error [{msg.code}]: {msg.message}")
+                # Solo el código: el `message` del transcriber no sale a logs ni a last_error (#238).
+                raise Exception(f"Transcriber auth/config error [{msg.code}]")
             else:
                 raise Exception(f"Respuesta inesperada del transcriber en handshake: {msg.type!r}")
 
         except Exception as e:
-            logger.error(f"[{self.client_id}] Error conectando a Transcriber: {e}")
+            logger.error(
+                f"[{self.client_id}] Error conectando a Transcriber: {type(e).__name__}"
+            )
             if self.ws is not None:
                 try:
                     await self.ws.close()
@@ -141,16 +144,12 @@ class TranscriberClient:
                         await on_status_callback(t_msg.state, t_msg.reason)
 
                 elif t_msg.type == "warning":
-                    logger.warning(
-                        f"[{self.client_id}] Transcriber warning [{t_msg.code}]: {t_msg.message}"
-                    )
+                    logger.warning(f"[{self.client_id}] Transcriber warning [{t_msg.code}]")
                     if on_warning_callback:
                         await on_warning_callback(t_msg.code or "unknown", t_msg.message)
 
                 elif t_msg.type == "error":
-                    logger.error(
-                        f"[{self.client_id}] Transcriber error [{t_msg.code}]: {t_msg.message}"
-                    )
+                    logger.error(f"[{self.client_id}] Transcriber error [{t_msg.code}]")
         except ConnectionClosed as e:
             clean_close = e.rcvd is not None and e.rcvd.code == 1000
             if self._is_ready and not clean_close:

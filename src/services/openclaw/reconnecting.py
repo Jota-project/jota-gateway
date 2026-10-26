@@ -206,9 +206,12 @@ class ReconnectingOpenClawClient:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                self._health.mark_attempt_failed(str(e))
+                self._health.mark_attempt_failed(describe_error(e))
                 logger.warning(
-                    "[%s] degraded retry %d failed: %s", self._name, self._reconnect_attempts, e
+                    "[%s] degraded retry %d failed: %s",
+                    self._name,
+                    self._reconnect_attempts,
+                    describe_error(e),
                 )
                 continue
             self._health.mark_connected()

@@ -1267,14 +1267,19 @@ class JotaBridge:
             except ClientGone:
                 logger.info(f"[{self.client_id}] Cliente no disponible: turno abortado.")
             except RuntimeError as e:
-                logger.error(f"[{self.client_id}] Orchestrator error: {e}")
-                gateway_stats.turn_error(str(e) if isinstance(e, OrchestratorError) else "internal_error")
+                # Solo OrchestratorError lleva un código estable; cualquier otro texto de
+                # excepción puede llevar detalle interno y no sale del proceso (#238).
+                code = str(e) if isinstance(e, OrchestratorError) else "internal_error"
+                logger.error(
+                    f"[{self.client_id}] Orchestrator error: {code} ({type(e).__name__})"
+                )
+                gateway_stats.turn_error(code)
                 try:
                     await self._sender.send_json(
                         {
                             "type": "error",
                             "code": "TURN_ERROR",
-                            "message": str(e),
+                            "message": code,
                             "fatal": False,
                             "turn_id": turn_id,
                         }
