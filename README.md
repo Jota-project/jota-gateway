@@ -283,3 +283,7 @@ src/
         ├── registry.py      TurnRegistry + ClientRegistry (+ broadcast_status a todas las sesiones)
         └── models.py        GatewayInfo, AgentInfo
 ```
+
+## Licencia
+
+MIT. Ver [LICENSE](LICENSE).
