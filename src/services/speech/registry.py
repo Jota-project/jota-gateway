@@ -111,9 +111,8 @@ class SpeechProviders:
             if new_tts is not None:
                 # Los TtsStream en vuelo son dueños de su socket y terminan solos.
                 await self._close_quietly(old_tts.aclose)
-            if new_stt is not None:
-                # Las sesiones ya abiertas conservan el proveedor viejo hasta cerrarse.
-                await self._close_quietly(old_stt.retire)
+            # STT viejo: solo se suelta la referencia; las sesiones ya abiertas lo conservan
+            # hasta cerrarse (ni jota ni ElevenLabs tienen nada que cerrar a nivel proveedor).
             return {"stt": self._stt.name, "tts": self._tts.name}
 
     @staticmethod

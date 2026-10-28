@@ -11,15 +11,8 @@ from src.core.config import settings
 from src.models.schemas import Client
 from src.services.reconnection import ConnectionState
 from src.services.speech.factory import build_stt_provider, build_tts_provider
-from src.services.speech.jota import JotaSttProvider, JotaSttSession
-from src.services.speech.ports import (
-    SpeechToTextProvider,
-    SttCallbacks,
-    SttParams,
-    SttSession,
-    TextToSpeechProvider,
-)
-from src.services.transcriber_reconnecting import ReconnectingTranscriberClient
+from src.services.speech.jota import JotaSttProvider
+from src.services.speech.ports import SttCallbacks, SttParams
 from src.services.tts_reconnecting import ReconnectingTTSClient
 
 CLIENT = Client(id="c1", client_key="the-key", is_active=True)
@@ -36,17 +29,6 @@ def test_factory_defaults_to_jota():
 
 
 
-def test_jota_providers_satisfy_ports():
-    stt = build_stt_provider(settings)
-    assert isinstance(stt, SpeechToTextProvider)
-    assert isinstance(build_tts_provider(settings), TextToSpeechProvider)
-    cb = SttCallbacks(AsyncMock(), AsyncMock(), AsyncMock(), AsyncMock())
-    session = stt.open_session(
-        client=Client(id="c1", client_key="k", is_active=True), params=SttParams("es", 0.0), callbacks=cb
-    )
-    assert isinstance(session, SttSession)
-
-
 def _session(params=None, callbacks=None):
     cb = callbacks or _callbacks()
     provider = JotaSttProvider(settings)
@@ -57,21 +39,19 @@ def _session(params=None, callbacks=None):
 async def test_jota_session_start_sends_service_token_not_client_key(monkeypatch):
     monkeypatch.setattr(settings, "TRANSCRIBER_TOKEN", "svc-token")
     session, _ = _session()
-    session._inner.connect = AsyncMock()
+    session._client.connect = AsyncMock()
     await session.start()
-    session._inner.connect.assert_awaited_once_with(language="en", token="svc-token", vad_thold=0.4)
+    session._client.connect.assert_awaited_once_with(language="en", token="svc-token", vad_thold=0.4)
 
 
 @pytest.mark.asyncio
 async def test_jota_session_run_passes_callbacks():
     session, cb = _session()
-    session._inner.run = AsyncMock()
+    session.state = ConnectionState.CONNECTED
+    session._client.listen_loop = AsyncMock()
     await session.run()
-    session._inner.run.assert_awaited_once_with(
-        on_transcription_callback=cb.on_transcription,
-        on_warning_callback=cb.on_warning,
-        on_status_callback=cb.on_status,
-        on_incomplete_callback=cb.on_incomplete,
+    session._client.listen_loop.assert_awaited_once_with(
+        cb.on_transcription, cb.on_warning, cb.on_status, cb.on_incomplete
     )
 
 
@@ -79,7 +59,7 @@ async def test_jota_session_run_passes_callbacks():
 async def test_jota_session_close_during_start_leaves_closed():
     """Foco 1: close() mientras start() aún conecta no deja un socket sin dueño."""
     session, _ = _session()
-    inner = session._inner
+    inner = session
     gate = asyncio.Event()
     opened = {"socket": False}
 
@@ -109,30 +89,18 @@ async def test_jota_session_close_during_start_leaves_closed():
 @pytest.mark.asyncio
 async def test_jota_session_start_after_close_is_noop():
     session, _ = _session()
-    session._inner.connect = AsyncMock()
+    session._client.connect = AsyncMock()
     await session.close()
     await session.start()
-    session._inner.connect.assert_not_awaited()
-
-
-def test_jota_session_delegates_state_and_last_transcript():
-    session, _ = _session()
-    seen = []
-    session.on_state_change = seen.append
-    session._inner._set_state(ConnectionState.CONNECTED)
-    assert session.state == ConnectionState.CONNECTED
-    assert seen == [ConnectionState.CONNECTED]
-    session._inner._client._last_transcription_at = 12.5
-    assert session.last_transcript_at == 12.5
-    assert isinstance(session, JotaSttSession)
+    session._client.connect.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_wrapper_last_error_has_no_exception_text():
     """Foco 4: last_error solo lleva el nombre del tipo, en los dos wrappers."""
-    tw = ReconnectingTranscriberClient(url="x:1", client_id="c1")
+    tw, _ = _session()
     with patch.object(tw._client, "connect", new=AsyncMock(side_effect=OSError("secret-xyz"))):
-        await tw.connect()
+        await tw.start()
     assert tw.status().last_error == "OSError"
     assert "secret-xyz" not in tw.status().last_error
 

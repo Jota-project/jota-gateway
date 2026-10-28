@@ -5,6 +5,7 @@ import math
 import struct
 import time
 
+import pytest
 from pydantic import SecretStr
 
 from src.core.config import settings
@@ -34,6 +35,13 @@ async def _wait_for(pred, timeout=3.0):
     raise AssertionError("condición no cumplida a tiempo")
 
 
+@pytest.fixture(autouse=True)
+def _short_drain(monkeypatch):
+    from src.services.speech.elevenlabs import stt as stt_mod
+
+    monkeypatch.setattr(stt_mod, "DRAIN_S", 0.3)
+
+
 async def _session(fake):
     from unittest.mock import AsyncMock
 
@@ -42,8 +50,7 @@ async def _session(fake):
             update={
                 "ELEVENLABS_API_KEY": SecretStr("fake-el-key"),
                 "ELEVENLABS_BASE_URL": fake.url,
-                "STT_AUDIO_GATE": "auto",  # elevenlabs -> puerta de energía
-                "ELEVENLABS_STT_DRAIN_S": 0.3,
+                "STT_AUDIO_GATE": "energy",
             }
         )
     )

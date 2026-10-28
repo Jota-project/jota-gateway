@@ -8,21 +8,18 @@ from websockets.frames import Close
 from src.services.speech.elevenlabs.common import (
     classify_close,
     classify_exception,
-    https_base,
     pin_websockets_logging,
     ws_url,
 )
 from src.services.speech.factory import build_tts_provider
 
 
-def test_ws_url_and_https_base():
+def test_ws_url():
     assert (
         ws_url("wss://api.elevenlabs.io/", "/v1/text-to-speech/abc/stream-input", {"a": "b c", "n": 1})
         == "wss://api.elevenlabs.io/v1/text-to-speech/abc/stream-input?a=b+c&n=1"
     )
     assert ws_url("127.0.0.1:9", "/x") == "wss://127.0.0.1:9/x"
-    assert https_base("wss://api.elevenlabs.io/") == "https://api.elevenlabs.io"
-    assert https_base("ws://127.0.0.1:9") == "http://127.0.0.1:9"
 
 
 @pytest.mark.parametrize(

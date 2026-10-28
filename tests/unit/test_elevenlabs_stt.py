@@ -13,6 +13,7 @@ from pydantic import SecretStr
 from src.core.config import settings
 from src.models.schemas import Client
 from src.services.reconnection import ConnectionState
+from src.services.speech.elevenlabs import stt as stt_mod
 from src.services.speech.elevenlabs.stt import ElevenLabsSttProvider
 from src.services.speech.ports import SttCallbacks, SttParams
 from tests.fakes.elevenlabs_stt import FakeElevenLabsStt
@@ -26,12 +27,6 @@ def make_settings(url: str, **update):
         "ELEVENLABS_API_KEY": SecretStr(KEY),
         "ELEVENLABS_BASE_URL": url,
         "STT_AUDIO_GATE": "off",
-        "ELEVENLABS_STT_IDLE_CLOSE_S": 0.3,
-        "ELEVENLABS_STT_DRAIN_S": 1.0,
-        "ELEVENLABS_STT_CONNECT_BUFFER_S": 2.0,
-        "ELEVENLABS_STT_MAX_SESSIONS": 15,
-        "ELEVENLABS_STT_WARM_HOLD_S": 0.0,
-        "ELEVENLABS_HEALTH_TTL_S": 60.0,
         "TRANSCRIBER_RECONNECT_INITIAL_BACKOFF": 0.05,
         "TRANSCRIBER_RECONNECT_MAX_BACKOFF": 0.2,
         "TRANSCRIBER_RECONNECT_MAX_DURATION": 5.0,
@@ -99,13 +94,24 @@ async def wait_until(pred, timeout=2.0):
     raise AssertionError("condición no cumplida a tiempo")
 
 
+@pytest.fixture(autouse=True)
+def consts(monkeypatch):
+    """Tiempos de test. DRAIN_S corto: el falso no confirma un commit sin `on_end`, así que
+    cada cierre con audio pendiente esperaba el drenado entero (~1 s por test)."""
+    monkeypatch.setattr(stt_mod, "IDLE_CLOSE_S", 0.3)
+    monkeypatch.setattr(stt_mod, "DRAIN_S", 0.2)
+
+
 @pytest.fixture
-async def env():
-    """(fake, make) con `make(**settings) -> (provider, session, rec, runner)`; limpia al final."""
+async def env(monkeypatch):
+    """`build(fake_kw, **update)` -> (fake, provider, session, rec); `update` admite settings
+    y constantes del módulo (IDLE_CLOSE_S, DRAIN_S, ...). Limpia al final."""
     made = []
     fakes = []
 
     async def build(fake_kw=None, **update):
+        for name in [k for k in update if hasattr(stt_mod, k)]:
+            monkeypatch.setattr(stt_mod, name, update.pop(name))
         fake = await start_fake(**(fake_kw or {}))
         fakes.append(fake)
         provider = ElevenLabsSttProvider(make_settings(fake.url, **update))
@@ -144,7 +150,7 @@ async def test_query_params_and_header_without_key_in_url(env):
 
 
 async def test_enable_logging_sent_only_when_configured(env):
-    fake, _p, s, _r = await env(ELEVENLABS_STT_ENABLE_LOGGING=False)
+    fake, _p, s, _r = await env(ENABLE_LOGGING=False)
     await s.send_audio(frame())
     await wait_until(lambda: fake.connections)
     assert fake.connections[0]["query"]["enable_logging"] == "false"
@@ -178,7 +184,7 @@ async def test_connect_buffer_keeps_first_words(env):
 
 async def test_connect_buffer_drops_oldest_beyond_cap(env):
     fake, _p, s, _r = await env(
-        {"delay_session_started_s": 0.3}, ELEVENLABS_STT_CONNECT_BUFFER_S=0.5
+        {"delay_session_started_s": 0.3}, CONNECT_BUFFER_S=0.5
     )
     for _ in range(10):
         await s.send_audio(frame())
@@ -202,7 +208,7 @@ async def test_send_end_commits_without_trailing_silence(env):
 
 
 async def test_commit_throttled_spacing(env):
-    fake, _p, s, _r = await env({"on_end": [("x", True)]}, ELEVENLABS_STT_IDLE_CLOSE_S=30.0)
+    fake, _p, s, _r = await env({"on_end": [("x", True)]}, IDLE_CLOSE_S=30.0)
     await s.send_audio(frame())
     await wait_until(lambda: fake.audio_bytes == 3200)
     await s.send_end()
@@ -214,7 +220,7 @@ async def test_commit_throttled_spacing(env):
 
 async def test_idle_close_commits_drains_then_closes(env):
     seen = {}
-    fake, _p, s, rec = await env({"on_end": [("fin", True)], "commit_delay_s": 0.2})
+    fake, _p, s, rec = await env({"on_end": [("fin", True)], "commit_delay_s": 0.2}, DRAIN_S=1.0)
 
     async def on_tr(text, final):
         seen["open_at_final"] = fake.sockets_open
@@ -230,7 +236,8 @@ async def test_idle_close_commits_drains_then_closes(env):
 
 async def test_no_new_upstream_until_previous_drained(env):
     fake, _p, s, rec = await env(
-        {"on_audio": [("p", False)], "on_end": [("u1", True)], "commit_delay_s": 0.4}
+        {"on_audio": [("p", False)], "on_end": [("u1", True)], "commit_delay_s": 0.4},
+        DRAIN_S=1.0,
     )
     await s.send_audio(frame())
     await wait_until(lambda: fake.commits == 1, 3)  # el reposo inició el drenado
@@ -242,7 +249,7 @@ async def test_no_new_upstream_until_previous_drained(env):
 
 
 async def test_semaphore_full_busy_then_ok_on_acquire(env):
-    fake, p, s1, rec1 = await env(ELEVENLABS_STT_MAX_SESSIONS=1)
+    fake, p, s1, rec1 = await env(MAX_SESSIONS=1)
     rec2 = Rec()
     s2 = open_session(p, rec2, "c2")
     r2 = asyncio.create_task(s2.run())
@@ -261,7 +268,7 @@ async def test_semaphore_full_busy_then_ok_on_acquire(env):
 
 
 async def test_busy_cleared_by_idle_timer(env):
-    fake, p, s1, _r1 = await env(ELEVENLABS_STT_MAX_SESSIONS=1)
+    fake, p, s1, _r1 = await env(MAX_SESSIONS=1)
     rec2 = Rec()
     s2 = open_session(p, rec2, "c2")
     r2 = asyncio.create_task(s2.run())
@@ -331,7 +338,7 @@ async def test_unexpected_close_with_audio_reconnects(env):
 
 async def test_upstream_idle_close_is_silent(env):
     fake, _p, s, rec = await env(
-        {"on_end": [("x", True)], "idle_close_s": 0.2}, ELEVENLABS_STT_IDLE_CLOSE_S=30.0
+        {"on_end": [("x", True)], "idle_close_s": 0.2}, IDLE_CLOSE_S=30.0
     )
     await s.send_audio(frame())
     await s.send_end()
@@ -368,7 +375,7 @@ async def test_counters_count_audio_seconds(env):
 
 
 async def test_close_idempotent_releases_semaphore_once(env):
-    fake, p, s, _r = await env(ELEVENLABS_STT_MAX_SESSIONS=2)
+    fake, p, s, _r = await env(MAX_SESSIONS=2)
     await s.send_audio(frame())
     await wait_until(lambda: fake.connections)
     assert p._sem._value == 1
@@ -377,18 +384,6 @@ async def test_close_idempotent_releases_semaphore_once(env):
     await wait_until(lambda: p._sem._value == 2)
     await asyncio.sleep(0.1)
     assert p._sem._value == 2
-
-
-async def test_warm_hold_feeds_silence_after_idle(env):
-    fake, _p, s, _r = await env(
-        ELEVENLABS_STT_IDLE_CLOSE_S=0.2, ELEVENLABS_STT_WARM_HOLD_S=0.5
-    )
-    await s.send_audio(frame())
-    await wait_until(lambda: fake.audio_bytes == 3200)
-    await asyncio.sleep(0.5)
-    assert fake.audio_bytes > 3200  # silencio PCM16 mantiene la conexión
-    assert fake.sockets_open == 1
-    await wait_until(lambda: fake.sockets_open == 0, 3)
 
 
 async def test_no_key_or_text_in_logs_at_debug(env, caplog):
@@ -433,17 +428,7 @@ async def test_probe_bad_key_marks_auth_failed_and_start_never_raises():
     assert p2.state == ConnectionState.RECONNECTING
 
 
-async def test_retire_closes_provider_after_last_session(env):
-    fake, p, s, _r = await env()
-    await p.retire()
-    assert not p._closed
-    await s.close()
-    assert p._closed
-
-
 async def test_probe_hung_handshake_is_failure_not_healthy(monkeypatch):
-    from src.services.speech.elevenlabs import stt as stt_mod
-
     monkeypatch.setattr(stt_mod, "PROBE_CONNECT_TIMEOUT_S", 0.3)
 
     async def handle(reader, writer):
@@ -512,7 +497,8 @@ async def test_bridge_watchdog_not_triggered_by_partials_without_commit(env, mon
 async def test_permit_released_before_respawn_no_spurious_busy_at_limit(env):
     fake, p, s, rec = await env(
         {"on_audio": [("p", False)], "on_end": [("u1", True)], "commit_delay_s": 0.4},
-        ELEVENLABS_STT_MAX_SESSIONS=1,
+        MAX_SESSIONS=1,
+        DRAIN_S=1.0,
     )
     await s.send_audio(frame())
     await wait_until(lambda: fake.commits == 1, 3)  # el reposo inició el drenado
@@ -524,7 +510,7 @@ async def test_permit_released_before_respawn_no_spurious_busy_at_limit(env):
 
 
 async def test_concurrent_send_audio_during_reopen_opens_one_upstream(env):
-    fake, p, s, rec = await env(ELEVENLABS_STT_MAX_SESSIONS=2)
+    fake, p, s, rec = await env(MAX_SESSIONS=2)
 
     async def slow_status(state, reason):
         rec.statuses.append((state, reason))
@@ -568,7 +554,7 @@ async def test_reopen_after_exhaustion_restores_session(env):
 
 
 async def test_capacity_refusal_counted_once_per_episode(env):
-    fake, p, s1, _r1 = await env(ELEVENLABS_STT_MAX_SESSIONS=1)
+    fake, p, s1, _r1 = await env(MAX_SESSIONS=1)
     s2 = open_session(p, Rec(), "c2")
     r2 = asyncio.create_task(s2.run())
     await s1.send_audio(frame())
@@ -583,8 +569,6 @@ async def test_capacity_refusal_counted_once_per_episode(env):
 async def test_provider_warning_is_not_forwarded_as_degradation(env, caplog):
     """En real, ElevenLabs avisa en cada sesión (p. ej. zero retention no aplicado): no es
     una degradación del servicio, así que no llega al cliente."""
-    import src.services.speech.elevenlabs.stt as stt_mod
-
     stt_mod._warning_logged[0] = False
     caplog.set_level(logging.INFO, logger=stt_mod.__name__)
     fake, _p, s, rec = await env(fake_kw={"error_type": "warning", "close_after_error": False})

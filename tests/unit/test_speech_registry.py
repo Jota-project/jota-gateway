@@ -11,9 +11,7 @@ from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
 from src.services.reconnection import ConnectionState
 from src.services.speech import factory
-from src.services.speech.jota import JotaSttProvider
 from src.services.speech.registry import SpeechProviders, SpeechSwapError
-from src.services.speech.sessions import SessionRefCount
 from tests.unit.test_bridge_speech_ports import FakeSession, FakeStt
 
 
@@ -26,9 +24,6 @@ class NamedStt(FakeStt):
 
     async def start(self):
         self.started += 1
-
-    async def retire(self):
-        await self.aclose()
 
     async def aclose(self):
         self.closed += 1
@@ -121,36 +116,6 @@ async def test_swap_stt_existing_session_keeps_old_provider_new_session_uses_new
     assert isinstance(b2.transcriber, FakeSession) and b2.transcriber is p.stt.session
 
 
-async def test_old_stt_provider_closed_when_last_session_closes(s):
-    class Counting(JotaSttProvider):
-        closed = 0
-
-        async def aclose(self):
-            Counting.closed += 1
-
-    prov = Counting(s)
-    client = Client(id="c1", client_key="k", is_active=True)
-    from src.services.speech.ports import SttCallbacks, SttParams
-
-    async def noop(*_a):
-        return None
-
-    cb = SttCallbacks(noop, noop, noop, noop)
-    sess1 = prov.open_session(client=client, params=SttParams("es", 0.0), callbacks=cb)
-    sess2 = prov.open_session(client=client, params=SttParams("es", 0.0), callbacks=cb)
-    await prov.retire()
-    assert Counting.closed == 0
-    await sess1.close()
-    await sess1.close()  # idempotente: no decrementa dos veces
-    assert Counting.closed == 0
-    await sess2.close()
-    assert Counting.closed == 1
-
-    idle = Counting(s)
-    await idle.retire()
-    assert Counting.closed == 2
-
-
 async def test_swap_rejected_without_key_keeps_current(s, fakes):
     p = _providers(s)
     stt, tts = p.stt, p.tts
@@ -184,64 +149,12 @@ async def test_swap_unknown_provider_raises_value_error_and_keeps_current(s, fak
     assert p.tts is tts
 
 
-class RefCountedStt(FakeStt):
-    """Proveedor no-jota cuyo aclose() rompe sus sesiones abiertas."""
-
-    name = "refcounted"
-
-    def __init__(self):
-        super().__init__()
-        self.refs = SessionRefCount()
-        self.closed = 0
-        self.broken = False
-
-    def open_session(self, *, client, params, callbacks):
-        s = super().open_session(client=client, params=params, callbacks=callbacks)
-        self.refs.opened()
-
-        async def close():
-            await self.refs.closed()
-
-        s.close = close
-        return s
-
-    async def retire(self):
-        await self.refs.retire(self.aclose)
-
-    async def aclose(self):
-        self.closed += 1
-        self.broken = True
-
-
-async def test_swap_stt_open_session_survives_until_closed_and_aclose_once(s, fakes):
-    old = RefCountedStt()
+async def test_swap_stt_only_drops_the_reference(s, fakes):
+    """El STT viejo no se cierra: sus sesiones abiertas lo siguen usando hasta acabar."""
+    old = NamedStt("old")
     p = SpeechProviders(s, old, NamedTts("jota"))
-    sess = old.open_session(client=None, params=None, callbacks=None)
     await p.swap(stt_name="fake")
-    assert old.broken is False and old.closed == 0
-    await sess.close()
-    await sess.close()
-    assert old.closed == 1 and old.broken is True
-
-
-async def test_session_refcount_fires_once_and_immediately_when_idle():
-    calls = []
-
-    async def cb():
-        calls.append(1)
-
-    idle = SessionRefCount()
-    await idle.retire(cb)
-    await idle.retire(cb)
-    assert calls == [1]
-
-    busy = SessionRefCount()
-    busy.opened()
-    await busy.retire(cb)
-    assert calls == [1]
-    await busy.closed()
-    await busy.closed()
-    assert calls == [1, 1]
+    assert p.stt is not old and old.closed == 0 and old.on_state_change is None
 
 
 async def test_swap_detaches_listeners_from_replaced_providers(s, fakes):

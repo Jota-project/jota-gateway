@@ -174,10 +174,10 @@ El STT y el TTS pasan por una capa de proveedores (`src/services/speech/`). Los 
 | `TTS_PROVIDER` | `jota` | `jota` (jota-speaker) o `elevenlabs` (stream-input, `eleven_flash_v2_5`) |
 | `ELEVENLABS_API_KEY` | — | Obligatoria si algún proveedor es `elevenlabs` (permisos Text to Speech y Speech to Text) |
 | `ELEVENLABS_TTS_DEFAULT_VOICE` | `gc61tTk93h3LBXPxew2V` | Voz por defecto; las voces de clientes que no son de ElevenLabs (p. ej. `af_heart`) caen en ella o se traducen con `TTS_VOICE_MAP` |
-| `STT_AUDIO_GATE` | `auto` | `auto` = puerta de energía con proveedores de pago (solo se envía audio mientras se habla), `off` con jota; también `off`/`energy` |
+| `STT_AUDIO_GATE` | `energy` | Puerta de energía del STT de ElevenLabs (solo se envía audio mientras se habla); `off` la quita. jota no la usa |
 | `STT_GATE_RMS_DBFS` | `-45` | Umbral de la puerta de energía |
 
-El resto de ajustes (`ELEVENLABS_*`) está documentado en `.env.sample`. El cambio en caliente se hace con `PUT /admin/speech`. Con el plan Creator, ElevenLabs conserva el audio y las transcripciones (la retención cero es solo enterprise).
+`ELEVENLABS_BASE_URL` y `ELEVENLABS_TTS_MODEL` están en `.env.sample`; el resto de ajustes de ElevenLabs son constantes del adaptador (`src/services/speech/elevenlabs/`). El cambio en caliente se hace con `PUT /admin/speech`. Con el plan Creator, ElevenLabs conserva el audio y las transcripciones (la retención cero es solo enterprise).
 
 `silence_timeout_s` y `max_silence_turns` (umbral del watchdog de silencio) son campos de configuración **por cliente** en la base de datos, no variables de entorno globales — ver `ClientRecord` en `CLAUDE.md`.
 

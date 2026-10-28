@@ -7,18 +7,31 @@ Imprime solo números y booleanos; nunca la clave ni el texto.
 import asyncio
 import os
 import time
+from array import array
 
 import pytest
 from pydantic import SecretStr
 
 from src.core.config import settings
 from src.models.schemas import Client
-from src.services.speech.audio import s16le_24k_to_f32le_16k
 from src.services.speech.elevenlabs.stt import ElevenLabsSttProvider
 from src.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
 from src.services.speech.ports import SttCallbacks, SttParams
 
 pytestmark = pytest.mark.live
+
+
+def s16le_24k_to_f32le_16k(pcm: bytes) -> bytes:
+    """PCM16 LE 24 kHz mono -> Float32 LE 16 kHz mono (remuestreo lineal, máquina little-endian)."""
+    src = array("h")
+    src.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+    out = array("f")
+    for i in range((len(src) * 2) // 3):
+        pos = i * 1.5
+        j = int(pos)
+        nxt = src[j + 1] if j + 1 < len(src) else src[j]
+        out.append((src[j] * (1.0 - (pos - j)) + nxt * (pos - j)) / 32768.0)
+    return out.tobytes()
 
 
 @pytest.fixture

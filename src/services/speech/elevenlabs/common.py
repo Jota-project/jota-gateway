@@ -1,18 +1,30 @@
-"""Utilidades comunes de los adaptadores ElevenLabs: URLs, logging y errores normalizados.
+"""Utilidades comunes de los adaptadores ElevenLabs: clave, URLs, sockets, sonda con caché y
+errores normalizados.
 
 Nada de aquí registra ni devuelve el texto de un error del proveedor: solo la clase
-(`auth`/`quota`/`capacity`/`other`).
+(`auth`/`quota`/`capacity`/`other`) o el nombre del tipo de excepción.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import time
+from collections.abc import AsyncIterator
 from typing import Literal
 from urllib.parse import quote, urlencode
 
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
+from src.services.reconnection import describe_error
+
+logger = logging.getLogger(__name__)
+
 ErrorKind = Literal["auth", "quota", "capacity", "other"]
+
+HEALTH_TTL_S = 60.0  # caché de probe(): cada sonda abre una conexión al proveedor
+CLOSE_GRACE_S = 0.5  # cierre limpio de un socket; si no, websockets aborta el transporte
 
 _QUOTA_WORDS = ("quota", "credits", "insufficient")  # cuota agotada: terminal, como auth
 _TIME_LIMIT_WORDS = ("session_time_limit", "time limit")  # tope de la sesión: solo reabrir
@@ -35,6 +47,69 @@ def pin_websockets_logging() -> None:
         lg.setLevel(max(lg.level, logging.INFO))
 
 
+def api_key(settings) -> str:
+    """`ELEVENLABS_API_KEY` sin espacios (ValueError si falta) y `websockets` fijado en INFO."""
+    secret = settings.ELEVENLABS_API_KEY
+    key = secret.get_secret_value().strip() if secret is not None else ""
+    if not key:
+        raise ValueError("ELEVENLABS_API_KEY")
+    pin_websockets_logging()
+    return key
+
+
+async def close_ws(ws) -> None:
+    try:
+        await asyncio.wait_for(ws.close(), CLOSE_GRACE_S)
+    except Exception:  # incluye TimeoutError
+        pass
+
+
+async def json_messages(ws) -> AsyncIterator[dict]:
+    """Los frames de texto que son objetos JSON; el resto se descarta en silencio."""
+    async for raw in ws:
+        if isinstance(raw, bytes):
+            continue
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            yield data
+
+
+class ProbedProvider:
+    """`probe()` con caché de `HEALTH_TTL_S`, `start()` que nunca lanza y `aclose()`.
+    Cada adaptador pone `_probe_once()` (None = sin red, p. ej. en backoff: no se cachea)."""
+
+    _closed = False
+    _terminal = False  # credenciales rechazadas o cuota agotada: hasta reiniciar o cambiar
+    _probe_at: float | None = None
+    _probe_ok = False
+
+    async def _probe_once(self) -> bool | None:
+        raise NotImplementedError
+
+    async def probe(self) -> bool:
+        if self._closed or self._terminal:
+            return False
+        if self._probe_at is not None and time.monotonic() - self._probe_at < HEALTH_TTL_S:
+            return self._probe_ok
+        ok = await self._probe_once()
+        if ok is None:
+            return False
+        self._probe_ok, self._probe_at = ok, time.monotonic()
+        return ok
+
+    async def start(self) -> None:
+        try:
+            await self.probe()
+        except Exception as e:
+            logger.warning("%r: probe de arranque falló (%s)", self, describe_error(e))
+
+    async def aclose(self) -> None:
+        self._closed = True
+
+
 def ws_url(base: str, path: str, params: dict[str, str | int | float] | None = None) -> str:
     """`base` (con o sin esquema y sin barra final) + `path` + query. Sin esquema -> wss."""
     base = base.strip().rstrip("/")
@@ -44,16 +119,6 @@ def ws_url(base: str, path: str, params: dict[str, str | int | float] | None = N
     if params:
         url += "?" + urlencode(params)
     return url
-
-
-def https_base(base: str) -> str:
-    """Base para la API REST: wss:// -> https://, ws:// -> http://."""
-    base = base.strip().rstrip("/")
-    if base.startswith("wss://"):
-        return "https://" + base[len("wss://") :]
-    if base.startswith("ws://"):
-        return "http://" + base[len("ws://") :]
-    return base if "://" in base else f"https://{base}"
 
 
 def classify_close(code: int | None, reason: str | None) -> ErrorKind:

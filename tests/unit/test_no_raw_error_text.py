@@ -20,6 +20,7 @@ from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
 from src.services.openclaw.registry import ClientRegistry
 from src.services.protocol import OrchestratorEvent
 from src.services.reconnection import ConnectionState, describe_error
+from src.services.speech.ports import SttCallbacks, SttParams
 from src.services.transcriber_client import TranscriberClient
 from src.services.transcriber_reconnecting import ReconnectingTranscriberClient
 from src.services.tts_client import TTSClient
@@ -241,14 +242,17 @@ async def test_bridge_close_all_failed_active_turn_logs_type_only(caplog):
 
 async def test_transcriber_listen_crash_logs_no_message(caplog):
     caplog.set_level(logging.DEBUG)
-    w = ReconnectingTranscriberClient(url="test:1", client_id="c1")
+    cb = SttCallbacks(AsyncMock(), AsyncMock(), AsyncMock(), AsyncMock())
+    w = ReconnectingTranscriberClient(
+        url="test:1", client_id="c1", callbacks=cb, params=SttParams("es", 0.0)
+    )
     w.state = ConnectionState.CONNECTED
 
     async def boom(*a, **k):
         raise RuntimeError(SECRET)
 
     w._client.listen_loop = boom
-    await w.run(on_transcription_callback=AsyncMock())
+    await w.run()
     assert w.state == ConnectionState.DEGRADED
     assert SECRET not in _logged(caplog)
 

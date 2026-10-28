@@ -3,7 +3,7 @@ import logging
 import pytest
 from pydantic import SecretStr
 
-from src.core.config import Settings, effective_audio_gate
+from src.core.config import Settings
 from src.core.startup_checks import SpeechConfigError, check_speech_settings
 from src.services.speech import voices
 from src.services.speech.voices import resolve_voice
@@ -75,22 +75,3 @@ def test_rejects_v3_model_for_ws(model):
     with pytest.raises(SpeechConfigError) as e:
         check_speech_settings(s, stt_provider="jota", tts_provider="elevenlabs")
     assert "ELEVENLABS_TTS_MODEL" in str(e.value) and model not in str(e.value)
-
-
-@pytest.mark.parametrize("schedule", [[], [120] * 5, [10, 120], [120, 900]])
-def test_rejects_bad_chunk_schedule(schedule):
-    s = _s(
-        ELEVENLABS_API_KEY="k",
-        ELEVENLABS_TTS_DEFAULT_VOICE="v",
-        ELEVENLABS_TTS_CHUNK_SCHEDULE=schedule,
-    )
-    with pytest.raises(SpeechConfigError) as e:
-        check_speech_settings(s, stt_provider="jota", tts_provider="elevenlabs")
-    assert "ELEVENLABS_TTS_CHUNK_SCHEDULE" in str(e.value)
-
-
-def test_effective_audio_gate_auto():
-    assert effective_audio_gate(_s(), "jota") == "off"
-    assert effective_audio_gate(_s(), "elevenlabs") == "energy"
-    assert effective_audio_gate(_s(STT_AUDIO_GATE="off"), "elevenlabs") == "off"
-    assert effective_audio_gate(_s(STT_AUDIO_GATE="energy"), "jota") == "energy"

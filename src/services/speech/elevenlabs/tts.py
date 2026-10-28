@@ -36,9 +36,12 @@ from src.services.reconnection import (
 )
 from src.services.speech.elevenlabs.common import (
     ErrorKind,
+    ProbedProvider,
+    api_key,
     classify_close,
     classify_exception,
-    pin_websockets_logging,
+    close_ws,
+    json_messages,
     ws_url,
 )
 from src.services.speech.voices import resolve_voice
@@ -50,7 +53,9 @@ MIN_SPEED, MAX_SPEED = 0.7, 1.2
 INACTIVITY_TIMEOUT_S = 180
 OUTPUT_FORMAT = "pcm_24000"
 MAX_FRAME_BYTES = 16 * 1024 * 1024
-CLOSE_GRACE_S = 0.5  # cierre limpio del socket al terminar; close() total < 1 s
+CHUNK_SCHEDULE = [120, 160, 250, 290]  # caracteres antes de generar audio (1-4 valores, 50-500)
+MAX_STREAMS = 10  # síntesis simultáneas por proceso
+MAX_BUFFER_BYTES = 10 * 1024 * 1024  # audio sin leer por stream; por encima se corta la síntesis
 PROBE_TIMEOUT_S = 5.0
 PROBE_CONNECT_TIMEOUT_S = 4.0  # TCP + handshake WS: vencer aquí es un fallo, no "sano"
 # Fin de frase: . ? ! … (más cierres de comillas/paréntesis opcionales) seguido de espacio o del
@@ -62,7 +67,6 @@ _ABBREVIATIONS = frozenset(
     | {"vs", "núm", "pág", "ej", "aprox", "tel", "avda"}
 )
 _NATIVE_VOICE = re.compile(r"[A-Za-z0-9]{20}")
-_MAX_CLAMP_CLIENTS = 1024
 
 
 def _is_abbreviation(prefix: str) -> bool:
@@ -177,7 +181,7 @@ class ElevenLabsTtsStream:
         return {
             "text": " ",
             "voice_settings": {"speed": self._speed},
-            "generation_config": {"chunk_length_schedule": self._p._chunk_schedule},
+            "generation_config": {"chunk_length_schedule": CHUNK_SCHEDULE},
         }
 
     async def _runner(self) -> None:
@@ -203,12 +207,8 @@ class ElevenLabsTtsStream:
 
     async def _close_ws(self) -> None:
         ws, self._ws = self._ws, None
-        if ws is None:
-            return
-        try:
-            await asyncio.wait_for(ws.close(), CLOSE_GRACE_S)
-        except Exception:  # incluye TimeoutError: websockets aborta el transporte solo
-            pass
+        if ws is not None:
+            await close_ws(ws)
 
     async def _serve(self, ws) -> str:
         """Escribe hasta el final de la entrada; devuelve "reopen" si procede reabrir."""
@@ -290,15 +290,7 @@ class ElevenLabsTtsStream:
         """Vuelca el audio al búfer. Devuelve "final", "overflow", "error" o, si el socket se
         cerró sin `isFinal`, la clase del cierre (`auth`/`capacity`/`other`)."""
         try:
-            async for raw in ws:
-                if isinstance(raw, bytes):
-                    continue
-                try:
-                    data = json.loads(raw)
-                except ValueError:
-                    continue
-                if not isinstance(data, dict):
-                    continue
+            async for data in json_messages(ws):
                 audio = data.get("audio")
                 if isinstance(audio, str) and audio:
                     try:
@@ -309,11 +301,11 @@ class ElevenLabsTtsStream:
                     pcm = pcm[: len(pcm) - len(self._carry)]
                     if not pcm:
                         continue
-                    if self._buffered + len(pcm) > self._p._max_buffer:
+                    if self._buffered + len(pcm) > MAX_BUFFER_BYTES:
                         logger.warning(
                             "ElevenLabs TTS: el búfer de audio supera %d bytes; se corta la "
                             "síntesis (el turno sigue solo con texto)",
-                            self._p._max_buffer,
+                            MAX_BUFFER_BYTES,
                         )
                         return "overflow"
                     if not self._got_audio:
@@ -334,37 +326,25 @@ class ElevenLabsTtsStream:
         return classify_close(ws.close_code, ws.close_reason)
 
 
-class ElevenLabsTtsProvider:
+class ElevenLabsTtsProvider(ProbedProvider):
     name = "elevenlabs"
 
     state = health_attr("state")
     on_state_change = health_attr("on_state_change")
 
     def __init__(self, settings) -> None:
-        secret = settings.ELEVENLABS_API_KEY
-        key = secret.get_secret_value().strip() if secret is not None else ""
-        if not key:
-            raise ValueError("ELEVENLABS_API_KEY")
-        pin_websockets_logging()
-        self._key = key
+        self._key = api_key(settings)
         self._base = settings.ELEVENLABS_BASE_URL
         self._model = settings.ELEVENLABS_TTS_MODEL
-        self._chunk_schedule = list(settings.ELEVENLABS_TTS_CHUNK_SCHEDULE)
-        self._max_buffer = settings.ELEVENLABS_TTS_MAX_BUFFER_BYTES
-        self._health_ttl = settings.ELEVENLABS_HEALTH_TTL_S
         self._default_voice = settings.ELEVENLABS_TTS_DEFAULT_VOICE
         self._voice_map = dict(settings.TTS_VOICE_MAP)
-        self._sem = asyncio.Semaphore(settings.ELEVENLABS_TTS_MAX_STREAMS)
+        self._sem = asyncio.Semaphore(MAX_STREAMS)
         self._gate = LazyBackoffGate(
             settings.TTS_RECONNECT_INITIAL_BACKOFF, settings.TTS_RECONNECT_MAX_BACKOFF
         )
         self._health = ServiceHealth("tts", ConnectionState.CONNECTED)
-        self._auth_failed = False
-        self._closed = False
         self._counters = {"capacity_refusals": 0, "provider_429": 0, "auth_errors": 0}
-        self._clamp_logged: set[str] = set()
-        self._probe_at: float | None = None
-        self._probe_ok = False
+        self._clamp_logged: set[str] = set()  # acotado por el número de clientes de la BD
 
     def __repr__(self) -> str:
         return f"<ElevenLabsTtsProvider state={self.state.value}>"
@@ -395,8 +375,6 @@ class ElevenLabsTtsProvider:
             return 1.0
         clamped = min(MAX_SPEED, max(MIN_SPEED, speed))
         if clamped != speed and client_id not in self._clamp_logged:
-            if len(self._clamp_logged) >= _MAX_CLAMP_CLIENTS:
-                self._clamp_logged.clear()
             self._clamp_logged.add(client_id)
             logger.info(
                 "ElevenLabs TTS: velocidad %.2f fuera de [%.1f, %.1f]; se usa %.2f",
@@ -412,7 +390,7 @@ class ElevenLabsTtsProvider:
     async def connect(
         self, voice: str | None, speed: float | None, client_id: str
     ) -> ElevenLabsTtsStream | None:
-        if self._closed or self._auth_failed:
+        if self._closed or self._terminal:
             return None
         token = self._gate.begin()
         if token is None:
@@ -445,8 +423,8 @@ class ElevenLabsTtsProvider:
 
     def _mark_auth_failed(self, why: str = "auth") -> None:
         self._counters["auth_errors"] += 1
-        if not self._auth_failed:
-            self._auth_failed = True
+        if not self._terminal:
+            self._terminal = True
             logger.error(
                 "ElevenLabs TTS: proveedor degradado (%s) hasta reiniciar o cambiar de proveedor",
                 why,
@@ -484,35 +462,24 @@ class ElevenLabsTtsProvider:
         self._health.set_state(ConnectionState.RECONNECTING)
 
     def _record_success(self) -> None:
-        if self._auth_failed:
+        if self._terminal:
             return
         self._gate.record_success()
         self._health.mark_connected()
 
     # --- sonda de salud ---
 
-    async def probe(self) -> bool:
-        if self._closed or self._auth_failed:
-            return False
-        now = time.monotonic()
-        if self._probe_at is not None and now - self._probe_at < self._health_ttl:
-            return self._probe_ok
+    async def _probe_once(self) -> bool | None:
+        """Abre el stream de la voz por defecto, manda `" "` y el fin de entrada y espera el
+        cierre. No factura más que un espacio. None dentro de la ventana de backoff (sin red)."""
         token = self._gate.begin()
         if token is None:
-            return False  # dentro de la ventana de backoff: sin red
-        ok = await self._probe_once(token)
-        self._probe_ok = ok
-        self._probe_at = time.monotonic()
-        return ok
-
-    async def _probe_once(self, token: int) -> bool:
-        """Abre el stream de la voz por defecto, manda `" "` y el fin de entrada y espera el
-        cierre. No factura más que un espacio."""
+            return None
         voice = self._default_voice or ""
         init = {
             "text": " ",
             "voice_settings": {"speed": 1.0},
-            "generation_config": {"chunk_length_schedule": self._chunk_schedule},
+            "generation_config": {"chunk_length_schedule": CHUNK_SCHEDULE},
         }
         connected = False
         try:
@@ -553,12 +520,3 @@ class ElevenLabsTtsProvider:
             return True
         self._connect_failed(token, kind, None)
         return False
-
-    async def start(self) -> None:
-        try:
-            await self.probe()
-        except Exception as e:
-            logger.warning("ElevenLabs TTS: probe de arranque falló (%s)", describe_error(e))
-
-    async def aclose(self) -> None:
-        self._closed = True

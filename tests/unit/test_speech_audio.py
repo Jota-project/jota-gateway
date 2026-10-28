@@ -86,19 +86,3 @@ def test_energy_gate_ignores_frames_shorter_than_one_sample():
     for n in (0, 1, 3):
         assert gate.feed(b"\x00" * n) == ([], False)
     assert len(gate._ring) == 0
-
-
-def test_s16le_24k_to_f32le_16k_length_and_values():
-    from src.services.speech.audio import s16le_24k_to_f32le_16k
-
-    n = 2400  # 0,1 s a 24 kHz
-    pcm = struct.pack(f"<{n}h", *([16384] * n))  # constante 0,5
-    out = s16le_24k_to_f32le_16k(pcm)
-    vals = struct.unpack(f"<{len(out) // 4}f", out)
-    assert len(vals) == 1600  # 0,1 s a 16 kHz
-    assert all(abs(v - 0.5) < 1e-3 for v in vals)
-    assert s16le_24k_to_f32le_16k(b"") == b""
-    assert s16le_24k_to_f32le_16k(b"\x01") == b""  # byte suelto: sin muestras
-    ramp = struct.pack("<4h", 0, 3000, 6000, 9000)
-    r = struct.unpack("<2f", s16le_24k_to_f32le_16k(ramp))
-    assert r[0] == 0.0 and abs(r[1] - 4500 / 32768) < 1e-6  # posición 1,5 interpolada
