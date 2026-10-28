@@ -106,7 +106,7 @@ def test_models_without_roster_lists_only_alias(client, mock_orchestrator):
 
 
 def test_models_with_empty_roster_lists_only_alias(client, mock_orchestrator):
-    mock_orchestrator.gateway_info.agents = {}
+    mock_orchestrator.gateway_info.agents = []
     assert _ids(client.get("/v1/models")) == ["jota-gateway"]
 
 

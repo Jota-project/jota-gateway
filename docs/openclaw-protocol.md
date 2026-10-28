@@ -490,8 +490,8 @@ lost. Fix belongs to M9 (correlate by `runId`; issue #202).
   pre-2026.6.11 compatibility: a `res` with `ok:true` + `status: "done"` no longer ends a turn
   (only `chat` `state: "final"` or a `res` with `ok:false` does), and `hello-ok`'s
   `snapshot.agents[]` / `snapshot.defaultAgentId` are no longer read (roster only from
-  `agents.list`, default agent from `snapshot.sessionDefaults.defaultAgentId`, then
-  `agents.list`'s `defaultId`). Also dropped the unused frame builders `chat.history`,
+  `agents.list`, default agent from `agents.list`'s `defaultId` when present, else
+  `snapshot.sessionDefaults.defaultAgentId`). Also dropped the unused frame builders `chat.history`,
   `chat.inject`, `sessions.steer`, `sessions.list`, `agent.identity.get`, `models.list` and
   `models.authStatus` (the methods themselves are unchanged server-side).
 - **2026-10-23**: added "`runId`, `chat.abort` and a concurrent `chat.send`" (issue #219).
