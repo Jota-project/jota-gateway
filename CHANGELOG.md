@@ -1,3 +1,10 @@
+## [1.21.2](https://github.com/Jota-project/jota-gateway/compare/v1.21.1...v1.21.2) (2026-10-28)
+
+
+### Bug Fixes
+
+* token de servicio TRANSCRIBER_TOKEN en vez de la client_key ([#218](https://github.com/Jota-project/jota-gateway/issues/218)) ([#261](https://github.com/Jota-project/jota-gateway/issues/261)) ([28ea639](https://github.com/Jota-project/jota-gateway/commit/28ea639260a4a05da248e01e8f8bdae5ccc5aaa8))
+
 ## [1.21.1](https://github.com/Jota-project/jota-gateway/compare/v1.21.0...v1.21.1) (2026-10-26)
 
 
