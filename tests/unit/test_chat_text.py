@@ -191,6 +191,13 @@ def test_reset_between_responses():
     assert t.feed(_delta("dos", "dos")) == "dos"
 
 
+def test_final_resets_for_next_response_without_snapshot():
+    t = ChatTextTracker()
+    assert t.feed(_final("completo")) == "completo"
+    assert t.feed({"state": "delta", "deltaText": "otra"}) == "otra"
+    assert t.feed(_final("otra")) == ""
+
+
 def test_all_out_resets_with_tracker():
     t = ChatTextTracker()
     t.feed(_delta("uno", "uno"))
