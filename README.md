@@ -158,7 +158,6 @@ Variables en `.env` (formato `host:port` sin protocolo para todos los URLs):
 | `ORCHESTRATOR_RECONNECT_MAX_DURATION` | `300.0` | Tiempo hasta DEGRADED del orquestador (s); en DEGRADED sigue reintentando un intento cada `MAX_BACKOFF` s |
 | `SINGLE_PROCESS_LOCK` | `true` | `flock` sobre `gateway.lock` junto a la BD: un segundo proceso (p. ej. `--workers 2`) no arranca. Multi-worker no está soportado |
 | `SESSION_REVALIDATE_INTERVAL_S` | `10.0` | Cada sesión WS se revalida contra la BD; cliente borrado/desactivado/clave rotada → cierre 1008 `revoked` |
-| `SESSION_CACHE_TTL_S` | `10.0` | TTL de la caché de sesiones de `db_client` (antes 60 s) |
 | `TRANSCRIBER_RECONNECT_INITIAL_BACKOFF` | `1.0` | Backoff inicial en reconexión del transcriptor (s) |
 | `TRANSCRIBER_RECONNECT_MAX_BACKOFF` | `60.0` | Backoff máximo en reconexión del transcriptor (s) |
 | `TRANSCRIBER_RECONNECT_MAX_DURATION` | `300.0` | Tiempo hasta DEGRADED del transcriptor (s) |

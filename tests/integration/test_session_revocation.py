@@ -12,7 +12,7 @@ import uvicorn
 import websockets
 from sqlmodel import Session
 
-from src.core.cache import make_cache
+from src.cli import cmd_deactivate
 from src.core.config import settings
 from src.db.models import ClientRecord
 from src.main import app
@@ -103,14 +103,13 @@ async def test_revoking_a_client_closes_its_live_session(server, revocation):
     assert app.state.client_registry.get(CLIENT_ID) is None
 
 
-async def test_change_from_another_process_is_caught_via_cache_ttl(server, db_engine):
-    """La CLI es otro proceso y no evicta la caché del gateway: solo valen TTL + revalidación."""
-    db_client._session_cache, db_client._session_lock = make_cache(maxsize=500, ttl=0.3)
+async def test_cli_deactivation_revokes_within_one_interval(server, db_engine, capsys):
+    """#265: sin caché, desactivar desde la CLI (otro proceso, solo toca la BD) corta la
+    sesión en la siguiente revalidación, ≤ SESSION_REVALIDATE_INTERVAL_S (+ margen)."""
     ws = await _open(server)
-    with Session(db_engine) as s:  # DELETE directo en la BD, sin db_client.invalidate
-        s.delete(s.get(ClientRecord, CLIENT_ID))
-        s.commit()
-    await _expect_revoked(ws)
+    cmd_deactivate(VALID_KEY, db_engine)
+    elapsed = await _expect_revoked(ws)
+    assert elapsed < INTERVAL_S + 0.5
 
 
 async def test_transient_db_error_does_not_close_the_session(server, monkeypatch):
@@ -125,7 +124,6 @@ async def test_transient_db_error_does_not_close_the_session(server, monkeypatch
         return await real(key)
 
     monkeypatch.setattr(db_client, "get_session", flaky)
-    db_client._session_cache.clear()
     ws = await _open(server)
     await asyncio.sleep(INTERVAL_S * 8)  # varias revalidaciones, las 2 primeras fallan
     assert calls["failed"] == 2 and calls["n"] > 3
@@ -147,7 +145,7 @@ def test_defaults():
     from src.core.config import Settings
 
     assert Settings.model_fields["SESSION_REVALIDATE_INTERVAL_S"].default == 10.0
-    assert Settings.model_fields["SESSION_CACHE_TTL_S"].default == 10.0
+    assert "SESSION_CACHE_TTL_S" not in Settings.model_fields
 
 
 async def test_client_recreated_with_same_key_but_new_id_revokes_the_session(server, db_engine):
@@ -159,5 +157,4 @@ async def test_client_recreated_with_same_key_but_new_id_revokes_the_session(ser
         s.commit()
         s.add(ClientRecord(id="otro-id", name="Nuevo", client_key=VALID_KEY, is_active=True))
         s.commit()
-    db_client.invalidate(VALID_KEY)  # el cliente nuevo resuelve la misma clave sin error
     await _expect_revoked(ws)

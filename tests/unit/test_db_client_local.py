@@ -54,304 +54,40 @@ async def test_get_session_raises_client_inactive():
 
 
 @pytest.mark.asyncio
-async def test_get_session_cached():
-    """Segunda llamada debe venir del caché sin tocar la BD."""
-    engine = _engine_with(ClientRecord(name="Cache", client_key="c-key"))
+async def test_get_session_reads_the_db_every_call():
+    """#265: sin caché, un cambio hecho directamente en la BD se ve en la siguiente llamada."""
+    engine = _engine_with(ClientRecord(name="Before", client_key="c-key"))
     client = DbClient(engine=engine)
-    r1 = await client.get_session("c-key")
-    # Modificar la BD directamente
+    await client.get_session("c-key")
     with Session(engine) as s:
         rec = s.exec(select(ClientRecord)).first()
-        rec.name = "Changed"
+        rec.is_active = False
         s.add(rec)
         s.commit()
-    r2 = await client.get_session("c-key")
-    assert r2 is r1  # mismo objeto del caché
+    with pytest.raises(ClientInactive):
+        await client.get_session("c-key")
 
 
 @pytest.mark.asyncio
-async def test_invalidate_clears_cache():
-    engine = _engine_with(ClientRecord(name="Before", client_key="inv-key"))
+async def test_slow_query_does_not_block_the_event_loop(monkeypatch):
+    """#240: la consulta corre en un hilo; el loop sigue atendiendo otras corrutinas."""
+    engine = _engine_with(ClientRecord(name="Slow", client_key="slow-key"))
     client = DbClient(engine=engine)
-    await client.get_session("inv-key")
-    # Modificar BD y limpiar caché
-    with Session(engine) as s:
-        rec = s.exec(select(ClientRecord)).first()
-        rec.name = "After"
-        s.add(rec)
-        s.commit()
-    client.invalidate("inv-key")
-    c2, _ = await client.get_session("inv-key")
-    assert c2.name == "After"
-
-
-@pytest.mark.asyncio
-async def test_invalidate_advances_epoch():
-    engine = _engine_with(ClientRecord(name="Gen", client_key="gen-key"))
-    client = DbClient(engine=engine)
-    await client.get_session("gen-key")
-    assert client._epoch == 0
-
-    client.invalidate("gen-key")
-    assert client._epoch == 1
-
-    client.invalidate("gen-key")
-    assert client._epoch == 2
-
-
-def test_generation_guard_prevents_stale_repopulation_after_concurrent_invalidate(
-    monkeypatch, tmp_path
-):
-    """Si invalidate() corre en otro hilo mientras get_session() está en
-    vuelo (incluso antes de que la consulta a BD arranque), el resultado
-    obsoleto no debe repoblar el caché compartido.
-
-    Motor de BD en fichero (sin `StaticPool`) para que el hilo lector y el
-    hilo principal del test obtengan cada uno su propia conexión DBAPI real,
-    igual que en `test_concurrent_readers_and_invalidate_never_leave_stale_cache`.
-    """
-    engine = create_engine(
-        f"sqlite:///{tmp_path}/test.db",
-        connect_args={"check_same_thread": False},
-    )
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as s:
-        s.add(ClientRecord(name="Before", client_key="race-key"))
-        s.commit()
-
-    client = DbClient(engine=engine)
-
-    query_started = threading.Event()
-    release_query = threading.Event()
+    started, release = threading.Event(), threading.Event()
     original_exec = Session.exec
 
     def slow_exec(self, *args, **kwargs):
-        query_started.set()
-        release_query.wait(timeout=5)
+        started.set()
+        release.wait(timeout=5)
         return original_exec(self, *args, **kwargs)
 
     monkeypatch.setattr(Session, "exec", slow_exec)
-
-    reader_result = {}
-
-    def run_reader():
-        reader_result["value"] = asyncio.run(client.get_session("race-key"))
-
-    reader = threading.Thread(target=run_reader)
-    reader.start()
-    assert query_started.wait(timeout=5), "el lector nunca llegó a la consulta de BD"
-
-    # Simula la mutación de admin completándose mientras la consulta del
-    # lector sigue en vuelo: invalidate() corre en el hilo principal del
-    # test, un hilo distinto al del lector.
-    client.invalidate("race-key")
-
-    release_query.set()
-    reader.join(timeout=5)
-
-    assert "value" in reader_result
-    assert "race-key" not in client._session_cache
-
-
-def test_concurrent_readers_and_invalidate_never_leave_stale_cache(tmp_path):
-    """100 get_session concurrentes + 1 invalidate intercalado: una lectura
-    final debe reflejar siempre el estado post-mutación, nunca el valor
-    anterior a la invalidación.
-
-    A diferencia de `_engine_with`, este motor usa un fichero SQLite real
-    en disco (sin `StaticPool`) para que cada uno de los 100 hilos obtenga
-    su propia conexión DBAPI real en lugar de contender por la única
-    conexión compartida que `:memory:` + `StaticPool` fuerza. Con 100
-    hilos golpeando una sola conexión SQLite compartida, SQLAlchemy/SQLite
-    pueden devolver filas corruptas de forma esporádica, lo que hacía que
-    este test fallase de forma silenciosa (excepciones perdidas dentro de
-    los hilos) en vez de fallar de forma explícita.
-    """
-    engine = create_engine(
-        f"sqlite:///{tmp_path}/test.db",
-        connect_args={"check_same_thread": False},
-    )
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as s:
-        s.add(ClientRecord(name="v1", client_key="hammer-key"))
-        s.commit()
-
-    client = DbClient(engine=engine)
-
-    reader_errors = []
-    errors_lock = threading.Lock()
-
-    def reader(idx):
-        try:
-            asyncio.run(client.get_session("hammer-key"))
-        except Exception as exc:  # cualquier fallo del lector debe ser visible, no silencioso
-            with errors_lock:
-                reader_errors.append((idx, exc))
-
-    threads = [threading.Thread(target=reader, args=(i,)) for i in range(100)]
-    for t in threads:
-        t.start()
-
-    with Session(engine) as s:
-        rec = s.exec(select(ClientRecord)).first()
-        rec.name = "v2"
-        s.add(rec)
-        s.commit()
-    client.invalidate("hammer-key")
-
-    for t in threads:
-        t.join(timeout=5)
-
-    assert reader_errors == [], f"reader thread(s) raised: {reader_errors}"
-
-    client_obj, _ = asyncio.run(client.get_session("hammer-key"))
-    assert client_obj.name == "v2"
-
-
-def test_rotated_key_does_not_poison_cache_when_read_races_the_commit(monkeypatch, tmp_path):
-    """Simula rotate_client_key: la consulta de un lector arranca y LEE la
-    fila con la key vieja ANTES de que el admin mute + commitee + invalide
-    (orden fijado por el fix de #107 en admin_routes.py). El resultado
-    obsoleto no debe repoblar el caché, y una lectura posterior de la key
-    vieja debe fallar con ClientNotFound.
-
-    Motor de BD en fichero (sin `StaticPool`) para que el hilo lector y el
-    hilo principal del test obtengan cada uno su propia conexión DBAPI real,
-    igual que en `test_concurrent_readers_and_invalidate_never_leave_stale_cache`.
-    """
-    engine = create_engine(
-        f"sqlite:///{tmp_path}/test.db",
-        connect_args={"check_same_thread": False},
-    )
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as s:
-        s.add(ClientRecord(name="R", client_key="old-key"))
-        s.commit()
-
-    client = DbClient(engine=engine)
-
-    first_call_done = threading.Event()
-    release_first_call = threading.Event()
-    call_count = {"n": 0}
-    count_lock = threading.Lock()
-    original_exec = Session.exec
-
-    def slow_exec(self, *args, **kwargs):
-        result = original_exec(self, *args, **kwargs)
-        with count_lock:
-            call_count["n"] += 1
-            is_first_call = call_count["n"] == 1
-        if is_first_call:
-            first_call_done.set()
-            release_first_call.wait(timeout=5)
-        return result
-
-    monkeypatch.setattr(Session, "exec", slow_exec)
-
-    reader_result = {}
-
-    def run_reader():
-        reader_result["value"] = asyncio.run(client.get_session("old-key"))
-
-    reader = threading.Thread(target=run_reader)
-    reader.start()
-    assert first_call_done.wait(timeout=5), "el lector nunca completó su consulta de BD"
-
-    with Session(engine) as s:
-        rec = s.exec(select(ClientRecord)).first()
-        rec.client_key = "new-key"
-        s.add(rec)
-        s.commit()
-    client.invalidate("old-key")
-
-    release_first_call.set()
-    reader.join(timeout=5)
-
-    # El lector, cuya lectura ganó la carrera contra el commit, obtiene
-    # legítimamente el dato pre-rotación...
-    reader_client, _ = reader_result["value"]
-    assert reader_client.client_key == "old-key"
-    # ...pero ese resultado obsoleto NUNCA debe repoblar el caché compartido.
-    assert "old-key" not in client._session_cache
-
-    # Cualquier lectura posterior debe reflejar la rotación ya asentada.
-    with pytest.raises(ClientNotFound):
-        asyncio.run(client.get_session("old-key"))
-
-
-# ── #163: época global en vez de contador por key ───────────────────────────
-
-
-def _inflight_reader(monkeypatch, tmp_path, key):
-    """Arranca get_session(key) en un hilo y lo deja bloqueado dentro de la
-    consulta a BD. Devuelve (client, release, join)."""
-    engine = create_engine(
-        f"sqlite:///{tmp_path}/epoch.db", connect_args={"check_same_thread": False}
-    )
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as s:
-        s.add(ClientRecord(name="Before", client_key=key))
-        s.commit()
-    client = DbClient(engine=engine)
-
-    query_started, release_query = threading.Event(), threading.Event()
-    original_exec = Session.exec
-
-    def slow_exec(self, *args, **kwargs):
-        query_started.set()
-        release_query.wait(timeout=5)
-        return original_exec(self, *args, **kwargs)
-
-    monkeypatch.setattr(Session, "exec", slow_exec)
-    reader = threading.Thread(target=lambda: asyncio.run(client.get_session(key)))
-    reader.start()
-    assert query_started.wait(timeout=5), "el lector nunca llegó a la consulta de BD"
-
-    def finish():
-        release_query.set()
-        reader.join(timeout=5)
-
-    return client, finish
-
-
-def test_first_invalidation_of_never_invalidated_key_blocks_stale_write(monkeypatch, tmp_path):
-    """El caso que rompía un `pop` ingenuo de la generación (#163): key sin
-    invalidaciones previas, lectura en vuelo, invalidate() → no se cachea."""
-    client, finish = _inflight_reader(monkeypatch, tmp_path, "fresh-key")
-
-    client.invalidate("fresh-key")
-    finish()
-
-    assert "fresh-key" not in client._session_cache
-
-
-def test_invalidating_another_key_during_inflight_read_skips_cache_write(monkeypatch, tmp_path):
-    """La época es global: es conservadora a propósito. Una invalidación de
-    OTRA key durante la lectura solo cuesta una consulta extra, nunca deja un
-    valor obsoleto."""
-    client, finish = _inflight_reader(monkeypatch, tmp_path, "reader-key")
-
-    client.invalidate("some-other-key")
-    finish()
-
-    assert "reader-key" not in client._session_cache
-
-
-@pytest.mark.asyncio
-async def test_read_without_concurrent_invalidation_is_cached():
-    engine = _engine_with(ClientRecord(name="Ok", client_key="cached-key"))
-    client = DbClient(engine=engine)
-
-    await client.get_session("cached-key")
-
-    assert "cached-key" in client._session_cache
-
-
-def test_invalidate_keeps_no_per_key_state():
-    client = DbClient(engine=create_engine("sqlite://"))
-
-    for i in range(1000):
-        client.invalidate(f"key-{i}")
-
-    assert not hasattr(client, "_generations")
-    assert client._epoch == 1000
+    pending = asyncio.create_task(client.get_session("slow-key"))
+    try:
+        assert await asyncio.to_thread(started.wait, 5), "la consulta nunca arrancó"
+        await asyncio.wait_for(asyncio.sleep(0.01), timeout=1)  # el loop responde
+        assert not pending.done()
+    finally:
+        release.set()  # un hilo de to_thread no se puede cancelar
+    c, _ = await pending
+    assert c.name == "Slow"

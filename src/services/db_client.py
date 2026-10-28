@@ -5,16 +5,14 @@ Cliente local SQLite. Reemplaza el cliente HTTP a jota-db.
 
 Interfaz pública invariante:
   db_client.get_session(client_key) → (Client, ClientConfig)
-  db_client.invalidate(client_key)  → None
 """
 
+import asyncio
 import json
 import logging
 
 from sqlmodel import Session, select
 
-from src.core.cache import make_cache
-from src.core.config import settings
 from src.core.exceptions import ClientInactive, ClientNotFound
 from src.db.database import get_engine
 from src.db.models import ClientRecord
@@ -48,7 +46,9 @@ def _parse_allowed_agents(raw: str | None) -> list[str] | None:
 
 class DbClient:
     """
-    Wrapper sobre la BD SQLite local.
+    Wrapper sobre la BD SQLite local. Sin caché (#265): cada llamada consulta la BD
+    (un SELECT por índice), así que un cambio hecho desde la CLI u otro proceso se ve
+    en la siguiente revalidación.
 
     `engine` opcional para facilitar tests en memoria;
     en producción usa el engine global de src.db.database.
@@ -56,40 +56,22 @@ class DbClient:
 
     def __init__(self, engine=None):
         self._engine = engine
-        self._session_cache, self._session_lock = make_cache(
-            maxsize=500, ttl=settings.SESSION_CACHE_TTL_S
-        )
-        # Global invalidation epoch (issue #163). One int instead of a per-key
-        # dict: a per-key counter can't be purged safely (an in-flight read of a
-        # deleted/rotated key could still repopulate the cache once its entry is
-        # gone), and keeping every historical key grows without bound.
-        self._epoch: int = 0
 
     def _get_engine(self):
         return self._engine if self._engine is not None else get_engine()
 
     async def get_session(self, client_key: str) -> tuple[Client, ClientConfig]:
         """
-        Resuelve client_key → (Client, ClientConfig). Resultado cacheado
-        SESSION_CACHE_TTL_S (10 s por defecto; antes 60 s, G-06).
-
-        Usa una época global de invalidación para evitar repoblar el caché
-        con un valor obsoleto: si invalidate() (de CUALQUIER key) corre en
-        otro hilo mientras la consulta a BD está en vuelo, la época capturada
-        antes de la consulta ya no coincide al terminar y el resultado NO se
-        escribe en caché (el siguiente acceso volverá a consultar BD). Es más
-        conservadora que un contador por key — a lo sumo cuesta una consulta
-        extra — pero nunca deja un valor obsoleto y usa memoria O(1).
+        Resuelve client_key → (Client, ClientConfig). La E/S de SQLite corre en un
+        hilo (#240): un `database is locked` no congela el event loop.
 
         Raises:
             ClientNotFound: la key no existe.
             ClientInactive: el cliente está desactivado.
         """
-        with self._session_lock:
-            if client_key in self._session_cache:
-                return self._session_cache[client_key]
-            epoch_before = self._epoch
+        return await asyncio.to_thread(self._lookup, client_key)
 
+    def _lookup(self, client_key: str) -> tuple[Client, ClientConfig]:
         with Session(self._get_engine()) as session:
             record: ClientRecord | None = session.exec(
                 select(ClientRecord).where(ClientRecord.client_key == client_key)
@@ -106,38 +88,15 @@ class DbClient:
             is_active=record.is_active,
             name=record.name,
         )
+        # `include` explícito: ClientConfig es extra="allow" y no debe recibir id/client_key.
         config = ClientConfig(
-            stt_language=record.stt_language,
-            stt_vad_thold=record.stt_vad_thold,
-            tts_voice=record.tts_voice,
-            tts_speed=record.tts_speed,
-            barge_in_enabled=record.barge_in_enabled,
-            barge_in_min_chars=record.barge_in_min_chars,
-            silence_timeout_s=record.silence_timeout_s,
-            max_silence_turns=record.max_silence_turns,
-            push_enabled=record.push_enabled,
-            tool_calls_enabled=record.tool_calls_enabled,
-            default_agent=record.default_agent,
+            **record.model_dump(include=_CONFIG_COLUMNS),
             allowed_agents=_parse_allowed_agents(record.allowed_agents),
         )
-        result = (client, config)
-        with self._session_lock:
-            if self._epoch == epoch_before:
-                self._session_cache[client_key] = result
-        return result
+        return client, config
 
-    def invalidate(self, client_key: str) -> None:
-        """Elimina la entrada del caché y avanza la época global.
 
-        Seguro de llamar desde cualquier hilo (p.ej. handlers `def`
-        síncronos de admin_routes.py, ejecutados en el threadpool de
-        Starlette, distinto del hilo del event loop). Llamar siempre
-        DESPUÉS de session.commit() en el mismo call site.
-        """
-        with self._session_lock:
-            self._session_cache.pop(client_key, None)
-            self._epoch += 1
-
+_CONFIG_COLUMNS = set(ClientConfig.model_fields) - {"allowed_agents"}
 
 # Singleton — importar este objeto directamente
 db_client = DbClient()
