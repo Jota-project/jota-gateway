@@ -161,6 +161,3 @@ class ReconnectingTranscriberClient:
 
     def status(self) -> ServiceStatus:
         return self._health.status()
-
-    def usage(self) -> dict[str, float]:
-        return {}  # servicio propio: sin coste por uso que contabilizar
