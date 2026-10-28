@@ -54,11 +54,12 @@ def _session(params=None, callbacks=None):
 
 
 @pytest.mark.asyncio
-async def test_jota_session_start_calls_connect_with_params_and_token():
+async def test_jota_session_start_sends_service_token_not_client_key(monkeypatch):
+    monkeypatch.setattr(settings, "TRANSCRIBER_TOKEN", "svc-token")
     session, _ = _session()
     session._inner.connect = AsyncMock()
     await session.start()
-    session._inner.connect.assert_awaited_once_with(language="en", token="the-key", vad_thold=0.4)
+    session._inner.connect.assert_awaited_once_with(language="en", token="svc-token", vad_thold=0.4)
 
 
 @pytest.mark.asyncio

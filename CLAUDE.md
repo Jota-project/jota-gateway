@@ -56,6 +56,7 @@ TRUSTED_PROXIES=127.0.0.1,::1            # CSV of IPs/CIDRs allowed to set X-Rea
 GATEWAY_HOST=0.0.0.0                     # Docker image only (Dockerfile CMD), not a Settings field; 127.0.0.1 behind a same-host proxy
 
 TRANSCRIBER_WS_URL=localhost:9000
+TRANSCRIBER_TOKEN=                       # service token = jota-transcriber's AUTH_TOKEN (empty = transcriber without auth); the client_key is never forwarded (#218)
 STT_PROVIDER=jota                        # jota | elevenlabs (elevenlabs: validated but not implemented until phases 3-4); startup value, PUT /admin/speech swaps it live (not persisted)
 TTS_PROVIDER=jota                        # idem
 # ELEVENLABS_* / TTS_VOICE_MAP / STT_AUDIO_GATE / STT_GATE_RMS_DBFS: see "Speech providers" below and .env.sample
