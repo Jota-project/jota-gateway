@@ -75,3 +75,9 @@ def test_rejects_v3_model_for_ws(model):
     with pytest.raises(SpeechConfigError) as e:
         check_speech_settings(s, stt_provider="jota", tts_provider="elevenlabs")
     assert "ELEVENLABS_TTS_MODEL" in str(e.value) and model not in str(e.value)
+
+
+def test_legacy_auto_audio_gate_means_energy(monkeypatch):
+    # "auto" was the documented default before #264; a production .env carrying it must still boot.
+    monkeypatch.setenv("STT_AUDIO_GATE", "auto")
+    assert Settings().STT_AUDIO_GATE == "energy"

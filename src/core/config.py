@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     # Puerta de energía hacia el STT de ElevenLabs (solo se envía audio mientras se habla).
     # jota nunca la usa.
     STT_AUDIO_GATE: Literal["off", "energy"] = "energy"
+
+    # shortcut: "auto" (default until #264) == "energy"; drop once no .env in production carries it.
+    @field_validator("STT_AUDIO_GATE", mode="before")
+    @classmethod
+    def _legacy_auto_gate(cls, v: object) -> object:
+        return "energy" if v == "auto" else v
+
     STT_GATE_RMS_DBFS: float = -45.0
     OPENCLAW_HOST: str = "127.0.0.1"
     OPENCLAW_PORT: int = 18789
