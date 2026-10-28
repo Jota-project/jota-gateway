@@ -724,8 +724,8 @@ class JotaBridge:
         Si el cliente fue borrado, desactivado o su clave rotada (`ClientNotFound` /
         `ClientInactive`) se cierra la sesión con 1008 «revoked». Cualquier otro error
         (BD ocupada, etc.) es transitorio: se registra solo el tipo y se reintenta en el
-        siguiente tick, nunca cierra la sesión. La lectura pasa por la caché de db_client
-        (TTL `SESSION_CACHE_TTL_S`), que las mutaciones de /admin evictan al instante.
+        siguiente tick, nunca cierra la sesión. La lectura va directa a la BD (sin caché,
+        #265), así que un cambio desde /admin o la CLI se ve en el siguiente tick.
         """
         while True:
             await asyncio.sleep(settings.SESSION_REVALIDATE_INTERVAL_S)
