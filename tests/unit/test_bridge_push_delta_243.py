@@ -1,4 +1,9 @@
-"""Issue #243: semantica delta/replace/snapshot en el camino de push."""
+"""Issue #241/#243: cableado de ChatTextTracker en el camino de push (`deliver_push`).
+
+Los casos del tracker viven en tests/unit/test_chat_text.py.
+"""
+
+import logging
 
 import pytest
 
@@ -35,34 +40,12 @@ async def test_push_captured_sequence_with_snapshots():
 
 
 @pytest.mark.asyncio
-async def test_push_first_snapshot_once_and_later_delta():
+async def test_push_final_retracted_to_prefix_emits_nothing(caplog):
+    caplog.set_level(logging.DEBUG)
     bridge, _ = make_bridge()
     _open(bridge)
-    await bridge.deliver_push({"state": "delta", "deltaText": "Hola", "message": _m("Hola")})
-    await bridge.deliver_push({"state": "delta", "deltaText": " a todos"})
-    await bridge.deliver_push(_final("Hola a todos"))
-    assert _sent(bridge) == ["Hola", " a todos"]
-
-
-@pytest.mark.asyncio
-async def test_push_replace_nonempty_emits_only_missing():
-    bridge, _ = make_bridge()
-    _open(bridge)
-    await bridge.deliver_push({"state": "delta", "deltaText": "Hola", "message": _m("Hola")})
-    await bridge.deliver_push(
-        {
-            "state": "delta",
-            "deltaText": "Hola mundo",
-            "replace": True,
-            "message": _m("Hola mundo"),
-        }
-    )
-    assert _sent(bridge) == ["Hola", " mundo"]
-
-
-@pytest.mark.asyncio
-async def test_push_join_mid_run_emits_snapshot():
-    bridge, _ = make_bridge()
-    _open(bridge)
-    await bridge.deliver_push({"state": "delta", "deltaText": "mundo", "message": _m("Hola mundo")})
-    assert _sent(bridge) == ["Hola mundo"]
+    await bridge.deliver_push({"state": "delta", "deltaText": "SECRETO, mundo. Adios"})
+    await bridge.deliver_push(_final("SECRETO, mundo."))
+    assert _sent(bridge) == ["SECRETO, mundo. Adios"]
+    assert "diverges" not in caplog.text
+    assert "SECRETO" not in caplog.text

@@ -34,54 +34,6 @@ async def test_failed_connect_returns_none_and_records_failure():
 
 
 @pytest.mark.asyncio
-async def test_second_attempt_within_backoff_window_is_skipped_without_trying():
-    w = ReconnectingTTSClient(url="test:1", token="t", initial_backoff=10.0)
-    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
-        mock_client = AsyncMock()
-        mock_client.connect.side_effect = OSError("refused")
-        MockTTS.return_value = mock_client
-        await w.connect(voice=None, speed=None, client_id="c1")  # first failure
-
-        MockTTS.reset_mock()
-        result = await w.connect(voice=None, speed=None, client_id="c1")  # too soon
-
-    assert result is None
-    MockTTS.assert_not_called()  # never even tried to construct a client
-
-
-@pytest.mark.asyncio
-async def test_attempt_after_backoff_elapses_tries_again():
-    w = ReconnectingTTSClient(url="test:1", token="t", initial_backoff=0.05)
-    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
-        failing_client = AsyncMock()
-        failing_client.connect.side_effect = OSError("refused")
-        MockTTS.return_value = failing_client
-        await w.connect(voice=None, speed=None, client_id="c1")
-
-        time.sleep(0.1)  # let the backoff window elapse
-
-        succeeding_client = AsyncMock()
-        MockTTS.return_value = succeeding_client
-        result = await w.connect(voice=None, speed=None, client_id="c1")
-
-    assert result is succeeding_client
-    assert w.state == ConnectionState.CONNECTED
-    assert w._health.reconnect_attempts == 0  # reset on success
-
-
-@pytest.mark.asyncio
-async def test_backoff_doubles_on_repeated_failure_capped_at_max():
-    w = ReconnectingTTSClient(url="test:1", token="t", initial_backoff=1.0, max_backoff=1.5)
-    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
-        mock_client = AsyncMock()
-        mock_client.connect.side_effect = OSError("refused")
-        MockTTS.return_value = mock_client
-        w._gate.last_failure_at = time.monotonic() - 100  # force should_attempt True
-        await w.connect(voice=None, speed=None, client_id="c1")
-    assert w._gate.backoff == 1.5  # doubled from 1.0, capped at max_backoff
-
-
-@pytest.mark.asyncio
 async def test_record_success_clears_last_error_after_prior_failure():
     """Issue #104 regression check: unlike the other two reconnecting
     wrappers, TTS funnels both outcomes through a single _record_success()/

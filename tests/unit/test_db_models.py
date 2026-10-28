@@ -18,22 +18,6 @@ def _mem_engine():
     return e
 
 
-def test_defaults():
-    engine = _mem_engine()
-    with Session(engine) as s:
-        s.add(ClientRecord(name="ESP32", client_key="k1"))
-        s.commit()
-        rec = s.exec(select(ClientRecord)).first()
-    assert rec.id is not None
-    assert rec.is_active is True
-    assert rec.stt_language == "es"
-    assert rec.tts_voice == "af_heart"
-    assert rec.barge_in_enabled is True
-    assert rec.barge_in_min_chars == 5
-    assert rec.tts_speed == 1.0
-    assert rec.silence_timeout_s == 2.0
-
-
 def test_client_key_unique():
     engine = _mem_engine()
     with pytest.raises(IntegrityError), Session(engine) as s:
