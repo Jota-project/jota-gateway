@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import math
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -86,11 +87,8 @@ async def _lifespan_body(app: FastAPI):
         max_backoff=settings.ORCHESTRATOR_RECONNECT_MAX_BACKOFF,
         max_duration=settings.ORCHESTRATOR_RECONNECT_MAX_DURATION,
     )
-    try:
-        await openclaw.connect()
-    except Exception as e:
-        logger.error(f"Initial OpenClaw connect failed: {describe_error(e)}")
-        logger.debug(f"Initial OpenClaw connect: {traceback_no_message(e)}")
+    # Never raises: a failed first connect is logged and retried in the background.
+    await openclaw.connect()
 
     # Wired *after* the initial connect on purpose: on_state_change firing
     # CONNECTED on a normal first-time success would send a spurious
@@ -101,34 +99,21 @@ async def _lifespan_body(app: FastAPI):
     # GC'd mid-flight; discarded once the task completes.
     _notification_tasks: set[asyncio.Task] = set()
 
-    def _on_orchestrator_state_change(state: ConnectionState) -> None:
-        task = asyncio.create_task(
-            client_registry.broadcast_status("orchestrator", to_wire_state(state))
-        )
-        _notification_tasks.add(task)
-        task.add_done_callback(_notification_tasks.discard)
+    def _broadcaster(service: str) -> Callable[[ConnectionState], None]:
+        def _on_state_change(state: ConnectionState) -> None:
+            task = asyncio.create_task(
+                client_registry.broadcast_status(service, to_wire_state(state))
+            )
+            _notification_tasks.add(task)
+            task.add_done_callback(_notification_tasks.discard)
 
-    openclaw.on_state_change = _on_orchestrator_state_change
+        return _on_state_change
+
+    openclaw.on_state_change = _broadcaster("orchestrator")
 
     # Proveedores de voz singleton (STT_PROVIDER / TTS_PROVIDER), inyectados al bridge.
     stt = build_stt_provider(settings)
     tts = build_tts_provider(settings)
-
-    # Unlike openclaw/transcriber, TTS has no lifespan-level initial connect to
-    # wire "after" — ReconnectingTTSClient starts CONNECTED by construction and
-    # only fires on_state_change on an actual transition (issue #117), so
-    # wiring it immediately can't produce a spurious first-time "restored".
-    def _on_tts_state_change(state: ConnectionState) -> None:
-        task = asyncio.create_task(client_registry.broadcast_status("tts", to_wire_state(state)))
-        _notification_tasks.add(task)
-        task.add_done_callback(_notification_tasks.discard)
-
-    def _on_stt_state_change(state: ConnectionState) -> None:
-        task = asyncio.create_task(
-            client_registry.broadcast_status("transcriber", to_wire_state(state))
-        )
-        _notification_tasks.add(task)
-        task.add_done_callback(_notification_tasks.discard)
 
     # Only the orchestrator is fatal: a provider whose start() fails degrades, it must
     # not abort startup with OpenClaw already connected and never closed (#110).
@@ -140,11 +125,11 @@ async def _lifespan_body(app: FastAPI):
     # Wired after start() on purpose (same reason as the orchestrator): a first-time
     # success must not broadcast a spurious "restored". The holder rewires them on a swap.
     speech = SpeechProviders(settings, stt, tts)
-    speech.set_state_listeners(_on_stt_state_change, _on_tts_state_change)
+    speech.set_state_listeners(_broadcaster("transcriber"), _broadcaster("tts"))
 
     app.state.openclaw = openclaw
     app.state.speech = speech
-    app.state.turn_registry = turn_registry
+    app.state.turn_registry = turn_registry  # read by routes.py for queue depths (#219)
     app.state.client_registry = client_registry
     app.state.session_registry = SessionRegistry()
 
@@ -201,7 +186,6 @@ async def _lifespan_body(app: FastAPI):
 app = FastAPI(
     title="JotaGateway (BFF)",
     description="Backend For Frontend - Enrutador principal de WebSockets.",
-    version="3.0.0",
     lifespan=lifespan,
 )
 
@@ -236,8 +220,3 @@ app.include_router(stream_router)  # WS /ws/stream
 app.include_router(openai_router)  # HTTP /v1/*
 app.include_router(health_router)  # HTTP /healthz, /ready
 app.include_router(admin_router)  # HTTP /admin/*
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=8004)

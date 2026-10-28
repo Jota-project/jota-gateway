@@ -30,7 +30,7 @@ async def test_tokens_reach_callback():
     async def on_token(t):
         received.append(t)
 
-    await call_orchestrator(orch, "hi", "agent:main:ha", "ha", on_token=on_token)
+    await call_orchestrator(orch, "hi", "agent:main:ha", on_token=on_token)
     assert received == ["Hello", " world"]
 
 
@@ -53,7 +53,7 @@ async def test_tracker_receives_llm_events():
         ]
     )
 
-    await call_orchestrator(orch, "hi", "agent:main:ha", "ha", tracker=tracker)
+    await call_orchestrator(orch, "hi", "agent:main:ha", tracker=tracker)
 
     stages = [e.stage for e in tracker.events]
     assert "llm_start" in stages
@@ -63,7 +63,7 @@ async def test_tracker_receives_llm_events():
 
 async def test_no_tracker_does_not_raise():
     orch = _make_orchestrator([OrchestratorEvent(type="status", content="done")])
-    await call_orchestrator(orch, "hi", "agent:main:ha", "ha", tracker=None, on_token=None)
+    await call_orchestrator(orch, "hi", "agent:main:ha", tracker=None, on_token=None)
 
 
 async def test_no_on_token_does_not_raise():
@@ -73,13 +73,13 @@ async def test_no_on_token_does_not_raise():
             OrchestratorEvent(type="status", content="done"),
         ]
     )
-    await call_orchestrator(orch, "hi", "agent:main:ha", "ha", on_token=None)
+    await call_orchestrator(orch, "hi", "agent:main:ha", on_token=None)
 
 
 async def test_error_event_raises():
     orch = _make_orchestrator([OrchestratorEvent(type="error", content="orchestrator_unavailable")])
     with pytest.raises(RuntimeError, match="orchestrator_unavailable"):
-        await call_orchestrator(orch, "hi", "agent:main:ha", "ha")
+        await call_orchestrator(orch, "hi", "agent:main:ha")
 
 
 async def test_error_event_closes_the_stream_response_generator():
@@ -105,7 +105,7 @@ async def test_error_event_closes_the_stream_response_generator():
     orch.stream_response = _stream
 
     with pytest.raises(RuntimeError, match="boom"):
-        await call_orchestrator(orch, "hi", "agent:main:ha", "ha")
+        await call_orchestrator(orch, "hi", "agent:main:ha")
 
     assert closed, "generator's finally (unregister) must run synchronously, not be abandoned"
 
@@ -129,7 +129,7 @@ async def test_tool_call_reaches_callback():
     async def on_tool_call(tc):
         received.append(tc)
 
-    await call_orchestrator(orch, "hi", "agent:main:ha", "ha", on_tool_call=on_tool_call)
+    await call_orchestrator(orch, "hi", "agent:main:ha", on_tool_call=on_tool_call)
     assert received == [tc_start, tc_result]
 
 
@@ -141,7 +141,7 @@ async def test_no_on_tool_call_does_not_raise():
             OrchestratorEvent(type="status", content="done"),
         ]
     )
-    await call_orchestrator(orch, "hi", "agent:main:ha", "ha", on_tool_call=None)
+    await call_orchestrator(orch, "hi", "agent:main:ha", on_tool_call=None)
 
 
 async def test_llm_done_meta_has_token_count():
@@ -163,6 +163,6 @@ async def test_llm_done_meta_has_token_count():
             OrchestratorEvent(type="status", content="done"),
         ]
     )
-    await call_orchestrator(orch, "hi", "agent:main:ha", "ha", tracker=tracker)
+    await call_orchestrator(orch, "hi", "agent:main:ha", tracker=tracker)
     done_event = next(e for e in tracker.events if e.stage == "llm_done")
     assert done_event.meta["token_count"] == 2

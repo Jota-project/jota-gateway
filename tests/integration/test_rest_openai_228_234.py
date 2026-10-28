@@ -39,7 +39,7 @@ def test_models_for_legacy_trusted_caller_lists_only_alias(client):
 def _chat_session_key(c, mock_orchestrator, model, headers=None):
     captured = {}
 
-    async def _stream(text, user_id, model_id=None, session_key=None):
+    async def _stream(text, session_key=None):
         captured["sk"] = session_key
         yield OrchestratorEvent(type="token", content="ok")
         yield OrchestratorEvent(type="status", content="done")
@@ -111,9 +111,7 @@ def test_models_with_empty_roster_lists_only_alias(client, mock_orchestrator):
 
 
 def test_models_never_duplicates_the_alias(client_untrusted, ha_bearer_headers, mock_orchestrator):
-    from src.services.openclaw.models import AgentInfo
-
-    mock_orchestrator.gateway_info.agents["jota-gateway"] = AgentInfo("jota-gateway", "x", False)
+    mock_orchestrator.gateway_info.agents.append("jota-gateway")
     ids = _ids(client_untrusted.get("/v1/models", headers=ha_bearer_headers))
     assert ids.count("jota-gateway") == 1 and len(ids) > 1
 

@@ -20,7 +20,7 @@ from src.core.config import settings
 from src.db.models import ClientRecord
 from src.main import app
 from src.services.db_client import db_client
-from src.services.openclaw.models import AgentInfo, GatewayInfo
+from src.services.openclaw.models import GatewayInfo
 from src.services.openclaw.registry import ClientRegistry, TurnRegistry
 from src.services.protocol import OrchestratorEvent, OrchestratorProtocol
 from src.services.reconnection import ConnectionState, ServiceStatus
@@ -116,15 +116,8 @@ def admin_headers():
 
 def _make_default_gateway_info() -> GatewayInfo:
     return GatewayInfo(
-        protocol_version=4,
-        server_version="test",
-        conn_id="test-conn",
         default_agent_id="main",
-        agents={
-            "main": AgentInfo(agent_id="main", name="Main", is_default=True),
-            "a": AgentInfo(agent_id="a", name="Agent A", is_default=False),
-            "openclaw": AgentInfo(agent_id="openclaw", name="OpenClaw", is_default=False),
-        },
+        agents=["main", "a", "openclaw"],
         tick_interval_ms=15000,
         max_payload=26214400,
     )

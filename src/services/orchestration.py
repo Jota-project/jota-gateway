@@ -19,8 +19,6 @@ async def call_orchestrator(
     orchestrator: OrchestratorProtocol,
     text: str,
     session_key: str,
-    user_id: str,
-    model_id: str | None = None,
     tracker: PipelineTracker | None = None,
     on_token: Callable[[str], Awaitable[None]] | None = None,
     on_tool_call: Callable[[ToolCallEvent], Awaitable[None]] | None = None,
@@ -43,12 +41,7 @@ async def call_orchestrator(
     # unregisters the turn in TurnRegistry) deferred to whenever Python's
     # asyncgen GC finalizer gets around to it (issue #99 follow-up).
     async with contextlib.aclosing(
-        orchestrator.stream_response(
-            text=text,
-            user_id=user_id,
-            model_id=model_id,
-            session_key=session_key,
-        )
+        orchestrator.stream_response(text=text, session_key=session_key)
     ) as stream:
         async for event in stream:
             if event.type == "token":

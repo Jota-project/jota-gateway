@@ -14,12 +14,8 @@ def _client(tick_ms=None):
     client = OpenClawClient("h", 1, "t", turns, FrameDispatcher(turns, ClientRegistry()))
     if tick_ms is not None:
         client.gateway_info = GatewayInfo(
-            protocol_version=4,
-            server_version="x",
-            conn_id="c",
             default_agent_id="main",
-            agents={},
-            tick_interval_ms=tick_ms,
+                        tick_interval_ms=tick_ms,
             max_payload=1,
         )
     return client

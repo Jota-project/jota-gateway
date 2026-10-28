@@ -67,6 +67,8 @@ def _frame_limit(announced: object) -> int:
     return max(_MIN_FRAME_LIMIT, min(announced, _MAX_FRAME_LIMIT))
 
 
+# shortcut: alias kept only because src/api/openai_routes.py imports it; drop it when that
+# import moves to src.services.reconnection.
 _traceback_no_message = traceback_no_message
 
 _SAFE_CODE_RE = re.compile(r"[A-Za-z0-9_.:-]{1,48}")
@@ -124,7 +126,7 @@ class OpenClawClient:
     async def _do_connect(self) -> GatewayInfo:
         # Last roster known from a previous connect, kept as fallback if agents.list
         # fails on this one (#151). Captured before gateway_info is rebuilt below.
-        previous_agents = dict(self.gateway_info.agents) if self.gateway_info else {}
+        previous_agents = list(self.gateway_info.agents) if self.gateway_info else []
         limit = _frame_limit(self.gateway_info.max_payload if self.gateway_info else None)
         self._ws = await websockets.connect(self._uri, max_size=limit)
         conn_err: Exception | None = None
@@ -162,7 +164,7 @@ class OpenClawClient:
                     "agents.list failed at connect (code=%s)",
                     _safe_error_code(agents_res.get("error")),
                 )
-                if not self.gateway_info.agents and previous_agents:
+                if previous_agents:
                     # Wiping the roster would make has_agent() reject every named
                     # agent with 1008 until the next successful agents.list (#151).
                     self.gateway_info.agents = previous_agents
@@ -247,22 +249,11 @@ class OpenClawClient:
                 return frame
 
     async def close(self) -> None:
-        for task in (self._keepalive_task, self._listener_task):
-            if task:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-        self._keepalive_task = None
-        self._listener_task = None
-        if self._ws:
-            await self._ws.close()
-            self._ws = None
+        await self._cancel_and_close()
 
     async def _cancel_and_close(self) -> None:
-        """Best-effort teardown of a previous connection before connect()
-        establishes a new one — cancelling the old listener before the new
+        """Best-effort teardown, used by close() and by connect() before it
+        establishes a new connection — cancelling the old listener before the new
         socket exists prevents it from ever racing the new handshake for
         frames (issue #103).
 
@@ -309,17 +300,11 @@ class OpenClawClient:
     async def stream_response(
         self,
         text: str,
-        user_id: str,
-        model_id: str | None = None,
-        session_key: str | None = None,
+        session_key: str,
     ) -> AsyncGenerator[OrchestratorEvent, None]:
         if not self._ws:
             yield OrchestratorEvent(type="error", content=ORCHESTRATOR_UNAVAILABLE_ERROR)
             return
-        if not session_key:
-            raise ValueError(
-                "session_key is required — callers must provide it via make_session_key()"
-            )
 
         req_id = str(uuid.uuid4())
         try:
@@ -376,17 +361,15 @@ class OpenClawClient:
                     if tool_call is not None:
                         yield OrchestratorEvent(type="tool_call", tool_call=tool_call)
                 elif kind == "done":
+                    # Only a rejected `res` (ok:false) reaches the queue (see dispatcher).
+                    # OpenClaw's own error text stays out of the client and the logs;
+                    # the operator gets only the short code.
                     _finished = True
-                    if not data.get("ok"):
-                        # OpenClaw's own error text stays out of the client and the logs;
-                        # the operator gets only the short code.
-                        logger.warning(
-                            "OpenClaw rejected the turn (code=%s)",
-                            _safe_error_code(data.get("error")),
-                        )
-                        yield OrchestratorEvent(type="error", content=ORCHESTRATOR_ERROR)
-                    else:
-                        yield OrchestratorEvent(type="status", content="done")
+                    logger.warning(
+                        "OpenClaw rejected the turn (code=%s)",
+                        _safe_error_code(data.get("error")),
+                    )
+                    yield OrchestratorEvent(type="error", content=ORCHESTRATOR_ERROR)
                     break
                 elif kind == "overflow":
                     # Consumer fell behind the bounded queue (#130 S3b). _finished

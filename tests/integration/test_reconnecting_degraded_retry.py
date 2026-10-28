@@ -13,12 +13,8 @@ from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
 from src.services.reconnection import ConnectionState
 
 GATEWAY_INFO = GatewayInfo(
-    protocol_version=4,
-    server_version="2026.6.6",
-    conn_id="c1",
     default_agent_id="main",
-    agents={},
-    tick_interval_ms=30000,
+        tick_interval_ms=30000,
     max_payload=26214400,
 )
 
@@ -86,7 +82,7 @@ async def test_probes_in_degraded_do_not_add_attempts_or_tasks():
 
     for _ in range(200):
         await roc.ping()
-        async for _event in roc.stream_response("x", "u", session_key="agent:main:u"):
+        async for _event in roc.stream_response("x", session_key="agent:main:u"):
             pass
 
     assert inner.connect.call_count == calls

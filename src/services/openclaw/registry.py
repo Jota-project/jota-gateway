@@ -104,10 +104,6 @@ class TurnRegistry:
     def get_queue_by_session(self, session_key: str) -> asyncio.Queue | None:
         return self._sessions.get(session_key)
 
-    def get_queue_by_req(self, req_id: str) -> asyncio.Queue | None:
-        sk = self._req_to_session.get(req_id)
-        return self._sessions.get(sk) if sk else None
-
     def deliver_by_session(self, session_key: str, item: tuple) -> bool:
         """Non-blocking put for the turn owning session_key. True if a turn owns it
         (even if the item was dropped), False if none does."""

@@ -316,7 +316,7 @@ async def test_first_connect_with_failed_agents_list_has_empty_roster():
     fake_ws = SmartFakeWS(hello_ok_payload=HELLO_OK_PAYLOAD_NO_SNAPSHOT_AGENTS)
     fake_ws.agents_list_ok = False
     client = await connected_client(fake_ws)
-    assert client.gateway_info.agents == {}
+    assert client.gateway_info.agents == []
     await client.close()
 
 
@@ -350,7 +350,7 @@ async def test_stream_response_tokens(fake_ws):
     client = await connected_client(fake_ws)
     tokens = []
     async for event in client.stream_response(
-        "hola", "client-a", session_key="agent:main:client-a"
+        "hola", session_key="agent:main:client-a"
     ):
         if event.type == "token":
             tokens.append(event.content)
@@ -363,7 +363,7 @@ async def test_stream_response_ends_with_status_done(fake_ws):
     client = await connected_client(fake_ws)
     events = []
     async for event in client.stream_response(
-        "hola", "client-a", session_key="agent:main:client-a"
+        "hola", session_key="agent:main:client-a"
     ):
         events.append(event)
     assert events[-1].type == "status"
@@ -374,7 +374,7 @@ async def test_stream_response_ends_with_status_done(fake_ws):
 @pytest.mark.asyncio
 async def test_stream_response_uses_sessionKey_format(fake_ws):
     client = await connected_client(fake_ws)
-    async for _ in client.stream_response("hola", "client-a", session_key="agent:main:client-a"):
+    async for _ in client.stream_response("hola", session_key="agent:main:client-a"):
         pass
     chat_sends = [f for f in fake_ws.sent_frames if f.get("method") == "chat.send"]
     assert len(chat_sends) == 1
@@ -396,15 +396,6 @@ async def test_ping_returns_false_when_not_connected():
     client = make_client(SmartFakeWS())
     result = await client.ping()
     assert result is False
-
-
-@pytest.mark.asyncio
-async def test_session_key_required(fake_ws):
-    client = await connected_client(fake_ws)
-    with pytest.raises(ValueError, match="session_key is required"):
-        async for _ in client.stream_response("hola", "client-a"):
-            pass
-    await client.close()
 
 
 @pytest.mark.asyncio
@@ -444,7 +435,7 @@ async def test_chat_abort_frame_schema(fake_ws):
 
     async def consume():
         async for _ in client.stream_response(
-            "hola", "client-a", session_key="agent:main:client-a"
+            "hola", session_key="agent:main:client-a"
         ):
             pass
 
@@ -471,7 +462,7 @@ async def test_stream_response_completes_without_second_res(fake_ws):
     client = await connected_client(fake_ws)
     events = []
     async for event in client.stream_response(
-        "hola", "client-a", session_key="agent:main:client-a"
+        "hola", session_key="agent:main:client-a"
     ):
         events.append(event)
     res_frames_after_started = [f for f in fake_ws.sent_frames if f.get("method") == "chat.send"]
@@ -496,7 +487,7 @@ async def test_stream_response_times_out_when_no_events_arrive(monkeypatch):
     async def consume():
         events = []
         async for event in client.stream_response(
-            "hola", "client-a", session_key="agent:main:client-a"
+            "hola", session_key="agent:main:client-a"
         ):
             events.append(event)
         return events
@@ -526,7 +517,7 @@ async def test_stream_response_overflow_errors_and_sends_chat_abort(monkeypatch)
         return [
             e
             async for e in client.stream_response(
-                "hola", "client-a", session_key="agent:main:client-a"
+                "hola", session_key="agent:main:client-a"
             )
         ]
 
@@ -562,17 +553,21 @@ async def test_stream_response_idle_reset_survives_slow_but_active_turn(monkeypa
     resets on every event, it is not a hard ceiling from turn start."""
     from src.core.config import settings
 
-    monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.05)
+    # #206: 0.05 s / 0.03 s left 20 ms of headroom per gap and failed under load. Each gap
+    # is now 0.1 s against a 0.3 s timeout; 4 gaps (0.4 s) still exceed the timeout.
+    monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.3)
 
     fake_ws = SmartFakeWS(
         {"agent:main:client-a": ["Hola ", "que ", "tal ", "mundo"]},
-        chat_response_delay=0.03,  # each gap < TURN_TIMEOUT_S, total > TURN_TIMEOUT_S
+        chat_response_delay=0.1,  # each gap < TURN_TIMEOUT_S, total > TURN_TIMEOUT_S
     )
     client = await connected_client(fake_ws)
 
+    loop = asyncio.get_running_loop()
+    started = loop.time()
     events = []
     async for event in client.stream_response(
-        "hola", "client-a", session_key="agent:main:client-a"
+        "hola", session_key="agent:main:client-a"
     ):
         events.append(event)
 
@@ -580,6 +575,7 @@ async def test_stream_response_idle_reset_survives_slow_but_active_turn(monkeypa
     assert events[-1].content == "done"
     tokens = [e.content for e in events if e.type == "token"]
     assert tokens == ["Hola ", "que ", "tal ", "mundo"]
+    assert loop.time() - started > settings.TURN_TIMEOUT_S  # total really exceeded it
     await client.close()
 
 
@@ -608,7 +604,7 @@ async def test_stream_response_yields_tool_call_events():
     client = await connected_client(fake_ws)
     tool_events = []
     async for event in client.stream_response(
-        "hola", "client-a", session_key="agent:main:client-a"
+        "hola", session_key="agent:main:client-a"
     ):
         if event.type == "tool_call":
             tool_events.append(event.tool_call)
@@ -635,7 +631,7 @@ async def test_concurrent_stream_response_same_session_key_rejects_one():
     async def _consume():
         events = []
         async for event in client.stream_response(
-            "hola", "client-a", session_key="agent:main:client-a"
+            "hola", session_key="agent:main:client-a"
         ):
             events.append(event)
         return events
@@ -682,7 +678,7 @@ async def test_reconnect_errors_out_in_flight_turn_instead_of_hanging_forever():
 
     async def consume():
         async for event in client.stream_response(
-            "hola", "client-a", session_key="agent:main:client-a"
+            "hola", session_key="agent:main:client-a"
         ):
             events.append(event)
 
@@ -719,7 +715,7 @@ async def test_terminal_event_then_generator_close_does_not_send_spurious_chat_a
     client = await connected_client(slow_fake_ws)
     session_key = "agent:main:client-a"
 
-    stream = client.stream_response("hola", "client-a", session_key=session_key)
+    stream = client.stream_response("hola", session_key=session_key)
 
     async def drive_and_close():
         event = await stream.__anext__()
@@ -853,16 +849,16 @@ async def test_concurrent_stream_response_different_session_keys_both_succeed():
     )
     client = await connected_client(fake_ws)
 
-    async def _consume(user_id, session_key):
+    async def _consume(session_key):
         events = []
-        async for event in client.stream_response("hola", user_id, session_key=session_key):
+        async for event in client.stream_response("hola", session_key=session_key):
             events.append(event)
         return events
 
     events_a, events_b = await asyncio.wait_for(
         asyncio.gather(
-            _consume("client-a", "agent:main:client-a"),
-            _consume("client-b", "agent:main:client-b"),
+            _consume("agent:main:client-a"),
+            _consume("agent:main:client-b"),
         ),
         timeout=1.0,
     )

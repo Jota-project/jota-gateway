@@ -1272,7 +1272,6 @@ class JotaBridge:
                     self.orchestrator,
                     text,
                     session_key,
-                    self.client_id,
                     tracker=self.tracker,
                     on_token=_on_token,
                     on_tool_call=_on_tool_call,

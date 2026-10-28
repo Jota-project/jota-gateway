@@ -192,7 +192,6 @@ async def chat_completions(
                         orchestrator,
                         text,
                         session_key,
-                        client_id,
                         tracker=tracker,
                         on_token=_on_token,
                     )
@@ -271,7 +270,6 @@ async def chat_completions(
             orchestrator,
             text,
             session_key,
-            client_id,
             tracker=tracker,
             on_token=_on_token,
         )

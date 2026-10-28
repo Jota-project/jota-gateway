@@ -7,7 +7,6 @@ from sqlmodel import Session
 
 from src.db.models import ClientRecord
 from src.services.db_client import db_client
-from src.services.openclaw.models import AgentInfo
 from tests.integration.conftest import CLIENT_ID, VALID_KEY
 
 
@@ -28,27 +27,19 @@ def _patch_client(engine, **fields):
 def test_ws_allowed_agent_passes(client, db_engine):
     """allowed_agents=['a'], handshake with agent='a' → ready.agent == 'a'."""
     _patch_client(db_engine, allowed_agents=json.dumps(["a"]))
-    # Teach the mock orchestrator about agent 'a' so the roster check passes.
-    app_state = client.app.state
-    app_state.openclaw.gateway_info.agents["a"] = AgentInfo(
-        agent_id="a", name="Agent A", is_default=False
-    )
-    try:
-        with client.websocket_connect("/ws/stream") as ws:
-            ws.send_json(
-                {
-                    "client_key": VALID_KEY,
-                    "input_mode": "text",
-                    "output_mode": ["text"],
-                    "agent": "a",
-                }
-            )
-            ready = ws.receive_json()
-            assert ready["type"] == "ready"
-            assert ready["agent"] == "a"
-    finally:
-        # Clean up so subsequent tests aren't polluted.
-        del app_state.openclaw.gateway_info.agents["a"]
+    # The default mock roster (conftest) already contains 'a'.
+    with client.websocket_connect("/ws/stream") as ws:
+        ws.send_json(
+            {
+                "client_key": VALID_KEY,
+                "input_mode": "text",
+                "output_mode": ["text"],
+                "agent": "a",
+            }
+        )
+        ready = ws.receive_json()
+        assert ready["type"] == "ready"
+        assert ready["agent"] == "a"
 
 
 def test_ws_disallowed_agent_closes_1008(client, db_engine):

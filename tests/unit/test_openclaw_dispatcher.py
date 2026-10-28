@@ -72,14 +72,25 @@ async def test_res_started_ignored():
 
 
 @pytest.mark.asyncio
-async def test_res_done_routes_to_turn_queue():
+async def test_res_legacy_status_done_is_not_a_turn_end():
+    """Pre-2026.6.11 servers ended a turn with `res status:"done"`; no longer supported:
+    only the chat event with state "final" (or an ok:false res) ends a turn."""
     dispatcher, turn_reg, _ = make_dispatcher()
     q = turn_reg.register("req-1", "agent:main:client-a")
     frame = {"type": "res", "id": "req-1", "ok": True, "payload": {"status": "done"}}
     await dispatcher.dispatch(frame)
+    assert q.empty()
+
+
+@pytest.mark.asyncio
+async def test_res_ok_false_routes_to_turn_queue():
+    dispatcher, turn_reg, _ = make_dispatcher()
+    q = turn_reg.register("req-1", "agent:main:client-a")
+    frame = {"type": "res", "id": "req-1", "ok": False, "error": {"code": "x"}}
+    await dispatcher.dispatch(frame)
     kind, data = q.get_nowait()
     assert kind == "done"
-    assert data["ok"] is True
+    assert data["ok"] is False
 
 
 @pytest.mark.asyncio

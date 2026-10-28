@@ -115,7 +115,7 @@ def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(
     called_with_text = {}
     mock_orch = make_mock_orchestrator()
 
-    async def _stream(text, user_id, model_id=None, session_key=None):
+    async def _stream(text, session_key=None):
         called_with_text["text"] = text
         yield OrchestratorEvent(type="token", content="ok")
         yield OrchestratorEvent(type="status", content="done")
