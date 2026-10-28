@@ -73,7 +73,9 @@ def _skip_lifespan_migrations(monkeypatch):
     """Las BD de test se crean con `create_all`, sin `alembic_version`; sin la rama «legacy
     stamp» (#265) el `upgrade head` del lifespan fallaría con «table clients already
     exists». Las migraciones se prueban aparte (tests/unit/test_migrations.py)."""
-    monkeypatch.setattr("src.main.run_migrations", lambda: None)
+    calls: list[None] = []
+    monkeypatch.setattr("src.main.run_migrations", lambda: calls.append(None))
+    return calls
 
 
 @pytest.fixture(autouse=True)

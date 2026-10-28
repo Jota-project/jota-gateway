@@ -50,3 +50,8 @@ def test_ready_transcriber_down_returns_200_degraded(client, mock_services):
     body = r.json()
     assert body["status"] == "degraded"
     assert body["services"]["transcriber"] == "unavailable"
+
+
+def test_lifespan_runs_migrations(client, _skip_lifespan_migrations):
+    # The fixture stubs run_migrations out; this pins that startup still calls it.
+    assert _skip_lifespan_migrations == [None]
