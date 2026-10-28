@@ -14,6 +14,7 @@ from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
 from src.services.reconnection import ConnectionState
+from tests.fakes.speech import speech_providers
 
 
 class RecWS:
@@ -44,7 +45,7 @@ def _bridge(config=None, input_mode="audio"):
         config=config or ClientConfig(),
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=tracker,
         handshake=Handshake(client_key="k", input_mode=input_mode, output_mode=["text"]),
         client_registry=ClientRegistry(),
@@ -129,7 +130,7 @@ async def test_watchdog_does_not_close_during_a_20s_turn_with_2s_timeout_3_strik
     monkeypatch.setattr(bridge_module.asyncio, "sleep", fake_sleep)
     bridge, _ = _bridge(ClientConfig(silence_timeout_s=2, max_silence_turns=3))
     start = clock.t
-    bridge._first_audio_at = bridge._last_audio_at = bridge._audio_burst_start = start
+    bridge._last_audio_at = bridge._audio_burst_start = start
     bridge.transcriber.last_transcript_at = start
     events: list[tuple[str, float]] = []
     bridge.close_all = AsyncMock(side_effect=lambda *a, **k: events.append(("close", clock.t)))

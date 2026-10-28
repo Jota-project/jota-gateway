@@ -5,8 +5,9 @@ from unittest.mock import AsyncMock, MagicMock
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
-from src.services.pipeline_tracker import PipelineTracker, _NullWS
+from src.services.pipeline_tracker import PipelineTracker
 from src.services.reconnection import ConnectionState
+from tests.fakes.speech import speech_providers
 
 _CLIENT = Client(id="hab_sito", client_key="test-key", is_active=True)
 _CONFIG = ClientConfig()
@@ -22,7 +23,6 @@ def _make_bridge(input_mode="text", output_mode=None):
         client_id="hab_sito",
         input_mode=input_mode,
         output_mode=output_mode,
-        client_ws=_NullWS(),
         registry=registry,
     )
     handshake = Handshake(client_key="test-key", input_mode=input_mode, output_mode=output_mode)
@@ -33,7 +33,7 @@ def _make_bridge(input_mode="text", output_mode=None):
         config=_CONFIG,
         client_ws=ws,
         orchestrator=orch,
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=tracker,
         handshake=handshake,
         client_registry=ClientRegistry(),

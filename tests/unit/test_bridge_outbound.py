@@ -8,9 +8,10 @@ import pytest
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
-from src.services.outbound import ClientGone, QueuedSender
+from src.services.outbound import ClientGone, DirectSender, QueuedSender
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.protocol import OrchestratorEvent
+from tests.fakes.speech import speech_providers
 
 _CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
 
@@ -40,7 +41,6 @@ def _make(ws, output_mode=("text", "status"), tts=None):
         client_id="test-uuid",
         input_mode="text",
         output_mode=list(output_mode),
-        client_ws=ws,
         registry=MagicMock(),
         sender=sender,
     )
@@ -49,7 +49,7 @@ def _make(ws, output_mode=("text", "status"), tts=None):
         config=ClientConfig(),
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=tts or AsyncMock(),
+        speech=speech_providers(tts=tts or AsyncMock()),
         tracker=tracker,
         handshake=Handshake(client_key="test-key", input_mode="text", output_mode=list(output_mode)),
         client_registry=ClientRegistry(),
@@ -138,11 +138,11 @@ async def test_bridge_defaults_to_direct_sender_forwarding_to_client_ws():
     ws = AsyncMock()
     tracker = PipelineTracker(
         session_id="s:1", client_id="c", input_mode="text", output_mode=["text"],
-        client_ws=ws, registry=MagicMock(),
+        sender=DirectSender(ws), registry=MagicMock(),
     )
     bridge = JotaBridge(
         client=_CLIENT, config=ClientConfig(), client_ws=ws, orchestrator=AsyncMock(),
-        tts=AsyncMock(), tracker=tracker,
+        speech=speech_providers(), tracker=tracker,
         handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text"]),
         client_registry=ClientRegistry(), default_agent="main",
     )

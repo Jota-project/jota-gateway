@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from src.services.outbound import DirectSender, OutboundSender
+from src.services.outbound import OutboundSender
 
 if TYPE_CHECKING:
     from src.services.session_registry import SessionRegistry, SessionStatus
@@ -28,7 +28,6 @@ class PipelineTracker:
         client_id: str,
         input_mode: str,
         output_mode: Sequence[str],
-        client_ws,
         registry: "SessionRegistry",
         sender: OutboundSender | None = None,
     ):
@@ -37,7 +36,7 @@ class PipelineTracker:
         self.input_mode = input_mode
         self.output_mode = list(output_mode)
         self.events: list[PipelineEvent] = []
-        self._sender: OutboundSender = sender or DirectSender(client_ws)
+        self._sender = sender  # None: nothing is sent to a client (HTTP sessions)
         self._registry = registry
         self._started_at: float = time.monotonic()
         self._last_event_at: float = self._started_at
@@ -82,7 +81,7 @@ class PipelineTracker:
             },
         )
 
-        if "status" in self.output_mode:
+        if self._sender is not None and "status" in self.output_mode:
             try:
                 await self._sender.send_json(
                     {
@@ -157,9 +156,3 @@ class PipelineTracker:
             return None
         return self.turn_e2e_latencies().get(done.turn)
 
-
-class _NullWS:
-    """Absorbs send_json calls silently. Used by HTTP sessions that have no WebSocket."""
-
-    async def send_json(self, data: dict) -> None:
-        pass

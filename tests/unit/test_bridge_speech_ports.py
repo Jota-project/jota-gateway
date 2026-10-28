@@ -6,8 +6,8 @@ from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
 from src.services.reconnection import ConnectionState
-from src.services.speech.jota import JotaSttProvider, JotaSttSession
 from src.services.speech.ports import SttCapabilities
+from tests.fakes.speech import speech_providers
 
 
 class FakeSession:
@@ -71,18 +71,16 @@ class FakeStt:
 
 
 def _bridge(mock_tracker, stt=None, **cfg):
-    kwargs = {} if stt is None else {"stt": stt}
     return JotaBridge(
         client=Client(id="c1", client_key="k", is_active=True),
         config=ClientConfig(stt_language="en", stt_vad_thold=0.3, **cfg),
         client_ws=AsyncMock(),
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(stt=stt),
         tracker=mock_tracker,
         handshake=Handshake(client_key="k", input_mode="audio", output_mode=["audio", "text"]),
         client_registry=ClientRegistry(),
         default_agent="main",
-        **kwargs,
     )
 
 
@@ -97,17 +95,6 @@ async def test_bridge_uses_injected_stt_provider(mock_tracker):
     assert params.vad_threshold == 0.3
     assert stt.session.started is True
     assert bridge.transcriber is stt.session
-
-
-async def test_bridge_defaults_stt_provider_when_not_injected(mock_tracker):
-    """Foco 2: sin `stt=` el bridge sigue funcionando con el proveedor por defecto."""
-    bridge = _bridge(mock_tracker)
-    assert isinstance(bridge._stt, JotaSttProvider)
-    await bridge.connect_internal_services()
-    try:
-        assert isinstance(bridge.transcriber, JotaSttSession)
-    finally:
-        await bridge.transcriber.close()
 
 
 async def test_stt_callbacks_available_before_run(mock_tracker):

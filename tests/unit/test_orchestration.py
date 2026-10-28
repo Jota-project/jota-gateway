@@ -35,7 +35,7 @@ async def test_tokens_reach_callback():
 
 
 async def test_tracker_receives_llm_events():
-    from src.services.pipeline_tracker import PipelineTracker, _NullWS
+    from src.services.pipeline_tracker import PipelineTracker
 
     registry = MagicMock()
     tracker = PipelineTracker(
@@ -43,7 +43,6 @@ async def test_tracker_receives_llm_events():
         client_id="ha",
         input_mode="text",
         output_mode=[],
-        client_ws=_NullWS(),
         registry=registry,
     )
     orch = _make_orchestrator(
@@ -145,7 +144,7 @@ async def test_no_on_tool_call_does_not_raise():
 
 
 async def test_llm_done_meta_has_token_count():
-    from src.services.pipeline_tracker import PipelineTracker, _NullWS
+    from src.services.pipeline_tracker import PipelineTracker
 
     registry = MagicMock()
     tracker = PipelineTracker(
@@ -153,7 +152,6 @@ async def test_llm_done_meta_has_token_count():
         client_id="ha",
         input_mode="text",
         output_mode=[],
-        client_ws=_NullWS(),
         registry=registry,
     )
     orch = _make_orchestrator(

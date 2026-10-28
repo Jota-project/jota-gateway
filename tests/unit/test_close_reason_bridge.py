@@ -10,9 +10,11 @@ from src.core.session_key import make_session_key
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry, TurnRegistry
+from src.services.outbound import DirectSender
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.reconnection import ConnectionState
 from src.services.stats import gateway_stats
+from tests.fakes.speech import speech_providers
 
 _CLIENT = Client(id="hab_sito", client_key="test-key", is_active=True)
 
@@ -23,7 +25,7 @@ def _make_bridge(config=None, input_mode="text", turn_registry=None):
         client_id=_CLIENT.id,
         input_mode=input_mode,
         output_mode=["text"],
-        client_ws=AsyncMock(),
+        sender=DirectSender(AsyncMock()),
         registry=MagicMock(),
     )
     registry = ClientRegistry()
@@ -32,7 +34,7 @@ def _make_bridge(config=None, input_mode="text", turn_registry=None):
         config=config or ClientConfig(),
         client_ws=AsyncMock(),
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=tracker,
         handshake=Handshake(client_key="test-key", input_mode=input_mode, output_mode=["text"]),
         client_registry=registry,
@@ -72,7 +74,7 @@ async def test_silence_timeout_reason(monkeypatch):
     now = time.monotonic()
     bridge._last_audio_at = now
     bridge._audio_burst_start = now - 5
-    bridge._first_audio_at = now - 5
+    bridge._last_audio_at = bridge._audio_burst_start = now - 5
 
     async def _fast_sleep(_):
         bridge._last_audio_at = time.monotonic()  # cliente enviando audio sin transcripción

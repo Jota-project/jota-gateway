@@ -13,6 +13,7 @@ from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
 from src.services.protocol import OrchestratorEvent
 from src.services.tts_client import TTSClient
+from tests.fakes.speech import speech_providers
 
 
 class _WS:
@@ -42,7 +43,7 @@ def _bridge(ws, tts_client):
         config=ClientConfig(),
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=tts,
+        speech=speech_providers(tts=tts),
         tracker=AsyncMock(),
         handshake=Handshake(client_key="k", input_mode="text", output_mode=["text", "audio"]),
         client_registry=ClientRegistry(),

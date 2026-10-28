@@ -9,6 +9,7 @@ import pytest
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
+from tests.fakes.speech import speech_providers
 
 
 @pytest.fixture
@@ -18,7 +19,7 @@ def bridge(mock_tracker):
         config=ClientConfig(),
         client_ws=AsyncMock(),
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=mock_tracker,
         handshake=Handshake(client_key="k", input_mode="text", output_mode=["text"]),
         client_registry=ClientRegistry(),

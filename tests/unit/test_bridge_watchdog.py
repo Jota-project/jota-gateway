@@ -9,7 +9,8 @@ import pytest
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
-from src.services.pipeline_tracker import PipelineTracker, _NullWS
+from src.services.pipeline_tracker import PipelineTracker
+from tests.fakes.speech import speech_providers
 
 _CLIENT = Client(id="hab_sito", client_key="test-key", is_active=True)
 _CONFIG = ClientConfig(silence_timeout_s=1, max_silence_turns=3)
@@ -23,7 +24,6 @@ def _make_bridge(config=None):
         client_id="hab_sito",
         input_mode="audio",
         output_mode=["text"],
-        client_ws=_NullWS(),
         registry=registry,
     )
     handshake = Handshake(client_key="test-key", input_mode="audio", output_mode=["text"])
@@ -38,7 +38,7 @@ def _make_bridge(config=None):
         config=config or _CONFIG,
         client_ws=ws,
         orchestrator=orch,
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=tracker,
         handshake=handshake,
         client_registry=ClientRegistry(),
@@ -53,7 +53,7 @@ async def test_watchdog_notifies_client_after_silence_timeout():
     """After silence_timeout_s with no transcription, client gets degraded notice."""
     config = ClientConfig(silence_timeout_s=1, max_silence_turns=1)
     bridge, ws, transcriber = _make_bridge(config=config)
-    bridge._first_audio_at = time.monotonic() - 2
+    bridge._last_audio_at = bridge._audio_burst_start = time.monotonic() - 2
     bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
     transcriber.last_transcript_at = None
     bridge.close_all = AsyncMock()
@@ -72,7 +72,7 @@ async def test_watchdog_notifies_client_after_silence_timeout():
 async def test_watchdog_exits_if_transcriber_disconnects():
     """Watchdog exits cleanly when transcriber goes offline."""
     bridge, ws, transcriber = _make_bridge()
-    bridge._first_audio_at = time.monotonic()
+    bridge._last_audio_at = bridge._audio_burst_start = time.monotonic()
     from src.services.reconnection import ConnectionState
 
     transcriber.state = ConnectionState.DEGRADED
@@ -86,7 +86,7 @@ async def test_watchdog_closes_session_after_max_silence_turns():
     """After max_silence_turns consecutive timeouts, close_all is called."""
     config = ClientConfig(silence_timeout_s=1, max_silence_turns=2)
     bridge, ws, transcriber = _make_bridge(config=config)
-    bridge._first_audio_at = time.monotonic() - 2
+    bridge._last_audio_at = bridge._audio_burst_start = time.monotonic() - 2
     bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
     transcriber.last_transcript_at = None
 
@@ -109,7 +109,7 @@ async def test_watchdog_resets_count_when_transcription_arrives():
     """Un silencio seguido de transcripción reinicia el contador."""
     config = ClientConfig(silence_timeout_s=1, max_silence_turns=2)
     bridge, ws, transcriber = _make_bridge(config=config)
-    bridge._first_audio_at = time.monotonic() - 2
+    bridge._last_audio_at = bridge._audio_burst_start = time.monotonic() - 2
     bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
     transcriber.last_transcript_at = None
 
@@ -153,7 +153,7 @@ async def test_watchdog_pauses_but_does_not_exit_when_reconnecting():
 
     config = ClientConfig(silence_timeout_s=1, max_silence_turns=2)
     bridge, ws, transcriber = _make_bridge(config=config)
-    bridge._first_audio_at = time.monotonic() - 2
+    bridge._last_audio_at = bridge._audio_burst_start = time.monotonic() - 2
     bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
     transcriber.last_transcript_at = time.monotonic()  # fresh, no silence yet
 
@@ -191,13 +191,13 @@ async def test_watchdog_does_not_close_immediately_after_reconnect_with_stale_ti
     so after a real reconnect it stays at whatever it was before the outage. The
     watchdog must not blame the client for the outage duration and force-close the
     session the moment it observes CONNECTED again — it should grant a fresh
-    baseline instead, exactly like a brand-new session would get via
-    `_first_audio_at`."""
+    baseline instead, exactly like a brand-new session would get on its first
+    audio frame."""
     from src.services.reconnection import ConnectionState
 
     config = ClientConfig(silence_timeout_s=1, max_silence_turns=2)
     bridge, ws, transcriber = _make_bridge(config=config)
-    bridge._first_audio_at = time.monotonic() - 10
+    bridge._last_audio_at = bridge._audio_burst_start = time.monotonic() - 10
     bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
     # A real transcription happened a while ago, then the transcriber dropped.
     transcriber.last_transcript_at = time.monotonic() - 10
@@ -527,7 +527,7 @@ async def test_run_launches_idle_watchdog_that_closes_the_session(monkeypatch, m
         config=ClientConfig(),
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=mock_tracker,
         handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text"]),
         client_registry=ClientRegistry(),
@@ -564,7 +564,7 @@ async def test_watchdog_counts_one_strike_per_poll_tick_not_per_timeout_window(m
     monkeypatch.setattr(bridge_module, "_WATCHDOG_POLL_S", 0.1)
     config = ClientConfig(silence_timeout_s=0.05, max_silence_turns=3)
     bridge, ws, transcriber = _make_bridge(config=config)
-    bridge._first_audio_at = time.monotonic() - 1
+    bridge._last_audio_at = bridge._audio_burst_start = time.monotonic() - 1
     bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
     transcriber.last_transcript_at = None
     bridge.close_all = AsyncMock()
@@ -590,7 +590,7 @@ async def test_watchdog_extends_first_window_after_burst_by_stt_warmup(monkeypat
     bridge, ws, transcriber = _make_bridge(config=config)
     bridge._session_stt = SimpleNamespace(capabilities=SttCapabilities(partials=True, warmup_s=0.5))
     t0 = time.monotonic()
-    bridge._first_audio_at = t0
+    bridge._last_audio_at = bridge._audio_burst_start = t0
     bridge._audio_burst_start = t0
     bridge._last_audio_at = float("inf")
     transcriber.last_transcript_at = None

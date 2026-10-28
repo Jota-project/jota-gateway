@@ -9,6 +9,7 @@ from src.core.config import settings
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
+from tests.fakes.speech import speech_providers
 
 
 def make_bridge():
@@ -23,7 +24,7 @@ def make_bridge():
         config=ClientConfig(),
         client_ws=AsyncMock(),
         orchestrator=AsyncMock(),
-        tts=tts,
+        speech=speech_providers(tts=tts),
         tracker=AsyncMock(),
         handshake=handshake,
         client_registry=ClientRegistry(),

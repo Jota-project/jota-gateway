@@ -19,6 +19,7 @@ from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
 from src.services.reconnection import ConnectionState, to_wire_state
 from src.services.tts_reconnecting import ReconnectingTTSClient
+from tests.fakes.speech import speech_providers
 
 _CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
 _CONFIG = ClientConfig()
@@ -30,7 +31,7 @@ def _make_bridge(output_mode: list[str], tts) -> JotaBridge:
         config=_CONFIG,
         client_ws=AsyncMock(),
         orchestrator=AsyncMock(),
-        tts=tts,
+        speech=speech_providers(tts=tts),
         tracker=AsyncMock(),
         handshake=Handshake(client_key="test-key", input_mode="text", output_mode=output_mode),
         client_registry=ClientRegistry(),

@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock, MagicMock
 
+from src.services.outbound import DirectSender
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.session_registry import SessionRegistry
 
@@ -12,7 +13,7 @@ def _make_tracker(session_id="s1", client_id="c1"):
         client_id=client_id,
         input_mode="audio",
         output_mode=["audio"],
-        client_ws=ws,
+        sender=DirectSender(ws),
         registry=registry,
     )
 

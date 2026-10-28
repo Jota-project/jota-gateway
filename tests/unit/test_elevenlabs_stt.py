@@ -358,14 +358,12 @@ async def test_gate_energy_forwards_only_speech_and_commits_on_segment_end(env):
     assert fake.audio_bytes > 0
 
 
-async def test_usage_counts_audio_seconds(env):
+async def test_counters_count_audio_seconds(env):
     fake, p, s, _r = await env()
     for _ in range(5):
         await s.send_audio(frame())
     await wait_until(lambda: fake.audio_bytes == 16000)
-    u = s.usage()
-    assert u["stt_audio_s"] == pytest.approx(0.5)
-    assert u["stt_upstream_opens"] == 1
+    assert p.counters()["upstream_opens"] == 1
     assert p.counters()["audio_seconds_sent"] == pytest.approx(0.5)
 
 
@@ -492,8 +490,7 @@ async def test_bridge_watchdog_not_triggered_by_partials_without_commit(env, mon
     config = ClientConfig(silence_timeout_s=0.1, max_silence_turns=1)
     bridge, ws, _t = _make_bridge(config=config)
     bridge.transcriber = s
-    bridge._first_audio_at = time.monotonic()
-    bridge._audio_burst_start = bridge._first_audio_at
+    bridge._audio_burst_start = time.monotonic()
     bridge._last_audio_at = float("inf")
     bridge.close_all = AsyncMock()
     up = _Upstream()
@@ -579,7 +576,6 @@ async def test_capacity_refusal_counted_once_per_episode(env):
     for _ in range(5):
         await s2.send_audio(frame())
     assert p.counters()["capacity_refusals"] == 1
-    assert s2.usage()["stt_capacity_refusals"] == 1
     await s2.close()
     await asyncio.gather(r2, return_exceptions=True)
 

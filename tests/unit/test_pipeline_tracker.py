@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
+from src.services.outbound import DirectSender
 from src.services.pipeline_tracker import PipelineTracker
 
 
@@ -11,7 +12,7 @@ def _tracker(registry):
         client_id="c1",
         input_mode="text",
         output_mode=["text"],
-        client_ws=AsyncMock(),
+        sender=DirectSender(AsyncMock()),
         registry=registry,
     )
 

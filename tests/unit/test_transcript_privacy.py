@@ -10,6 +10,7 @@ import pytest
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
+from tests.fakes.speech import speech_providers
 
 _CLIENT = Client(id="priv-uuid", client_key="k", is_active=True)
 _SECRET = "TOP-SECRET-PHRASE"
@@ -22,7 +23,7 @@ def bridge(mock_tracker):
         config=ClientConfig(barge_in_enabled=True, barge_in_min_chars=3),
         client_ws=AsyncMock(),
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=mock_tracker,
         handshake=Handshake(client_key="k", input_mode="audio", output_mode=["text", "status"]),
         client_registry=ClientRegistry(),

@@ -1,6 +1,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
+from src.services.outbound import DirectSender
 from src.services.pipeline_tracker import PipelineTracker
 
 
@@ -13,7 +14,7 @@ def _make_tracker(ws=None, output_mode=None):
         client_id="test",
         input_mode="audio",
         output_mode=output_mode if output_mode is not None else ["audio", "text", "status"],
-        client_ws=ws,
+        sender=DirectSender(ws),
         registry=registry,
     )
     return tracker, ws, registry

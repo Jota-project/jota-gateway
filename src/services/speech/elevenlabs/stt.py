@@ -131,9 +131,6 @@ class ElevenLabsSttSession:
         self._cooldown_until = 0.0
         self._warm_deadline: float | None = None
         self._tasks: set[asyncio.Task] = set()
-        self._audio_bytes_sent = 0
-        self._opens = 0
-        self._refusals = 0
         provider._refs.opened()
         provider._sessions.add(self)
         if provider._terminal:
@@ -198,13 +195,6 @@ class ElevenLabsSttSession:
                 t.cancel()
             await self._p._refs.closed()
 
-    def usage(self) -> dict[str, float]:
-        return {
-            "stt_audio_s": self._audio_bytes_sent / BYTES_PER_S,
-            "stt_upstream_opens": float(self._opens),
-            "stt_capacity_refusals": float(self._refusals),
-        }
-
     # --- buffer / apertura perezosa ---
 
     def _trim_buffer(self) -> None:
@@ -244,7 +234,6 @@ class ElevenLabsSttSession:
             return
         if self._p._sem.locked():
             if not self._busy:  # una vez por episodio de rechazo, no por frame
-                self._refusals += 1
                 self._p._counters["capacity_refusals"] += 1
             await self._set_busy("sem")
             self._buf.clear()
@@ -300,7 +289,6 @@ class ElevenLabsSttSession:
             if self._p._terminal:
                 raise _Terminal
             raise ConnectionError("session_started")
-        self._opens += 1
         self._p._counters["upstream_opens"] += 1
         self._p._record_success()
         if not self._p._terminal:
@@ -526,7 +514,6 @@ class ElevenLabsSttSession:
             "sample_rate": SAMPLE_RATE,
         }
         await up.ws.send(json.dumps(msg))
-        self._audio_bytes_sent += len(pcm)
         self._p._counters["audio_seconds_sent"] += len(pcm) / BYTES_PER_S
 
     # --- cierre ---

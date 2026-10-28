@@ -85,8 +85,6 @@ def _bridge(providers, mock_tracker):
         config=ClientConfig(),
         client_ws=AsyncMock(),
         orchestrator=AsyncMock(),
-        tts=providers.tts,
-        stt=providers.stt,
         speech=providers,
         tracker=mock_tracker,
         handshake=Handshake(
