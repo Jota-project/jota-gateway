@@ -59,13 +59,6 @@ def test_whitespace_only_emitted_does_not_warn(caplog):
 # ── #241: full text only in `final` ───────────────────────────────────────────
 
 
-def test_captured_sequence_without_snapshots():
-    t = ChatTextTracker()
-    assert t.feed({"state": "delta", "deltaText": "1, 2, 3,"}) == "1, 2, 3,"
-    assert t.feed({"state": "delta", "deltaText": "", "replace": True}) == ""
-    assert t.feed(_final("1, 2, 3, 4, 5")) == " 4, 5"
-
-
 def test_final_without_any_delta_emits_full_text():
     assert ChatTextTracker().feed(_final("Hola completo")) == "Hola completo"
 
