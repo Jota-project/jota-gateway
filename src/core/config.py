@@ -31,6 +31,8 @@ class Settings(BaseSettings):
 
     # Servicios externos
     TRANSCRIBER_WS_URL: str = "localhost:9000"
+    # Token de servicio para el transcriber (su AUTH_TOKEN). Nunca la client_key (#218).
+    TRANSCRIBER_TOKEN: str = ""
     TTS_WS_URL: str = "localhost:8005"
     TTS_TOKEN: str = "gateway"
 

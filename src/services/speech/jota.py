@@ -128,7 +128,7 @@ class JotaSttProvider:
         )
         self._sessions.opened()
         return JotaSttSession(
-            inner, params, callbacks, token=client.client_key, on_closed=self._session_closed
+            inner, params, callbacks, token=s.TRANSCRIBER_TOKEN, on_closed=self._session_closed
         )
 
     async def _session_closed(self) -> None:
