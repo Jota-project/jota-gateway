@@ -99,9 +99,7 @@ class ReconnectingOpenClawClient:
     async def stream_response(
         self,
         text: str,
-        user_id: str,
-        model_id: str | None = None,
-        session_key: str | None = None,
+        session_key: str,
     ) -> AsyncGenerator[OrchestratorEvent, None]:
         if self.state != ConnectionState.CONNECTED:
             if self.state == ConnectionState.DEGRADED:
@@ -116,12 +114,7 @@ class ReconnectingOpenClawClient:
             # instead of being abandoned for the asyncgen GC finalizer to eventually
             # close (issue #150, one layer removed from the #99/#147 fix).
             async with contextlib.aclosing(
-                self._client.stream_response(
-                    text=text,
-                    user_id=user_id,
-                    model_id=model_id,
-                    session_key=session_key,
-                )
+                self._client.stream_response(text=text, session_key=session_key)
             ) as inner:
                 async for event in inner:
                     yield event

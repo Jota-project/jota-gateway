@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict
 OutputMode = Literal["audio", "text", "status"]
 
 # =====================================================================
-# jota-db — modelos que el gateway recibe de GET /auth/session
+# Identidad y configuración del cliente (BD local, src/db)
 # =====================================================================
 
 
@@ -38,13 +38,6 @@ class ClientConfig(BaseModel):
     allowed_agents: list[str] | None = None
 
     model_config = ConfigDict(extra="allow")
-
-
-class SessionResponse(BaseModel):
-    """Respuesta de GET /auth/session en jota-db."""
-
-    client: Client
-    config: ClientConfig
 
 
 # =====================================================================

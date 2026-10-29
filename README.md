@@ -281,7 +281,7 @@ src/
         ├── reconnecting.py  ReconnectingOpenClawClient — backoff + DEGRADED
         ├── dispatcher.py    FrameDispatcher — enruta frames a turn/client registry
         ├── registry.py      TurnRegistry + ClientRegistry (+ broadcast_status a todas las sesiones)
-        └── models.py        GatewayInfo, AgentInfo
+        └── models.py        GatewayInfo
 ```
 
 ## Licencia

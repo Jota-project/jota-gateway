@@ -32,12 +32,8 @@ def make_mock_client(gateway_info=None):
 
 
 GATEWAY_INFO = GatewayInfo(
-    protocol_version=4,
-    server_version="2026.6.6",
-    conn_id="c1",
     default_agent_id="main",
-    agents={},
-    tick_interval_ms=30000,
+        tick_interval_ms=30000,
     max_payload=26214400,
 )
 
@@ -57,7 +53,7 @@ async def test_stream_response_delegates():
     roc = ReconnectingOpenClawClient(inner, "test")
     await roc.connect()
     events = []
-    async for e in roc.stream_response("hello", "user", session_key="agent:main:u"):
+    async for e in roc.stream_response("hello", session_key="agent:main:u"):
         events.append(e)
     assert any(e.type == "token" for e in events)
 
@@ -68,7 +64,7 @@ async def test_stream_response_when_not_connected_yields_error():
     roc = ReconnectingOpenClawClient(inner, "test")
     # NOT calling connect() first
     events = []
-    async for e in roc.stream_response("hello", "user", session_key="agent:main:u"):
+    async for e in roc.stream_response("hello", session_key="agent:main:u"):
         events.append(e)
     assert events[0].type == "error"
     assert "unavailable" in events[0].content
@@ -268,7 +264,7 @@ async def test_stream_response_closes_inner_generator_on_early_exit():
 
     with pytest.raises(RuntimeError):
         async with contextlib.aclosing(
-            roc.stream_response("hi", "user", session_key="agent:main:u")
+            roc.stream_response("hi", session_key="agent:main:u")
         ) as stream:
             async for event in stream:
                 if event.type == "error":

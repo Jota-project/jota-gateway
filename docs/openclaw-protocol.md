@@ -13,6 +13,9 @@ current, hyper-detailed understanding* of its API as it affects this codebase. S
 `CLAUDE.md`'s "OpenClaw package" section for how jota-gateway's code responds to what's
 documented here.
 
+**Minimum supported OpenClaw server: 2026.6.11** (since 2026-10-28, issue #262). The gateway no
+longer understands the older protocol shapes described below as "gone".
+
 ---
 
 ## Breaking change — v2026.6.11
@@ -134,7 +137,7 @@ While the agent is responding, `chat` events stream:
 
 `state: "final"` on the last chunk is the real completion signal (server 2026.6.11+ — see
 breaking change above). `stream_response()` yields `status: "done"` on `state == "final"`; the
-old `res`-based completion path is kept only as a fallback for older server versions.
+old `res`-based completion (`status: "done"`) was removed on 2026-10-28 (issue #262).
 
 > Since 2026.10.5 `final` also carries the full reply text and no `deltaText` — see
 > "Breaking change — OpenClaw 2026.10.5" below.
@@ -408,9 +411,9 @@ Observed/decided while hardening the gateway's boundary with OpenClaw (audit G-0
 - **A clean close (1000) from the server ends the iteration silently** (no exception), so
   in-flight turns must be failed explicitly on any exit from the listen loop.
 - **`res` frames:** `chat.send`'s ack is `ok:true` with `payload.status == "started"`. Only
-  `ok:false` is a failure that ends the turn; the explicit `status: "done"` is kept as a legacy
-  completion fallback (pre-2026.6.11). Any other `ok:true` status is not a turn end; the real
-  completion is the `chat` event with `state == "final"`.
+  `ok:false` is a failure that ends the turn. Any other `ok:true` status (including the
+  pre-2026.6.11 `status: "done"`, no longer supported) is not a turn end; the real completion
+  is the `chat` event with `state == "final"`.
 - **`hello-ok` carries `protocol` and `server.version`;** the gateway logs both once per
   connection (INFO) so version drift shows in the logs.
 
@@ -483,6 +486,14 @@ lost. Fix belongs to M9 (correlate by `runId`; issue #202).
 
 ## Change log of this file
 
+- **2026-10-28**: minimum supported server is now **2026.6.11** (issue #262). Removed the
+  pre-2026.6.11 compatibility: a `res` with `ok:true` + `status: "done"` no longer ends a turn
+  (only `chat` `state: "final"` or a `res` with `ok:false` does), and `hello-ok`'s
+  `snapshot.agents[]` / `snapshot.defaultAgentId` are no longer read (roster only from
+  `agents.list`, default agent from `agents.list`'s `defaultId` when present, else
+  `snapshot.sessionDefaults.defaultAgentId`). Also dropped the unused frame builders `chat.history`,
+  `chat.inject`, `sessions.steer`, `sessions.list`, `agent.identity.get`, `models.list` and
+  `models.authStatus` (the methods themselves are unchanged server-side).
 - **2026-10-23**: added "`runId`, `chat.abort` and a concurrent `chat.send`" (issue #219).
 - **2026-10-20**: documented the official delta/replace/snapshot semantics (issue #243).
 - **2026-10-20**: added "Breaking change — OpenClaw 2026.10.5" (issue #241): `final` carries the full text without `deltaText`.

@@ -30,12 +30,12 @@ def test_text_message_produces_token(client):
         assert msg["text"] == "Hola"
 
 
-def test_orchestrator_receives_correct_user_id(client, mock_registry, mock_orchestrator):
-    """El user_id pasado a stream_response coincide con el client UUID."""
+def test_orchestrator_session_key_carries_client_id(client, mock_registry, mock_orchestrator):
+    """La session_key pasada a stream_response termina en el UUID del cliente."""
     captured = {}
 
-    async def _stream(text, user_id, model_id=None, session_key=None):
-        captured["user_id"] = user_id
+    async def _stream(text, session_key=None):
+        captured["session_key"] = session_key
         yield OrchestratorEvent(type="token", content="ok")
         yield OrchestratorEvent(type="status", content="done")
 
@@ -48,4 +48,4 @@ def test_orchestrator_receives_correct_user_id(client, mock_registry, mock_orche
         ws.receive_json()  # turn_start
         ws.receive_json()  # token
 
-    assert captured["user_id"] == CLIENT_ID
+    assert captured["session_key"].endswith(f":{CLIENT_ID}")

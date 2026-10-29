@@ -74,7 +74,7 @@ def test_rest_default_agent_applied_when_model_missing(
 
     captured = {}
 
-    async def _stream(text, user_id, model_id=None, session_key=None):
+    async def _stream(text, session_key=None):
         captured["session_key"] = session_key
         yield OrchestratorEvent(type="token", content="ok")
         yield OrchestratorEvent(type="status", content="done")
@@ -101,7 +101,7 @@ def test_rest_legacy_trusted_origin_still_uses_gateway_default(client, mock_orch
 
     captured = {}
 
-    async def _stream(text, user_id, model_id=None, session_key=None):
+    async def _stream(text, session_key=None):
         captured["session_key"] = session_key
         yield OrchestratorEvent(type="token", content="ok")
         yield OrchestratorEvent(type="status", content="done")

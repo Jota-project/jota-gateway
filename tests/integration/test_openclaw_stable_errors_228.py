@@ -97,7 +97,7 @@ def make_client(port):
 
 
 async def run_turn(client):
-    return [e async for e in client.stream_response("hola", "u", session_key=SK)]
+    return [e async for e in client.stream_response("hola", session_key=SK)]
 
 
 def assert_clean(caplog, *texts):
@@ -168,7 +168,7 @@ async def test_reconnecting_stream_exception_gives_stable_error(caplog):
     inner.stream_response = boom
     roc = ReconnectingOpenClawClient(inner, "test")
     roc._health.state = ConnectionState.CONNECTED
-    events = [e async for e in roc.stream_response("hi", "u", session_key=SK)]
+    events = [e async for e in roc.stream_response("hi", session_key=SK)]
     assert events == [OrchestratorEvent(type="error", content="orchestrator_error")]
     assert "ValueError" in caplog.text
     assert_clean(caplog, events)

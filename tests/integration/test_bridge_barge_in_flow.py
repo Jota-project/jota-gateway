@@ -134,7 +134,7 @@ def test_disabled_barge_in_does_not_interrupt_in_flight_response(
 
     mock_orch = make_mock_orchestrator()
 
-    async def _stream(text, user_id, model_id=None, session_key=None):
+    async def _stream(text, session_key=None):
         yield OrchestratorEvent(type="token", content="respuesta ")
         await asyncio.sleep(0.3)  # keeps the turn active while the partial arrives
         yield OrchestratorEvent(type="token", content="larga completa")

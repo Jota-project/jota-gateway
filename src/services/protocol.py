@@ -21,7 +21,5 @@ class OrchestratorProtocol(Protocol):
     def stream_response(
         self,
         text: str,
-        user_id: str,
-        model_id: str | None = None,
-        session_key: str | None = None,
+        session_key: str,
     ) -> AsyncGenerator[OrchestratorEvent, None]: ...

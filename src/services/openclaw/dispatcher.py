@@ -57,12 +57,10 @@ class FrameDispatcher:
         )
 
     async def _handle_res(self, frame: dict) -> None:
-        # A res ends the turn only when it is a failure (ok:false) or the legacy
-        # completion of servers older than 2026.6.11 (explicit status "done"). Any other
-        # ok:true ack ("started", "accepted", ...) is not a turn end (G-47); the real
-        # completion is the chat event with state "final".
-        payload = _as_dict(frame.get("payload"))
-        if frame.get("ok") is False or payload.get("status") == "done":
+        # A res ends the turn only when it is a failure (ok:false). An ok:true ack
+        # ("started", ...) is not a turn end (G-47); the real completion is the chat
+        # event with state "final" (server 2026.6.11+, the minimum supported).
+        if frame.get("ok") is False:
             self._turns.deliver_by_req(frame.get("id", ""), ("done", frame))
 
     async def _handle_event(self, frame: dict) -> None:

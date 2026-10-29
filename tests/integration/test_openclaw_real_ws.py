@@ -138,7 +138,7 @@ def make_client(port):
 
 
 async def run_turn(client, sk, text):
-    return [e async for e in client.stream_response(text, "u", session_key=sk)]
+    return [e async for e in client.stream_response(text, session_key=sk)]
 
 
 def tokens(events):

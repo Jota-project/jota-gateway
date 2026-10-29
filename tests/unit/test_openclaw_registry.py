@@ -40,16 +40,10 @@ def test_get_queue_by_session():
     assert reg.get_queue_by_session("agent:main:client-a") is q
 
 
-def test_get_queue_by_req():
-    reg = TurnRegistry()
-    q = reg.register("req-1", "agent:main:client-a")
-    assert reg.get_queue_by_req("req-1") is q
-
-
 def test_get_queue_missing_returns_none():
     reg = TurnRegistry()
     assert reg.get_queue_by_session("nonexistent") is None
-    assert reg.get_queue_by_req("nonexistent") is None
+    assert not reg.deliver_by_req("nonexistent", ("x", None))
 
 
 def test_unregister_clears_both():
@@ -57,7 +51,7 @@ def test_unregister_clears_both():
     reg.register("req-1", "agent:main:client-a")
     reg.unregister("agent:main:client-a", "req-1")
     assert reg.get_queue_by_session("agent:main:client-a") is None
-    assert reg.get_queue_by_req("req-1") is None
+    assert not reg.deliver_by_req("req-1", ("x", None))
 
 
 def test_register_rejects_duplicate_session_key():
@@ -69,9 +63,8 @@ def test_register_rejects_duplicate_session_key():
 
     # The first caller's queue is untouched by the rejected attempt.
     assert reg.get_queue_by_session("agent:main:client-a") is qa
-    assert reg.get_queue_by_req("req-a") is qa
     # The rejected req_id was never registered.
-    assert reg.get_queue_by_req("req-b") is None
+    assert not reg.deliver_by_req("req-b", ("x", None))
 
 
 def test_unregister_does_not_pop_unrelated_queue():
@@ -92,7 +85,8 @@ def test_unregister_does_not_pop_unrelated_queue():
     reg.unregister("agent:main:client-a", "req-a")
 
     assert reg.get_queue_by_session("agent:main:client-a") is qb
-    assert reg.get_queue_by_req("req-b") is qb
+    assert reg.deliver_by_req("req-b", ("x", None))
+    assert qb.get_nowait() == ("x", None)
 
 
 def test_two_sessions_independent():
@@ -112,7 +106,7 @@ def test_error_all_notifies_and_clears():
     assert qa.get_nowait() == ("error", "reconnecting")
     assert qb.get_nowait() == ("error", "reconnecting")
     assert reg.get_queue_by_session("agent:main:client-a") is None
-    assert reg.get_queue_by_req("req-a") is None
+    assert not reg.deliver_by_req("req-a", ("x", None))
 
 
 # --- ClientRegistry ---
