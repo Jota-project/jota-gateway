@@ -15,9 +15,8 @@ class Settings(BaseSettings):
     SINGLE_PROCESS_LOCK: bool = True
 
     # Revocación de sesiones vivas (M6f, G-06): cada sesión se revalida contra la BD cada
-    # SESSION_REVALIDATE_INTERVAL_S; la caché de db_client vive SESSION_CACHE_TTL_S (antes 60).
+    # SESSION_REVALIDATE_INTERVAL_S (db_client no cachea: #265).
     SESSION_REVALIDATE_INTERVAL_S: float = Field(default=10.0, gt=0)
-    SESSION_CACHE_TTL_S: float = Field(default=10.0, gt=0)
 
     # Admin API
     ADMIN_TOKEN: str = ""

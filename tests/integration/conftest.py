@@ -19,7 +19,6 @@ from starlette.testclient import TestClient
 from src.core.config import settings
 from src.db.models import ClientRecord
 from src.main import app
-from src.services.db_client import db_client
 from src.services.openclaw.models import GatewayInfo
 from src.services.openclaw.registry import ClientRegistry, TurnRegistry
 from src.services.protocol import OrchestratorEvent, OrchestratorProtocol
@@ -70,13 +69,13 @@ def seed_client(db_engine):
 
 
 @pytest.fixture(autouse=True)
-def clear_db_cache():
-    """Limpia el caché y la época de invalidación de db_client antes y después de cada test."""
-    db_client._session_cache.clear()
-    db_client._epoch = 0
-    yield
-    db_client._session_cache.clear()
-    db_client._epoch = 0
+def _skip_lifespan_migrations(monkeypatch):
+    """Las BD de test se crean con `create_all`, sin `alembic_version`; sin la rama «legacy
+    stamp» (#265) el `upgrade head` del lifespan fallaría con «table clients already
+    exists». Las migraciones se prueban aparte (tests/unit/test_migrations.py)."""
+    calls: list[None] = []
+    monkeypatch.setattr("src.main.run_migrations", lambda: calls.append(None))
+    return calls
 
 
 @pytest.fixture(autouse=True)

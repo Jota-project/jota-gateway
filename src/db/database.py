@@ -3,17 +3,10 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import inspect
 from sqlalchemy.engine import make_url
 from sqlmodel import Session, create_engine
 
 from src.core.config import settings
-from src.db.models import ClientRecord
-
-
-class SchemaMismatchError(RuntimeError):
-    """El esquema real de una BD legacy no coincide con el modelo (G-42)."""
-
 
 _engine = None
 _ALEMBIC_INI = Path(__file__).resolve().parent.parent.parent / "alembic.ini"
@@ -64,31 +57,11 @@ def _alembic_config() -> Config:
 
 def run_migrations() -> None:
     """
-    Aplica el esquema de `clients` vía Alembic sobre settings.DATABASE_URL.
-
-    - BD nueva (sin tabla `clients` ni `alembic_version`): upgrade head desde cero.
-    - BD legacy (`clients` ya existe pero `alembic_version` no — esquema ya al
-      día tras un ALTER TABLE manual, como la producción tras el incidente
-      original): stamp head, sin ejecutar ningún DDL.
-    - BD ya versionada: upgrade head aplica solo las migraciones pendientes.
+    `alembic upgrade head` sobre settings.DATABASE_URL: crea el esquema en una BD nueva y
+    aplica solo las pendientes en una ya versionada. Una BD con `clients` pero sin
+    `alembic_version` (anterior a Alembic) ya no se sella: falla al crear la tabla (#265).
     """
-    insp = inspect(get_engine())
-    tables = insp.get_table_names()
-    cfg = _alembic_config()
-    if "clients" in tables and "alembic_version" not in tables:
-        # G-42 (#218): sellar `head` sobre un esquema al que le faltan columnas lo dejaría
-        # «versionado» pero roto (fallos tardíos en runtime). Fallar antes, sin DDL ni sello.
-        present = {c["name"] for c in insp.get_columns("clients")}
-        missing = sorted(c.name for c in ClientRecord.metadata.tables["clients"].columns if c.name not in present)
-        if missing:
-            raise SchemaMismatchError(
-                "La tabla `clients` existe sin `alembic_version` (BD legacy) pero le faltan "
-                f"columnas del modelo: {', '.join(missing)}. No se sella `head`; añádelas "
-                "a mano (ALTER TABLE) o migra la BD antes de arrancar."
-            )
-        command.stamp(cfg, "head")
-    else:
-        command.upgrade(cfg, "head")
+    command.upgrade(_alembic_config(), "head")
 
 
 def get_db_session() -> Generator[Session, None, None]:

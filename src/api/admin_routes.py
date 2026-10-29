@@ -44,7 +44,6 @@ from src.core.startup_checks import SpeechConfigError
 from src.db.database import get_db_session
 from src.db.models import ClientRecord
 from src.models.admin_schemas import ClientCreate, ClientResponse, ClientUpdate
-from src.services.db_client import db_client
 from src.services.reconnection import ServiceStatus
 from src.services.speech.registry import SpeechSwapError
 from src.services.stats import gateway_stats
@@ -87,6 +86,14 @@ def _check_agent_consistency(default_agent: str | None, allowed_agents: list[str
         )
 
 
+def _lists_to_json(data: dict[str, Any]) -> dict[str, Any]:
+    """Serializa a JSON las listas que la BD guarda como texto (si vienen y no son null)."""
+    for field in ("allowed_agents", "output_mode"):
+        if data.get(field) is not None:
+            data[field] = json.dumps(data[field])
+    return data
+
+
 # ---------------------------------------------------------------------------
 # Client CRUD
 # ---------------------------------------------------------------------------
@@ -104,24 +111,9 @@ def create_client(
     session: Session = Depends(get_db_session),
 ) -> ClientResponse:
     _check_agent_consistency(body.default_agent, body.allowed_agents)
-    record = ClientRecord(
-        name=body.name,
-        client_key=body.client_key or secrets.token_urlsafe(32),
-        client_type=body.client_type,
-        default_agent=body.default_agent,
-        allowed_agents=json.dumps(body.allowed_agents) if body.allowed_agents is not None else None,
-        stt_language=body.stt_language,
-        stt_vad_thold=body.stt_vad_thold,
-        tts_voice=body.tts_voice,
-        tts_speed=body.tts_speed,
-        barge_in_enabled=body.barge_in_enabled,
-        barge_in_min_chars=body.barge_in_min_chars,
-        output_mode=json.dumps(body.output_mode) if body.output_mode is not None else None,
-        silence_timeout_s=body.silence_timeout_s,
-        max_silence_turns=body.max_silence_turns,
-        push_enabled=body.push_enabled,
-        tool_calls_enabled=body.tool_calls_enabled,
-    )
+    data = _lists_to_json(body.model_dump())
+    data["client_key"] = data["client_key"] or secrets.token_urlsafe(32)
+    record = ClientRecord(**data)
     session.add(record)
     try:
         session.commit()
@@ -152,7 +144,6 @@ def update_client(
     session: Session = Depends(get_db_session),
 ) -> ClientResponse:
     rec = _get_or_404(session, client_id)
-    old_key = rec.client_key
     patch = body.model_dump(exclude_unset=True)
     # Solo si el PATCH toca alguno de los dos campos: una fila antigua inconsistente
     # que se edita por otros campos no debe fallar (solo se valida la entrada, #122).
@@ -163,18 +154,11 @@ def update_client(
             if "allowed_agents" in patch
             else (json.loads(rec.allowed_agents) if rec.allowed_agents else None),
         )
-    # Serializar listas a JSON antes de escribir en la BD
-    for list_field in ("allowed_agents", "output_mode"):
-        if list_field in patch:
-            patch[list_field] = (
-                json.dumps(patch[list_field]) if patch[list_field] is not None else None
-            )
-    for field, value in patch.items():
+    for field, value in _lists_to_json(patch).items():
         setattr(rec, field, value)
     session.add(rec)
     session.commit()
     session.refresh(rec)
-    db_client.invalidate(old_key)
     return ClientResponse.from_record(rec)
 
 
@@ -183,11 +167,8 @@ def delete_client(
     client_id: str,
     session: Session = Depends(get_db_session),
 ) -> None:
-    rec = _get_or_404(session, client_id)
-    client_key = rec.client_key
-    session.delete(rec)
+    session.delete(_get_or_404(session, client_id))
     session.commit()
-    db_client.invalidate(client_key)
 
 
 @router.post("/clients/{client_id}/rotate-key", response_model=ClientResponse)
@@ -196,7 +177,6 @@ def rotate_client_key(
     session: Session = Depends(get_db_session),
 ) -> ClientResponse:
     rec = _get_or_404(session, client_id)
-    old_key = rec.client_key
     for _ in range(_ROTATE_KEY_ATTEMPTS):
         rec.client_key = secrets.token_urlsafe(32)
         session.add(rec)
@@ -212,7 +192,6 @@ def rotate_client_key(
             status_code=status.HTTP_409_CONFLICT, detail="could not generate a unique client_key"
         ) from None
     session.refresh(rec)
-    db_client.invalidate(old_key)
     return ClientResponse.from_record(rec)
 
 

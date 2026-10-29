@@ -6,7 +6,6 @@ import pytest
 from sqlmodel import Session
 
 from src.db.models import ClientRecord
-from src.services.db_client import db_client
 from tests.integration.conftest import CLIENT_ID, VALID_KEY
 
 
@@ -18,7 +17,6 @@ def _patch_client(engine, **fields):
             setattr(rec, k, v)
         s.add(rec)
         s.commit()
-    db_client.invalidate(VALID_KEY)
 
 
 # --- Tests ----------------------------------------------------------------

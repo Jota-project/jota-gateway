@@ -1,8 +1,7 @@
 import logging
 
 from alembic import command
-from sqlalchemy import create_engine, inspect, text
-from sqlmodel import SQLModel
+from sqlalchemy import create_engine, inspect
 
 import src.db.models  # noqa: F401
 from src.core.config import settings
@@ -27,25 +26,6 @@ def test_fresh_db_upgrades_from_scratch(tmp_path, monkeypatch):
     columns = {c["name"] for c in inspect(engine).get_columns("clients")}
     assert {"id", "client_key", "tool_calls_enabled"} <= columns
     assert "system_prompt_extra" not in columns
-
-
-def test_legacy_db_gets_stamped_without_altering_schema(tmp_path, monkeypatch):
-    db_path = tmp_path / "legacy.db"
-    # Simular la BD de producción: esquema ya creado directamente (sin Alembic),
-    # tal y como quedó tras el ALTER TABLE manual del incidente original.
-    legacy_engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
-    SQLModel.metadata.create_all(legacy_engine)
-    legacy_engine.dispose()
-
-    _point_at(monkeypatch, db_path)
-    database.run_migrations()
-
-    engine = create_engine(f"sqlite:///{db_path}")
-    tables = inspect(engine).get_table_names()
-    assert "alembic_version" in tables
-    with engine.connect() as conn:
-        version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert version is not None
 
 
 def test_already_versioned_db_is_a_clean_noop(tmp_path, monkeypatch):
