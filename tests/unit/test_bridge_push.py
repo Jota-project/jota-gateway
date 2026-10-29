@@ -6,6 +6,7 @@ import pytest
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
+from tests.fakes.speech import speech_providers
 
 
 def make_bridge(output_mode=("text",), client_id="hab_sito", tts=None):
@@ -30,7 +31,7 @@ def make_bridge(output_mode=("text",), client_id="hab_sito", tts=None):
         config=config,
         client_ws=ws,
         orchestrator=orchestrator,
-        tts=tts,
+        speech=speech_providers(tts=tts),
         tracker=tracker,
         handshake=handshake,
         client_registry=client_registry,
@@ -203,7 +204,7 @@ async def test_push_disabled_ignores_push_turn_start():
         config=config,
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=AsyncMock(),
         handshake=handshake,
         client_registry=ClientRegistry(),
@@ -227,7 +228,7 @@ async def test_deliver_push_tool_call_forwarded_when_enabled():
         config=config,
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=AsyncMock(),
         handshake=handshake,
         client_registry=ClientRegistry(),
@@ -264,7 +265,7 @@ async def test_deliver_push_tool_call_not_forwarded_when_disabled():
         config=config,
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=AsyncMock(),
         handshake=handshake,
         client_registry=ClientRegistry(),
@@ -290,7 +291,7 @@ async def test_deliver_push_tool_call_malformed_payload_ignored():
         config=config,
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=AsyncMock(),
         handshake=handshake,
         client_registry=ClientRegistry(),
@@ -426,7 +427,7 @@ async def test_deliver_push_rejected_when_push_disabled():
         config=config,
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=AsyncMock(),
         handshake=handshake,
         client_registry=ClientRegistry(),
@@ -464,7 +465,7 @@ async def test_deliver_push_tool_call_rejected_when_push_disabled():
         config=config,
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=AsyncMock(),
         handshake=handshake,
         client_registry=ClientRegistry(),
@@ -490,7 +491,7 @@ async def test_deliver_push_tool_call_rejected_when_no_turn_open():
         config=config,
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=AsyncMock(),
         handshake=handshake,
         client_registry=ClientRegistry(),

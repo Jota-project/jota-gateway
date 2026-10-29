@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
+from src.services.outbound import DirectSender
 from src.services.pipeline_tracker import PipelineTracker
 
 
@@ -11,7 +12,7 @@ def _tracker(registry):
         client_id="c1",
         input_mode="text",
         output_mode=["text"],
-        client_ws=AsyncMock(),
+        sender=DirectSender(AsyncMock()),
         registry=registry,
     )
 
@@ -35,3 +36,13 @@ async def test_second_close_does_not_overwrite_first_status():
     await tracker.close("completed")
 
     registry.close.assert_called_once_with("s1", "error")
+
+
+async def test_tracker_without_sender_records_and_sends_nothing():
+    """Sin sender (sesiones HTTP de /v1) registra el evento aunque pida `status`."""
+    tracker = PipelineTracker(
+        session_id="s1", client_id="c1", input_mode="text", output_mode=["status"],
+        registry=MagicMock(),
+    )  # fmt: skip
+    event = await tracker.record("llm_start")
+    assert tracker.events == [event]

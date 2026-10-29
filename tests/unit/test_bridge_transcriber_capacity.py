@@ -10,6 +10,7 @@ from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
 from src.services.reconnection import ConnectionState
+from tests.fakes.speech import speech_providers
 
 
 @pytest.fixture
@@ -19,7 +20,7 @@ def bridge(mock_tracker):
         config=ClientConfig(silence_timeout_s=1, max_silence_turns=2),
         client_ws=AsyncMock(),
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=mock_tracker,
         handshake=Handshake(client_key="k", input_mode="audio", output_mode=["text"]),
         client_registry=ClientRegistry(),
@@ -98,7 +99,7 @@ async def test_incomplete_final_is_recorded_in_tracker_without_text(bridge):
 
 
 async def test_watchdog_does_not_count_silence_while_transcriber_busy(bridge):
-    bridge._first_audio_at = time.monotonic() - 10
+    bridge._last_audio_at = bridge._audio_burst_start = time.monotonic() - 10
     bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
     bridge._transcriber_busy = True
     ticks = {"n": 0}
@@ -117,7 +118,7 @@ async def test_watchdog_does_not_count_silence_while_transcriber_busy(bridge):
 
 
 async def test_watchdog_grants_fresh_baseline_after_busy_clears(bridge):
-    bridge._first_audio_at = time.monotonic() - 10
+    bridge._last_audio_at = bridge._audio_burst_start = time.monotonic() - 10
     bridge._last_audio_at = float("inf")  # client streaming audio without gaps (#227)
     bridge.transcriber.last_transcript_at = time.monotonic() - 10
     bridge._transcriber_busy = True

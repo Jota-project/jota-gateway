@@ -24,7 +24,6 @@ from src.services.reconnection import (
     traceback_no_message,
 )
 from src.services.session_registry import SessionStatus
-from src.services.speech.factory import build_stt_provider
 from src.services.speech.ports import (
     SpeechToTextProvider,
     SttCallbacks,
@@ -42,10 +41,6 @@ logger = logging.getLogger(__name__)
 # longer than `silence_timeout_s` is one strike (and one `degraded` notice), so
 # `max_silence_turns` counts ticks, not whole `silence_timeout_s` windows.
 _WATCHDOG_POLL_S = 2
-
-# Window in which an identical repeated final transcription is treated as the
-# transcriber's duplicate emission rather than a new utterance (issue #128).
-_FINAL_DEDUP_WINDOW_S = 1.0
 
 
 def _tool_call_message(turn_id: str | None, tool_call: ToolCallEvent) -> dict:
@@ -80,14 +75,12 @@ class JotaBridge:
         config: ClientConfig,
         client_ws: WebSocket,
         orchestrator: OrchestratorProtocol,
-        tts: TextToSpeechProvider,
+        speech: SpeechProviders,
         tracker: PipelineTracker,
         handshake: Handshake,
         client_registry: ClientRegistry,
         default_agent: str,
         sender: OutboundSender | None = None,
-        stt: SpeechToTextProvider | None = None,
-        speech: SpeechProviders | None = None,
         turn_registry: TurnRegistry | None = None,
     ):
         # Contada al crearse: toda sesión que luego cierra close_all() cuenta como abierta,
@@ -102,21 +95,11 @@ class JotaBridge:
         self._sender: OutboundSender = sender or DirectSender(client_ws)
         self.handshake: Handshake = handshake
         self.orchestrator: OrchestratorProtocol = orchestrator  # injected, not created here
-        # Con `speech` (titular con cambio en caliente) cada turno TTS y cada sesión STT
-        # nueva usa el proveedor VIGENTE; una sesión STT ya abierta conserva el suyo hasta
-        # que termina. Sin `speech` rigen los proveedores fijos inyectados (tests).
+        # Cada turno TTS y cada sesión STT nueva usa el proveedor VIGENTE de `speech`; una
+        # sesión STT ya abierta conserva el suyo hasta que termina.
         self._speech = speech
-        self._fixed_tts = tts
-        # Sin `stt` (tests, llamadas antiguas) se usa el proveedor por defecto de la factoría.
-        self._fixed_stt: SpeechToTextProvider | None = (
-            stt if stt is not None or speech is not None else build_stt_provider(settings)
-        )
         self._session_stt: SpeechToTextProvider | None = None  # el que abrió la sesión
         self.tracker: PipelineTracker = tracker
-        # texto enviado al TTS (normal + push) por proveedor: base del coste por carácter
-        self._tts_chars_by_provider: dict[str, int] = {}
-        self._push_tts_name = ""  # proveedor que abrió el TtsStream del push en curso
-        self._usage_recorded = False  # speech_usage una sola vez aunque close_all se reintente
         self._client_registry = client_registry
         self._turn_registry = turn_registry  # solo para el máximo de la cola de turno (#219)
         self._default_agent = default_agent
@@ -127,23 +110,18 @@ class JotaBridge:
         self._push_audio_task: asyncio.Task | None = None
 
         self.tasks: list[asyncio.Task] = []
-        self._supervision_tasks: set[asyncio.Task] = set()
-        # Fire-and-forget notification tasks (e.g. _on_transcriber_state_change)
-        # are not part of the session lifecycle managed by `tasks`/close_all() —
-        # they're short-lived and self-cleaning. Kept here only so the event
-        # loop's weak reference doesn't let them get GC'd mid-flight.
-        self._notification_tasks: set[asyncio.Task] = set()
+        # Fire-and-forget tasks (status notifications, the idle-watchdog closer) are not
+        # part of the session lifecycle managed by `tasks`/close_all() — they're
+        # short-lived and self-cleaning. Kept here only so the event loop's weak
+        # reference doesn't let them get GC'd mid-flight.
+        self._background_tasks: set[asyncio.Task] = set()
         self._active_turn: asyncio.Task | None = None
         self._active_turn_started_at: float | None = None  # para snapshot() (#219)
         # True while the transcriber reports `status busy` (GPU saturated, #143).
         self._transcriber_busy: bool = False
         self._session_start: float = 0.0
         self._last_client_activity: float = 0.0
-        self._first_audio_at: float | None = None
-        self._last_final_text: str | None = None
-        self._last_final_at: float = 0.0
         self._turn_seq: int = 0
-        self._push_turn_seq: int = 0
         self._push_turn_id: str | None = None
         # Issue #84: OpenClaw emits multiple agent start/end pairs during a single
         # LLM response (tool use, multi-step reasoning). Track whether a push turn
@@ -203,18 +181,11 @@ class JotaBridge:
 
     @property
     def tts(self) -> TextToSpeechProvider:
-        return self._speech.tts if self._speech is not None else self._fixed_tts
-
-    @tts.setter
-    def tts(self, value: TextToSpeechProvider) -> None:
-        self._fixed_tts = value
+        return self._speech.tts
 
     @property
     def _stt(self) -> SpeechToTextProvider:
-        if self._speech is not None:
-            return self._speech.stt
-        assert self._fixed_stt is not None
-        return self._fixed_stt
+        return self._speech.stt
 
     async def connect_internal_services(self):
         """Inicializa clientes de microservicios dependiendo del handshake."""
@@ -476,15 +447,6 @@ class JotaBridge:
                         f"durante el cierre de microservicios."
                     )
 
-            if not self._usage_recorded:
-                self._usage_recorded = True
-                try:
-                    await self.tracker.record("speech_usage", **self._speech_usage_meta())
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    logger.debug(f"[{self.client_id}] close_all: speech_usage no registrado")
-
             end_meta = self._session_end_meta(status)
             if not self._close_counted:
                 self._close_counted = True
@@ -500,27 +462,6 @@ class JotaBridge:
                     f"durante el cierre del tracker."
                 )
             self._closed = True
-
-    def _count_tts_chars(self, provider: str, n: int) -> None:
-        self._tts_chars_by_provider[provider] = self._tts_chars_by_provider.get(provider, 0) + n
-
-    def _speech_usage_meta(self) -> dict[str, Any]:
-        """Solo nombres de proveedor y números (nunca texto: el tracker lo persiste)."""
-        meta: dict[str, Any] = {"tts_provider": str(getattr(self.tts, "name", ""))}
-        if self._session_stt is not None:  # solo si se abrió una sesión STT
-            meta["stt_provider"] = str(getattr(self._session_stt, "name", ""))
-        meta["tts_chars"] = sum(self._tts_chars_by_provider.values())
-        for name, chars in self._tts_chars_by_provider.items():
-            meta[f"tts_chars_{name}"] = chars
-        try:
-            usage = self.transcriber.usage() if self.transcriber else {}
-        except Exception:
-            usage = {}
-        if isinstance(usage, dict):
-            for k, v in usage.items():
-                if isinstance(v, (int, float)) and not isinstance(v, bool):
-                    meta.setdefault(str(k), v)
-        return meta
 
     async def health_check(self) -> dict[str, bool] | None:
         """Ping each microservice and return a snapshot of live capabilities.
@@ -628,7 +569,7 @@ class JotaBridge:
     async def _transcription_watchdog(self):
         """Notifica al cliente si hay silencio prolongado; cierra tras max_silence_turns consecutivos."""
         # Esperar a que el cliente empiece a enviar audio antes de vigilar
-        while self._first_audio_at is None:
+        while self._last_audio_at is None:
             await asyncio.sleep(0.5)
             if not self.transcriber or self.transcriber.state == ConnectionState.DEGRADED:
                 return
@@ -676,17 +617,15 @@ class JotaBridge:
                 recovery_baseline = now
                 continue
 
-            last_audio = self._last_audio_at if self._last_audio_at is not None else self._first_audio_at
-            if last_audio is None or now - last_audio > self._audio_gap_s():
+            last_audio = self._last_audio_at
+            if now - last_audio > self._audio_gap_s():
                 # #227: the client is not sending audio (wake-word client idle between
                 # turns, keepalive only). Silence is only counted while audio flows:
                 # no strikes, no `degraded`, accumulated strikes are forgotten.
                 silence_count = 0
                 continue
 
-            burst_start = (
-                self._audio_burst_start if self._audio_burst_start is not None else self._first_audio_at
-            )
+            burst_start = self._audio_burst_start
             # A burst that opened after the last transcription starts a fresh window,
             # so a stale pre-idle timestamp is never blamed on the client.
             last = max(
@@ -785,8 +724,8 @@ class JotaBridge:
         Si el cliente fue borrado, desactivado o su clave rotada (`ClientNotFound` /
         `ClientInactive`) se cierra la sesión con 1008 «revoked». Cualquier otro error
         (BD ocupada, etc.) es transitorio: se registra solo el tipo y se reintenta en el
-        siguiente tick, nunca cierra la sesión. La lectura pasa por la caché de db_client
-        (TTL `SESSION_CACHE_TTL_S`), que las mutaciones de /admin evictan al instante.
+        siguiente tick, nunca cierra la sesión. La lectura va directa a la BD (sin caché,
+        #265), así que un cambio desde /admin o la CLI se ve en el siguiente tick.
         """
         while True:
             await asyncio.sleep(settings.SESSION_REVALIDATE_INTERVAL_S)
@@ -850,8 +789,8 @@ class JotaBridge:
             if t.get_name() == "idle_watchdog":
                 self.note_close_reason("error")
                 closer = asyncio.create_task(self.close_all(), name="idle_watchdog_close")
-                self._supervision_tasks.add(closer)
-                closer.add_done_callback(self._supervision_tasks.discard)
+                self._background_tasks.add(closer)
+                closer.add_done_callback(self._background_tasks.discard)
 
         task.add_done_callback(_on_done)
 
@@ -922,10 +861,8 @@ class JotaBridge:
 
                 # AUDIO → Transcriber
                 if "bytes" in message:
-                    if self.handshake.input_mode == "audio" and self.transcriber:
+                    if self.transcriber:
                         now = time.monotonic()
-                        if self._first_audio_at is None:
-                            self._first_audio_at = now
                         # A frame after an idle gap opens a new audio burst (#227).
                         if (
                             self._last_audio_at is None
@@ -955,7 +892,7 @@ class JotaBridge:
                         await self._send_invalid_message()
                     elif json_msg.get("type") == "end":
                         # Cliente terminó de hablar → señalizar fin al transcriber
-                        if self.handshake.input_mode == "audio" and self.transcriber:
+                        if self.transcriber:
                             await self.transcriber.send_end()
 
                     elif json_msg.get("type") == "cancel":
@@ -969,7 +906,7 @@ class JotaBridge:
                             await self._send_invalid_message()
                         else:
                             text = raw_text.strip()
-                            if text and self.orchestrator:
+                            if text:
                                 logger.info(f"[{self.client_id}] send recibido: len={len(text)}")
                                 await self._start_turn(text)
 
@@ -1059,8 +996,8 @@ class JotaBridge:
 
     def _on_transcriber_state_change(self, state: ConnectionState) -> None:
         task = asyncio.create_task(self.notify_service_status("transcriber", to_wire_state(state)))
-        self._notification_tasks.add(task)
-        task.add_done_callback(self._notification_tasks.discard)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def _on_transcription(self, text: str, is_final: bool):
         """Callback dispatched by TranscriberClient on every transcription event.
@@ -1095,22 +1032,6 @@ class JotaBridge:
                         pass
             return  # partials never reach the orchestrator
 
-        # Final: deduplicate — the transcriber used to emit the same final twice within
-        # milliseconds (jota-transcriber#27, fixed upstream in #28). Only a repeat inside
-        # _FINAL_DEDUP_WINDOW_S counts as that duplicate; the same words said again later
-        # are a genuine new utterance (issue #128). The window is measured from the last
-        # *delivered* final, so dropped repeats never extend it.
-        now = time.monotonic()
-        if (
-            text == self._last_final_text
-            and now - self._last_final_at < _FINAL_DEDUP_WINDOW_S
-        ):
-            logger.debug(
-                f"[{self.client_id}] Transcripción final duplicada descartada: '{text[:40]}'"
-            )
-            return
-        self._last_final_text = text
-        self._last_final_at = now
         await self.tracker.record("transcription_final", text_len=len(text))
 
         # Final: cancel any running turn, notify client.
@@ -1184,9 +1105,7 @@ class JotaBridge:
         needs_audio = "audio" in self.handshake.output_mode
 
         tts: TtsStream | None = None
-        tts_name = ""
         if needs_audio:
-            tts_name = str(getattr(self.tts, "name", ""))
             tts = await self.tts.connect(
                 voice=self.tts.resolve_voice(self.config.tts_voice),
                 speed=self.config.tts_speed,
@@ -1245,7 +1164,6 @@ class JotaBridge:
                 pass
             if tts_live:
                 try:
-                    self._count_tts_chars(tts_name, len(token_text))
                     await asyncio.wait_for(
                         tts_live.send_text_chunk(token_text),
                         timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S,
@@ -1308,8 +1226,6 @@ class JotaBridge:
                         )
                     except Exception as e:
                         await _drop_tts(f"end {type(e).__name__}")
-
-        audio_progress_at = time.monotonic()
 
         async def pipe_audio():
             nonlocal audio_progress_at
@@ -1392,7 +1308,7 @@ class JotaBridge:
             return
 
         self._turn_seq += 1
-        self._push_turn_seq = self._turn_seq & 0xFFFF  # uint16 on the wire (G-11)
+        turn_seq = self._turn_seq & 0xFFFF  # uint16 on the wire (G-11)
         self._push_turn_id = f"t-{self._turn_seq}"
         self._push_turn_open = True
         self._push_text.reset()
@@ -1405,7 +1321,7 @@ class JotaBridge:
                 {
                     "type": "turn_start",
                     "turn_id": self._push_turn_id,
-                    "turn_seq": self._push_turn_seq,
+                    "turn_seq": turn_seq,
                 }
             )
         except Exception:
@@ -1413,7 +1329,6 @@ class JotaBridge:
 
         if "audio" not in self.handshake.output_mode:
             return
-        tts_name = str(getattr(self.tts, "name", ""))
         tts = await self.tts.connect(
             voice=self.tts.resolve_voice(self.config.tts_voice),
             speed=self.config.tts_speed,
@@ -1422,14 +1337,13 @@ class JotaBridge:
         if tts is None:
             return
         self._push_tts = tts
-        self._push_tts_name = tts_name
         self._push_tts_stats = {
             "send_ms": 0.0, "end_ms": 0.0, "drain_ms": 0.0, "close_ms": 0.0,
             "dropped": False, "chars": 0,
         }  # fmt: skip
 
         async def _pipe_push_audio():
-            header = bytes([0xA1]) + self._push_turn_seq.to_bytes(2, "big")
+            header = bytes([0xA1]) + turn_seq.to_bytes(2, "big")
             async for chunk in tts.get_audio_stream():
                 try:
                     await self._sender.send_bytes(header + chunk)
@@ -1460,7 +1374,6 @@ class JotaBridge:
         if tts:
             t0 = time.monotonic()
             try:
-                self._count_tts_chars(self._push_tts_name, len(delta))
                 if self._push_tts_stats is not None:
                     self._push_tts_stats["chars"] += len(delta)
                 await asyncio.wait_for(

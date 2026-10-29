@@ -17,6 +17,7 @@ from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
 from src.services.outbound import QueuedSender
 from src.services.protocol import OrchestratorEvent
+from tests.fakes.speech import speech_providers
 
 
 class RecWS:
@@ -56,7 +57,7 @@ def _bridge(ws=None, *, output_mode=("text",), config=None, input_mode="text", s
         config=config or ClientConfig(),
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=tts or AsyncMock(),
+        speech=speech_providers(tts=tts or AsyncMock()),
         tracker=_tracker(),
         handshake=Handshake(client_key="k", input_mode=input_mode, output_mode=list(output_mode)),
         client_registry=ClientRegistry(),

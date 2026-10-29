@@ -9,6 +9,7 @@ import pytest
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
+from tests.fakes.speech import speech_providers
 
 _CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
 _CONFIG = ClientConfig()
@@ -25,7 +26,7 @@ def make_bridge(mock_tracker):
             config=_CONFIG,
             client_ws=ws,
             orchestrator=AsyncMock(),
-            tts=AsyncMock(),
+            speech=speech_providers(),
             tracker=mock_tracker,
             handshake=Handshake(
                 client_key="test-key", input_mode=input_mode, output_mode=output_mode
@@ -273,7 +274,7 @@ async def test_barge_in_uses_config_threshold_not_global(mock_tracker):
         config=config,
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=mock_tracker,
         handshake=Handshake(
             client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]
@@ -308,7 +309,7 @@ async def test_barge_in_triggers_when_above_custom_threshold(mock_tracker):
         config=config,
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=mock_tracker,
         handshake=Handshake(
             client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]
@@ -337,7 +338,7 @@ async def test_barge_in_disabled_forwards_partial_but_does_not_cancel(mock_track
         config=config,
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=mock_tracker,
         handshake=Handshake(
             client_key="test-key", input_mode="audio", output_mode=["audio", "text", "status"]

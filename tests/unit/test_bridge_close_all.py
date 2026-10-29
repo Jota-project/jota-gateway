@@ -17,6 +17,7 @@ import pytest
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
+from tests.fakes.speech import speech_providers
 
 _CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
 _CONFIG = ClientConfig()
@@ -31,7 +32,7 @@ def bridge(mock_tracker):
         config=_CONFIG,
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=mock_tracker,
         handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text"]),
         client_registry=registry,
@@ -125,7 +126,7 @@ async def test_late_close_of_old_bridge_keeps_reconnected_session(mock_tracker):
             config=_CONFIG,
             client_ws=AsyncMock(),
             orchestrator=AsyncMock(),
-            tts=AsyncMock(),
+            speech=speech_providers(),
             tracker=mock_tracker,
             handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text"]),
             client_registry=registry,

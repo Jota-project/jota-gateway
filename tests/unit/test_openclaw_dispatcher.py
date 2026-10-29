@@ -9,6 +9,7 @@ from src.services.bridge import JotaBridge
 from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.registry import ClientRegistry, TurnRegistry
 from src.services.reconnection import ConnectionState, ServiceStatus
+from tests.fakes.speech import speech_providers
 
 
 def make_dispatcher():
@@ -48,7 +49,7 @@ def make_real_bridge(client_id="hab_sito", push_enabled=True, tool_calls_enabled
         config=config,
         client_ws=ws,
         orchestrator=orchestrator,
-        tts=tts,
+        speech=speech_providers(tts=tts),
         tracker=tracker,
         handshake=handshake,
         client_registry=ClientRegistry(),

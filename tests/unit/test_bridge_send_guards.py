@@ -9,6 +9,7 @@ from src.services.bridge import JotaBridge
 from src.services.openclaw.models import ToolCallEvent
 from src.services.openclaw.registry import ClientRegistry
 from src.services.protocol import OrchestratorEvent
+from tests.fakes.speech import speech_providers
 
 _CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
 _CONFIG = ClientConfig()
@@ -22,7 +23,7 @@ def bridge(mock_tracker):
         config=_CONFIG,
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=mock_tracker,
         handshake=Handshake(
             client_key="test-key", input_mode="text", output_mode=["text", "status"]
@@ -67,7 +68,7 @@ async def test_tool_call_forwarded_when_enabled(mock_tracker):
         config=config,
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=mock_tracker,
         handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text"]),
         client_registry=ClientRegistry(),
@@ -97,7 +98,7 @@ async def test_tool_call_not_forwarded_when_disabled(mock_tracker):
         config=config,
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(),
         tracker=mock_tracker,
         handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text"]),
         client_registry=ClientRegistry(),
@@ -158,7 +159,7 @@ async def test_audio_send_failure_does_not_propagate(mock_tracker):
         config=_CONFIG,
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=tts_wrapper,
+        speech=speech_providers(tts=tts_wrapper),
         tracker=mock_tracker,
         handshake=Handshake(
             client_key="test-key", input_mode="audio", output_mode=["audio", "text"]
@@ -228,7 +229,7 @@ async def test_tts_end_called_when_orchestrator_raises_non_runtime_error(mock_tr
         config=_CONFIG,
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=tts_wrapper,
+        speech=speech_providers(tts=tts_wrapper),
         tracker=mock_tracker,
         handshake=Handshake(
             client_key="test-key", input_mode="audio", output_mode=["audio", "text"]

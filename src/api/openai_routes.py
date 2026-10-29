@@ -17,7 +17,7 @@ from src.services.db_client import db_client
 from src.services.openclaw.client import _traceback_no_message
 from src.services.openclaw.registry import TURN_IN_PROGRESS_ERROR
 from src.services.orchestration import OrchestratorError, call_orchestrator
-from src.services.pipeline_tracker import PipelineTracker, _NullWS
+from src.services.pipeline_tracker import PipelineTracker
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +112,6 @@ def _make_http_tracker(session_id: str, registry, client_id: str) -> PipelineTra
         client_id=client_id,
         input_mode="text",
         output_mode=[],
-        client_ws=_NullWS(),
         registry=registry,
     )
 

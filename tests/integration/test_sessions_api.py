@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock, MagicMock
 
+from src.services.outbound import DirectSender
 from src.services.pipeline_tracker import PipelineTracker
 
 
@@ -11,7 +12,7 @@ def _make_live_tracker(app, session_id="sess:111", output_mode=None):
         client_id="client-abc",
         input_mode="audio",
         output_mode=output_mode or ["audio", "text"],
-        client_ws=ws,
+        sender=DirectSender(ws),
         registry=registry_mock,
     )
     app.state.session_registry.register(tracker)
@@ -106,7 +107,7 @@ async def test_get_session_avg_latencies_computed_correctly(client, admin_header
         client_id="c1",
         input_mode="audio",
         output_mode=["text"],
-        client_ws=ws,
+        sender=DirectSender(ws),
         registry=registry_mock,
     )
     await tracker.record("transcription_final")
@@ -139,7 +140,7 @@ async def test_get_session_avg_latencies_exclude_cancelled_turns(client, admin_h
         client_id="c1",
         input_mode="audio",
         output_mode=["text"],
-        client_ws=ws,
+        sender=DirectSender(ws),
         registry=registry_mock,
     )
     await tracker.record("transcription_final")

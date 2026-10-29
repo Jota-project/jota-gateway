@@ -13,6 +13,7 @@ from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
 from src.services.speech.elevenlabs.stt import ElevenLabsSttProvider
 from tests.fakes.elevenlabs_stt import FakeElevenLabsStt
+from tests.fakes.speech import speech_providers
 from tests.unit.test_bridge_m6c_turns import RecWS, _blocking, _tracker
 
 
@@ -52,12 +53,11 @@ async def _session(fake):
         config=ClientConfig(),
         client_ws=ws,
         orchestrator=AsyncMock(),
-        tts=AsyncMock(),
+        speech=speech_providers(stt=provider),
         tracker=_tracker(),
         handshake=Handshake(client_key="k", input_mode="audio", output_mode=["text", "status"]),
         client_registry=ClientRegistry(),
         default_agent="main",
-        stt=provider,
     )
     await bridge.connect_internal_services()
     runner = asyncio.create_task(bridge.run())

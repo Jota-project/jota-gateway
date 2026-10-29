@@ -136,7 +136,6 @@ async def gateway_websocket(websocket: WebSocket):
         client_id=client.id,
         input_mode=handshake.input_mode,
         output_mode=handshake.output_mode,
-        client_ws=websocket,
         registry=session_registry,
         sender=sender,
     )
@@ -146,8 +145,6 @@ async def gateway_websocket(websocket: WebSocket):
         config=config,
         client_ws=websocket,
         orchestrator=openclaw,
-        tts=app_state.speech.tts,
-        stt=app_state.speech.stt,
         speech=app_state.speech,
         tracker=tracker,
         handshake=handshake,
@@ -233,10 +230,7 @@ async def gateway_websocket(websocket: WebSocket):
     finally:
         await bridge.close_all(status="error")
         # close_all() queued session_end; drain it before the socket goes away.
-        try:
-            await sender.aclose(settings.SHUTDOWN_DRAIN_S)
-        except Exception as e:  # aclose never raises by contract; be defensive
-            logger.debug(f"[{client.id}] sender.aclose falló: {e}")
+        await sender.aclose(settings.SHUTDOWN_DRAIN_S)  # never raises Exception (contract)
         if "DISCONNECTED" not in websocket.client_state.name:
             try:
                 await websocket.close()
