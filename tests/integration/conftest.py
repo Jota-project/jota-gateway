@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 import respx
-from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 from starlette.testclient import TestClient
 
@@ -39,14 +38,19 @@ ADMIN_TOKEN = "test-admin-token"
 
 
 @pytest.fixture(autouse=True)
-def db_engine(monkeypatch):
-    """SQLite in-memory inyectado en get_engine() para todos los integration tests."""
+def db_engine(monkeypatch, tmp_path):
+    """SQLite en archivo inyectado en get_engine() para todos los integration tests.
+
+    En archivo y no `:memory:` + StaticPool: esa única conexión compartida entre hilos
+    (to_thread de db_client + threadpool de /admin) deja que el rollback de un hilo
+    deshaga el commit de otro, y se pierden borrados. Como en producción, una conexión
+    por hilo.
+    """
     from src import db
 
     engine = create_engine(
-        "sqlite:///:memory:",
+        f"sqlite:///{tmp_path / 'gateway.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     SQLModel.metadata.create_all(engine)
     monkeypatch.setattr(db.database, "_engine", engine)
