@@ -6,11 +6,6 @@ import pytest
 from sqlmodel import Session
 
 from src.db.models import ClientRecord
-<<<<<<< HEAD
-from src.services.db_client import db_client
-=======
-
->>>>>>> cb9eb1d (refactor: sin caché de sesiones y SQLite fuera del event loop (#265, #240))
 from tests.integration.conftest import CLIENT_ID, VALID_KEY
 
 
