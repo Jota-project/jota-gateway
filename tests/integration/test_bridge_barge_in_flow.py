@@ -6,7 +6,6 @@ an in-flight orchestrator response when a partial transcription arrives.
 import asyncio
 import json
 import threading
-import time
 
 import pytest
 import websockets
@@ -36,7 +35,7 @@ HANDSHAKE_AUDIO = {
 # chunk, then a long partial (is_final=False) on the second chunk.
 # ---------------------------------------------------------------------------
 
-_FAKE_TRANSCRIBER_PORT = 19011
+_FAKE_TRANSCRIBER_PORT = 0  # puerto libre que asigna el SO al arrancar (#266)
 _fake_transcriber_started = False
 
 
@@ -87,8 +86,13 @@ def _start_fake_transcriber():
 
     loop = asyncio.new_event_loop()
 
+    bound = threading.Event()
+
     async def run():
-        async with websockets.serve(handler, "localhost", _FAKE_TRANSCRIBER_PORT):
+        global _FAKE_TRANSCRIBER_PORT
+        async with websockets.serve(handler, "127.0.0.1", 0) as server:
+            _FAKE_TRANSCRIBER_PORT = server.sockets[0].getsockname()[1]
+            bound.set()
             await asyncio.Future()
 
     thread = threading.Thread(
@@ -96,14 +100,14 @@ def _start_fake_transcriber():
         daemon=True,
     )
     thread.start()
-    time.sleep(0.15)  # esperar a que el servidor arranque
+    assert bound.wait(5), "fake transcriber did not start"
 
 
 @pytest.fixture(scope="module", autouse=True)
 def start_fake_transcriber():
     _start_fake_transcriber()
     old_url = settings.TRANSCRIBER_WS_URL
-    settings.TRANSCRIBER_WS_URL = f"localhost:{_FAKE_TRANSCRIBER_PORT}"
+    settings.TRANSCRIBER_WS_URL = f"127.0.0.1:{_FAKE_TRANSCRIBER_PORT}"
     yield
     settings.TRANSCRIBER_WS_URL = old_url
 

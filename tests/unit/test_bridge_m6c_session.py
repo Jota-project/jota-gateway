@@ -2,8 +2,8 @@
 (turn in flight, idle persistent sessions)."""
 
 import asyncio
+import heapq
 import json
-import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -177,17 +177,50 @@ async def _until(pred):
 
 
 # ── #227: idle persistent sessions ───────────────────────────────────────────
+# Virtual time (#266): the bridge's `time.monotonic` and `asyncio.sleep` only advance
+# when the test calls `advance`, so the result never depends on how busy the machine is.
 
 
-async def _feed(ws, *, audio_for=0.0, keepalive_for=0.0, every=0.01):
-    end = time.monotonic() + audio_for
-    while time.monotonic() < end:
-        ws.inbox.put_nowait({"type": "websocket.receive", "bytes": b"\x00\x00\x00\x00"})
-        await asyncio.sleep(every)
-    end = time.monotonic() + keepalive_for
-    while time.monotonic() < end:
-        ws.inbox.put_nowait(_text({"type": "keepalive"}))
-        await asyncio.sleep(every)
+class VClock:
+    def __init__(self, monkeypatch):
+        self.t = 1000.0
+        self._timers: list = []
+        self._seq = 0
+        monkeypatch.setattr(bridge_module, "time", SimpleNamespace(monotonic=lambda: self.t))
+        monkeypatch.setattr(bridge_module.asyncio, "sleep", self.sleep)
+
+    async def sleep(self, d):
+        fut = asyncio.get_running_loop().create_future()
+        self._seq += 1
+        heapq.heappush(self._timers, (self.t + d, self._seq, fut))
+        await fut
+
+    @staticmethod
+    async def _settle():
+        for _ in range(50):  # let every ready task run to its next timer/queue wait
+            await _REAL_SLEEP(0)
+
+    async def advance(self, until):
+        await self._settle()
+        while self._timers and self._timers[0][0] <= until:
+            deadline, _, fut = heapq.heappop(self._timers)
+            self.t = max(self.t, deadline)
+            if not fut.done():
+                fut.set_result(None)
+            await self._settle()
+        self.t = max(self.t, until)
+
+
+def _audio():
+    return {"type": "websocket.receive", "bytes": b"\x00\x00\x00\x00"}
+
+
+async def _feed(clock, ws, *, audio_for=0.0, keepalive_for=0.0, every=0.01):
+    for frame, duration in ((_audio, audio_for), (lambda: _text({"type": "keepalive"}), keepalive_for)):
+        end = clock.t + duration
+        while clock.t < end:
+            ws.inbox.put_nowait(frame())
+            await clock.advance(clock.t + every)
 
 
 @pytest.mark.parametrize(
@@ -197,14 +230,15 @@ async def _feed(ws, *, audio_for=0.0, keepalive_for=0.0, every=0.01):
 async def test_idle_persistent_client_is_not_closed_nor_degraded(monkeypatch, timeout_s, strikes):
     """One turn of audio, then only keepalive for many silence windows (wake-word client)."""
     monkeypatch.setattr(bridge_module, "_WATCHDOG_POLL_S", 0.05)
+    clock = VClock(monkeypatch)
     bridge, ws = _bridge(ClientConfig(silence_timeout_s=timeout_s, max_silence_turns=strikes))
     bridge.close_all = AsyncMock()
     loop_task = asyncio.create_task(bridge._client_input_loop())
     wd = asyncio.create_task(bridge._transcription_watchdog())
     try:
-        await _feed(ws, audio_for=0.03)  # the user speaks a turn (shorter than a tick)...
-        bridge.transcriber.last_transcript_at = time.monotonic()  # ...and it is transcribed
-        await _feed(ws, keepalive_for=0.8)  # then only keepalive: >= 8 windows, ~16 ticks idle
+        await _feed(clock, ws, audio_for=0.03)  # the user speaks a turn (shorter than a tick)...
+        bridge.transcriber.last_transcript_at = clock.t  # ...and it is transcribed
+        await _feed(clock, ws, keepalive_for=0.8)  # then only keepalive: >= 8 windows, ~16 ticks idle
     finally:
         wd.cancel()
         loop_task.cancel()
@@ -214,18 +248,19 @@ async def test_idle_persistent_client_is_not_closed_nor_degraded(monkeypatch, ti
 
 async def test_audio_resuming_after_idle_starts_a_fresh_silence_window(monkeypatch):
     monkeypatch.setattr(bridge_module, "_WATCHDOG_POLL_S", 0.05)
+    clock = VClock(monkeypatch)
     bridge, ws = _bridge(ClientConfig(silence_timeout_s=0.2, max_silence_turns=2))
     closed_at: list[float] = []
-    bridge.close_all = AsyncMock(side_effect=lambda *a, **k: closed_at.append(time.monotonic()))
+    bridge.close_all = AsyncMock(side_effect=lambda *a, **k: closed_at.append(clock.t))
     loop_task = asyncio.create_task(bridge._client_input_loop())
     wd = asyncio.create_task(bridge._transcription_watchdog())
     try:
-        await _feed(ws, audio_for=0.03)  # one turn, transcribed, then idle
-        bridge.transcriber.last_transcript_at = time.monotonic()
-        await _feed(ws, keepalive_for=0.6)  # idle phase
+        await _feed(clock, ws, audio_for=0.03)  # one turn, transcribed, then idle
+        bridge.transcriber.last_transcript_at = clock.t
+        await _feed(clock, ws, keepalive_for=0.6)  # idle phase
         assert not ws.of("status") and not closed_at
-        resumed = time.monotonic()
-        await _feed(ws, audio_for=1.0)  # wake word again, then silence in the audio
+        resumed = clock.t
+        await _feed(clock, ws, audio_for=1.0)  # wake word again, then silence in the audio
     finally:
         wd.cancel()
         loop_task.cancel()
@@ -236,19 +271,35 @@ async def test_audio_resuming_after_idle_starts_a_fresh_silence_window(monkeypat
     assert closed_at[0] - resumed >= 0.2
 
 
+async def test_watchdog_exits_if_transcriber_degrades_before_any_audio(monkeypatch):
+    clock = VClock(monkeypatch)
+    bridge, _ = _bridge()
+    wd = asyncio.create_task(bridge._transcription_watchdog())
+    await clock.advance(clock.t + 0.5)
+    assert not wd.done()  # still waiting for the first audio frame
+    bridge.transcriber.state = ConnectionState.DEGRADED
+    await clock.advance(clock.t + 0.5)
+    assert wd.done() and not wd.cancelled()
+
+
 async def test_streaming_client_with_no_transcriptions_behaves_as_before(monkeypatch):
     """Regression guard: an always-streaming client (ESP32) gets one strike and one
     degraded notice per poll tick and is closed after max_silence_turns ticks."""
     monkeypatch.setattr(bridge_module, "_WATCHDOG_POLL_S", 0.1)
+    clock = VClock(monkeypatch)
     bridge, ws = _bridge(ClientConfig(silence_timeout_s=0.05, max_silence_turns=3))
     bridge.close_all = AsyncMock()
     loop_task = asyncio.create_task(bridge._client_input_loop())
-    feeder = asyncio.create_task(_feed(ws, audio_for=3.0))
     wd = asyncio.create_task(bridge._transcription_watchdog())
     try:
-        await asyncio.wait_for(wd, timeout=3.0)
+        for _ in range(300):  # up to 3 virtual seconds of continuous audio
+            if wd.done():
+                break
+            ws.inbox.put_nowait(_audio())
+            await clock.advance(clock.t + 0.01)
     finally:
-        feeder.cancel()
+        wd.cancel()
         loop_task.cancel()
+    assert wd.done() and not wd.cancelled()
     assert len(ws.of("status")) == 3
     bridge.close_all.assert_awaited_once()
