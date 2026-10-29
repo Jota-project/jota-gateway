@@ -4,18 +4,31 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.services.reconnection import ConnectionState
+from src.services.speech.ports import SttCallbacks, SttParams
 from src.services.transcriber_reconnecting import ReconnectingTranscriberClient
 
 
-def _wrap(**kwargs):
-    return ReconnectingTranscriberClient(url="test:1", client_id="c1", **kwargs)
+def _cbs(**kw) -> SttCallbacks:
+    base = dict(
+        on_transcription=AsyncMock(), on_warning=AsyncMock(),
+        on_status=AsyncMock(), on_incomplete=AsyncMock(),
+    )
+    base.update(kw)
+    return SttCallbacks(**base)
+
+
+def _wrap(callbacks=None, **kwargs):
+    return ReconnectingTranscriberClient(
+        url="test:1", client_id="c1", callbacks=callbacks or _cbs(),
+        params=SttParams(language="es", vad_threshold=0.0), token="k", **kwargs,
+    )
 
 
 @pytest.mark.asyncio
 async def test_initial_connect_success_sets_connected():
     w = _wrap()
     with patch.object(w._client, "connect", new=AsyncMock()):
-        await w.connect(language="es", token="k", vad_thold=0.0)
+        await w.start()
     assert w.state == ConnectionState.CONNECTED
 
 
@@ -23,7 +36,7 @@ async def test_initial_connect_success_sets_connected():
 async def test_initial_connect_failure_does_not_raise_and_sets_reconnecting():
     w = _wrap()
     with patch.object(w._client, "connect", new=AsyncMock(side_effect=OSError("refused"))):
-        await w.connect(language="es", token="k", vad_thold=0.0)  # must not raise
+        await w.start()  # must not raise
     assert w.state == ConnectionState.RECONNECTING
     assert w._last_error == "OSError"
 
@@ -34,7 +47,7 @@ async def test_on_state_change_fires_on_transitions():
     seen = []
     w.on_state_change = seen.append
     with patch.object(w._client, "connect", new=AsyncMock()):
-        await w.connect()
+        await w.start()
     assert seen == [ConnectionState.CONNECTED]
 
 
@@ -52,7 +65,7 @@ async def test_run_clean_close_does_not_reconnect():
     connect_spy = AsyncMock()
     w._client.connect = connect_spy
 
-    await w.run(on_transcription_callback=AsyncMock())
+    await w.run()
 
     connect_spy.assert_not_awaited()  # never entered the reconnect loop
 
@@ -75,7 +88,7 @@ async def test_run_unexpected_drop_reconnects_and_resumes_listening():
     w._client.listen_loop = fake_listen_loop
     w._client.connect = AsyncMock()  # reconnect succeeds instantly
 
-    await asyncio.wait_for(w.run(on_transcription_callback=AsyncMock()), timeout=2.0)
+    await asyncio.wait_for(w.run(), timeout=2.0)
 
     assert calls["listen"] == 2
     assert w.state == ConnectionState.CONNECTED
@@ -88,7 +101,7 @@ async def test_reconnect_exhausted_enters_degraded_and_run_returns():
     w._client.connect = AsyncMock(side_effect=OSError("still down"))
     w._client.listen_loop = AsyncMock()  # must never be reached
 
-    await asyncio.wait_for(w.run(on_transcription_callback=AsyncMock()), timeout=2.0)
+    await asyncio.wait_for(w.run(), timeout=2.0)
 
     assert w.state == ConnectionState.DEGRADED
     w._client.listen_loop.assert_not_awaited()
@@ -122,7 +135,7 @@ async def test_close_cancels_in_flight_reconnect_loop():
     w._client.listen_loop = AsyncMock()  # must never be reached
     w._client.close = AsyncMock()
 
-    task = asyncio.create_task(w.run(on_transcription_callback=AsyncMock()))
+    task = asyncio.create_task(w.run())
     await asyncio.sleep(0.05)  # let it enter _reconnect_loop's backoff a few times
     assert not task.done()
 
@@ -151,10 +164,10 @@ async def test_reconnect_loop_success_clears_last_error():
     assert w._last_error is None
 
 
-def test_last_transcription_at_proxies_inner_client():
+def test_last_transcript_at_proxies_inner_client():
     w = _wrap()
     w._client._last_transcription_at = 123.45
-    assert w._last_transcription_at == 123.45
+    assert w.last_transcript_at == 123.45
 
 
 def test_status_shape():
@@ -182,7 +195,7 @@ async def test_run_unexpected_exception_degrades_and_notifies():
     connect_spy = AsyncMock()
     w._client.connect = connect_spy
 
-    await w.run(on_transcription_callback=AsyncMock())
+    await w.run()
 
     assert w.state == ConnectionState.DEGRADED
     assert seen == [ConnectionState.DEGRADED]
@@ -201,7 +214,7 @@ async def test_run_clean_close_keeps_state_connected():
         w._client._dropped_unexpectedly = False
 
     w._client.listen_loop = clean
-    await w.run(on_transcription_callback=AsyncMock())
+    await w.run()
 
     assert w.state == ConnectionState.CONNECTED
     assert seen == []
@@ -210,7 +223,8 @@ async def test_run_clean_close_keeps_state_connected():
 @pytest.mark.asyncio
 async def test_run_forwards_status_and_incomplete_callbacks_to_listen_loop():
     """#143: run() must plumb the new optional callbacks through to listen_loop."""
-    w = _wrap()
+    on_status, on_incomplete = AsyncMock(), AsyncMock()
+    w = _wrap(_cbs(on_status=on_status, on_incomplete=on_incomplete))
     w.state = ConnectionState.CONNECTED
     received = {}
 
@@ -223,12 +237,7 @@ async def test_run_forwards_status_and_incomplete_callbacks_to_listen_loop():
         w._client._dropped_unexpectedly = False
 
     w._client.listen_loop = fake_listen_loop
-    on_status, on_incomplete = AsyncMock(), AsyncMock()
 
-    await w.run(
-        on_transcription_callback=AsyncMock(),
-        on_status_callback=on_status,
-        on_incomplete_callback=on_incomplete,
-    )
+    await w.run()
 
     assert received == {"status": on_status, "incomplete": on_incomplete}

@@ -177,10 +177,12 @@ def test_ready_carries_requested_and_live_capabilities_when_audio(client, monkey
     class FakeTranscriber:
         state = ConnectionState.CONNECTED
 
-        async def connect(self, *, language: str, vad_thold: float, **kw):
+        last_transcript_at = None
+
+        async def start(self):
             pass
 
-        async def run(self, **kw):
+        async def run(self):
             pass
 
         async def close(self):

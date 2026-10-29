@@ -214,3 +214,32 @@ async def test_complete_final_and_partials_do_not_report_incomplete(client):
 
 async def _noop():
     return None
+
+
+async def test_provider_codes_are_sanitized_in_logs_and_callbacks(client, caplog):
+    """#260: `code`/`reason`/`state` del transcriber son texto ajeno: nunca a logs tal cual."""
+    marker = "MARKER texto del proveedor"
+    client.ws = make_ws(
+        json.dumps({"type": "warning", "code": marker, "message": "m"}),
+        json.dumps({"type": "error", "code": marker}),
+        json.dumps({"type": "status", "state": marker, "reason": marker}),
+        json.dumps(
+            {"type": "transcription", "text": "hola", "is_final": True, "complete": False,
+             "reason": marker}
+        ),
+        json.dumps({"type": "warning", "code": "buffer_full", "message": "m"}),
+    )
+    seen = []
+
+    async def rec(*args):
+        seen.append(args)
+
+    async def on_tr(text, is_final):
+        pass
+
+    with caplog.at_level("DEBUG"):
+        await client.listen_loop(on_tr, rec, rec, rec)
+
+    assert "MARKER" not in caplog.text
+    assert not any("MARKER" in str(a) for a in seen)
+    assert ("buffer_full", "m") in seen  # un código válido pasa igual

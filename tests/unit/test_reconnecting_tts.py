@@ -29,8 +29,8 @@ async def test_failed_connect_returns_none_and_records_failure():
         result = await w.connect(voice=None, speed=None, client_id="c1")
     assert result is None
     assert w.state == ConnectionState.RECONNECTING
-    assert w._reconnect_attempts == 1
-    assert w._last_error == "OSError"
+    assert w._health.reconnect_attempts == 1
+    assert w._health.last_error == "OSError"
 
 
 @pytest.mark.asyncio
@@ -66,7 +66,7 @@ async def test_attempt_after_backoff_elapses_tries_again():
 
     assert result is succeeding_client
     assert w.state == ConnectionState.CONNECTED
-    assert w._reconnect_attempts == 0  # reset on success
+    assert w._health.reconnect_attempts == 0  # reset on success
 
 
 @pytest.mark.asyncio
@@ -76,9 +76,9 @@ async def test_backoff_doubles_on_repeated_failure_capped_at_max():
         mock_client = AsyncMock()
         mock_client.connect.side_effect = OSError("refused")
         MockTTS.return_value = mock_client
-        w._last_failure_at = time.monotonic() - 100  # force should_attempt True
+        w._gate.last_failure_at = time.monotonic() - 100  # force should_attempt True
         await w.connect(voice=None, speed=None, client_id="c1")
-    assert w._backoff == 1.5  # doubled from 1.0, capped at max_backoff
+    assert w._gate.backoff == 1.5  # doubled from 1.0, capped at max_backoff
 
 
 @pytest.mark.asyncio
@@ -206,8 +206,8 @@ async def test_concurrent_failures_of_one_outage_double_backoff_once():
         results = await asyncio.gather(*tasks)
 
     assert results == [None] * 5
-    assert w._backoff == 2.0  # one outage, one doubling (not 32.0)
-    assert w._reconnect_attempts == 1
+    assert w._gate.backoff == 2.0  # one outage, one doubling (not 32.0)
+    assert w._health.reconnect_attempts == 1
     assert changes == [ConnectionState.RECONNECTING]
 
 
@@ -236,6 +236,6 @@ async def test_failure_finishing_after_a_newer_success_does_not_clobber_it():
         assert await slow is None
 
     assert w.state == ConnectionState.CONNECTED
-    assert w._last_error is None
-    assert w._backoff == 1.0
-    assert w._last_failure_at is None
+    assert w._health.last_error is None
+    assert w._gate.backoff == 1.0
+    assert w._gate.last_failure_at is None

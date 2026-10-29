@@ -32,7 +32,7 @@ def live_provider(monkeypatch):
 async def test_synthesize_hola_soy_jota(live_provider):
     provider = live_provider
     if not await provider.probe():
-        reason = "credenciales rechazadas" if provider._auth_failed else "servicio no disponible"
+        reason = "credenciales rechazadas" if provider._terminal else "servicio no disponible"
         pytest.fail(f"ElevenLabs no acepta la sonda ({reason}); revisa ELEVENLABS_API_KEY")
     stream = await provider.connect(provider.resolve_voice(None), 1.0, "live")
     assert stream is not None

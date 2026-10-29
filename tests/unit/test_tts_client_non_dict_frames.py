@@ -51,3 +51,17 @@ async def test_connect_non_dict_auth_reply_raises_runtime_error():
             assert "42" not in str(e)
         else:
             raise AssertionError("connect must fail")
+
+
+async def test_error_frame_code_is_sanitized_in_logs(caplog):
+    """#260: el `code` de un frame de error del TTS es texto ajeno: nunca al log tal cual."""
+    frames = [json.dumps({"type": "error", "code": "MARKER texto del proveedor"})]
+    async with _serve(frames) as server:
+        port = server.sockets[0].getsockname()[1]
+        tts = TTSClient(url=f"127.0.0.1:{port}", token="t", client_id="c1")
+        await tts.connect()
+        with caplog.at_level(logging.DEBUG):
+            assert [c async for c in tts.get_audio_stream()] == []
+        await tts.close()
+    assert "MARKER" not in caplog.text
+    assert "TTS error: unknown" in caplog.text

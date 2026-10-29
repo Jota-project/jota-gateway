@@ -5,13 +5,10 @@ import pytest
 
 from src.core.config import settings
 from src.services.reconnection import ConnectionState
-from src.services.speech.ports import SpeechToTextProvider, TextToSpeechProvider
 
 
 def test_app_state_has_stt_and_tts_providers(client):
     state = client.app.state.speech
-    assert isinstance(state.stt, SpeechToTextProvider)
-    assert isinstance(state.tts, TextToSpeechProvider)
     assert (state.stt.name, state.tts.name) == ("jota", "jota")
 
 

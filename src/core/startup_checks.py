@@ -66,9 +66,6 @@ def check_speech_settings(settings, *, stt_provider: str, tts_provider: str) -> 
         # v3/v4 no están soportados en el WebSocket stream-input.
         if settings.ELEVENLABS_TTS_MODEL.strip().lower().startswith(("eleven_v3", "eleven_v4")):
             raise SpeechConfigError("ELEVENLABS_TTS_MODEL")
-        sched = settings.ELEVENLABS_TTS_CHUNK_SCHEDULE
-        if not 1 <= len(sched) <= 4 or not all(50 <= n <= 500 for n in sched):
-            raise SpeechConfigError("ELEVENLABS_TTS_CHUNK_SCHEDULE")
 
 
 def _is_placeholder(value: str) -> bool:

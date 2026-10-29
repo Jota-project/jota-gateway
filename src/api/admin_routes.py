@@ -39,7 +39,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from src.api.deps import get_admin_auth
-from src.core.config import effective_audio_gate, settings
 from src.core.startup_checks import SpeechConfigError
 from src.db.database import get_db_session
 from src.db.models import ClientRecord
@@ -377,7 +376,8 @@ async def get_speech(request: Request) -> dict:
     return {
         "stt": {"provider": speech.stt.name, "state": speech.stt.state.value},
         "tts": {"provider": speech.tts.name, "state": speech.tts.state.value},
-        "audio_gate": effective_audio_gate(settings, speech.stt.name),
+        # La puerta solo existe en el STT de ElevenLabs: con jota es siempre "off".
+        "audio_gate": getattr(speech.stt, "audio_gate", "off"),
     }
 
 

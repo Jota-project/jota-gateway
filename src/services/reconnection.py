@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 
@@ -54,6 +56,30 @@ def describe_error(exc: BaseException) -> str:
     otherwise just its type name. Never `str(exc)` (#228)."""
     code = getattr(exc, "stable_code", None)
     return code if isinstance(code, str) else type(exc).__name__
+
+
+def safe_code(code: object) -> str:
+    """A provider-sent `code`/`reason`/`state` fit for logs and client frames: a short
+    identifier, or "unknown". Frames from the transcriber/TTS are untrusted text (#260)."""
+    if isinstance(code, str) and code.isidentifier() and len(code) <= 40:
+        return code
+    return "unknown"
+
+
+async def ping_ready(url: str) -> bool:
+    """True if `http://<url>/ready` answers 2xx (jota-transcriber and jota-speaker, #101).
+
+    /ready, not /health: /health is pure liveness, /ready reflects real readiness
+    (503 while busy or the engine isn't loaded). `url` is host:port; empty -> False.
+    """
+    if not url:
+        return False
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"http://{url}/ready", timeout=5.0)
+            return r.is_success
+    except Exception:
+        return False
 
 
 def health_attr(name: str) -> property:

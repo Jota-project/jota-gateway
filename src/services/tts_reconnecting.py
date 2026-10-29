@@ -29,8 +29,6 @@ class ReconnectingTTSClient:
 
     state = health_attr("state")
     on_state_change = health_attr("on_state_change")
-    _reconnect_attempts = health_attr("reconnect_attempts")
-    _last_error = health_attr("last_error")
 
     name = "jota"
 
@@ -43,22 +41,8 @@ class ReconnectingTTSClient:
     ) -> None:
         self._url = url
         self._token = token
-        self._initial_backoff = initial_backoff
-        self._max_backoff = max_backoff
         self._gate = LazyBackoffGate(initial_backoff, max_backoff)
         self._health = ServiceHealth("tts", ConnectionState.CONNECTED)
-
-    @property
-    def _backoff(self) -> float:
-        return self._gate.backoff
-
-    @property
-    def _last_failure_at(self) -> float | None:
-        return self._gate.last_failure_at
-
-    @_last_failure_at.setter
-    def _last_failure_at(self, value: float | None) -> None:
-        self._gate.last_failure_at = value
 
     async def connect(
         self, voice: str | None, speed: float | None, client_id: str
@@ -84,7 +68,7 @@ class ReconnectingTTSClient:
             logger.debug("TTS connect failure ignored (same outage / stale attempt): %s", error)
             return
         self._health.mark_attempt_failed(error)
-        logger.warning("TTS connect failed (attempt %d): %s", self._reconnect_attempts, error)
+        logger.warning("TTS connect failed (attempt %d): %s", self._health.reconnect_attempts, error)
         self._health.set_state(ConnectionState.RECONNECTING)
 
     def _record_success(self) -> None:

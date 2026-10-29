@@ -10,6 +10,7 @@ from pydantic import SecretStr
 
 from src.core.config import settings
 from src.services.reconnection import ConnectionState
+from src.services.speech.elevenlabs import common as common_mod
 from src.services.speech.elevenlabs import tts as tts_mod
 from src.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
 from tests.fakes.elevenlabs_tts import FakeElevenLabsTts
@@ -19,16 +20,24 @@ VOICE = "gc61tTk93h3LBXPxew2V"
 USER_TEXT = "frase privada del usuario que supera con mucho los cuarenta caracteres."
 
 
+# Constantes de módulo que los tests ajustan vía make_settings (se restauran tras cada test).
+_CONSTS = {"MAX_STREAMS": tts_mod, "MAX_BUFFER_BYTES": tts_mod, "HEALTH_TTL_S": common_mod}
+
+
+@pytest.fixture(autouse=True)
+def _restore_consts(monkeypatch):
+    for name, mod in _CONSTS.items():
+        monkeypatch.setattr(mod, name, getattr(mod, name))
+
+
 def make_settings(fake_url: str, **update):
+    for name in [k for k in update if k in _CONSTS]:
+        setattr(_CONSTS[name], name, update.pop(name))
     base = {
         "ELEVENLABS_API_KEY": SecretStr(KEY),
         "ELEVENLABS_BASE_URL": fake_url,
         "ELEVENLABS_TTS_DEFAULT_VOICE": VOICE,
         "ELEVENLABS_TTS_MODEL": "eleven_flash_v2_5",
-        "ELEVENLABS_TTS_CHUNK_SCHEDULE": [120, 160, 250, 290],
-        "ELEVENLABS_TTS_MAX_STREAMS": 10,
-        "ELEVENLABS_TTS_MAX_BUFFER_BYTES": 10_485_760,
-        "ELEVENLABS_HEALTH_TTL_S": 60.0,
         "TTS_VOICE_MAP": {},
         "TTS_RECONNECT_INITIAL_BACKOFF": 1.0,
         "TTS_RECONNECT_MAX_BACKOFF": 60.0,
@@ -148,7 +157,7 @@ async def test_connect_returns_immediately_with_slow_handshake():
 
 
 async def test_close_midway_under_1s_and_releases_semaphore(fake):
-    p = ElevenLabsTtsProvider(make_settings(fake.url, ELEVENLABS_TTS_MAX_STREAMS=1))
+    p = ElevenLabsTtsProvider(make_settings(fake.url, MAX_STREAMS=1))
     stream = await p.connect(VOICE, 1.0, "c1")
     await stream.send_text_chunk("a medias")
     await wait_until(lambda: len(fake.messages) >= 2)
@@ -165,7 +174,7 @@ async def test_close_midway_under_1s_and_releases_semaphore(fake):
 async def test_cancel_during_connect_releases_semaphore():
     fake = await start_fake(delay_handshake_s=1.0)
     try:
-        p = ElevenLabsTtsProvider(make_settings(fake.url, ELEVENLABS_TTS_MAX_STREAMS=1))
+        p = ElevenLabsTtsProvider(make_settings(fake.url, MAX_STREAMS=1))
         stream = await p.connect(VOICE, 1.0, "c1")
         await asyncio.sleep(0.05)
         t0 = time.monotonic()
@@ -179,7 +188,7 @@ async def test_cancel_during_connect_releases_semaphore():
 
 
 async def test_close_before_runner_starts_releases_semaphore(fake):
-    p = ElevenLabsTtsProvider(make_settings(fake.url, ELEVENLABS_TTS_MAX_STREAMS=1))
+    p = ElevenLabsTtsProvider(make_settings(fake.url, MAX_STREAMS=1))
     stream = await p.connect(VOICE, 1.0, "c1")
     await stream.close()  # la tarea aún no ha ejecutado ni su primera línea
     again = await p.connect(VOICE, 1.0, "c1")
@@ -188,7 +197,7 @@ async def test_close_before_runner_starts_releases_semaphore(fake):
 
 
 async def test_semaphore_full_returns_none_without_touching_health(fake):
-    p = ElevenLabsTtsProvider(make_settings(fake.url, ELEVENLABS_TTS_MAX_STREAMS=1))
+    p = ElevenLabsTtsProvider(make_settings(fake.url, MAX_STREAMS=1))
     events = []
     p.on_state_change = events.append
     first = await p.connect(VOICE, 1.0, "c1")
@@ -279,7 +288,7 @@ async def test_second_unexpected_close_does_not_reopen_again():
 
 
 async def test_buffer_cap_stops_stream_with_warning(fake, caplog):
-    p = ElevenLabsTtsProvider(make_settings(fake.url, ELEVENLABS_TTS_MAX_BUFFER_BYTES=1500))
+    p = ElevenLabsTtsProvider(make_settings(fake.url, MAX_BUFFER_BYTES=1500))
     stream = await p.connect(VOICE, 1.0, "c1")
     with caplog.at_level(logging.WARNING):
         await stream.send_text_chunk("x" * 60 + ". ")  # ~7 chunks de 960 bytes
@@ -360,7 +369,7 @@ async def test_probe_ok_is_cached_and_cheap(fake):
 
 
 async def test_probe_ttl_expiry_probes_again(fake):
-    p = ElevenLabsTtsProvider(make_settings(fake.url, ELEVENLABS_HEALTH_TTL_S=0.05))
+    p = ElevenLabsTtsProvider(make_settings(fake.url, HEALTH_TTL_S=0.05))
     assert await p.probe() is True
     await asyncio.sleep(0.1)
     assert await p.probe() is True
@@ -426,7 +435,7 @@ async def test_probe_timeout_after_successful_connect_counts_as_success(monkeypa
     import websockets
 
     async def handler(ws):
-        await asyncio.sleep(5)  # handshake hecho, pero nunca cierra
+        await ws.wait_closed()  # handshake hecho, pero nunca cierra (hasta que lo cierra el probe)
 
     monkeypatch.setattr(tts_mod, "PROBE_TIMEOUT_S", 0.5)
     async with websockets.serve(handler, "127.0.0.1", 0) as server:

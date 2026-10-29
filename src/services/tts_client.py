@@ -3,12 +3,12 @@ import json
 import logging
 from collections.abc import AsyncGenerator
 
-import httpx
 import websockets
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
 from src.core.config import settings
+from src.services.reconnection import ping_ready, safe_code
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +71,7 @@ class TTSClient:
             if msg.get("type") != "auth_ok":
                 # G-40 (#216): only the protocol error `code` (short identifier), never
                 # the rest of the message.
-                code = msg.get("code")
-                if not (isinstance(code, str) and code.isidentifier() and len(code) <= 40):
-                    code = "unknown"
+                code = safe_code(msg.get("code"))
                 raise RuntimeError(f"[{self.client_id}] TTS auth failed (code={code})")
 
             _authenticated = True
@@ -138,7 +136,7 @@ class TTSClient:
                     if msg_type == "done":
                         break
                     elif msg_type == "error":
-                        logger.warning("[%s] TTS error: %s", self.client_id, data.get("code"))
+                        logger.warning("[%s] TTS error: %s", self.client_id, safe_code(data.get("code")))
                         break
                     else:
                         logger.debug("[%s] TTS control frame: %s", self.client_id, msg_type)
@@ -154,22 +152,4 @@ class TTSClient:
         except Exception:
             pass
 
-    @staticmethod
-    async def ping(url: str) -> bool:
-        """Return True if the TTS /ready endpoint responds with 2xx.
-
-        Unlike /health (pure liveness, always 200 if the process is up),
-        /ready reflects real engine readiness (503 "not_ready" while a TTS
-        engine isn't loaded) — see issue #101.
-
-        Expects url as host:port (no protocol, no path).
-        Empty URLs return False.
-        """
-        if not url:
-            return False
-        try:
-            async with httpx.AsyncClient() as client:
-                r = await client.get(f"http://{url}/ready", timeout=5.0)
-                return r.is_success
-        except Exception:
-            return False
+    ping = staticmethod(ping_ready)  # GET /ready (503 "not_ready" sin motor cargado)

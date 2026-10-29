@@ -48,9 +48,9 @@ class TtsHarness:
 
 
 @pytest.fixture(params=STT_ADAPTERS)
-async def stt_harness(request):
+async def stt_harness(request, monkeypatch):
     if request.param == "elevenlabs":
-        async for h in _elevenlabs_stt_harness():
+        async for h in _elevenlabs_stt_harness(monkeypatch):
             yield h
         return
     from src.services.speech.jota import JotaSttProvider
@@ -69,12 +69,14 @@ async def stt_harness(request):
     await up.stop()
 
 
-async def _elevenlabs_stt_harness():
+async def _elevenlabs_stt_harness(monkeypatch):
     from pydantic import SecretStr
 
+    from src.services.speech.elevenlabs import stt as stt_mod
     from src.services.speech.elevenlabs.stt import ElevenLabsSttProvider
     from tests.fakes.elevenlabs_stt import FakeElevenLabsStt
 
+    monkeypatch.setattr(stt_mod, "DRAIN_S", 0.3)
     key = "el-key-SECRET-0123456789"
     up = FakeElevenLabsStt(api_key=key)
     await up.start()
@@ -84,7 +86,6 @@ async def _elevenlabs_stt_harness():
                 "ELEVENLABS_API_KEY": SecretStr(key),
                 "ELEVENLABS_BASE_URL": up.url,
                 "STT_AUDIO_GATE": "off",
-                "ELEVENLABS_STT_DRAIN_S": 0.3,
             }
         )
     )

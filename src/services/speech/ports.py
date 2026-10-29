@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 from src.models.schemas import Client
 from src.services.reconnection import ConnectionState, ServiceStatus
@@ -34,7 +34,6 @@ class SttCallbacks:
     on_incomplete: Callable[[str | None], Awaitable[None]]  # final truncado (solo jota)
 
 
-@runtime_checkable
 class SttSession(Protocol):
     """Una por sesión de audio."""
 
@@ -50,7 +49,6 @@ class SttSession(Protocol):
     async def close(self) -> None: ...  # idempotente
 
 
-@runtime_checkable
 class SpeechToTextProvider(Protocol):
     """Singleton de proceso."""
 
@@ -65,12 +63,9 @@ class SpeechToTextProvider(Protocol):
     async def probe(self) -> bool: ...
     def status(self) -> ServiceStatus: ...
     async def start(self) -> None: ...
-    async def retire(self) -> None: ...  # deja de ser el vigente; aclose() al cerrarse la última
-    # sesión abierta (ya, si no hay ninguna). Ver `sessions.SessionRefCount`.
     async def aclose(self) -> None: ...
 
 
-@runtime_checkable
 class TtsStream(Protocol):
     """Uno por turno."""
 
@@ -80,7 +75,6 @@ class TtsStream(Protocol):
     async def close(self) -> None: ...
 
 
-@runtime_checkable
 class TextToSpeechProvider(Protocol):
     """Singleton de proceso."""
 

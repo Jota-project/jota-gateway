@@ -2,7 +2,7 @@
 
 Una sesión de audio del gateway = como mucho una conexión upstream abierta a la vez, y solo
 mientras hay voz: la conexión se abre de forma perezosa con el primer audio que hay que
-reenviar y se cierra tras `ELEVENLABS_STT_IDLE_CLOSE_S` sin audio (el proveedor factura por
+reenviar y se cierra tras `IDLE_CLOSE_S` sin audio (el proveedor factura por
 hora de audio enviado). El proveedor es un singleton de proceso que limita las conexiones
 abiertas con un semáforo (no las sesiones).
 
@@ -23,7 +23,6 @@ from typing import Any
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from src.core.config import effective_audio_gate
 from src.models.schemas import Client
 from src.services.reconnection import (
     ConnectionState,
@@ -35,13 +34,15 @@ from src.services.reconnection import (
 )
 from src.services.speech.audio import EnergyGate, f32le_to_s16le
 from src.services.speech.elevenlabs.common import (
+    ProbedProvider,
+    api_key,
     classify_close,
     classify_exception,
-    pin_websockets_logging,
+    close_ws,
+    json_messages,
     ws_url,
 )
 from src.services.speech.ports import SttCallbacks, SttCapabilities, SttParams
-from src.services.speech.sessions import SessionRefCount
 
 logger = logging.getLogger(__name__)
 _warning_logged = [False]  # un único INFO por proceso para los avisos del proveedor
@@ -57,7 +58,14 @@ SESSION_STARTED_TIMEOUT_S = 10.0
 PROBE_TIMEOUT_S = 5.0
 PROBE_CONNECT_TIMEOUT_S = 4.0  # TCP + handshake WS: vencer aquí es un fallo, no "sano"
 MAX_FRAME_BYTES = 4 * 1024 * 1024
-CLOSE_GRACE_S = 0.5
+VAD_SILENCE_S = 1.0  # silencio con el que el VAD del proveedor confirma la frase
+IDLE_CLOSE_S = 5.0  # sin audio reenviado este tiempo: se cierra la conexión upstream
+DRAIN_S = 1.5  # espera máxima del `committed_transcript` al cerrar
+CONNECT_BUFFER_S = 2.0  # audio guardado mientras se abre la conexión (se tira lo más viejo)
+MAX_SESSIONS = 15  # conexiones upstream abiertas a la vez por proceso
+# Sin valor no se envía: `false` (zero retention) solo lo aplican los planes enterprise/trial
+# y en el resto el proveedor avisa en cada sesión.
+ENABLE_LOGGING: bool | None = None
 
 _AUTH_ERRORS = {"auth_error", "unaccepted_terms"}
 _TERMINAL_QUOTA = {"quota_exceeded"}
@@ -104,16 +112,15 @@ class ElevenLabsSttSession:
         self._client_id = client.id
         self._params = params
         self._cb = callbacks
-        s = provider._settings
         self._health = ServiceHealth("transcriber", ConnectionState.CONNECTED)
         self.last_transcript_at: float | None = None
         self._gate = (
-            EnergyGate(rms_dbfs=s.STT_GATE_RMS_DBFS)
-            if effective_audio_gate(s, "elevenlabs") == "energy"
+            EnergyGate(rms_dbfs=provider._settings.STT_GATE_RMS_DBFS)
+            if provider.audio_gate == "energy"
             else None
         )
         self._buf = bytearray()  # PCM16 pendiente de enviar
-        self._buf_cap = int(s.ELEVENLABS_STT_CONNECT_BUFFER_S * BYTES_PER_S) // 2 * 2
+        self._buf_cap = int(CONNECT_BUFFER_S * BYTES_PER_S) // 2 * 2
         self._conn: _Upstream | None = None
         self._life: asyncio.Task | None = None
         self._send_lock = asyncio.Lock()
@@ -129,9 +136,7 @@ class ElevenLabsSttSession:
         self._busy = False
         self._busy_cause = ""
         self._cooldown_until = 0.0
-        self._warm_deadline: float | None = None
         self._tasks: set[asyncio.Task] = set()
-        provider._refs.opened()
         provider._sessions.add(self)
         if provider._terminal:
             self._health.state = ConnectionState.DEGRADED
@@ -165,7 +170,6 @@ class ElevenLabsSttSession:
             self._uncommitted = True
             self._audio_since_commit = True
             self._last_fwd = time.monotonic()
-            self._warm_deadline = None
             await self._ensure_upstream()
             conn = self._conn
             if conn is not None and conn.ready.is_set() and not conn.draining:
@@ -193,7 +197,6 @@ class ElevenLabsSttSession:
             self._p._sessions.discard(self)
             for t in list(self._tasks):
                 t.cancel()
-            await self._p._refs.closed()
 
     # --- buffer / apertura perezosa ---
 
@@ -285,7 +288,7 @@ class ElevenLabsSttSession:
             waiter.cancel()
         if not up.ready.is_set():
             reader.cancel()
-            await self._close_ws(ws)
+            await close_ws(ws)
             if self._p._terminal:
                 raise _Terminal
             raise ConnectionError("session_started")
@@ -320,7 +323,7 @@ class ElevenLabsSttSession:
                 if up.reader is not None:
                     await up.reader
                 up.ready.clear()
-                await self._close_ws(up.ws)
+                await close_ws(up.ws)
                 if self._closed or self._p._terminal:
                     return
                 if up.closing:
@@ -332,23 +335,21 @@ class ElevenLabsSttSession:
                     return  # cierre en reposo: silencioso, el próximo audio reabre
                 self._health.set_state(ConnectionState.RECONNECTING)
                 s = self._p._settings
-                try:
-                    ok = await reconnect_with_backoff(
-                        lambda: self._connect_once(up),
-                        self._health,
-                        initial_backoff=s.TRANSCRIBER_RECONNECT_INITIAL_BACKOFF,
-                        max_backoff=s.TRANSCRIBER_RECONNECT_MAX_BACKOFF,
-                        max_duration=s.TRANSCRIBER_RECONNECT_MAX_DURATION,
-                        label="elevenlabs-stt",
-                    )
-                except _Terminal:
-                    return
+                # Un fallo terminal durante el backoff cancela esta tarea
+                # (`_on_provider_degraded`); reconnect_with_backoff traga el resto.
+                ok = await reconnect_with_backoff(
+                    lambda: self._connect_once(up),
+                    self._health,
+                    initial_backoff=s.TRANSCRIBER_RECONNECT_INITIAL_BACKOFF,
+                    max_backoff=s.TRANSCRIBER_RECONNECT_MAX_BACKOFF,
+                    max_duration=s.TRANSCRIBER_RECONNECT_MAX_DURATION,
+                    label="elevenlabs-stt",
+                )
                 if not ok:
                     return
         finally:
-            ws = up.ws
-            if ws is not None:
-                await self._close_ws(ws)
+            if up.ws is not None:
+                await close_ws(up.ws)
             if self._conn is up:
                 self._conn = None
             self._release_permit(up)  # antes del respawn: la sesión no compite con su propio permiso
@@ -356,24 +357,10 @@ class ElevenLabsSttSession:
                 # Audio llegado mientras la conexión anterior drenaba: abrir la siguiente.
                 self._spawn(self._ensure_upstream())
 
-    async def _close_ws(self, ws) -> None:
-        try:
-            await asyncio.wait_for(ws.close(), CLOSE_GRACE_S)
-        except Exception:  # incluye TimeoutError
-            pass
-
     async def _read(self, up: _Upstream) -> None:
         ws = up.ws
         try:
-            async for raw in ws:
-                if isinstance(raw, bytes):
-                    continue
-                try:
-                    data = json.loads(raw)
-                except ValueError:
-                    continue
-                if not isinstance(data, dict):
-                    continue
+            async for data in json_messages(ws):
                 if await self._on_message(up, data):
                     return
         except ConnectionClosed:
@@ -467,10 +454,7 @@ class ElevenLabsSttSession:
             ):
                 return
             try:
-                while len(self._buf) >= MIN_CHUNK_BYTES:
-                    n = min(len(self._buf), MAX_CHUNK_BYTES)
-                    await self._send_chunk(up, bytes(self._buf[:n]), commit=False)
-                    del self._buf[:n]
+                await self._send_buffer(up)
                 if self._want_commit:
                     wait = self._commit_wait()
                     if wait > 0:
@@ -479,6 +463,13 @@ class ElevenLabsSttSession:
                         await self._send_commit(up)
             except ConnectionClosed:
                 return  # el lector ve el cierre y lo trata
+
+    async def _send_buffer(self, up: _Upstream) -> None:
+        """Envía el búfer en trozos de 0,1 a 1 s; lo que no llega a 0,1 s se queda."""
+        while len(self._buf) >= MIN_CHUNK_BYTES:
+            n = min(len(self._buf), MAX_CHUNK_BYTES)
+            await self._send_chunk(up, bytes(self._buf[:n]), commit=False)
+            del self._buf[:n]
 
     def _commit_wait(self) -> float:
         if self._last_commit_at is None:
@@ -518,27 +509,32 @@ class ElevenLabsSttSession:
 
     # --- cierre ---
 
-    async def _graceful_close(self, *, reason: str = "close") -> None:
-        """Confirma lo pendiente, espera el final (≤ DRAIN_S) y cierra la conexión."""
+    async def _graceful_close(self) -> None:
+        """Cierre de la sesión: drena la conexión viva y espera a que su tarea termine."""
         up = self._conn
         life = self._life
         if up is not None and life is not None and not life.done():
-            drain = self._p._settings.ELEVENLABS_STT_DRAIN_S
             up.draining = True
-            try:
-                if (self._uncommitted or self._buf) and not up.closing:
-                    await self._drain(up, drain)
-            except Exception as e:
-                logger.debug("ElevenLabs STT: drenado falló (%s)", describe_error(e))
-            up.closing = True
-            if up.ws is not None:
-                await self._close_ws(up.ws)
+            await self._drain_and_close(up)
             if not life.done():
                 try:
                     await asyncio.wait_for(asyncio.shield(life), 1.5)
                 except (TimeoutError, asyncio.CancelledError, Exception):
                     life.cancel()
                     await asyncio.wait({life}, timeout=0.5)
+
+    async def _drain_and_close(self, up: _Upstream) -> None:
+        """Confirma lo pendiente, espera el final (≤ DRAIN_S) y cierra la conexión."""
+        if self._conn is not up:
+            return  # cierre en reposo programado tarde: esa conexión ya no está
+        try:
+            if (self._uncommitted or self._buf) and not up.closing:
+                await self._drain(up, DRAIN_S)
+        except Exception as e:
+            logger.debug("ElevenLabs STT: drenado falló (%s)", describe_error(e))
+        up.closing = True
+        if up.ws is not None:
+            await close_ws(up.ws)
 
     async def _drain(self, up: _Upstream, drain: float) -> None:
         try:
@@ -551,10 +547,7 @@ class ElevenLabsSttSession:
             if up.closing or up.ws is None:
                 return
             try:
-                while len(self._buf) >= MIN_CHUNK_BYTES:
-                    n = min(len(self._buf), MAX_CHUNK_BYTES)
-                    await self._send_chunk(up, bytes(self._buf[:n]), commit=False)
-                    del self._buf[:n]
+                await self._send_buffer(up)
                 if self._uncommitted or self._buf:
                     await self._send_commit(up)
                 else:
@@ -569,53 +562,20 @@ class ElevenLabsSttSession:
     # --- temporizador de reposo ---
 
     async def _idle_loop(self) -> None:
-        s = self._p._settings
-        idle = s.ELEVENLABS_STT_IDLE_CLOSE_S
-        warm = s.ELEVENLABS_STT_WARM_HOLD_S
-        tick = max(0.01, min(0.1 if warm > 0 else 0.25, idle / 4))
+        tick = max(0.01, min(0.25, IDLE_CLOSE_S / 4))
         while not self._closed:
             await asyncio.sleep(tick)
-            now = time.monotonic()
             last = self._last_fwd
             if last is None:
                 continue
-            quiet = now - last >= idle
+            quiet = time.monotonic() - last >= IDLE_CLOSE_S
             if self._busy and quiet:
                 await self._clear_busy()
             up = self._conn
             if not quiet or up is None or up.closing or up.draining or not up.ready.is_set():
                 continue
-            if warm > 0:
-                if self._warm_deadline is None:
-                    self._warm_deadline = now + warm
-                if now < self._warm_deadline:
-                    await self._feed_silence(up, tick)
-                    continue
-            self._warm_deadline = None
             up.draining = True
-            self._spawn(self._graceful_close_idle(up))
-
-    async def _feed_silence(self, up: _Upstream, seconds: float) -> None:
-        async with self._send_lock:
-            if up.closing or up.draining or up.ws is None:
-                return
-            try:
-                await self._send_chunk(up, b"\x00\x00" * int(SAMPLE_RATE * seconds), commit=False)
-            except ConnectionClosed:
-                return
-
-    async def _graceful_close_idle(self, up: _Upstream) -> None:
-        if self._conn is not up or up.closing:
-            return
-        drain = self._p._settings.ELEVENLABS_STT_DRAIN_S
-        try:
-            if self._uncommitted or self._buf:
-                await self._drain(up, drain)
-        except Exception as e:
-            logger.debug("ElevenLabs STT: drenado falló (%s)", describe_error(e))
-        up.closing = True
-        if up.ws is not None:
-            await self._close_ws(up.ws)
+            self._spawn(self._drain_and_close(up))
 
     def _on_provider_degraded(self) -> None:
         self._buf.clear()
@@ -626,7 +586,7 @@ class ElevenLabsSttSession:
             self._life.cancel()
 
 
-class ElevenLabsSttProvider:
+class ElevenLabsSttProvider(ProbedProvider):
     name = "elevenlabs"
     capabilities = SttCapabilities(partials=True, warmup_s=2.5)
 
@@ -634,20 +594,13 @@ class ElevenLabsSttProvider:
     on_state_change = health_attr("on_state_change")
 
     def __init__(self, settings) -> None:
-        secret = settings.ELEVENLABS_API_KEY
-        key = secret.get_secret_value().strip() if secret is not None else ""
-        if not key:
-            raise ValueError("ELEVENLABS_API_KEY")
-        pin_websockets_logging()
         self._settings = settings
-        self._key = key
+        self._key = api_key(settings)
         self._base = settings.ELEVENLABS_BASE_URL
-        self._sem = asyncio.Semaphore(settings.ELEVENLABS_STT_MAX_SESSIONS)
+        self.audio_gate = settings.STT_AUDIO_GATE  # lo lee GET /admin/speech
+        self._sem = asyncio.Semaphore(MAX_SESSIONS)
         self._health = ServiceHealth("transcriber", ConnectionState.CONNECTED)
-        self._refs = SessionRefCount()
         self._sessions: set[ElevenLabsSttSession] = set()
-        self._terminal = False
-        self._closed = False
         self._counters: dict = {
             "capacity_refusals": 0,
             "provider_429": 0,
@@ -655,27 +608,21 @@ class ElevenLabsSttProvider:
             "upstream_opens": 0,
             "audio_seconds_sent": 0.0,
         }
-        self._probe_at: float | None = None
-        self._probe_ok = False
 
     def __repr__(self) -> str:
         return f"<ElevenLabsSttProvider state={self.state.value}>"
 
     def _stream_url(self, language: str) -> str:
-        s = self._settings
         params: dict[str, str | int | float] = {
             "model_id": MODEL_ID,
             "audio_format": AUDIO_FORMAT,
             "language_code": language,
-            "commit_strategy": s.ELEVENLABS_STT_COMMIT,
+            "commit_strategy": "vad",
             "include_timestamps": "false",
+            "vad_silence_threshold_secs": VAD_SILENCE_S,
         }
-        # Sin valor explícito no se envía: `false` (zero retention) solo lo aplican los
-        # planes enterprise/trial y en el resto el proveedor avisa en cada sesión.
-        if s.ELEVENLABS_STT_ENABLE_LOGGING is not None:
-            params["enable_logging"] = "true" if s.ELEVENLABS_STT_ENABLE_LOGGING else "false"
-        if s.ELEVENLABS_STT_COMMIT == "vad":
-            params["vad_silence_threshold_secs"] = s.ELEVENLABS_STT_VAD_SILENCE_S
+        if ENABLE_LOGGING is not None:
+            params["enable_logging"] = "true" if ENABLE_LOGGING else "false"
         return ws_url(self._base, "/v1/speech-to-text/realtime", params)
 
     # --- puerto SpeechToTextProvider ---
@@ -690,18 +637,6 @@ class ElevenLabsSttProvider:
 
     def status(self) -> ServiceStatus:
         return self._health.status()
-
-    async def start(self) -> None:
-        try:
-            await self.probe()
-        except Exception as e:
-            logger.warning("ElevenLabs STT: probe de arranque falló (%s)", describe_error(e))
-
-    async def retire(self) -> None:
-        await self._refs.retire(self.aclose)
-
-    async def aclose(self) -> None:
-        self._closed = True
 
     # --- salud ---
 
@@ -728,18 +663,6 @@ class ElevenLabsSttProvider:
     def _record_success(self) -> None:
         if not self._terminal:
             self._health.mark_connected()
-
-    async def probe(self) -> bool:
-        if self._closed or self._terminal:
-            return False
-        now = time.monotonic()
-        ttl = self._settings.ELEVENLABS_HEALTH_TTL_S
-        if self._probe_at is not None and now - self._probe_at < ttl:
-            return self._probe_ok
-        ok = await self._probe_once()
-        self._probe_ok = ok
-        self._probe_at = time.monotonic()
-        return ok
 
     async def _probe_once(self) -> bool:
         """Abre el realtime y espera `session_started` o el cierre (≤ 5 s); cierra sin enviar

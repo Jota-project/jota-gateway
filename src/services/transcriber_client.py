@@ -4,7 +4,6 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 
-import httpx
 import websockets
 from pydantic import ValidationError
 from websockets.asyncio.client import ClientConnection
@@ -12,7 +11,7 @@ from websockets.exceptions import ConnectionClosed
 
 from src.core.config import settings
 from src.models.schemas import TranscriberConfig, TranscriberMessage
-from src.services.reconnection import describe_error
+from src.services.reconnection import describe_error, ping_ready, safe_code
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +21,7 @@ class TranscriberHandshakeError(RuntimeError):
     frame (saneado), nunca su `message` (#238); describe_error lo usa en logs y last_error."""
 
     def __init__(self, code: object) -> None:
-        if not (isinstance(code, str) and code.isidentifier() and len(code) <= 40):
-            code = "unknown"
-        self.stable_code = f"transcriber_handshake_failed[{code}]"
+        self.stable_code = f"transcriber_handshake_failed[{safe_code(code)}]"
         super().__init__(self.stable_code)
 
 
@@ -141,25 +138,27 @@ class TranscriberClient:
                         f"[{self.client_id}] Transcripción: is_final={t_msg.is_final!r} text='{t_msg.text[:40]}'"
                     )
                     if t_msg.is_final and t_msg.complete is False:
+                        reason = safe_code(t_msg.reason) if t_msg.reason is not None else None
                         logger.warning(
-                            f"[{self.client_id}] Transcripción final incompleta "
-                            f"(reason={t_msg.reason!r})"
+                            f"[{self.client_id}] Transcripción final incompleta (reason={reason!r})"
                         )
                         if on_incomplete_callback:
-                            await on_incomplete_callback(t_msg.reason)
+                            await on_incomplete_callback(reason)
                     await on_transcription_callback(t_msg.text, bool(t_msg.is_final))
 
                 elif t_msg.type == "status":
                     if on_status_callback and t_msg.state:
-                        await on_status_callback(t_msg.state, t_msg.reason)
+                        reason = safe_code(t_msg.reason) if t_msg.reason is not None else None
+                        await on_status_callback(safe_code(t_msg.state), reason)
 
                 elif t_msg.type == "warning":
-                    logger.warning(f"[{self.client_id}] Transcriber warning [{t_msg.code}]")
+                    code = safe_code(t_msg.code)
+                    logger.warning(f"[{self.client_id}] Transcriber warning [{code}]")
                     if on_warning_callback:
-                        await on_warning_callback(t_msg.code or "unknown", t_msg.message)
+                        await on_warning_callback(code, t_msg.message)
 
                 elif t_msg.type == "error":
-                    logger.error(f"[{self.client_id}] Transcriber error [{t_msg.code}]")
+                    logger.error(f"[{self.client_id}] Transcriber error [{safe_code(t_msg.code)}]")
         except ConnectionClosed as e:
             clean_close = e.rcvd is not None and e.rcvd.code == 1000
             if self._is_ready and not clean_close:
@@ -178,24 +177,7 @@ class TranscriberClient:
         except ConnectionClosed:
             self._is_ready = False
 
-    @staticmethod
-    async def ping(url: str) -> bool:
-        """Return True if the transcriber HTTP /ready responds with 2xx.
-
-        Unlike /health (pure liveness, always 200 if the process is up),
-        /ready reflects real capacity (503 "busy" when GPU/inference is
-        saturated) — see issue #101.
-
-        Expects url as host:port (no protocol).
-        """
-        if not url:
-            return False
-        try:
-            async with httpx.AsyncClient() as client:
-                r = await client.get(f"http://{url}/ready", timeout=5.0)
-                return r.is_success
-        except Exception:
-            return False
+    ping = staticmethod(ping_ready)  # GET /ready (503 "busy" con la GPU saturada)
 
     async def close(self):
         self._is_ready = False
