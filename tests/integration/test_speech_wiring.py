@@ -30,22 +30,23 @@ def test_ready_degraded_not_503_when_stt_and_tts_down(client, mock_services):
     assert body["services"]["orchestrator"] == "ok"
 
 
-def test_stt_provider_state_change_broadcasts_transcriber_status(client):
+@pytest.mark.parametrize("kind,service", [("stt", "transcriber"), ("tts", "tts")])
+def test_provider_state_change_broadcasts_status(client, kind, service):
     from unittest.mock import AsyncMock
 
     registry = client.app.state.client_registry
     registry.broadcast_status = AsyncMock()
-    stt = client.app.state.speech.stt
+    provider = getattr(client.app.state.speech, kind)
 
     async def fire():
         import asyncio
 
-        stt.on_state_change(ConnectionState.DEGRADED)
+        provider.on_state_change(ConnectionState.DEGRADED)
         await asyncio.sleep(0)
         await asyncio.sleep(0)
 
     client.portal.call(fire)
-    registry.broadcast_status.assert_awaited_once_with("transcriber", "unavailable")
+    registry.broadcast_status.assert_awaited_once_with(service, "unavailable")
 
 
 @pytest.fixture
