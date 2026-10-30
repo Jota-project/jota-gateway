@@ -185,9 +185,14 @@ package (read on the server by the maintainer; summarized here):
   delta twice.
 - Non-prefix replacements carry `replace:true` and use `deltaText` as the **entire**
   replacement text (the empty string deletes it); replacements always include a full snapshot.
-- Snapshots after the first arrive **at most once every 2 s** per session and connection with
-  the latest text; the terminal event flushes the last snapshot immediately, **including final
-  corrections or retractions**.
+- Pending `chat` appends are concatenated in order and flushed **at most every 75 ms** per run
+  (`LIVE_TEXT_PACING_MS = 75`, `src/gateway/server-chat.ts:125` in OpenClaw v2026.10.5); tool
+  and terminal boundaries flush pending text before settlement.
+- The "at most once every two seconds" limit of that same document (`NARRATION_INTERVAL_MS =
+  2_000`, `src/gateway/server-broadcast-narration.ts`) applies **only** to `session.narration`
+  snapshots for subscriptions declared with `mode:"narration"`, not to `chat` deltas. The
+  gateway does not use narration mode: it only sends `sessions.subscribe`
+  (`src/services/openclaw/frames.py:28-29`).
 - `final`, `aborted` and `error` keep full-message semantics.
 
 **Deliberate gateway decision:** the gateway emits a text tail only for `final`. On
@@ -218,8 +223,9 @@ falling back to the divergence policy (this avoids re-emitting the whole `final`
 empty replace followed by a `delta` without `message`). A whitespace-only `emitted` never
 logs the divergence WARNING.
 Observation: with 2026.10.5 most of the text arrives at once in `final` (capture: a
-16-character delta, a 409-character final), so TTS starts only when generation ends; fixing
-that latency is an OpenClaw streaming-configuration matter.
+16-character delta, a 409-character final), so TTS starts only when generation ends. The 2 s
+narration interval does not explain it (it does not apply to `chat`, see above); fixing that
+latency is an OpenClaw streaming-configuration matter.
 
 ---
 
