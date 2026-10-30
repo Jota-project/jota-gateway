@@ -43,12 +43,12 @@ El **primer mensaje** que envíes DEBE ser el handshake. Es el único mensaje si
 |-------|------|-----------|-------------|
 | `client_key` | string | ✓ | Clave de autenticación del cliente |
 | `input_mode` | `"audio"` \| `"text"` | ✓ | Cómo enviará datos este cliente |
-| `output_mode` | array | ✓ | Qué quiere recibir: `"text"`, `"audio"`, `"status"` |
+| `output_mode` | array | ✓ | Qué quiere recibir: `"text"` (mensajes `token`), `"audio"` (frames TTS), `"status"` (mensajes `pipeline_event`, §12). Los `status` de servicios, `error`, `transcription*` y el control de turnos llegan siempre |
 | `agent` | string | — | Agente OpenClaw a usar; omitir para usar el agente por defecto (ver "Selección de agente" abajo) |
 
 ### Selección de agente
 
-El agente efectivo de la sesión no es simplemente "el que pediste o el global": el gateway resuelve una cascada server-side (`requested` → `default_agent` configurado por el admin para tu `client_key` → default global de OpenClaw → `"main"`) y aplica dos comprobaciones de política antes de aceptar la conexión — ver `CLAUDE.md` ("Session key derivation") para el detalle completo. Como cliente solo necesitas saber dos cosas:
+El agente efectivo de la sesión no es simplemente "el que pediste o el global": el gateway resuelve una cascada server-side (`agent` del handshake si no está vacío → `default_agent` configurado por el admin para tu `client_key` → default global de OpenClaw → `"main"`) y aplica dos comprobaciones de política antes de aceptar la conexión: si tu cliente tiene una lista `allowed_agents`, el agente resultante debe estar en ella (una lista vacía lo deniega todo); y si pediste el agente explícitamente, debe existir en el roster de OpenClaw (`src/core/agent_policy.py`). Como cliente solo necesitas saber dos cosas:
 
 1. Si omites `agent` en el handshake, el que acabes usando puede venir de una configuración por-cliente que un admin te haya asignado (no siempre el default global) — comprueba siempre `ready.agent`, no asumas cuál será.
 2. Pedir explícitamente un `agent` puede fallar de dos formas distintas (ver tabla siguiente): que ese agente no esté permitido para tu cliente, o que no exista en OpenClaw.
@@ -59,12 +59,13 @@ El agente efectivo de la sesión no es simplemente "el que pediste o el global":
 |-----------|-----------|--------|
 | No se recibe el handshake JSON en los primeros `HANDSHAKE_TIMEOUT_S` (5s por defecto) | 1008 | `"Handshake timeout"` |
 | El handshake supera `HANDSHAKE_MAX_BYTES` (4096 caracteres) | 1008 | `"Handshake too large"` |
-| JSON inválido o campos incorrectos | 1008 | `"Handshake invalido"` |
-| `client_key` inválida o cliente inactivo | 1008 | `"Clave de cliente invalida o inactiva"` |
-| Servicio de identidad no disponible | 1011 | `"Servicio de identidad no disponible"` |
+| JSON inválido o campos incorrectos | 1008 | `"Handshake invalido. Se esperaba JSON de configuración."` |
+| El primer mensaje es binario, no texto | 1008 | `"Handshake invalido. Se esperaba texto."` |
+| `client_key` inválida o cliente inactivo | 1008 | `"Clave de cliente invalida o inactiva."` |
 | Agente solicitado no está en la lista permitida para este cliente (`allowed_agents`) | 1008 | `"Agent '{name}' not permitted for this client."` |
 | Agente solicitado no existe en OpenClaw | 1008 | `"Agent '{name}' not available."` |
-| Orquestador no disponible tras health check | 1011 | `"Servicio crítico no disponible"` |
+| Fallo al abrir los servicios internos de la sesión | 1011 | `"Problema estableciendo microservicios internos del hub."` |
+| Orquestador no disponible tras health check | 1011 | `"Servicio crítico no disponible."` |
 
 > **El orquestador (OpenClaw) es el único servicio que puede cerrar la conexión en el handshake.** Transcriber y TTS ya **no** son críticos: si cualquiera de los dos no responde al arrancar la sesión, el gateway la abre igualmente en modo degradado y te lo notifica vía `status` (ver §8) — nunca cierra el WebSocket por esto. Antes de la versión que introdujo la reconexión automática (issue #46), un fallo de Transcriber en este punto sí cerraba la conexión con 1011; ya no es el caso.
 >
@@ -105,7 +106,7 @@ Si el handshake es válido y todos los servicios críticos responden, el gateway
 | `requested_capabilities.barge_in` | Si el barge-in está habilitado para este cliente |
 | `requested_capabilities.tts` | Si el cliente pidió salida de audio (`"audio"` en `output_mode`) |
 | `requested_capabilities.transcriber` | Si el cliente pidió modo audio (`input_mode == "audio"`) |
-| `live_capabilities.barge_in` | Si el barge-in está operativos (requiere transcriber activo) |
+| `live_capabilities.barge_in` | Si el barge-in está operativo (requiere barge-in habilitado, transcriber activo y un proveedor STT con parciales) |
 | `live_capabilities.tts` | Si TTS responde en este momento |
 | `live_capabilities.transcriber` | Si el transcriptor está conectado (`input_mode == "audio"`) |
 
@@ -221,7 +222,7 @@ Señala que el turno terminó. **Todo turno con `turn_start` recibe exactamente 
 
 ### `tool_call` — uso de herramientas del agente (opt-in)
 
-Solo se envía si el cliente tiene el flag `tool_calls_enabled` activado (por defecto `False`, gestionable vía Admin API — ver `CLAUDE.md`). Cuando el agente invoca una herramienta durante el turno, llegan dos mensajes intercalados con los `token`:
+Solo se envía si el cliente tiene el flag `tool_calls_enabled` activado (por defecto `False`, gestionable vía Admin API — ver el [README](../README.md#admin-requiere-x-admin-token)). Cuando el agente invoca una herramienta durante el turno, llegan dos mensajes intercalados con los `token`:
 
 ```json
 { "type": "tool_call", "turn_id": "t-1", "phase": "start", "name": "exec", "tool_call_id": "call-1", "args": {"command": "ls"}, "result": null, "is_error": null }
@@ -403,7 +404,7 @@ Por servicio:
 | `service` | Comportamiento e impacto en la sesión |
 |-----------|-----------------------------------------|
 | `orchestrator` | Reintenta en segundo plano con backoff mientras la sesión está activa. Si cae **antes o durante el handshake** (health check inicial), es el único caso fatal: el gateway cierra el WebSocket con 1011 y nunca llega a enviar `ready` (ver §1). Si cae **durante una sesión ya establecida**, el WebSocket **no se cierra** — solo falla el turno en curso (`error` con `code: "TURN_ERROR"`, `fatal: false`) y **todas** las sesiones conectadas reciben proactivamente `status: {orchestrator, unavailable→reconnecting→restored}`, incluso si están inactivas en ese momento (no hace falta intentar un turno para enterarte). |
-| `transcriber` | Un `TranscriberClient` por sesión de audio; reconecta en segundo plano. `unavailable` significa que no hay transcripción automática — puedes seguir enviando texto con `send`. Puede llegar desde el arranque mismo de la sesión (ver nota en §1) o en cualquier punto intermedio. Nunca cierra la sesión. |
+| `transcriber` | Una sesión STT por sesión de audio (con el proveedor `jota`, una conexión a jota-transcriber); reconecta en segundo plano. `unavailable` significa que no hay transcripción automática — puedes seguir enviando texto con `send`. Puede llegar desde el arranque mismo de la sesión (ver nota en §1) o en cualquier punto intermedio. Nunca cierra la sesión. |
 | `tts` | Sin conexión persistente — TTS se reconstruye en cada turno por diseño. `reconnecting`/`unavailable` aquí significa "el último intento falló y el siguiente turno con audio puede fallar también hasta que pase el backoff" — no hay un reintento en segundo plano independiente del propio turno. Los `token` de texto siguen llegando igual; solo falta el audio. |
 
 Los mensajes de estado también pueden incluir `code` y `message` con detalles adicionales:
@@ -428,7 +429,7 @@ Los errores llegan independientemente de `output_mode`:
 {
   "type": "error",
   "code": "TURN_ERROR",
-  "message": "Error al conectar con el orquestador",
+  "message": "orchestrator_unavailable",
   "fatal": false,
   "turn_id": "t-2"
 }
@@ -443,11 +444,11 @@ Los errores llegan independientemente de `output_mode`:
 
 ### Códigos de error
 
-> **Nota de precisión:** en la implementación actual, el único código que el gateway envía de verdad como mensaje `{"type":"error",...}` es `TURN_ERROR` (fallo dentro de un turno ya en marcha, `fatal: false`). Los fallos de handshake (`client_key` inválida, agente inexistente, orquestador no disponible al arrancar) **no** se comunican con un mensaje `error` previo — el gateway cierra directamente el WebSocket con el código y `reason` de la tabla de la §1. La tabla siguiente documenta la intención original del formato `code`/`fatal`; trátala como referencia de forma, no como lista exhaustiva de códigos que verás en producción hoy.
+> **Nota de precisión:** en la implementación actual, los únicos códigos que el gateway envía de verdad como mensaje `{"type":"error",...}` son `TURN_ERROR` (fallo dentro de un turno ya en marcha) e `INVALID_MESSAGE` (mensaje del cliente mal formado), ambos con `fatal: false`. Los fallos de handshake (`client_key` inválida, agente inexistente, orquestador no disponible al arrancar) **no** se comunican con un mensaje `error` previo — el gateway cierra directamente el WebSocket con el código y `reason` de la tabla de la §1. La tabla siguiente documenta la intención original del formato `code`/`fatal`; trátala como referencia de forma, no como lista exhaustiva de códigos que verás en producción hoy.
 
 | Código | Fatal | Cuándo ocurre |
 |--------|-------|---------------|
-| `TURN_ERROR` | false | Fallo en un turno concreto (orquestador caído/reconectando durante una sesión activa, **o** el turno se cuelga sin progreso — `message: "turn_timeout"`, ver §13); la sesión continúa — **el único código realmente emitido hoy** |
+| `TURN_ERROR` | false | Fallo en un turno concreto (orquestador caído/reconectando durante una sesión activa, **o** el turno se cuelga sin progreso — `message: "turn_timeout"`, ver §13); la sesión continúa |
 | `INVALID_MESSAGE` | false | Mensaje de texto del cliente que no es un objeto JSON (`42`, `[1]`, `"s"`, `true`, `null`) o `send` con `text` que no es cadena (#215). La sesión continúa; el mensaje se ignora. En modo texto, un prompt plano que parsea como JSON escalar (`"42"`, `"true"`, `"null"`) también recibe `INVALID_MESSAGE`: los prompts van en `{"type":"send","text":...}` |
 | `AUTH_FAILED` | true | Documentado para `client_key` inválida o inactiva — en la práctica se señaliza cerrando el WS con 1008, sin este mensaje previo |
 | `AGENT_NOT_FOUND` | true | Documentado para agente inexistente — en la práctica se señaliza cerrando el WS con 1008, sin este mensaje previo |
@@ -560,6 +561,7 @@ El cliente escribe; el gateway sintetiza audio con el texto de la respuesta.
 | Enviar texto | `{"type":"send","text":"..."}` | Envía texto al orquestador |
 | Cancelar turno | `{"type":"cancel"}` | Cancela turno activo sin iniciar uno nuevo |
 | Frame de audio | bytes PCM Float32 16 kHz sin header | `input_mode="audio"` |
+| Otro `type` (p. ej. `{"type":"keepalive"}`) | `{"type":"..."}` | Se ignora, pero cuenta como actividad para `IDLE_TIMEOUT_S` (§13) |
 
 ### Gateway → Cliente
 
@@ -577,6 +579,7 @@ El cliente escribe; el gateway sintetiza audio con el texto de la respuesta.
 | `interrupted` | `{"type":"interrupted","turn_id":"t-N"}` | Barge-in confirmado, turno anterior cancelado (`turn_id` puede faltar si el turno aún no había enviado su `turn_start`; ver §7) |
 | `status` | `{"type":"status","service":"...","state":"..."}` | Cambio de estado de un microservicio |
 | `error` | `{"type":"error","code":"...","message":"...","fatal":bool,"turn_id":"..."}` | Error (turno o sesión) |
+| `pipeline_event` | `{"type":"pipeline_event","stage":"...","elapsed_ms":N,"turn":N}` | Solo con `"status"` en `output_mode`: cada etapa del pipeline (p. ej. `llm_start`, `llm_first_token`, `tts_first_chunk`, `transcription_final`, `session_end`) con los ms desde la etapa anterior. Diagnóstico; no lleva texto |
 
 #### Frames binarios de audio
 
@@ -598,8 +601,10 @@ Llegan entrelazados con los mensajes JSON. Identifica audio por el magic byte `0
 | `TURN_TIMEOUT_S` | 120s, **idle-reset** | El orquestador deja de mandar nada durante un turno ya en marcha (cuelgue real, no duración total) | `{"type":"error","code":"TURN_ERROR","message":"turn_timeout","fatal":false,"turn_id":"..."}` (ver §9) — la sesión sigue viva, solo ese turno se aborta |
 | `TURN_QUEUE_MAX` | 1000 eventos por turno | El gateway no consigue procesar los eventos del orquestador al ritmo al que llegan para ese turno (consumidor atascado); es un fallo interno raro, no depende de tu lectura del socket | `{"type":"error","code":"TURN_ERROR","message":"turn_overflow","fatal":false,"turn_id":"..."}` — la sesión sigue viva, solo ese turno se aborta (los tokens pendientes se descartan); mismo tratamiento en el cliente que `turn_timeout` |
 | `IDLE_TIMEOUT_S` | 300s (5 min) | No mandas **ningún** mensaje (ni audio ni texto) durante ese tiempo | Cierre WS con código 1000, **sin ningún mensaje de error o aviso previo** |
+| `silence_timeout_s` / `max_silence_turns` (por cliente, defaults 2 s y 3) | ~6 s con los defaults | Mientras envías audio, el transcriptor no devuelve nada: cada sondeo de 2 s pasado `silence_timeout_s` cuenta un aviso (`status` `transcriber` `degraded`); con `max_silence_turns` avisos seguidos se cierra la sesión. No cuenta con un turno en curso ni sin audio entrante | Avisos `degraded` y después cierre WS con código 1000 |
+| `SESSION_REVALIDATE_INTERVAL_S` | 10s | Tu cliente se borra, se desactiva o se le rota la `client_key` con la sesión abierta | Cierre WS 1008 `"revoked"` en la siguiente revalidación; el turno en curso se cancela |
 | `SHUTDOWN_DRAIN_S` | 30s | Interno — límite que el gateway se da a sí mismo para esperar un turno en curso al cerrar una sesión (reinicio del servidor, u otro camino de cierre) | Ninguno directo; si el turno se corta, aun así recibe su `turn_end` (si el socket sigue abierto). Si tu cliente se desconecta, el turno se cancela de inmediato, sin esperar este tiempo |
-| `PUSH_TTS_DRAIN_TIMEOUT_S` | 30s | El audio TTS de un turno de push (iniciado por el agente) sigue sintetizándose 30s después del `end` del agente | El audio restante de ese push se corta, el TTS se cierra y el `turn_end` se envía igualmente — la sesión sigue viva. Con el mismo tope se acotan las escrituras de texto al TTS de push y su `end()`: si vencen, el resto de ese push llega solo como `token` de texto, sin más audio, y el `turn_end` se envía igualmente. Los turnos normales no tienen un tope equivalente: solo el audio de push |
+| `PUSH_TTS_DRAIN_TIMEOUT_S` | 30s | El audio TTS de un turno de push (iniciado por el agente) sigue sintetizándose 30s después del `end` del agente | El audio restante de ese push se corta, el TTS se cierra y el `turn_end` se envía igualmente — la sesión sigue viva. Con el mismo tope se acotan las escrituras de texto al TTS de push y su `end()`: si vencen, el resto de ese push llega solo como `token` de texto, sin más audio, y el `turn_end` se envía igualmente. En los turnos normales el mismo tope acota cada operación con el TTS, y la espera del audio cuenta como tiempo **sin progreso** (se reinicia con cada chunk): si vence, el turno sigue solo con texto y también recibe su `turn_end` |
 | `CLIENT_SEND_TIMEOUT_S` | 10s, **por envío** | El gateway no consigue escribirte un mensaje durante ese tiempo porque tu socket **drena por debajo del ritmo al que el gateway escribe**: o has dejado de leer, o lees muy por debajo del caudal de salida (el audio TTS PCM16 a 24 kHz son 48 KB/s). Es un umbral de caudal de drenado, del orden de unos pocos KB/s (teoría) a unas pocas decenas de KB/s (medidas de laboratorio en macOS), según kernel y tasa de producción, y **solo cuando hay más datos en vuelo que los buffers del sistema** (varios MB); con respuestas de tamaño normal y un cliente que lee, no se activa; un cliente que lee a un ritmo razonable no se corta | Cierre WS con código **1013** (`client too slow`) (mejor esfuerzo) si reanudas la lectura en los 2 s siguientes; si no, o si el close frame se pierde, la conexión se corta sin close frame (1006). Los mensajes pendientes se descartan; reconecta y abre una sesión nueva |
 
 ### Cuidado con el ping de la librería WebSocket de tu cliente

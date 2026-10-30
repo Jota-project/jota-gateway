@@ -22,7 +22,7 @@ Jota-Screen / jota-voice / App iPhone / Home Assistant
   └──────────────────────────────────────────┘
 ```
 
-No hay dependencia de `jota-db` — la identidad y configuración de clientes viven en una base de datos SQLite local (`data/gateway.db`).
+No hay dependencia de `jota-db` — la identidad y configuración de clientes viven en una base de datos SQLite local (`data/gateway.db`). Requiere OpenClaw **2026.6.11 o posterior** (detalles del protocolo en [`docs/openclaw-protocol.md`](docs/openclaw-protocol.md)).
 
 ---
 
@@ -72,8 +72,12 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la guía completa 
 | `/admin/clients/{id}` | PATCH | Actualizar cliente (campos parciales) |
 | `/admin/clients/{id}` | DELETE | Borrar cliente |
 | `/admin/clients/{id}/rotate-key` | POST | Rotar `client_key` |
+| `/admin/state` | GET | Instantánea viva: uptime, estado de servicios, contadores y una fila por sesión |
+| `/admin/state/stream` | GET | La misma instantánea por SSE cada segundo; cada stream termina solo a los 25 s, el cliente debe reconectar (`EventSource` lo hace solo) |
 
-Los tres endpoints `*/status` devuelven la misma forma: `{"name", "state", "connected_at", "reconnect_attempts", "last_error"}`.
+Los tres endpoints `*/status` comparten la forma `{"name", "state", "connected_at", "reconnect_attempts", "last_error"}`; los de transcriber y TTS añaden `provider` y, con ElevenLabs, `counters`.
+
+Los campos de un cliente (`POST`/`PATCH /admin/clients`) están en `src/models/admin_schemas.py` y sus defaults en `src/db/models.py`. Desde la terminal: `python3 src/cli.py add-client --name … [--key …] [--type ha|esp32|web|app] [--agent …]`, `list-clients`, `activate-client`, `deactivate-client`, `delete-client <client_key>`.
 
 Auth: header `X-Admin-Token`. Sin header → 422. Token incorrecto → 401. `ADMIN_TOKEN` vacío → 503.
 
@@ -140,7 +144,7 @@ docker compose up
 
 ## Configuración
 
-Variables en `.env` (formato `host:port` sin protocolo para todos los URLs):
+Variables en `.env` (formato `host:port` sin protocolo para todos los URLs). Esta tabla es un resumen: la referencia completa, con todos los plazos y sus defaults, es [`.env.sample`](.env.sample).
 
 | Variable | Default | Descripción |
 |----------|---------|-------------|
@@ -178,14 +182,14 @@ El STT y el TTS pasan por una capa de proveedores (`src/services/speech/`). Los 
 
 `ELEVENLABS_BASE_URL` y `ELEVENLABS_TTS_MODEL` están en `.env.sample`; el resto de ajustes de ElevenLabs son constantes del adaptador (`src/services/speech/elevenlabs/`). El proveedor se elige con `STT_PROVIDER`/`TTS_PROVIDER` al arrancar; cambiarlo exige reiniciar. Con el plan Creator, ElevenLabs conserva el audio y las transcripciones (la retención cero es solo enterprise).
 
-`silence_timeout_s` y `max_silence_turns` (umbral del watchdog de silencio) son campos de configuración **por cliente** en la base de datos, no variables de entorno globales — ver `ClientRecord` en `CLAUDE.md`.
+`silence_timeout_s` y `max_silence_turns` (umbral del watchdog de silencio) son campos de configuración **por cliente** en la base de datos, no variables de entorno globales — ver `ClientRecord` en `src/db/models.py`.
 
 ---
 
 ## Desarrollo y tests
 
 ```bash
-# Tests
+# Tests (pytest.ini excluye por defecto los marcadores e2e_real y live)
 PYTHONPATH=. pytest
 
 # Test específico
@@ -245,7 +249,7 @@ real.
 
 ## Arquitectura interna
 
-El gateway instancia un `JotaBridge` por cada sesión WebSocket. Los tres servicios downstream (OpenClaw, Transcriber, TTS) tienen reconexión automática con backoff exponencial, unificada en `services/reconnection.py` (estados compartidos CONNECTED / RECONNECTING / DEGRADED). `OpenClawClient` y `ReconnectingTTSClient` son singletons de proceso; `ReconnectingTranscriberClient` es uno por sesión de audio.
+El gateway instancia un `JotaBridge` por cada sesión WebSocket. Los tres servicios downstream (OpenClaw, Transcriber, TTS) tienen reconexión automática con backoff exponencial, unificada en `services/reconnection.py` (estados compartidos CONNECTED / RECONNECTING / DEGRADED). OpenClaw y los proveedores de voz son singletons de proceso; con el proveedor `jota`, cada sesión de audio abre su propio `ReconnectingTranscriberClient` y cada turno su propio `TTSClient`.
 
 ```
 src/
@@ -257,7 +261,9 @@ src/
 │   └── deps.py              get_admin_auth — dependencia de auth para admin
 ├── core/
 │   ├── config.py            Settings (pydantic-settings, .env)
-│   ├── cache.py             make_cache() — TTLCache + threading.Lock (cross-thread: event loop + Starlette threadpool)
+│   ├── agent_policy.py      resolve_agent() — cascada y política de agentes
+│   ├── network.py           resolve_client_ip() / origen de confianza de /v1
+│   ├── startup_checks.py    lock de proceso único y comprobaciones de arranque
 │   └── session_key.py       make_session_key() — formato canónico de session key
 ├── db/
 │   ├── models.py            ClientRecord (SQLModel) — identidad y config por cliente
@@ -265,7 +271,8 @@ src/
 ├── cli.py                   CLI — add-client / list-clients / (de)activate-client / delete-client
 └── services/
     ├── bridge.py            JotaBridge — coordinador de sesión WS
-    ├── db_client.py         DbClient — lee ClientRecord de SQLite local (singleton, caché 10s)
+    ├── db_client.py         DbClient — lee ClientRecord de SQLite local (singleton, sin caché)
+    ├── outbound.py          QueuedSender — salida serializada hacia cada cliente
     ├── reconnection.py      ConnectionState / ServiceStatus / to_wire_state() — compartido por los 3 wrappers
     ├── transcriber_client.py       WebSocket → jota-transcriber, protocolo puro (sin reconexión)
     ├── transcriber_reconnecting.py ReconnectingTranscriberClient — uno por sesión de audio, backoff en background
@@ -274,6 +281,7 @@ src/
     ├── orchestration.py     call_orchestrator() — helper compartido WS+HTTP
     ├── pipeline_tracker.py  PipelineTracker — latencias por turno
     ├── session_registry.py  SessionRegistry — observabilidad de sesiones
+    ├── speech/              Proveedores STT/TTS: ports.py, factory.py, jota.py, elevenlabs/
     └── openclaw/
         ├── client.py        OpenClawClient — WebSocket v4, multiplexado
         ├── reconnecting.py  ReconnectingOpenClawClient — backoff + DEGRADED
