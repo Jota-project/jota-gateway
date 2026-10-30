@@ -9,9 +9,8 @@ the real running instance — not what any general OpenClaw documentation says i
 event shape while working on jota-gateway** — dated, with the server version if known. This is
 separate from the general-purpose `openclaw` skill (`~/.claude/skills/openclaw/`), which
 explains what OpenClaw is and how to use it across any project; this file tracks *our specific,
-current, hyper-detailed understanding* of its API as it affects this codebase. See also
-`CLAUDE.md`'s "OpenClaw package" section for how jota-gateway's code responds to what's
-documented here.
+current, hyper-detailed understanding* of its API as it affects this codebase. The code that
+responds to what's documented here lives in `src/services/openclaw/`.
 
 **Minimum supported OpenClaw server: 2026.6.11** (since 2026-10-28, issue #262). The gateway no
 longer understands the older protocol shapes described below as "gone".
@@ -291,7 +290,7 @@ turn-start events client-side — the tool-invoking turn, then at least one more
 the same incoming user message. This appears to be the agent treating each step of its own
 multi-step reasoning/tool-use as a fresh "turn" from the gateway's perspective (an `agent`
 event with `phase: "start"`/`"end"`, the same mechanism used for genuinely unsolicited
-agent-initiated pushes — see `CLAUDE.md`'s "Agent-initiated push" bullet), firing **while the
+agent-initiated pushes — see `docs/client-protocol.md` §10), firing **while the
 original `chat.send`-triggered turn is still active**, not only as a fully separate later
 event.
 
@@ -399,7 +398,8 @@ Consequences observable on the wire:
   `sk.rsplit(":", 1)[-1]` (safe for agent names or keys containing extra colons).
 - The REST trusted-origin legacy path (no Bearer) has no client row, so it uses the fixed id `ha`.
 
-How the `agent` segment is resolved and validated lives in `CLAUDE.md` ("Session key derivation").
+How the `agent` segment is resolved and validated lives in `src/core/agent_policy.py`
+(summarised for clients in `docs/client-protocol.md` §1, "Selección de agente").
 
 ---
 

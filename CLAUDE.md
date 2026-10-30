@@ -1,521 +1,89 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code in this repository. Reference docs live elsewhere; link to them, don't copy them here:
+
+- [`README.md`](README.md) — endpoints (`/ws/stream`, `/admin/*`, `/v1/*`, `/healthz`, `/ready`), `/v1` auth, configuration summary.
+- [`docs/client-protocol.md`](docs/client-protocol.md) — the WebSocket protocol clients implement (handshake, `ready`, messages, close codes, error codes, timeouts).
+- [`docs/openclaw-protocol.md`](docs/openclaw-protocol.md) — OpenClaw wire protocol as observed (minimum server 2026.6.11).
+- [`.env.sample`](.env.sample) — every `Settings` field with its default (`tests/unit/test_env_sample.py` keeps them in sync with `src/core/config.py`).
+
+Roadmap, specs, plans, decisions and audits live **only in Obsidian** (`Producto Jota/jota-gateway/`, note `JGW Roadmap`); issues, milestones and releases live in GitHub.
 
 ## Commands
 
 ```bash
-# Run the server in development
+# Dev server
 uvicorn src.main:app --host 0.0.0.0 --port 8004 --reload
 
-# Run all tests
-PYTHONPATH=. pytest
-
-# Run a specific test file
+# Use the repo venv (.venv, `pip install -e .[dev]`), never the system python
+PYTHONPATH=. pytest                                   # pytest.ini adds -m "not e2e_real and not live"
 PYTHONPATH=. pytest tests/integration/test_admin_clients.py
-
-# Run a specific test by name
 PYTHONPATH=. pytest -k "test_create_client_minimal"
-
-# Lint
 ruff check src/ tests/
+mypy                                                  # [tool.mypy] files = ["src"]
 
-# Docker
 docker compose up
 
-# CLI — manage clients from the terminal
-python3 src/cli.py add-client --name "ESP32 salón" [--key <existing-key>] [--type ha] [--agent assistant]
+# Clients from the terminal (src/cli.py; runs migrations first)
+python3 src/cli.py add-client --name "Jota-Screen" [--key <existing-key>] [--type ha|esp32|web|app] [--agent main]
 python3 src/cli.py list-clients
-python3 src/cli.py deactivate-client <client_key>
-python3 src/cli.py activate-client <client_key>
-python3 src/cli.py delete-client <client_key>
+python3 src/cli.py deactivate-client|activate-client|delete-client <client_key>
 ```
 
-## Architecture
-
-> 📋 **Estado del proyecto:** el estado (issues, milestones, labels, releases) vive en **GitHub**; la narrativa (roadmap, fases, decisiones, auditorías, specs y planes) vive **solo en Obsidian** (`Producto Jota/jota-gateway/`, nota `JGW Roadmap`). El repo ya no tiene `docs/ROADMAP.md` (eliminado el 2026-10-11, archivado en el vault); ver [`docs/superpowers/README.md`](docs/superpowers/README.md).
-
-jota-gateway is a **BFF (Backend For Frontend)** — the single entry point for all clients (ESP32, web, app, Home Assistant). It has four surfaces:
-
-- **WebSocket** `/ws/stream` — full voice+text session managed by `JotaBridge`
-- **Admin REST** `/admin/*` — client CRUD + observability (sessions, orchestrators); requires `X-Admin-Token`
-- **OpenAI-compatible REST** `/v1/*` — `GET /v1/models` (the `jota-gateway` alias plus the OpenClaw roster agents, filtered by the caller's `allowed_agents`, #234; the legacy trusted-origin caller without Bearer only gets the alias, since chat ignores `model` for it) and `POST /v1/chat/completions` for Home Assistant integration; delegates to the singleton `OpenClawClient`. Requests from a trusted origin (a direct peer in `TRUSTED_NETWORKS`, a loopback peer if `TRUST_LOOPBACK`, or a client vouched for by a `TRUSTED_PROXIES` proxy via a valid `X-Real-IP`) need no auth — **but with the default `TRUSTED_PROXIES=127.0.0.1,::1`, a direct loopback client with no `X-Real-IP` is NOT exempt since #216 and must send a Bearer** (empty `TRUSTED_PROXIES=` to restore the old behaviour when there is no proxy); anyone else must send `Authorization: Bearer <client_key>`, validated against the same `ClientRecord` table the WS handshake uses (`src/core/network.py`, `resolve_ha_caller` in `src/api/openai_routes.py`) — see issue #52. **Fail-closed behind a proxy (G-31, #216):** `resolve_client_ip()` returns a non-IP sentinel (`NO_REAL_IP`) when the peer is in `TRUSTED_PROXIES` but `X-Real-IP` is missing or not a valid IP, so a same-host reverse proxy that doesn't set it no longer turns every Internet client into "loopback"; consequently a *direct* loopback caller without a proxy also needs a Bearer unless `TRUSTED_PROXIES` is emptied. `X-Forwarded-For` never grants trust: the image's `CMD` runs uvicorn with `--no-proxy-headers` (otherwise uvicorn would rewrite the peer from a forwarded XFF) and `--ws-max-size 1048576`; listen host via `GATEWAY_HOST`. Tests: `tests/integration/test_v1_proxy_uvicorn.py` (real uvicorn). Errors during an SSE turn (any `Exception`, not only `RuntimeError`, #217) end as an `error` event + a chunk with `finish_reason:"error"` + `data: [DONE]`, never as a truncated `stop`; non-stream gives `502` (non-`RuntimeError` failures carry a generic `internal_error` message, no internals).
-- **Health** `/healthz`, `/ready` — liveness and readiness probes
-
-There is no longer any dependency on `jota-db`. Client identity and configuration live in the local SQLite database (`data/gateway.db`).
-
-### Environment variables
-
-```
-DATABASE_URL=sqlite:///data/gateway.db   # path to SQLite file
-ADMIN_TOKEN=<secret>                     # required for /admin/* routes
-
-TRUST_LOOPBACK=true                      # 127.0.0.1/::1 exempt from /v1/* auth — except when the peer is in TRUSTED_PROXIES and sends no valid X-Real-IP (#216). WARNING at startup if TRUST_LOOPBACK and TRUSTED_PROXIES is empty
-TRUSTED_NETWORKS=                        # CSV of CIDRs exempt from /v1/* auth, e.g. 192.168.1.0/24. Empty = fail-closed.
-TRUSTED_PROXIES=127.0.0.1,::1            # CSV of IPs/CIDRs allowed to set X-Real-IP for /v1/*. A proxy peer WITHOUT a valid X-Real-IP is NOT a trusted origin (fail-closed, G-31 #216)
-GATEWAY_HOST=0.0.0.0                     # Docker image only (Dockerfile CMD), not a Settings field; 127.0.0.1 behind a same-host proxy
-
-TRANSCRIBER_WS_URL=localhost:9000
-TRANSCRIBER_TOKEN=                       # service token = jota-transcriber's AUTH_TOKEN (empty = transcriber without auth); the client_key is never forwarded (#218)
-STT_PROVIDER=jota                        # jota | elevenlabs (elevenlabs: validated but not implemented until phases 3-4); startup value, PUT /admin/speech swaps it live (not persisted)
-TTS_PROVIDER=jota                        # idem
-# ELEVENLABS_* / TTS_VOICE_MAP / STT_AUDIO_GATE / STT_GATE_RMS_DBFS: see "Speech providers" below and .env.sample
-
-TTS_WS_URL=localhost:8005
-TTS_TOKEN=gateway
-TTS_AUTH_TIMEOUT_S=10.0
-TRANSCRIBER_READY_TIMEOUT_S=10.0
-
-OPENCLAW_HOST=127.0.0.1
-OPENCLAW_PORT=18789
-OPENCLAW_TOKEN=<secret>
-
-ORCHESTRATOR_RECONNECT_INITIAL_BACKOFF=1.0
-ORCHESTRATOR_RECONNECT_MAX_BACKOFF=60.0
-ORCHESTRATOR_RECONNECT_MAX_DURATION=300.0
-
-TRANSCRIBER_RECONNECT_INITIAL_BACKOFF=1.0
-TRANSCRIBER_RECONNECT_MAX_BACKOFF=60.0
-TRANSCRIBER_RECONNECT_MAX_DURATION=300.0
-TTS_RECONNECT_INITIAL_BACKOFF=1.0
-TTS_RECONNECT_MAX_BACKOFF=60.0
-
-HANDSHAKE_TIMEOUT_S=5.0                  # was 10.0 until #216 — slow clients (ESP32) may need to raise it
-HANDSHAKE_MAX_BYTES=4096                 # max CHARS (not bytes) of the first WS message; --ws-max-size 1 MiB exists only in the image CMD (plain `uvicorn` = 16 MiB), checked before parsing/auth (#216); else 1008 "Handshake too large"
-TURN_TIMEOUT_S=120.0
-IDLE_TIMEOUT_S=300.0
-SHUTDOWN_DRAIN_S=30.0
-PUSH_TTS_DRAIN_TIMEOUT_S=30.0                # cap on each TTS wait (per op; audio drain of a normal turn = time without progress), #199, #214
-CLIENT_SEND_TIMEOUT_S=10.0
-TURN_QUEUE_MAX=1000                      # events per OpenClaw turn queue; overflow aborts the turn (#130 S3b)
-SINGLE_PROCESS_LOCK=true                 # flock on gateway.lock next to the DB: one process per DB (#218)
-SESSION_REVALIDATE_INTERVAL_S=10.0       # live sessions re-checked against the DB; revoked client → 1008 "revoked" (G-06)
-SESSION_CACHE_TTL_S=10.0                 # db_client session cache TTL (was 60)
-LOG_FORMAT=text                          # text | json (one JSON line per record, `extra` as top-level fields); the Docker image sets ENV LOG_FORMAT=json (#219)
-```
-
-All service addresses are `host:port` **without protocol**. Each client injects the protocol itself (`http://`, `ws://`).
-
-### URL convention in settings
-
-All `Settings` fields for external services are `host:port` **without protocol**. Each service client injects the protocol itself at construction time (`http://`, `ws://`). Never store full URLs in settings.
-
----
-
-## Local database (`src/db/`)
-
-### `src/db/models.py` — `ClientRecord`
-
-SQLModel table (`__tablename__ = "clients"`) with the following columns:
-
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `id` | `str` (PK) | `uuid4()` | |
-| `name` | `str` | — | Human label |
-| `client_key` | `str` (unique, indexed) | — | Auth token the client sends in the handshake |
-| `is_active` | `bool` | `True` | Deactivated clients are rejected at handshake |
-| `client_type` | `str?` | `None` | Label, one of `ha`/`esp32`/`web`/`app` on input (see "Input validation" below) — not used in routing logic |
-| `default_agent` | `str?` | `None` | Override OpenClaw agent for this client |
-| `allowed_agents` | `str?` | `None` | JSON list of permitted agent names |
-| `created_at` | `datetime` | `now(UTC)` | |
-| `stt_language` | `str` | `"es"` | Passed to `TranscriberClient.connect()` |
-| `stt_vad_thold` | `float` | `0.0` | VAD threshold passed to transcriber |
-| `tts_voice` | `str` | `"af_heart"` | Passed to `TTSClient.connect()` |
-| `tts_speed` | `float` | `1.0` | Passed to `TTSClient.connect()` |
-| `barge_in_enabled` | `bool` | `True` | Whether partial transcriptions can cancel active turn |
-| `barge_in_min_chars` | `int` | `5` | Minimum chars in partial before barge-in fires |
-| `output_mode` | `str?` | `None` | JSON list of `audio`/`text`/`status` — stored default, informational only (the handshake's `output_mode` is what actually drives a session) |
-| `silence_timeout_s` | `float` | `2.0` | Seconds of no transcription before a tick counts as a silence strike (see "Silence watchdog") |
-| `max_silence_turns` | `int` | `3` | Consecutive silence **poll ticks** (not `silence_timeout_s` windows) before session is closed |
-| `push_enabled` | `bool` | `True` | Whether agent-initiated push turns are accepted |
-| `tool_calls_enabled` | `bool` | `False` | Whether `tool_call` WS messages are sent for this client (opt-in) |
-
-### `src/db/database.py`
-
-```python
-get_engine()            # lazy-init SQLAlchemy engine from DATABASE_URL
-run_migrations()        # called once at app startup (lifespan) — applies Alembic migrations
-get_db_session()        # FastAPI dependency — yields a SQLModel Session
-```
-
-The module-level `_engine` variable is intentionally exposed for monkeypatching in tests.
-
-### `src/core/exceptions.py`
-
-```python
-class ClientNotFound(Exception): ...   # client_key not in DB
-class ClientInactive(Exception): ...   # client exists but is_active=False
-```
-
-Both are raised by `db_client.get_session()` and caught in `routes.py` to close the WebSocket with code 1008.
-
-### `src/core/transport.py` (issue #130 S2)
-
-`TransportCaptureMiddleware` (ASGI puro, registrado en `main.py` tras `RequestIdMiddleware`) guarda en `scope["state"]["transport"]` el transporte de uvicorn de cada WebSocket, tomándolo de `send.__self__.transport`. `abort_client_transport(websocket) -> bool` lo aborta; `drop_slow_client(websocket, *, record=None)` es la secuencia completa (registro, `close(1013)` acotado por `SLOW_CLOSE_GRACE_S`, abort) y nunca lanza `Exception`. Sin transporte capturado (`TestClient`, otro servidor ASGI, `--log-level trace`) el valor es `None` y no se puede abortar. **Limitación conocida:** en uvicorn real sin transporte el `close(1013)` se cancela tras `SLOW_CLOSE_GRACE_S` y la sesión puede seguir abierta con un sender muerto hasta que el cliente se vaya o venza `IDLE_TIMEOUT_S`; solo bajo `TestClient` el cliente lento acaba cerrado con 1013.
-
----
-
-## Client management
-
-### Admin REST API (`/admin/clients/*`)
-
-All routes require `X-Admin-Token: <ADMIN_TOKEN>`.
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/admin/clients` | List all clients |
-| `POST` | `/admin/clients` | Create client (returns generated or provided `client_key`) |
-| `GET` | `/admin/clients/{id}` | Get client by UUID |
-| `PATCH` | `/admin/clients/{id}` | Partial update (exclude_unset semantics) |
-| `DELETE` | `/admin/clients/{id}` | Delete client |
-| `POST` | `/admin/clients/{id}/rotate-key` | Regenerate `client_key` |
-
-`POST /admin/clients` body: all fields from `ClientCreate` — `name` is required, `client_key` is optional (generated if omitted), everything else defaults to the table defaults above.
-
-After any mutation, `db_client.invalidate(client_key)` is called to evict the session cache (TTL `SESSION_CACHE_TTL_S`, 10s; was 60s before G-06). `tests/integration/test_admin_invalidate_invariant.py` pins both that PATCH/DELETE/rotate-key invalidate and that they do it *after* the commit (G-07).
-
-Schemas: `src/models/admin_schemas.py` — `ClientCreate`, `ClientUpdate`, `ClientResponse`.
-
-**Input validation (issue #122, decision 2026-10-08):** `client_type` is validated on input as `Literal["ha","esp32","web","app"]` (`ClientType` in `admin_schemas.py`) and `output_mode` as `list[OutputMode]` (`OutputMode = Literal["audio","text","status"]` in `src/models/schemas.py`, the same type the WS handshake uses). Anything else → `422` on `POST`/`PATCH /admin/clients`, and the CLI's `--type` uses `choices=`. **Only the input side is validated**: `ClientResponse` keeps `client_type: str | None` and `output_mode: list[str] | None`, so legacy rows written before this check (any free-text `client_type`) still read fine — no migration, no data rewrite. Adding a new client type means extending `ClientType`. **Input bounds (#217):** `name` non-empty (stripped), `stt_language`/`tts_voice` non-empty, `tts_speed`/`silence_timeout_s` `> 0`, `stt_vad_thold` in `[0,1]`, `barge_in_min_chars`/`max_silence_turns` `>= 1`, with upper caps; `NaN`/`inf` rejected (`allow_inf_nan=False`); an explicit `null` in `PATCH` for a NOT NULL column → `422` (only `client_type`, `default_agent`, `allowed_agents`, `output_mode` accept `null`). A custom `RequestValidationError` handler in `main.py` keeps a `NaN` input from turning the 422 into a 500. A duplicate `client_key` on `POST` → `409` (the `IntegrityError` is caught, rolled back and **not logged or chained**, since its message carries the full key). **Agents (#233):** `default_agent` and each `allowed_agents` item must be non-empty after stripping (else `422`), and the *resulting row state* must be consistent: `default_agent` not in an explicit `allowed_agents` → `422` (`allowed_agents: null` = unrestricted, `[]` = all denied per #105, so `[]` + any `default_agent` is also `422`). On `PATCH` the check combines the sent fields with the stored ones and only runs when the patch touches `default_agent` or `allowed_agents`, so legacy inconsistent rows still read and can be edited by other fields. `POST /admin/clients/{id}/rotate-key` retries up to 3 times on a `client_key` collision, then `409` (never 500, key never logged). `client_key: ""` still means "generate one", and short keys are accepted. The field was kept rather than dropped: dropping it would need an Alembic drop-column migration and break any caller still sending it.
-
-### CLI (`src/cli.py`)
-
-```bash
-python3 src/cli.py add-client --name "ESP32" [--key <key>] [--type esp32] [--agent main]
-python3 src/cli.py list-clients
-python3 src/cli.py deactivate-client <client_key>
-python3 src/cli.py activate-client <client_key>
-python3 src/cli.py delete-client <client_key>
-```
-
-**Key hygiene in the CLI (G-27, #216):** `add-client` prints the full generated key once (the only moment the operator can capture it). `list-clients` shows ID, NAME, ACTIVE and the key's `fp` (`fingerprint_key()`, same as log lines) — no key characters; and the "client not found" error echoes only `fp=`, never the key. The WS handshake validation ERROR logs field + error type only (pydantic's `input_value=` would carry the key).
-
-`--key` lets you import an existing token verbatim (e.g. migrating from jota-db). Omit it to generate a random key.
-
-The CLI calls `run_migrations()` when run as a script, so it is safe to run against a fresh `data/gateway.db`.
-
-Every mutating command (`add-client`, `activate-client`, `deactivate-client`, `delete-client`) calls `db_client.invalidate(key)` after its commit, same as `admin_routes.py` (issue #123). The CLI is a separate process, though, so that only clears *its own* in-process cache — it does **not** evict a running gateway's `_session_cache` (10s TTL; a live session of a client changed from the CLI is revalidated and closed within TTL + `SESSION_REVALIDATE_INTERVAL_S`). Run the CLI against a stopped gateway, or use the admin REST API for live changes.
-
----
-
-## DbClient (`src/services/db_client.py`)
-
-Replaces the old HTTP client. Reads `ClientRecord` from SQLite and returns `(Client, ClientConfig)`.
-
-```python
-await db_client.get_session(client_key) -> (Client, ClientConfig)
-db_client.invalidate(client_key)        # evict from the session cache (SESSION_CACHE_TTL_S, 10s)
-```
-
-`ClientConfig` fields mapped from `ClientRecord`:
-`stt_language`, `stt_vad_thold`, `tts_voice`, `tts_speed`, `barge_in_enabled`, `barge_in_min_chars`, `silence_timeout_s`, `max_silence_turns`, `push_enabled`.
-
-The singleton `db_client = DbClient()` is imported from this module everywhere. An optional `engine` constructor parameter allows injecting a test engine.
-
-`invalidate()` must be called **after** the triggering `session.commit()`, never before — calling it first reopens the exact cache-repopulation race the epoch guard exists to close (see the Cache pattern section).
-
----
-
-## WebSocket session lifecycle (`routes.py` → `bridge.py`)
-
-1. Client connects and sends a **Handshake** JSON. The initial `websocket.receive_text()` wait
-   for it is bounded by `HANDSHAKE_TIMEOUT_S` (issue #115, default 5 s since #216) — a client that connects and never
-   sends anything gets closed with code 1008 instead of holding the connection open forever.
-   The message is also capped by `HANDSHAKE_MAX_BYTES` (4096 chars) *before* `json.loads`/pydantic/auth (1008 `"Handshake too large"`), on top of the image's uvicorn `--ws-max-size 1048576` (1009 for anything bigger).
-   ```json
-   {
-     "client_key": "...",
-     "input_mode": "audio" | "text",
-     "output_mode": ["audio", "text", "status"],
-     "agent": "assistant"   // optional — defaults to gateway_info.default_agent_id
-   }
-   ```
-2. Gateway resolves identity via `db_client.get_session(client_key)` → `(Client, ClientConfig)`.
-   - `ClientNotFound` or `ClientInactive` → close 1008.
-3. If `agent` is specified, `routes.py` validates it against `openclaw.gateway_info.has_agent(agent)` — unknown agents close with code 1008.
-4. `routes.py` constructs a `QueuedSender(websocket)` for this session's outbound path (issue #130 S1), then passes it to `PipelineTracker` and `JotaBridge` (order: sender → tracker → bridge). `JotaBridge` is instantiated with client, config, WebSocket, the singleton `ReconnectingOpenClawClient` (from `app.state.openclaw`), the singleton `ReconnectingTTSClient` (from `app.state.tts`), `app.state.client_registry`, and `default_agent`.
-5. `bridge.connect_internal_services()` — starts a `ReconnectingTranscriberClient` only if `input_mode == "audio"`; registers the bridge in `ClientRegistry`. `ReconnectingTranscriberClient.connect()` never raises — a failed initial connect just leaves it in `RECONNECTING` state for `health_check()`/the background `run()` loop to handle, it no longer aborts session setup.
-6. `bridge.health_check()` — pings each microservice; **only the orchestrator is fatal** (its failure returns `False`, closing the WebSocket with code 1011 before `ready` is ever sent). Transcriber and TTS failures are both non-fatal — the session opens normally and the client is notified via `status` messages (see "Service reconnection" below). `routes.py` calls `sender.flush()` before closing with 1011 to deliver any queued `status` messages. A `ClientGone` escaping `health_check(propagate=True)` (client left during startup) is a normal disconnect: INFO + clean return, the `finally` still runs `close_all`/`sender.aclose` (#205). A non-text first frame (binary) closes 1008 `"Handshake invalido. Se esperaba texto."` (#232).
-7. `bridge.run()` — launches concurrent tasks: `_client_input_loop` + idle watchdog + `transcriber.run()` (listen + background reconnect) + silence watchdog.
-
-### JotaBridge data flow
-
-- **Audio bytes from client** → `TranscriberClient.send_audio()` → transcription partials/finals via `_on_transcription` callback
-- **`{"type":"end"}`** → `transcriber.send_end()` (signals end of utterance)
-- **Final-transcription dedup** (issue #128): an identical `is_final` text arriving within `_FINAL_DEDUP_WINDOW_S` (1s, `bridge.py`) of the last *delivered* final is dropped — a defensive leftover from the transcriber's old double-emission bug (jota-transcriber#27, fixed upstream in #28). The same words said again after the window are delivered normally.
-- **`{"type":"send","text":"..."}`** → `_call_orchestrator(text)` — creates a fresh `TTSClient` per turn, runs `pipe_tokens` + `pipe_audio` concurrently (`pipe_audio` as a task); **every TTS wait is bounded by `PUSH_TTS_DRAIN_TIMEOUT_S`** (#214 G-02, same mechanism as push #199): `send_text_chunk`, `end` and `close` per operation, and the audio wait after the tokens finish by **inactivity** (the window restarts with every audio chunk, so long healthy replies are not truncated; it only expires after `PUSH_TTS_DRAIN_TIMEOUT_S` with no chunk). On expiry or failure the TTS is dropped once (one WARNING), the audio task is cancelled, the turn continues text-only and the client still gets `turn_end`
-- **Turn lifecycle (M6c, #215/#201):** `_call_orchestrator` sends exactly **one `turn_end`** in a `finally` once `turn_start` was enqueued — on normal end, `RuntimeError`, any other `Exception` (`TURN_ERROR` with a generic `message:"internal_error"`, type name only in logs), cancel, barge-in, a `send` that overrides the turn, a final transcription, or close. `_run_turn` holds the body. `_cancel_turn()`/`_cancel_active_turn()` capture the target on entry, are serialized by `_turn_lock` and only clear `_active_turn` if it is still that task (G-08/#201); new turns start via `_start_turn()` under the same lock. `close_all()` sets `_closing` on entry (never reset; `_closed` still only flips at the end so #101 retries work) and `_start_turn` refuses while closing (G-09). `turn_seq` is masked `& 0xFFFF` in both the audio header and `turn_start` (`turn_id` keeps the full counter). A gone client (`_client_gone`: disconnect seen by the input loop, or `ClientGone` from the sender) aborts its turn at the next token and `close_all()` cancels instead of draining `SHUTDOWN_DRAIN_S` (G-18). Non-dict JSON or a non-string `send.text` gets `error` `INVALID_MESSAGE` (`fatal:false`) and the loop continues (G-20).
-- **Barge-in**: partial transcriptions with `len >= config.barge_in_min_chars` cancel the active orchestrator turn via `_cancel_turn()`, which cancels the Python task and causes `OpenClawClient` to send `chat.abort` to OpenClaw. The client receives the turn's `turn_end` and then `{"type":"interrupted","turn_id":...}`. Controlled per-client by `barge_in_enabled` and `barge_in_min_chars`.
-- **Agent-initiated push**: OpenClaw sends `agent` events with `phase: "start"/"end"` and interleaved `chat` events. `FrameDispatcher` routes these to the bridge via `ClientRegistry`. `on_push_turn_start` checks `config.push_enabled` — if `False`, the push is silently dropped. Otherwise creates a TTS client, pipes audio, and sends `turn_start`/`turn_end` to the client. **Multiple agent start/end pairs collapse into one client-facing turn** (issue #84): OpenClaw emits N pairs per LLM response when the agent does tool use or multi-step reasoning, and the gateway used to forward them 1:1, flooding the client. `JotaBridge` now tracks `_push_turn_open` — the first `agent` start opens the logical turn; subsequent `agent` starts received while a turn is already open are dropped silently, and `agent` ends received with no open turn are also dropped. The client always sees exactly one `turn_start`/`turn_end` pair per push reply. **Coordination with normal turns** (issue #112): `_handle_agent_lifecycle` in `FrameDispatcher` (`src/services/openclaw/dispatcher.py`) checks `TurnRegistry.get_queue_by_session(sk)` before calling `on_push_turn_start` — if a normal `chat.send` turn's queue is already registered for that `session_key`, the `agent` start event is dropped silently instead of opening a second, duplicate client-facing turn. This mirrors the same check `_handle_chat` and `_handle_session_tool` already perform. `agent` end events are always forwarded to `on_push_turn_end` unconditionally, never gated on `TurnRegistry` state — `on_push_turn_end` already no-ops safely when no push turn is open (issue #84), and suppressing `end` too would orphan a push turn that opened before the normal turn started. **Push worker (issue #130 S3a):** `FrameDispatcher` no espera los handlers de push; llama a `bridge.enqueue_push(kind, arg)` (síncrono) y un worker FIFO único por bridge (`push_worker`, perezoso, supervisado vía `_spawn`) ejecuta `on_push_turn_start`/`deliver_push`/`deliver_push_tool_call`/`on_push_turn_end`. Antes se esperaban inline dentro de `_listen`: `on_push_turn_end` esperaba la síntesis TTS completa y congelaba la lectura de frames de *todas* las sesiones multiplexadas. La decisión de #112 sigue en el dispatcher (síncrona); `end` se reenvía siempre. La espera del audio en `on_push_turn_end` está acotada por `PUSH_TTS_DRAIN_TIMEOUT_S` (al vencer: cancela el audio, cierra el TTS, envía `turn_end`). Con el mismo setting se acotan `send_text_chunk`, `tts.end()` y `tts.close()` del TTS de push (#199): al vencer o fallar, `_drop_push_tts` cancela el audio, cierra el TTS, deja `_push_tts=None` y registra un único WARNING por turno; el turno sigue solo con texto y el worker continúa con la cola. El worker sale si `_push_accepting` es False y `enqueue_push` lo respawnea si murió (#204). La cola del worker es ilimitada (acotarla es S3b).
-- **Tool calls**: when the agent invokes a tool during a turn, OpenClaw emits a `session.tool`
-  event (`phase: "start"` with `args`, then `phase: "result"` with `result`/`isError` — the
-  intermediate `phase: "update"` streaming partials are dropped). If the client's
-  `tool_calls_enabled` config flag is `True` (default `False`), the gateway forwards each as
-  `{"type": "tool_call", "turn_id", "phase", "name", "tool_call_id", "args", "result",
-  "is_error"}` over the WS — for both regular turns and agent-initiated push turns.
-
-### Silence watchdog
-
-`_transcription_watchdog` runs as a background task during audio sessions:
-
-- Polls every 2s for transcription activity.
-- **Semantics (issue #129, decision 2026-10-09): ticks, not windows.** The poll interval is the fixed `_WATCHDOG_POLL_S` (2s, `bridge.py`). Every tick with `elapsed > silence_timeout_s` is one strike and sends one `degraded` notice, so `max_silence_turns` counts *ticks*: the session closes at roughly `silence_timeout_s + (max_silence_turns − 1) × 2s` (defaults: ~6s), **not** `max_silence_turns × silence_timeout_s` (with `silence_timeout_s=10` and 3 turns that is ~14s, not 30s), and a client with `silence_timeout_s > 2` gets a `degraded` notice every 2s rather than one per window. Kept deliberately — switching to real windows would silently change the close time of every client with a non-default `silence_timeout_s`. `test_watchdog_counts_one_strike_per_poll_tick_not_per_timeout_window` pins it with real time. The other two #129 asks were already satisfied: `close_all()` is idempotent and serialized by `_close_lock` (#101/#110), so the watchdog calling it itself while `run()`'s `finally` also does is safe.
-- If `elapsed > config.silence_timeout_s` and no new transcription has arrived, increments an internal counter and sends `{"type":"status","service":"transcriber","state":"degraded"}` to the client.
-- If the counter reaches `config.max_silence_turns` **consecutively** (reset to 0 whenever a transcription arrives), calls `close_all()` to terminate the session.
-- **Turn in flight (decision of Sito, #215):** while `_turn_in_flight()` (active turn not done, or an open push turn within `TURN_TIMEOUT_S`) the watchdog counts no silence, resets strikes and restarts the window from that tick. Ticks-vs-windows stays for M9 (the old provisional M8; M8 became the voice provider layer).
-- **Idle persistent sessions (#227, design decision pending human review):** silence is counted only while the client is actually sending audio. `_client_input_loop` tracks `_last_audio_at` and `_audio_burst_start` (a frame after a gap of `N = max(silence_timeout_s, _WATCHDOG_POLL_S)` opens a new burst, `_audio_gap_s()`). A tick with no audio newer than `N`, or none newer than the window's reference point (last transcription / burst start / recovery baseline), adds no strike, sends no `degraded` and resets the strikes; the window reference is `max(recovery_baseline, last transcription, burst start)`, so a stale pre-idle timestamp is never blamed on a client that resumes after its wake word. An always-streaming client (ESP32) behaves as before. `keepalive` frames never count as audio. Alternatives not taken: an explicit audio window (first frame after `end` to the final), or a per-client/handshake flag.
-- Only exits permanently when `self.transcriber.state == ConnectionState.DEGRADED` (or the transcriber was never constructed). A transient `RECONNECTING` blip — the transcriber's background reconnect loop retrying after an unexpected drop — no longer kills the watchdog; it skips silence-counting for that tick and resumes normally once the transcriber is back to `CONNECTED`. Before this fix, any drop (even a successfully-recovered one) permanently stopped silence monitoring for the rest of the session.
-- **Recovery grace baseline (issue #149):** `TranscriberClient.connect()` never resets `_last_transcription_at` — it only changes inside `listen_loop()` when a real transcription arrives. So the instant the watchdog observes `RECONNECTING → CONNECTED`, that field still holds the pre-outage timestamp; measuring `elapsed` against it would count the whole outage as silence and force-close the session within a couple of ticks of a *successful* recovery. The watchdog tracks its own `recovery_baseline` (reset to `time.monotonic()` the tick it first sees `CONNECTED` again after a drop) and measures `elapsed` against that instead, until a real new transcription supersedes it. Ongoing silence *after* recovery still counts normally — this only removes the outage duration itself from the count.
-
-### Idle watchdog
-
-`_idle_watchdog` runs as a background task for every session, launched by `run()` alongside
-`_client_input_loop` regardless of `input_mode` — unlike the silence watchdog above, it applies
-uniformly to text and audio sessions, not just audio ones.
-
-- Tracks `_last_client_activity`, updated on every inbound message in `_client_input_loop`
-  (audio bytes or text frames alike). If `IDLE_TIMEOUT_S` elapses with no inbound message at
-  all, the session is closed via `close_all()` — **with no warning sent to the client first**,
-  unlike the silence watchdog's progressive `status: degraded` notices.
-- **Gated on activity actually in flight (issue #115 follow-up):** a client can legitimately go
-  quiet while the server is still working — the orchestrator streaming a long response, or a
-  push-only consumer session that never sends anything by design. Before closing, the watchdog
-  checks three signals — `self._active_turn` (not done), `self._push_turn_open`, and a
-  non-empty push backlog (`self._push_pending`, issue #130 S3a); if any indicates
-  something is in flight, it skips the close for that tick and re-checks again after a short
-  fixed interval (2s, matching the silence watchdog's poll interval) instead of closing or
-  resetting the full idle window. Once nothing is in flight anymore, idle-timeout behavior
-  resumes normally, measured from `_last_client_activity` as before. The push backlog and
-  `_push_turn_open` are each bounded by `TURN_TIMEOUT_S` (from `_push_pending_since` /
-  `_push_turn_opened_at`), so a wedged worker or an orphaned push can't gate the watchdog forever.
-
-### Session revalidation (G-06, issue #218)
-
-`run()` also spawns `_session_revalidation_loop` (supervised, in `bridge.tasks`): every `SESSION_REVALIDATE_INTERVAL_S` (10s) it calls `db_client.get_session(client_key)`. `ClientNotFound`/`ClientInactive` (client deleted, `is_active=false`, key rotated) → `_revoke_session()`: tracker event `session_revoked`, `client_ws.close(1008, "revoked")` bounded by `CLIENT_SEND_TIMEOUT_S`, then `close_all(status="revoked")` (the active turn is cancelled, not drained: `_client_gone=True`). Any other exception is transient: one WARNING with only the exception type, retry next tick, the session is never closed for it. Revocation through `/admin/*` evicts the cache at once, so the session closes at the next tick; a change from the CLI (other process) takes up to TTL + interval. Test: `tests/integration/test_session_revocation.py` (real uvicorn + `websockets`).
-
-### Startup checks and single-process guard (issue #218)
-
-`lifespan()` takes `fcntl.flock(LOCK_EX|LOCK_NB)` on `<dir of the DB>/gateway.lock` first (`src/core/startup_checks.py`); if held, startup fails with `SingleProcessLockError` ("multi-worker no está soportado"). It is released in the lifespan `finally` (and by the OS if the process dies). `SINGLE_PROCESS_LOCK=false` disables it; skipped for in-memory/non-SQLite URLs. Two opens of the same file *inside one process* also conflict, so `tests/conftest.py` disables it for every test (the lock tests re-enable it). `uvicorn --reload` works: the reloader waits for the old child to exit (releasing the lock) before spawning the new one. It also logs a WARNING (never the value) for empty/placeholder `ADMIN_TOKEN`, empty/placeholder `OPENCLAW_TOKEN` and `TTS_TOKEN` left at its default.
-
-### Lifespan shutdown
-
-`src/main.py`'s `lifespan()` wraps everything after service construction in
-`try: yield / finally: ...` (issue #110) — the app no longer relies solely on
-Uvicorn's external cancellation to clean up. On shutdown, in order:
-
-1. **Drain active sessions** — `ClientRegistry.close_all_sessions(status="shutdown",
-   timeout=settings.SHUTDOWN_DRAIN_S)` snapshots every registered bridge and calls
-   `close_all()` on each concurrently, each individually bounded by
-   `SHUTDOWN_DRAIN_S`. `close_all()` waits for the push worker (#130 S3a) with
-   `SHUTDOWN_DRAIN_S` as a cap; if a push handler ignored cancellation, the generic
-   task-cancel loop would cancel it once more, so teardown could take up to two drain
-   windows in that unlikely case (no current handler ignores cancellation). Mirrors `broadcast_status`'s isolation contract — one
-   session that raises or times out never blocks or fails the others. A session
-   closed this way is recorded with `SessionRecord.status = "shutdown"` (a fourth
-   value alongside `"active"/"completed"/"error"`; a fifth, `"revoked"`, is written when the
-   session revalidation closes a session of a deleted/deactivated/rekeyed client, see
-   "Session revalidation" below), visible via `GET /admin/sessions`.
-2. **Close OpenClaw** — only after step 1, so any turn still in flight when
-   shutdown began has already been given its `SHUTDOWN_DRAIN_S` window to finish
-   naturally inside `close_all()`'s own `_active_turn` wait (see `JotaBridge.close_all()`
-   above) before the orchestrator connection goes away.
-3. **Cancel and await notification tasks** — the module-level `_notification_tasks`
-   set (holding the orchestrator/TTS `on_state_change` broadcast tasks) is drained
-   *after* closing OpenClaw, not before: `ReconnectingOpenClawClient.close()` cancels
-   the only background loop that could still schedule a new one (`_reconnect_task`),
-   so nothing can add to the set once step 2 completes.
-4. **Dispose the DB engine** — `dispose_engine()` (`src/db/database.py`) disposes
-   the SQLAlchemy engine's connection pool and resets the module-level `_engine`
-   singleton to `None`, run last since nothing above touches the DB.
-
-`JotaBridge.close_all()`'s own task-cancellation loop (issue #110 follow-up)
-excludes `asyncio.current_task()` from the tasks it cancels, and awaits every
-task it does cancel instead of firing `.cancel()` and moving on. Without the
-exclusion, a watchdog (`_idle_watchdog`/`_transcription_watchdog`) that triggers
-its own session's `close_all()` would self-deliver a `CancelledError` at
-`close_all()`'s next real suspension point (e.g. awaiting `transcriber.close()`),
-aborting teardown before `tracker.close()`/`ClientRegistry.unregister()` ever ran
-— masked in practice by `bridge.run()`'s own redundant `close_all()` call in its
-`finally`, but not something the shutdown drain above can rely on.
-
-`close_all()` detiene la entrada de push (`_push_accepting=False`), cancela el worker **antes** de cerrar `_push_tts` y descarta el backlog; espera al worker con `SHUTDOWN_DRAIN_S` como tope (issue #130 S3a).
-
-### Session key derivation
-
-Each orchestrator turn uses a session key derived from the agent name and the client UUID:
-
-```
-session_key = f"agent:{agent}:{client.id}"
-```
-
-The `agent` is resolved by `src.core.agent_policy.resolve_agent(requested, client_config, gateway_info)` at the call site — WS handshake in `routes.py`, REST `/v1/chat/completions` in `openai_routes.py`. The cascade is:
-
-1. `requested` — `handshake.agent` (WS) or `body.model` (REST), if non-empty after stripping. In REST, `body.model == "jota-gateway"` (the model name `GET /v1/models` advertises, `MODEL_ALIAS` in `agent_policy.py`) is **not** an agent: `agent_from_model()` maps it to "no explicit agent" so it falls through to the cascade below (and skips the roster check); the allowlist still applies to the resolved agent (#217).
-2. `client_config.default_agent` — set per-client by admin via the CRUD.
-3. `gateway_info.default_agent_id` — server-wide default from OpenClaw's `hello-ok`.
-4. `"main"` — last-resort fallback (preserves legacy REST trusted-origin behavior when neither config nor gateway info is available).
-
-Validation runs after the cascade (issue #105):
-
-- If `client_config.allowed_agents` is an explicit list (`None` skips this check), the resolved agent must be in it.
-- If the agent was explicitly requested (`requested is not None`) and `gateway_info` is available, the resolved agent must be in `gateway_info.agents`. Cascade defaults are trusted server-side configuration, not user input — they skip the roster check.
-
-WS violation → close 1008 with a specific reason. REST violation → 403 JSON body with `{"error":"forbidden","reason":"agent_not_permitted"|"agent_not_available","message":...}`. The REST legacy trusted-origin path (no Bearer) skips `resolve_agent` entirely and uses the gateway default directly — preserves historical behavior for loopback callers.
-
-The HA REST endpoint (`/v1/chat/completions`) uses `client_id="ha"` for the trusted-origin legacy path and the caller's UUID otherwise.
-
-`client_id_from_session_key(sk)` extracts the client ID via `sk.rsplit(":", 1)[-1]` — safe for keys containing multiple colons (e.g. Telegram user IDs).
-
----
-
-## Microservice clients (all in `src/services/`)
-
-| Client | Protocol | Notes |
-|---|---|---|
-| `DbClient` | SQLite (SQLModel) | Singleton; reads `ClientRecord`; caches sessions `SESSION_CACHE_TTL_S` (10s) via TTLCache |
-| `OpenClawClient` | WebSocket v4 | Singleton per app; multiplexed — N concurrent sessions on one connection; sends `chat.abort` on barge-in |
-| `ReconnectingOpenClawClient` | — | Wraps `OpenClawClient`; auto-reconnects with exponential backoff; exposes state (CONNECTED/RECONNECTING/DEGRADED) |
-| `TranscriberClient` | WebSocket | Protocol-only, unchanged; one instance per session (audio mode only); receives PCM Float32 16kHz |
-| `ReconnectingTranscriberClient` | — | Wraps `TranscriberClient`; **one per audio session**, constructed in `connect_internal_services()`; same CONNECTED/RECONNECTING/DEGRADED state machine as the orchestrator, background-task-driven (`run()` supervises listen + reconnect for the session's lifetime) |
-| `TTSClient` | WebSocket | Protocol-only, unchanged; **created fresh per turn** (both normal and push turns), not per session; receives tokens, yields PCM16 24kHz |
-| `ReconnectingTTSClient` | — | Wraps `TTSClient`; **process-level singleton** (`app.state.tts`, one per app, shared across all sessions) since TTS has no persistent connection to hold — a lazy backoff gate checked on each new per-turn attempt instead of a background reconnect loop |
-
-### Service reconnection (`src/services/reconnection.py`)
-
-`ConnectionState` (`CONNECTED`/`RECONNECTING`/`DEGRADED`) and `ServiceStatus` (dataclass: `name`, `state`, `connected_at`, `reconnect_attempts`, `last_error`) are shared across all three reconnection wrappers — `ReconnectingOpenClawClient`, `ReconnectingTranscriberClient`, `ReconnectingTTSClient` — so the pattern reads as one system rather than three accidental variations. `to_wire_state(state)` maps a transition to the client-facing `status` wire vocabulary (`CONNECTED→"restored"`, `RECONNECTING→"reconnecting"`, `DEGRADED→"unavailable"`); callers decide *whether* a transition merits notifying (e.g. never fire "restored" for a session's very first successful connect, since nothing was ever broken), this only decides *what word* to send.
-
-- **Shared core by composition (issue #126, `src/services/reconnection.py`):** each wrapper *has* a `ServiceHealth` (state, `connected_at`, attempts, `last_error`, `on_state_change`, `status()`) and exposes `state`/`on_state_change`/`_last_error`/... as delegating properties. `ServiceHealth.set_state()` fires `on_state_change` **only on an actual transition** for all three wrappers (it used to be TTS-only), and `mark_connected()` updates the fields before firing. OpenClaw and Transcriber share one `reconnect_with_backoff()` loop (exponential backoff, `max_duration` → `DEGRADED`); the TTS lazy gate is `LazyBackoffGate`. No base class: `connect()`, OpenClaw's `_ensure_reconnecting`/circuit breaker (#102) and the Transcriber's `run()` supervisor stay per-wrapper. Spec: en Obsidian, `JGW Spec 2026-10-11 - reconnecting-wrappers`.
-- **TTS concurrent turns (issue #152):** `ReconnectingTTSClient` is shared by every session, so overlapping attempts get ordered tokens from `LazyBackoffGate`: a success always applies and makes older in-flight attempts stale; a failure applies only if its attempt started after the last recorded outcome. One outage doubles the backoff once, and a late failure never overwrites a newer success. No `asyncio.Lock` across the connect (it would serialize every session's TTS connect).
-- **Trigger mechanism differs by service lifetime, deliberately**: OpenClaw and Transcriber hold a real socket open continuously, so losing it is an event (`on_disconnect` callback) and recovery is a background task retrying with backoff. TTS has no socket between turns by design (`TTSClient` is reconstructed every turn) — there's nothing to hold open in the background, so `ReconnectingTTSClient.connect()` is a lazy gate: if the last failure was more recent than the current backoff window, it returns `None` immediately without even attempting a socket; otherwise it tries, and records success/failure. No `DEGRADED` terminal state and no max-duration for TTS — every eligible turn always gets a fresh attempt, capped at 60s between attempts.
-- **Client notification** — every state-change path funnels through `JotaBridge.notify_service_status(service, state)`, a thin wrapper around `client_ws.send_json({"type":"status",...})`. Never a separate ad-hoc send call site.
-  - **Transcriber**: `ReconnectingTranscriberClient.on_state_change` is wired *after* the session's initial `connect()` call (not before) to avoid a spurious `"restored"` notice on a normal first-time success.
-  - **TTS** (issue #117): `ReconnectingTTSClient.on_state_change` is wired in `main.py`'s lifespan to `ClientRegistry.broadcast_status`, same pattern as the orchestrator below — no "wire after initial connect" trick needed here, since the wrapper starts `CONNECTED` by construction (no lifespan-level initial connect exists for TTS) and only fires on an actual transition (`_set_state()` no-ops if the new state equals the current one), so a normal healthy turn's `_record_success()` never re-fires a spurious `"restored"`. This replaced the old per-bridge `JotaBridge._maybe_notify_tts_state()`/`_tts_degraded_notified` polling (compared `app.state.tts.status().state` after every attempted turn) — the transition guard now lives once in the wrapper instead of once per bridge. A brand-new session starting mid-outage learns about it via `health_check()`'s pre-existing live `TTSClient.ping()` check (unchanged by #117, see below) — deliberately **not** duplicated with a second, wrapper-state-based check in `connect_internal_services()`: the wrapper's own `status()` can be stale by up to the current backoff window (up to `TTS_RECONNECT_MAX_BACKOFF`), so a second check there could show the client a stale `"reconnecting"` immediately followed by `ready.live_capabilities.tts: true` from the live probe — two conflicting signals for one outage. Same rationale the transcriber block above already documents inline ("`health_check()` already reports the initial-failure case, if any").
-  - **Orchestrator**: `ClientRegistry.broadcast_status(service, state)` — wired via `openclaw.on_state_change` in `main.py`'s lifespan, after the initial `connect()` — notifies **every** connected session, not just the one attempting a turn. Closes a gap where an idle-but-connected client only learned about a drop/recovery reactively, on its next turn attempt.
-- **Connect timeouts (issue #134):** every service's connect path is bounded. `websockets.connect` applies its default `open_timeout=10` (TCP + HTTP upgrade); OpenClaw bounds each handshake step (15s challenge, 30s `hello-ok`, 10s `agents.list`/subscribe ack) and TTS bounds auth with `TTS_AUTH_TIMEOUT_S`. The one unbounded wait was the Transcriber's `ready` — now `asyncio.wait_for(..., TRANSCRIBER_READY_TIMEOUT_S)` in `TranscriberClient.connect()`, which closes the socket and raises like any other failed connect. No per-service `*_CONNECT_TIMEOUT_S` settings were added: they would only duplicate the bounds above.
-- **Supervision (issue #131):** `TranscriberClient.listen_loop()` skips a frame that is valid JSON but has an unexpected shape (`ValidationError`/`TypeError`) with a payload-free WARNING instead of dying. Any other unexpected exception out of `listen_loop` (e.g. a failing transcription callback) is caught in `ReconnectingTranscriberClient.run()`: logged with `exc_info`, state → `DEGRADED` (so `on_state_change` sends `status transcriber unavailable` through the usual path), no reconnect attempt, session stays open. A clean close (1000) is still a normal exit. `JotaBridge._supervise()` adds a done-callback to every session task that logs a crash with the task's name instead of leaving it unobserved.
-- **Transcriber capacity status (issue #143):** the transcriber pushes `{"type":"status","state":"busy"|"ok","reason":...}` per session when its GPU is saturated, and may mark a final as truncated with `complete:false` + `reason`. `TranscriberClient.listen_loop()` surfaces the first via `on_status_callback(state, reason)` and the second via `on_incomplete_callback(reason)` (plumbed through `ReconnectingTranscriberClient.run()`); `JotaBridge._on_transcriber_status` notifies transition-only — `busy` → `status degraded` with `code=reason`, `ok` → `restored` only if a `busy` preceded it. While `_transcriber_busy`, `_transcription_watchdog` skips silence-counting and reuses the #149 recovery baseline. A `complete:false` final is logged at WARNING with its `reason` (never the text), recorded as a `transcription_incomplete` tracker event, and still delivered to the client unchanged — the client protocol does not expose `complete`. `notify_service_status(service, state, code=None, message=None)` is the single send point, including for transcriber warnings. The field/value semantics come from the jota-transcriber capacity spec as quoted in issue #143 (the spec itself was not accessible when this was written) — verify against a live transcriber.
-- **Never force-closes a session**: only the orchestrator remains a fatal dependency (in `health_check()`, at session start). Transcriber/TTS failures — at start or mid-session — degrade the session, they never close the WebSocket.
-- **Settings are dedicated per service** (`TRANSCRIBER_RECONNECT_*`, `TTS_RECONNECT_*`), not shared with `ORCHESTRATOR_RECONNECT_*` — see Environment variables above.
-- **Admin observability**: `GET /admin/transcriber/status` (live reachability via `TranscriberClient.ping()`, since Transcriber has no process-level connection to report — one instance per session) and `GET /admin/tts/status` (`app.state.speech.tts.status()` — real memory of consecutive failures, current backoff, last error), same shape as the pre-existing `GET /admin/orchestrators/{name}/status`.
-
-### Speech providers (`src/services/speech/`)
-
-STT and TTS go through ports (`typing.Protocol`, `@runtime_checkable`) in `ports.py`, so the bridge doesn't know who is behind them. The ports describe gateway behaviour, not transport: **STT = one stream per audio session, TTS = one synthesis per turn**; each adapter decides its own transport. Spec/plan in the vault (`JGW Spec|Plan 2026-10-20 - Capa de proveedores de voz`); phase 1 = jota adapter only (**no behaviour change**); phase 2 (below) adds settings, audio gate, voice mapping, usage counters, contract tests and the live swap. phase 3 (below) adds the ElevenLabs TTS adapter; phase 4 the ElevenLabs STT adapter.
-
-- **Ports:** `SpeechToTextProvider` (process singleton: `name`, `capabilities: SttCapabilities(partials, warmup_s)`, `state`/`on_state_change`, `open_session(client=, params=, callbacks=)`, `probe()`, `status()`, `start()`, `retire()`, `aclose()`; **`retire()` = stop being current and `aclose()` once the last open session closes (at once if none)**, helper `sessions.SessionRefCount` with `opened()`/`closed()`/`retire(cb)`, fire-once), `SttSession` (one per audio session: `state`, `on_state_change`, `last_transcript_at`, `start()` never raises, `send_audio`, `send_end`, `run()`, idempotent `close()`), `TextToSpeechProvider` (`name`, `connect(voice, speed, client_id) -> TtsStream | None`, `probe()`, `status()`, `resolve_voice()`, `start()`, `aclose()`), `TtsStream` (`send_text_chunk`, `end`, `get_audio_stream`, `close`). **STT callbacks (`SttCallbacks`) are handed over in `open_session`, not in `run()`** (the client input loop starts before `run()`, so the first event must already have a destination).
-- **Factory:** `factory.build_stt_provider(settings)` / `build_tts_provider(settings)` read `STT_PROVIDER` / `TTS_PROVIDER` (`Literal["jota","elevenlabs"]`) or an explicit `name`; the adapters live in `factory.PROVIDER_BUILDERS = {"stt": {...}, "tts": {...}}` (tests `monkeypatch.setitem` fakes into it). A name without a builder → `ValueError`: both `elevenlabs` builders are registered (TTS phase 3, STT phase 4); anything else is `"... no soportado"`, never echoing the value. Providers are built once in `main.py`'s lifespan after `check_speech_settings` (fatal at startup), `start()`ed, wrapped in `SpeechProviders` (`registry.py`, `app.state.speech`; `app.state.stt/tts` no longer exist) and `aclose()`d right after the session drain (step 1b, before closing OpenClaw).
-- **Bridge:** `JotaBridge(..., tts=, stt=, speech=app_state.speech)`; with `speech`, `bridge.tts` and `bridge._stt` are properties reading the CURRENT provider (each TTS turn and each new STT session), without it the fixed injected ones apply; `_session_stt` remembers which provider opened the session. `stt` defaults to `None` → `build_stt_provider(settings)` so the many test constructions and old callers keep working. The attribute name `self.transcriber` is kept (now an `SttSession`); `connect_internal_services` does `open_session(...)` + `await start()`, `run()` takes no arguments, the watchdog reads `transcriber.last_transcript_at`. `health_check` uses `await self.tts.probe()` and `live_capabilities.barge_in` is also gated by `stt.capabilities.partials`.
-- **jota adapter (`jota.py`):** `JotaSttProvider` (state always CONNECTED; `probe()` = `TranscriberClient.ping(TRANSCRIBER_WS_URL)`; `status()` = last probe result, CONNECTED if never probed) builds a `ReconnectingTranscriberClient` per session and wraps it in `JotaSttSession` (thin delegation; `close()` during `start()` closes the socket `start()` just opened). `JotaTtsProvider` is an alias of `ReconnectingTTSClient`, which gained `name="jota"`, `probe()` (`TTSClient.ping(self._url)`), `resolve_voice()` (pass-through) and no-op `start()`/`aclose()`. `transcriber_client.py`, `transcriber_reconnecting.py`, `tts_client.py`, `tts_reconnecting.py` did not move. `ReconnectingTranscriberClient.last_transcript_at` is public (the private `_last_transcription_at` alias stays).
-- **Health / admin:** `/ready` calls `app.state.speech.stt.probe()` / `app.state.speech.tts.probe()` (STT or TTS down still gives 200 `degraded`, never 503; only the orchestrator is critical). `GET /admin/transcriber/status` does `await stt.probe()` then returns `stt.status()` in the same shape as before; `/admin/tts/status` unchanged; both now add `"provider": <provider.name>`. STT provider state changes are wired (after `start()`) to `ClientRegistry.broadcast_status("transcriber", ...)`, like TTS.
-- **`last_error` change (#228, intended):** both reconnecting wrappers now store `describe_error(e)` (the exception type name, or its `stable_code`) in `last_error` instead of `str(e)`, and the connect-failure WARNING/ERROR logs carry the same, so provider/exception text never reaches `/admin/*/status` or logs.
-
-- **Settings (phase 2, `src/core/config.py`, all in `.env.sample`):** `ELEVENLABS_API_KEY` (`SecretStr`, never logged), `ELEVENLABS_BASE_URL`, `ELEVENLABS_HEALTH_TTL_S`, `ELEVENLABS_STT_{COMMIT,VAD_SILENCE_S,IDLE_CLOSE_S,DRAIN_S,CONNECT_BUFFER_S,WARM_HOLD_S,MAX_SESSIONS,ENABLE_LOGGING}`, `ELEVENLABS_TTS_{MODEL,DEFAULT_VOICE,CHUNK_SCHEDULE,MAX_STREAMS,MAX_BUFFER_BYTES}` (`DEFAULT_VOICE` defaults to the Spanish voice `gc61tTk93h3LBXPxew2V`, not a secret; the startup check only fires if it is blanked), `TTS_VOICE_MAP` (JSON client voice → provider voice), `STT_AUDIO_GATE` (`auto|off|energy`), `STT_GATE_RMS_DBFS`. `check_speech_settings(settings, *, stt_provider, tts_provider)` (`startup_checks.py`) raises `SpeechConfigError(setting_name)` — message names the setting, never the value — for: ElevenLabs selected without a non-blank key; TTS elevenlabs without default voice; model `eleven_v3*`/`eleven_v4*` (no WebSocket support); chunk schedule not 1-4 ints in [50, 500]. Fatal at startup; on a swap it rejects the swap (422).
-- **Audio gate:** `audio.EnergyGate(rms_dbfs, preroll_s, hangover_s, sample_rate)` (`feed(f32) -> (chunks, segment_ended)`; frames under 4 bytes are ignored: preroll ring while silent, opens on the first loud frame, closes after `hangover_s` of continuous quiet, the caller then forces the end-of-utterance commit) and `f32le_to_s16le` live in `audio.py`; `config.effective_audio_gate(settings, provider_name)` resolves `auto` (energy for paid providers = elevenlabs, off for jota). Owner decision: audio goes to a paid STT only while the user speaks. **The gate lives inside the ElevenLabs STT session** (phase 4, see below), not in the bridge; jota stays `off`.
-- **Voices:** `voices.resolve_voice(configured, voice_map=, accepts_native=, default=)` = map hit → native voice accepted by the provider → default (ONE WARNING per distinct unmapped voice name).
-- **Usage counters:** `SttSession.usage() -> dict[str, float]` (jota: `{}`); the bridge counts `tts_chars` (text passed to `send_text_chunk`, normal + push turns) and in `close_all()` (just before the tracker closes) records tracker event `speech_usage` once (`_usage_recorded`, safe if `close_all` is retried) with only provider names and numbers — never text: `tts_provider` (current at close), `stt_provider` only if an STT session was opened, `tts_chars` (total) plus `tts_chars_<provider>` (characters counted against the provider that opened that turn's/push turn's `TtsStream`, so a mid-session swap splits correctly) and the numeric STT usage.
-- **Live swap (no restart, not persisted):** `SpeechProviders.swap(stt_name=, tts_name=)` (serialized by a lock; same name = no-op) validates with `check_speech_settings`, builds + `start()`s the new provider(s), rewires `on_state_change` (listeners stored by `set_state_listeners`), replaces the reference, then retires the old one: the old providers' `on_state_change` is set to `None`; TTS is `aclose()`d at once (in-flight `TtsStream`s own their sockets); STT calls `retire()` (part of the port; no fallback to `aclose()`). **If a new provider's `start()` raises during a swap** (operator action; startup still degrades instead of aborting) every new provider is `aclose()`d, the current ones stay untouched and `SpeechSwapError` is raised → `PUT /admin/speech` answers `503` with a body naming only the provider (`"tts provider <name> failed to start"`), never the exception text. **A TTS switches on the next turn; an already-open STT session keeps its provider until it ends; new sessions use the new one.** `GET /admin/speech` → `{"stt": {"provider","state"}, "tts": {...}, "audio_gate": effective}`; `PUT /admin/speech {"stt_provider"?, "tts_provider"?}` → 200 with the new names, 503 if the new provider fails to start, 422 (`detail` names the setting) if validation fails or the provider is unknown/not implemented; `X-Admin-Token` required. One INFO line per swap (names only). A restart returns to the env settings.
-- **ElevenLabs TTS adapter (phase 3, `src/services/speech/elevenlabs/{common,tts}.py`):** `ElevenLabsTtsProvider(settings)` (`name="elevenlabs"`) over the WebSocket `…/v1/text-to-speech/{voice}/stream-input?model_id=…&output_format=pcm_24000&inactivity_timeout=180`, auth header `xi-api-key` (never in the URL). One `ElevenLabsTtsStream` per turn owns its socket: a background runner opens it, sends the init `{"text":" ","voice_settings":{"speed"},"generation_config":{"chunk_length_schedule"}}`, forwards queued chunks (a chunk ending a sentence — `.`/`?`/`!`/`…` plus optional closing quotes/brackets and whitespace, at the end or inside the chunk; `:`/`;` do NOT, nor a `.` after an abbreviation (`Sr.`, `Dra.`, `etc.`…), an initial (`J.`) or a 1–2 digit number (`3.`) — carries `"flush":true`; an empty chunk is never sent because `""` means end of input) and `end()` sends `{"text":"","flush":true}` then `{"text":""}`; a reader decodes base64 PCM16 (odd bytes carried over so every chunk is even) into a buffer capped by `ELEVENLABS_TTS_MAX_BUFFER_BYTES` (over the cap: one WARNING, the stream stops, the turn continues text-only), `isFinal` ends the audio iterator. **`connect()` returns at once (no network wait)** — so unlike jota it never returns `None` for a down backend on the first try: the stream just yields no audio and the failure is recorded (next `connect()` within the backoff window is `None`). Keepalive `{"text":" "}` after `KEEPALIVE_S=15` s idle; an unexpected non-auth close before `end()` reopens ONCE (init re-sent, sent text not re-sent, possible audio gap, one WARNING). `close()` is idempotent and returns in <1 s; the stream slot (semaphore `ELEVENLABS_TTS_MAX_STREAMS`) is released by a task done-callback exactly once (also if the task is cancelled before it ever runs). **Lifetime cap:** a stream that has been sent no text for `TURN_TIMEOUT_S` and never got `end()` stops its keepalives and closes itself (one WARNING, kind only). The bridge closes the stream if `_run_turn` is cancelled right after `connect()` (while recording `tts_start`). No re-resolution of the voice inside `connect()` (the bridge calls `tts.resolve_voice()` first, in normal and push turns; unmapped/Kokoro ids → default voice with one WARNING). Speed is clamped to [0.7, 1.2] (one INFO per client).
-- **ElevenLabs health & errors:** same `ServiceHealth("tts")` + `LazyBackoffGate` as `ReconnectingTTSClient` (no new reconnection variant). A full semaphore returns `None` and bumps `capacity_refusals` WITHOUT touching health. Errors are normalised in `common.py` (`classify_close(code, reason)` / `classify_exception(exc)` → `auth|quota|capacity|other`; a close reason with quota wording ("quota", credits, insufficient) → `quota` (terminal like auth: DEGRADED, `last_error="quota"`, checked before capacity), "session_time_limit"/"time limit" → `other` (just reopen); a close reason with auth wording ("api key", unauthorized, forbidden, authentication, invalid key, permission) → auth — a bare/other 1008 is `other` (ElevenLabs also uses it for input/inactivity timeouts, bad voice/model), 401/403 → auth, 429 or reason with limit/busy → capacity); only the kind is ever logged, never the provider's text. **Auth is terminal:** `_auth_failed` → state `DEGRADED` (`last_error="auth"`), `connect()`/`probe()` return `None`/`False` with no network until restart or a swap. 429/capacity bumps `provider_429` and goes through the normal backoff (state RECONNECTING); a capacity close AFTER the handshake only advances the gate backoff (next `connect()` in the window is `None`) and leaves the state alone (not an outage). `probe()` = open the default voice's stream, send `" "` and `{"text":""}`, wait ≤5 s for the close (the connect/handshake is bounded separately by `PROBE_CONNECT_TIMEOUT_S`=4 s and a timeout there is a FAILURE; only a timeout after a successful connect counts as healthy); result cached `ELEVENLABS_HEALTH_TTL_S`; skipped (False) inside a backoff window; `start()` = one `probe()`, never raises; `aclose()` only marks it closed. `counters()` → `{"capacity_refusals","provider_429","auth_errors"}`, added to `GET /admin/tts/status` as `"counters"` only when the provider has them. `pin_websockets_logging()` pins the `websockets` loggers to ≥INFO at construction (DEBUG would dump the key header and every text frame).
-- **Tests:** fake upstream `tests/fakes/elevenlabs_tts.py` (127.0.0.1:0; wrong key → 1008 "Invalid API key"; modes `handshake_status`, `close_after_s`, `delay_handshake_s`, `close_midway_after_n_messages`); adapter tests `tests/unit/test_elevenlabs_tts.py`, `test_elevenlabs_common.py`; the TTS contract battery now runs for `jota` and `elevenlabs` (the backend-down case accepts "stream without audio" as well as `None`, then requires the backoff `None`); bridge turn `tests/integration/test_bridge_elevenlabs_tts.py`. **Live smoke** `tests/live/test_elevenlabs_tts_live.py`, marker `live` (excluded by default via `-m "not e2e_real and not live"`; run `JGW_LIVE=1 ELEVENLABS_API_KEY=… pytest -m live tests/live`; prints numbers only, skips without both, fails cleanly if the key is rejected). `tests/conftest.py` forces `ELEVENLABS_API_KEY=None` for every test.
-- **ElevenLabs STT adapter (phase 4, `src/services/speech/elevenlabs/stt.py`):** `ElevenLabsSttProvider(settings)` (`name="elevenlabs"`, `capabilities=SttCapabilities(partials=True, warmup_s=2.5)`) over `…/v1/speech-to-text/realtime?model_id=scribe_v2_realtime&audio_format=pcm_16000&language_code=…&commit_strategy=<vad|manual>[&vad_silence_threshold_secs]&include_timestamps=false&enable_logging=…`, header `xi-api-key`. `ElevenLabsSttSession` (one per audio session; `open_session` and `start()` do no network): **lazy open** — the upstream opens with the first audio to forward (non-blocking acquire of the `ELEVENLABS_STT_MAX_SESSIONS` semaphore, which counts OPEN connections, not sessions), buffers up to `ELEVENLABS_STT_CONNECT_BUFFER_S` while connecting (drops the oldest beyond) and flushes on `session_started`; audio goes out as base64 PCM16 (`f32le_to_s16le`) in chunks of ≥0.1 s (≤1 s). **Gate:** with `effective_audio_gate(...)=="energy"` (default for elevenlabs) the session owns an `EnergyGate`, only gate-forwarded audio goes upstream and a segment end forces the commit (as `send_end()`); gate `off` forwards everything (still lazy open / idle close). `send_end()` is a no-op without audio since the last commit; commits are ≥1 s apart (a too-early one is deferred); a `committed_transcript` clears the pending-commit flag (so a VAD commit makes the hangover commit a no-op). **Idle close:** no forwarded audio for `ELEVENLABS_STT_IDLE_CLOSE_S` → commit pending audio, wait ≤`ELEVENLABS_STT_DRAIN_S` for the `committed_transcript` (delivered before the socket closes), close, release the slot; audio arriving while draining waits in the buffer and a NEW upstream opens only after the old one is gone (ordering). `ELEVENLABS_STT_WARM_HOLD_S>0` feeds PCM16 silence for that long before the idle close (billed, off by default). The idle timer runs inside `run()`; it also clears `busy` after idle-close seconds without audio. **Errors** (never log text): `auth_error`/`unaccepted_terms`/close with auth wording → provider `_terminal` (DEGRADED, `last_error="auth"`, every session goes DEGRADED, no new upstreams until restart/swap); `quota_exceeded` → same, `last_error="quota"`; `rate_limited`/`queue_overflow`/`resource_exhausted` → `on_status("busy","provider_capacity")`, upstream closed, 1 backoff-initial cooldown, `ok` when the next upstream opens; full semaphore → `busy` once and `capacity_refusals` +1 per refusal episode, not per frame (audio dropped, `ok` on next successful acquire); the permit is released exactly once per connection, explicitly in `_life_main`'s `finally` BEFORE the respawn of an utterance that arrived while draining (so a session at `MAX_SESSIONS` never competes with its own permit), and `_conn` is claimed before any await in `_ensure_upstream` (concurrent `send_audio` opens a single upstream); `commit_throttled`/`insufficient_audio_activity` ignored; other errors close the upstream (next audio reopens); `warning` → `on_warning("provider_warning","")`. Unexpected close with audio in flight → session RECONNECTING + `reconnect_with_backoff` (`TRANSCRIBER_RECONNECT_*`) → CONNECTED (slot kept during the backoff); if the backoff is exhausted (session DEGRADED), a later lazy reopen that gets `session_started` sets the session back to CONNECTED (client gets `restored`); idle close is silent. Probe = open realtime (connect bounded by `PROBE_CONNECT_TIMEOUT_S`=4 s, a timeout there is a failure), wait ≤5 s for `session_started` or close, close without sending audio (cached `ELEVENLABS_HEALTH_TTL_S`; failed probe → provider RECONNECTING, success → CONNECTED). `counters()` → `{"capacity_refusals","provider_429","auth_errors","upstream_opens","audio_seconds_sent"}` (also in `GET /admin/transcriber/status` as `"counters"`); session `usage()` → `stt_audio_s`, `stt_upstream_opens`, `stt_capacity_refusals`. **Watchdog activity:** `last_transcript_at` is updated on every non-empty partial AND committed transcript (as jota does), so continuous speech without a 1 s pause never looks like silence to the bridge's silence watchdog. **Bridge warmup:** the first silence window after an audio burst starts is extended by `capabilities.warmup_s` (jota 0 → unchanged).
-- **STT tests:** fake `tests/fakes/elevenlabs_stt.py`, `tests/unit/test_elevenlabs_stt.py`, `tests/integration/test_bridge_elevenlabs_stt.py`, live `tests/live/test_elevenlabs_stt_live.py` (TTS → `audio.s16le_24k_to_f32le_16k` → STT, asserts "jota").
-- **Contract battery:** `tests/contract/` parametrized over `ADAPTERS` (`jota`, `elevenlabs` for both TTS and STT; the STT harness uses gate `off` and 10 frames per "utterance" since ElevenLabs sends ≥0.1 s at a time) with the fakes in `tests/fakes/jota_upstreams.py` (port 0); new adapters add their harness in `tests/contract/conftest.py`.
-
-### OpenClaw package (`src/services/openclaw/`)
-
-Built once in `main.py` lifespan; stored in `app.state`.
-
-- `OpenClawClient` (`client.py`) — WebSocket v4 handshake (challenge → connect → hello-ok → **agents.list → sessions.subscribe**), persistent `_listen` task, `_keepalive_loop` (pings at 80% of `tickIntervalMs`, floored at 1s so a `tickIntervalMs` of 0 can't flood the socket — issue #135). All events carry `sessionKey`; `stream_response()` registers a `Queue` in `TurnRegistry` per turn, sends `{"sessionKey": key}` and reads the queue until turn completion or `error` (see turn-completion note below). `connect()` is serialized by a `_connect_lock` and always tears down (`_cancel_and_close()`) the previous `_ws`/`_listener_task`/`_keepalive_task` before opening a new socket — otherwise the old listener could start racing the new handshake for frames, or dispatch stale frames to the shared `TurnRegistry`, once it actually got scheduled to run (issue #103). Each `queue.get()` wait inside that loop is bounded by `TURN_TIMEOUT_S` (issue #115) with idle-reset semantics — the timeout resets on every event received, so a turn making steady progress can run indefinitely; only a genuine gap longer than `TURN_TIMEOUT_S` between events yields a `turn_timeout` error. **Frontera de `_listen` (issue #213, M6a):** cada frame se procesa en su propio `try` (`_handle_raw_frame`): uno malformado (no JSON, no objeto, `payload`/`data` nulos) se descarta con un WARNING que solo lleva el tipo de la excepción, nunca el contenido, y no afecta a ninguna sesión. Un único `finally` de `_listen` llama a `TurnRegistry.error_all(ORCHESTRATOR_DISCONNECTED_ERROR)` (`"orchestrator_disconnected"`, mensaje estable, nunca `str(e)`) en cualquier salida — cierre limpio 1000, excepción o cancelación —, así que los turnos en vuelo fallan al instante y su `session_key` queda libre; `on_disconnect` sigue sin dispararse en la cancelación. **`max_size`:** `websockets.connect` recibe `max_size=_frame_limit(...)` (por defecto 1 MiB, insuficiente frente a los 25 MiB de `hello-ok.policy.maxPayload`): antes del `hello-ok` se usa 25 MiB (o el último `maxPayload` anunciado en una reconexión) y justo después se alinea el socket vivo con el `maxPayload` anunciado (`protocol.max_message_size`), acotado a [1 MiB, 64 MiB]. Una vez por conexión se registra en INFO la versión de servidor y de protocolo de `hello-ok`.
-- `ReconnectingOpenClawClient` (`reconnecting.py`) — wraps `OpenClawClient`; on unexpected disconnect calls `on_disconnect` hook, retries with exponential backoff up to `ORCHESTRATOR_RECONNECT_MAX_DURATION` seconds; after that enters DEGRADED state — which is **not terminal** (G-55, #218): a single `_slow_retry_task` makes one `connect()` attempt every `ORCHESTRATOR_RECONNECT_MAX_BACKOFF` seconds until it succeeds (state stays DEGRADED while failing, no flapping, no new full window; `trigger_reconnect()` and `close()` cancel it). `/ready` keeps returning 503 while DEGRADED; the Docker HEALTHCHECK stays on `/healthz` (liveness) on purpose, since recovery is now automatic and no orchestrator restarts on `unhealthy`. `stream_response()` returns an `error` event immediately when not CONNECTED. `trigger_reconnect()` is the admin-facing entry point (`POST /admin/orchestrators/{name}/reconnect`) — it coalesces onto any reconnect already in flight via the same `_reconnect_task`/job-id tracking the background loop uses, and returns immediately with a job id rather than blocking on the handshake, so an admin-triggered reconnect can never race the background loop into opening two sockets. **Circuit breaker (issue #102):** `_reconnect_exhausted` is set once `_reconnect_loop()` hits `max_duration` and enters DEGRADED; while set, `_ensure_reconnecting()` (called from `ping()`, `stream_response()`, and `on_disconnect`) returns immediately without spawning a new `_reconnect_task`, so DEGRADED no longer relaunches a full reconnect window on every probe/request. It's cleared only by a successful `connect()` or by `trigger_reconnect()` — so an admin-triggered reconnect always gets a fresh attempt even mid-DEGRADED. **Nested-generator cleanup (issue #150):** `stream_response()` wraps its own iteration of the inner `OpenClawClient.stream_response()` in its own `contextlib.aclosing()`, not just a plain `async for`. In production `orchestrator` (in `call_orchestrator()`) is always this class, so the `aclosing()` PR #147 added to `call_orchestrator()` only closes *this* generator — without this inner `aclosing()`, closing it early (e.g. `call_orchestrator` raising on an `error` event) throws `GeneratorExit` at this generator's own suspended `yield`, which propagates straight out without ever resuming/closing the inner `OpenClawClient` generator, so its `finally: self._turn_registry.unregister(...)` gets deferred to the asyncgen GC finalizer instead of running synchronously — reopening the exact TurnRegistry race #99/#147 closed, one layer removed.
-- `TurnRegistry` (`registry.py`) — dual-index dict (`session_key → Queue`, `req_id → session_key`); `FrameDispatcher` uses it to route response frames to the correct waiting `stream_response()` call. Queues are bounded (`TURN_QUEUE_MAX`) and fed non-blockingly; overflow aborts the turn (see S3b above).
-- `ClientRegistry` (`registry.py`) — maps `client_id → JotaBridge`; used by `FrameDispatcher` to deliver agent-initiated push events to the right session.
-- `FrameDispatcher` (`dispatcher.py`) — called by `_listen` for every incoming frame; routes `res` frames to `TurnRegistry` (a `res` ends the turn only with `ok:false` or the legacy explicit `status:"done"`; any other `ok:true` ack is ignored, G-47), `chat` events to active turn queue or bridge push hooks, `agent` phase events to `bridge.enqueue_push` (`start` suppressed when a normal turn's queue is registered for that `session_key`, #112 — `end` is always forwarded unconditionally, since `on_push_turn_end` already no-ops safely when no push turn is open), `session.tool` events (`phase: "start"`/`"result"`, `"update"` dropped) to the active turn queue or `bridge.enqueue_push` (push handlers run on the bridge's worker, not inline in `_listen`, #130 S3a). Frame types and event names it doesn't handle are logged **once per kind at INFO** (payload never logged), then at DEBUG (issue #136) — a new INFO line like that after an OpenClaw upgrade is the signal of protocol drift; update `docs/openclaw-protocol.md`.
-- `GatewayInfo` / `AgentInfo` (`models.py`) — `default_agent_id`/`tick_interval_ms`/etc. come from the `hello-ok` payload; the **agent roster itself no longer does** (OpenClaw server 2026.6.11+ stopped embedding it in `hello-ok`'s `snapshot`). `OpenClawClient.connect()` fetches it explicitly via `agents.list` right after `hello-ok` and merges it in via `GatewayInfo.update_agents_from_list()`. **Roster fallback (issue #151):** if `agents.list` answers `ok:false` on a *re*connect, `_do_connect()` keeps the last known roster instead of leaving it empty (a timeout already fails the whole connect, which the reconnect loop retries; the first connect has no previous roster to fall back to). Without this, `has_agent()` silently rejects every named agent — clients that omit `agent` in the Handshake are unaffected, since the fallback `default_agent_id` still comes from `sessionDefaults`.
-- `ToolCallEvent` (`models.py`) — parsed from a `session.tool` event's `data` sub-object; only `start`/`result` phases are surfaced (`update` streaming-partials are dropped). Forwarded to clients as a `{"type": "tool_call", ...}` WS message only when `ClientConfig.tool_calls_enabled` is `True` (default `False`).
-
-**Stable errors (issue #228):** outside `_listen` too, nothing raw reaches a client or a log. Turn errors use fixed codes (`orchestrator_send_failed`, `orchestrator_unavailable`, `orchestrator_error`, plus the existing `orchestrator_disconnected`/`turn_timeout`/`turn_overflow`/`turn_in_progress`; table in `docs/client-protocol.md` §9). `call_orchestrator` raises `OrchestratorError` for them; `/v1` relays only that and answers any other exception as `internal_error`. A bad handshake is `OrchestratorHandshakeError` (`orchestrator_handshake_failed`), and `last_error` (`/admin/.../status`) holds that code or the exception type name only (`describe_error`/`traceback_no_message` in `src/services/reconnection.py`).
-
-**Turn-completion signal:** OpenClaw server 2026.6.11+ never sends a second `res` for `chat.send` — the real completion signal is a `chat` event with `payload.state == "final"`. `stream_response()` treats that as `status: "done"` and ends the turn; the old `res`-based `done`/`status` handling is kept only as a fallback for older server versions, but production no longer relies on it. **Final text (issue #241, OpenClaw 2026.10.5):** `final` carries the full reply in `message` and no `deltaText`, so tokens are not only `deltaText`. **Delta/replace/snapshot (issue #243):** `ChatTextTracker` (`src/services/openclaw/chat_text.py`, used by `stream_response()` and `deliver_push()`) keeps `current` (`replace:true` → `current = deltaText`; `message` present → its text, authoritative, never re-adding `deltaText`; else `current += deltaText`; `final` → text of its `message`) and on every update emits only `missing_tail(emitted, current)`; if `current` does not start with what was already delivered (also tried after stripping leading whitespace) it emits the full `current` and logs a content-free WARNING (losing the reply is worse than repeating a fragment). A `current` that is a strict non-empty prefix of what was delivered (retraction) emits nothing, keeps `emitted` and logs a fixed content-free INFO line. An empty `current` emits nothing and does not reset `emitted`. The tracker also keeps `all_out` (every token delivered) and compares against it when `current` diverges from the last aligned text; a whitespace-only `emitted` never logs the WARNING. **`aborted`/`error` never emit a text tail from `message`** (deliberate: after an `aborted` the client already cut the reply by barge-in/cancel, and an `error` may omit `message` on purpose); only `final` does. Detail in `docs/openclaw-protocol.md`. Assume this if a turn ever appears to hang after a token is received but before `turn_end` reaches the client — check `state` on the `chat` events, not for a stray `res`.
-
-OpenClaw connection details (loopback backend mode, no device signature required):
-- Token: `OPENCLAW_TOKEN`
-- Port: `OPENCLAW_PORT` (default 18789)
-
-**Keep `docs/openclaw-protocol.md` in sync.** OpenClaw's wire protocol drifts between minor
-server versions with no changelog (the `agents.list`/`chat.state=="final"` breaks above were
-both discovered live, by accident, not from release notes). `docs/openclaw-protocol.md` in
-this repo (git-tracked, versioned) is jota-gateway's own hyper-current technical record of
-what the protocol actually does, as observed against the real running instance — separate from
-the general-purpose `openclaw` skill (`~/.claude/skills/openclaw/`), which explains what
-OpenClaw is project-agnostically and is not meant to track this level of fast-moving detail.
-Whenever you discover a new protocol change, inconsistency, or undocumented event shape while
-working on this codebase (via raw-frame capture, a failing assumption, a hanging turn, etc.):
-1. Update `docs/openclaw-protocol.md` with what you found, dated, including the server version
-   if known — follow the existing "Breaking change — vX.Y.Z" style for anything that silently
-   breaks old client code.
-2. Only mirror the parts of that finding that are specific to *this repo's implementation* here
-   in `CLAUDE.md` (as done above for `agents.list` and turn-completion) — `docs/openclaw-protocol.md`
-   is the source of truth for the protocol itself, this file is for how jota-gateway's code
-   responds to it.
-Skipping this is how the same drift gets silently re-discovered (and re-debugged from scratch)
-in a future session.
-
----
-
-## Gateway observation (issue #219)
-
-- **Counters:** `gateway_stats` (`src/services/stats.py`, singleton, no locks, event loop only) counts `sessions_opened`, `sessions_closed` by reason, `handshake_rejected` by reason (`too_large`/`invalid`/`timeout`/`not_text`/`invalid_key`/`agent`), `turns` (`normal`/`push`) and `turn_errors` (stable codes only). In-process, reset on restart.
-- **`session_end` meta:** besides `duration_s`, carries `reason` (`CloseReason`: `client_disconnect`/`idle_timeout`/`silence_timeout`/`slow_client`/`revoked`/`shutdown`/`error`/`unknown`; first `note_close_reason()` wins), `turn_in_flight`, `sender_peak_msgs`, `sender_peak_bytes`, `turn_queue_peak`, `push_backlog_peak`. `SessionRecord.status` keeps its five values; `reason` is the finer detail. A WS disconnect with code 1012 (uvicorn closing every socket before the lifespan drain) is recorded as `reason=shutdown`; on a real restart sessions mostly end through that path, so they get `status=completed, reason=shutdown`, not `status=shutdown`. `sessions_opened` is counted in `JotaBridge.__init__`, so every closed session was counted opened.
-- **Queue depths:** `QueuedSender.queue_stats()` (`pending_msgs/bytes`, `peak_msgs/bytes`; `DirectSender` gives zeros), `TurnRegistry.depth(session_key) -> (current, peak)`, bridge `_push_pending`/`_push_pending_peak`. O(1) per message, no new locks.
-- **Tracker stage `push_tts`:** recorded at a push turn's end when it had TTS, meta `send_ms`, `end_ms`, `drain_ms`, `close_ms`, `dropped`, `chars` (numbers only).
-- **Logging:** `LOG_FORMAT=json` (`configure_logging`, `src/core/logging.py`) switches app and uvicorn loggers to `JsonFormatter`; `/healthz` is filtered out of the uvicorn access log in both formats.
-- **`GET /admin/state`** (admin token): gateway uptime, service states, `gateway_stats` totals + `sessions_active`, and one row per session (`JotaBridge.snapshot()` + `started_at`/`last_latencies` from the `SessionRecord`); shape in `_build_state` (`admin_routes.py`), test `tests/integration/test_admin_state.py`. Services use the in-memory `status()`, never `probe()`. Rows come from `ClientRegistry.bridges()`, keyed by `client_id`: a reconnect overlap shows only the newest bridge; a row whose `snapshot()` raises is skipped. No user text and no `client_key`.
-- **`GET /admin/state/stream`** (admin token): SSE, `data: <same JSON>\n\n` every `STATE_STREAM_INTERVAL_S` (1.0). Each stream ends by itself after `STATE_STREAM_MAX_S` (25 s, below the image's 35 s graceful-shutdown timeout, so an open dashboard never blocks shutdown) or on disconnect: **the dashboard must reconnect** (`EventSource` does it automatically).
-
-## Admin API authentication
-
-All `/admin/*` routes use `Depends(get_admin_auth)` (`src/api/deps.py`), which reads the `X-Admin-Token` header and compares it against `settings.ADMIN_TOKEN`. Returns 422 if the header is missing, 401 if wrong, 503 if `ADMIN_TOKEN` is not configured.
-
-The `/v1/*` routes use `Depends(resolve_ha_caller)` (`src/api/openai_routes.py`) instead — see `src/core/network.py` and the trusted-origin bullet under Architecture above (issue #52).
-
----
-
-## Client output — serialized outbound path (`src/services/outbound.py`, issue #130 S1)
-
-Every message the gateway sends to a client flows through one `OutboundSender` per session so message order = enqueue order, never interleaved. `routes.py` constructs `QueuedSender(websocket)` after agent policy validation and passes it to `PipelineTracker` and `JotaBridge` (order: sender → tracker → bridge). Los 1008 del handshake ocurren antes de que exista; los cierres posteriores los cubre el `aclose` del `finally`.
-
-**`QueuedSender`:** unbounded FIFO queue + `_writer` task per session (not in `bridge.tasks` — `close_all()` must not cancel it). `send_json()`/`send_bytes()` enqueue and return; writer drains in order. On first socket failure: subsequent sends raise `ClientGone` y el writer descarta mensajes pendientes (solo flush() esperando recibe ClientGone). Un fallo por desconexión rutinaria del cliente (`WebSocketDisconnect`, o el `RuntimeError` de starlette al enviar tras el cierre) se registra en INFO; cualquier otro fallo de escritura, en WARNING (una línea, solo el nombre del tipo, nunca el payload). Garantía: total order = enqueue order; sin interleaving, sin duplicados. **Cliente lento (issue #130 S2):** cada escritura al socket va bajo `asyncio.timeout(CLIENT_SEND_TIMEOUT_S)` (10s por envío). uvicorn >= 0.52.1 aplica write flow control (sansio), así que un cliente que dejó de leer bloquea `send`; al vencer el writer lanza `ClientSlow` (subclase de `ClientGone`), descarta lo pendiente y llama a `on_slow` una sola vez. La cola sigue siendo ilimitada: el timeout solo acota su crecimiento para un cliente por debajo del umbral de drenado (ver "Cliente lento — S2 hecha"); para uno que drena por encima, la cola crece mientras dure la producción. El mínimo `uvicorn>=0.52.1` lo guarda `tests/unit/test_uvicorn_backpressure.py`.
-
-**Lifecycle:** (1) Enqueue: el `turn_start` de un turno normal, `pipe_audio` y `_pipe_push_audio` hacen return; el resto lo traga (algunos con warning). (2) `ready` en `routes.py`: `await sender.flush()` tras enviar — si falla, log y return. (3) `status` messages (`bridge.notify_service_status`, el único punto de envío): un envío fallido se traga salvo con `propagate=True`, que solo usa `health_check()` para que el error llegue a `routes.py`. (4) Shutdown: `routes.py finally` llama `await sender.aclose(SHUTDOWN_DRAIN_S)` tras `bridge.close_all()` — nunca lanza `Exception` (una cancelación sí puede propagarse; el descarte de pendientes corre igualmente).
-
-**Cliente lento — S2 hecha (issue #130 S2):** `routes.py` construye `QueuedSender(websocket, on_slow=_on_slow_client)`; el closure llama a `drop_slow_client(websocket, record=...)` (`src/core/transport.py`), que (1) registra el evento de tracker `client_slow` (solo `timeout_s`, nunca texto), (2) intenta `websocket.close(1013, "client too slow")` acotado a `SLOW_CLOSE_GRACE_S=2s` (el close frame queda detrás de los datos sin leer; es de mejor esfuerzo: `abort()` corre justo tras un close correcto y descarta el buffer de escritura en espacio de usuario, así que un close frame encolado detrás de datos pendientes puede perderse) y (3) llama a `transport.abort()` en un `finally`. El cliente suele (no siempre) ver 1013 si reanuda la lectura dentro del margen; si no, 1006 (`abort()` no envía close frame). Tras el abort, el `receive()` del servidor devuelve `websocket.disconnect` y sigue el teardown normal de la sesión. **Es un umbral de caudal de drenado, no un detector de atasco ni un limitador de caudal:** con el write flow control de uvicorn un `send` espera desde el high-water mark (~64 KiB) hasta el low-water (~16 KiB), es decir ~48 KiB por ciclo, así que el tiempo es ~48 KiB / caudal de lectura del cliente. Con `CLIENT_SEND_TIMEOUT_S=10` la teoría corta a quien drena por debajo de ~5 KB/s; en macOS loopback contra uvicorn real, produciendo más rápido de lo que lee el cliente, T=1s cortó a 10, 30, 60 y 100 KB/s (400 KB/s no) y T=10s cortó a 3 KB/s (a los 10.0 s), 8 KB/s (12.8 s) y 20 KB/s (11.2 s); el umbral real depende de la ventana TCP del kernel y de la tasa de producción, de ahí "unos pocos KB/s (teoría) a unas pocas decenas de KB/s (medidas)". **Matiz importante (medición del 2026-10-11):** esas cifras solo valen cuando hay más datos en vuelo que los buffers del sistema (varios MB). Con un cliente `websockets` por defecto que lee a ritmo de reproducción (1x) una respuesta de 6 MB (≈125 s de audio) no hizo esperar a ningún `send` (espera máxima 0,0 s), tampoco con clientes que leían a 20 y a 5 KB/s: los buffers del sistema absorbieron todo. En la práctica la política solo actúa con un cliente parado o con mucho más audio en vuelo del que caben en esos buffers. En esa misma prueba el cliente cerró la conexión a los 40 s por su propio keepalive (ping de 20 s + 20 s por defecto de la librería: el pong llega detrás del audio ya enviado, que el cliente lee a ritmo de reproducción); es independiente de S2 y está documentado para quien desarrolle clientes en `docs/client-protocol.md` §13. Para escala, el TTS PCM16 a 24 kHz son 48 KB/s. S2 corta a un cliente cuyo `send` queda bloqueado más de T, lo que incluye al parado y al que drena muy por debajo del caudal de salida; los clientes por encima del umbral no se cortan y la cola de `QueuedSender` sigue creciendo para ellos mientras dure la producción, así que no es una cota de memoria para clientes moderadamente lentos. Una cola acotada con política de descarte sigue siendo trabajo futuro. **Limitación conocida:** con `--log-level trace` uvicorn envuelve la app en `MessageLoggerMiddleware` y le pasa un `send` que es un cierre, no un método enlazado, así que `TransportCaptureMiddleware` guarda `None` y no se puede abortar la conexión. En uvicorn real el `close(1013)` queda detrás de los datos sin leer y se cancela tras los 2 s de margen, no sigue ningún `abort()`, y la sesión queda abierta con un sender muerto hasta que el cliente se va o vence `IDLE_TIMEOUT_S` (que puede no vencer nunca si el cliente sigue enviando). Solo bajo `TestClient` se cierra simplemente con 1013. **S3b hecha (issue #130 S3b):** la cola de cada turno en `TurnRegistry` está acotada por `TURN_QUEUE_MAX` (1000 eventos) y el dispatcher ya no hace `await put`: usa `deliver_by_session`/`deliver_by_req` (`put_nowait`). Si se llena (consumidor atascado) se vacía la cola, se encola `("overflow", None)`, los frames siguientes de ese turno se descartan, y `stream_response` emite `error` `turn_overflow` **sin** marcar `_finished`, así que su `finally` envía `chat.abort` (como `turn_timeout`). El cliente ve `TURN_ERROR` con `message:"turn_overflow"`; la sesión sigue. Lápida de `TURN_ABORT_TOMBSTONE_S` (5 s, `registry.py`): `is_aborted(sk)` hace que el dispatcher descarte `chat`/`tool`/`agent start` tardíos de ese `session_key` en vez de reencaminarlos como push (`agent end` se sigue reenviando siempre). `error_all` usa un put forzado y nunca lanza `QueueFull`.
-
-**Riesgo conocido:** `connect_internal_services()` registra el bridge en `ClientRegistry` antes de que `routes.py` envíe `ready`, así que un `broadcast_status` de otra tarea puede llegar al cliente antes que `ready`. S1 no cambia esto: el orden total garantiza coherencia, no que `ready` sea primero (deducido del código, no reproducido por test).
-
----
-
-## Cache pattern (`src/core/cache.py`)
-
-`make_cache(maxsize, ttl)` returns `(TTLCache, threading.Lock)`. A real OS-level mutex, not `asyncio.Lock`, because callers span both the event loop (async handlers) and Starlette's threadpool (sync `def` route handlers, e.g. `admin_routes.py`) — `asyncio.Lock` is only safe to acquire from the loop it's bound to. The lock must wrap **only dict access, including TTLCache's internal expiry housekeeping** (`in`, `[]`, `.pop()` all trigger it), never IO calls — acquire lock to check/set, release before any query or await.
-
-Callers that cache the result of an external lookup (e.g. `DbClient._session_cache`) must guard against a stale write racing a concurrent invalidation: capture a single **global** invalidation epoch under the lock before the lookup, then only write to cache if the epoch is unchanged after the lookup completes (issue #163). It is global, not per-key, on purpose: a per-key counter can't be purged safely — a naive `pop` resets it to the default 0, so an in-flight read of a just-deleted/rotated key would match and repopulate the cache with a dead key's session for up to 60s — and keeping every historical key grows without bound. The cost of the global epoch is only a skipped cache write (one extra query) when an unrelated key is invalidated mid-read, never a stale value. See `DbClient.get_session` / `DbClient.invalidate` for the reference implementation.
-
----
-
-## Docker & data persistence
-
-`docker-compose.yml` mounts `./data:/app/data`. The SQLite file at `data/gateway.db` lives on the host and survives container rebuilds. `data/` is in `.gitignore`.
-
-On first startup (`run_migrations()` in the lifespan), the schema is created automatically if the file doesn't exist.
-
-`run_migrations()` (`src/db/database.py`, Alembic) picks one of three modes by inspecting the DB:
-- **Fresh** — no `clients` table and no `alembic_version`: `upgrade head` from scratch.
-- **Versioned** — `alembic_version` exists: `upgrade head` applies only pending migrations.
-- **Legacy stamp** — `clients` exists but `alembic_version` doesn't (schema already patched by hand with `ALTER TABLE`, as in production after the original incident): `stamp head`, no DDL executed. Before stamping it checks that the real `clients` columns include every `ClientRecord` column; if any is missing it raises `SchemaMismatchError` listing them and neither runs DDL nor stamps (G-42).
-
-`get_engine()` also creates the SQLite file's parent directory if missing (`_ensure_sqlite_dir`, issue #124), so `DATABASE_URL=sqlite:///data/gateway.db` works on a clean non-Docker checkout without a manual `mkdir -p data`. In-memory and non-SQLite URLs are left untouched.
-
----
+CI (`.github/workflows/test.yml`) runs ruff, mypy and pytest over `tests/unit`, `tests/contract` and `tests/integration`: run all three locally before opening a PR. `tests/e2e` (marker `e2e_real`, real OpenClaw) and `tests/live` (marker `live`, real ElevenLabs, `JGW_LIVE=1`) only run on demand; see the README.
+
+## What this is
+
+A BFF: the single entry point for Jota-Screen, jota-voice (Mac and Android/Termux), the iPhone app and Home Assistant (an ESP32 client is planned, not built). Client identity and per-client config live in a local SQLite DB (`data/gateway.db`, Alembic migrations applied at startup). One `JotaBridge` per WebSocket session talks to OpenClaw (orchestrator, the only fatal dependency), an STT provider and a TTS provider. One process per DB: `SINGLE_PROCESS_LOCK` takes a `flock` on `gateway.lock` next to the DB; multi-worker is not supported.
+
+## Module map (`src/`)
+
+| Path | Role |
+|---|---|
+| `main.py` | App + lifespan: lock and startup checks, migrations, builds OpenClaw and speech providers into `app.state`, wires state-change broadcasts, ordered shutdown (drain sessions → close speech providers → OpenClaw → dispose DB engine) |
+| `api/routes.py` | `/ws/stream`: handshake (size, timeout, auth, agent policy) → `QueuedSender` → `PipelineTracker` → `JotaBridge` → health check → `ready` → `bridge.run()` |
+| `api/admin_routes.py` | `/admin/*` (`X-Admin-Token` via `api/deps.py`): client CRUD, sessions, service status, `GET /admin/speech`, `/admin/state` (+ SSE stream) |
+| `api/openai_routes.py` | `/v1/models`, `/v1/chat/completions` (Home Assistant); auth in `resolve_ha_caller` + `core/network.py` |
+| `api/health_routes.py` | `/healthz` (liveness), `/ready` (503 only if OpenClaw is down) |
+| `core/config.py` | `Settings` (pydantic-settings, `.env`) |
+| `core/agent_policy.py` | `resolve_agent()`: handshake/`model` → client `default_agent` → OpenClaw default → `"main"`, then `allowed_agents` and roster checks |
+| `core/network.py` | `resolve_client_ip()`; `X-Real-IP` trusted only from `TRUSTED_PROXIES` |
+| `core/logging.py` | `fingerprint_key()`, text/JSON formatters |
+| `core/transport.py` | Captures the uvicorn transport so a slow client can be aborted (`drop_slow_client`) |
+| `core/startup_checks.py` | Single-process lock, token/speech settings checks |
+| `db/` | `ClientRecord` (`models.py`), engine and `run_migrations()` (`database.py`); Alembic scripts in the top-level `migrations/` |
+| `models/` | Handshake/`ClientConfig` (`schemas.py`), admin input validation (`admin_schemas.py`) |
+| `services/bridge.py` | `JotaBridge`: input loop, turns, barge-in, push turns, silence/idle watchdogs, session revalidation, `close_all()` |
+| `services/outbound.py` | `QueuedSender`: one ordered outbound queue per session; slow-client cut-off (`CLIENT_SEND_TIMEOUT_S`) |
+| `services/db_client.py` | `get_session(client_key)` → `(Client, ClientConfig)` straight from the DB (no cache) |
+| `services/openclaw/` | `OpenClawClient` (one multiplexed WS v4 connection), `ReconnectingOpenClawClient`, `FrameDispatcher`, `TurnRegistry`/`ClientRegistry`, `ChatTextTracker` |
+| `services/speech/` | STT/TTS ports (`ports.py`), `factory.py`, `jota.py` (jota-transcriber/jota-speaker), `elevenlabs/`; `SpeechProviders` holder in `app.state.speech` |
+| `services/reconnection.py` | Shared `ConnectionState`, `ServiceHealth`, backoff loop, `describe_error()` |
+| `services/pipeline_tracker.py`, `session_registry.py`, `stats.py` | Per-session events/latencies, `/admin/sessions`, in-process counters |
+| `cli.py` | Client management from the terminal |
+
+Speech providers are chosen at startup with `STT_PROVIDER`/`TTS_PROVIDER` (`jota` or `elevenlabs`); changing them needs a restart (`GET /admin/speech` only reads). Every remaining ElevenLabs tunable is a module constant in `services/speech/elevenlabs/`.
+
+## Hard invariants
+
+Breaking any of these is a bug, whatever the change is for.
+
+- **Service addresses are `host:port` without protocol** in every `Settings` field; each client adds `ws://`/`http://` itself. Never store full URLs in settings.
+- **`client_key` is a credential.** Never log it, in full or as a prefix; correlate with `fingerprint_key(value)` logged as `fp=<8 hex>`, and with `client.id` after auth. Pydantic validation errors must be logged as field + error type only (`input_value` would carry the key).
+- **No user text in logs at INFO or above, nor in tracker `meta`** (it is logged at INFO and persisted in `SessionRecord`, visible in `/admin/sessions`): record lengths (`text_len=len(text)`). DEBUG transcripts are truncated (finals: 40 chars).
+- **Stable errors toward clients.** A client or a log never sees exception text or OpenClaw's raw error: turn errors use the fixed codes listed in `docs/client-protocol.md` §9 (`orchestrator_*`, `turn_timeout`, `turn_overflow`, `turn_in_progress`, `internal_error`); logs carry the exception type (`describe_error`, `traceback_no_message`) and `last_error` holds a code or a type name.
+- **Exactly one `turn_end` per `turn_start`**, normal or push, on every path (end, error, cancel, barge-in, replacing `send`, final transcription, close). `turn_seq` is masked `& 0xFFFF` in both `turn_start` and the audio header.
+- **All client output goes through the session's `QueuedSender`** (total order = enqueue order); `notify_service_status()` is the single point for `status` messages.
+- **Only the orchestrator is fatal** (health check before `ready` → 1011). STT/TTS failures degrade the session and are reported with `status`; they never close it.
+- **OpenClaw drift:** when you discover a protocol change, inconsistency or undocumented event shape, update `docs/openclaw-protocol.md` (dated, server version if known, "Breaking change — vX.Y.Z" style). That file is the source of truth for the protocol; this one only says how the code reacts.
+- `.env.sample` must list every `Settings` field with its default; `/admin/*` input is validated in `admin_schemas.py` (new client type → extend `ClientType`).
+
+## Testing notes
+
+- `tests/unit` (bridge and services with light fakes), `tests/contract` (the same battery against every speech adapter, fakes in `tests/fakes/`), `tests/integration` (`TestClient`, fake upstreams; a few use real uvicorn).
+- `tests/integration/conftest.py`: `db_engine` (autouse) puts a file-backed SQLite in `tmp_path` into `src.db.database._engine`; `_skip_lifespan_migrations` and `_noop_dispose_engine` (autouse) keep the lifespan off that DB; `seed_client` (not autouse — admin tests need an empty DB) inserts `VALID_KEY`/`CLIENT_ID`; `client` is a full `TestClient` with a mock orchestrator.
+- `tests/conftest.py` disables the single-process lock, resets `gateway_stats` and forces `ELEVENLABS_API_KEY=None` for every test.
+- If imports of `src`/`tests` fail oddly, check the Python environment for stray `.pth` files or a foreign `tests` package before assuming the code is broken.
 
 ## Sincronización obligatoria con Obsidian (ciclo de vida de issues y PRs)
 
@@ -538,42 +106,5 @@ Reglas de contraste:
 
 - Si GitHub y Obsidian discrepan en el **estado**, manda GitHub (verifícalo con `gh`), y se corrige Obsidian. La **información de contexto** (decisiones, avances por subfase, notas) la conserva Obsidian: léela antes de decidir.
 - No se da una issue o PR por cerrada del todo mientras Obsidian siga mostrando otro estado. Si Obsidian está cerrado o el MCP falla, **no reintentes en bucle**: dilo al usuario y deja constancia explícita en la PR o en la respuesta de que Obsidian queda sin sincronizar.
-- Nada de claves, tokens ni transcripts en Obsidian (aplican las reglas de higiene de logs de más abajo).
+- Nada de claves, tokens ni transcripts en Obsidian (aplican las reglas de higiene de logs de «Hard invariants»).
 
-## Production readiness / log hygiene
-
-`client_key` is a bearer credential and must never be written to logs in full or as a plaintext prefix. When correlation is necessary, use `src.core.logging.fingerprint_key(value)`, which returns the first 8 hexadecimal characters of the value's SHA-256 digest, and log it as `fp=<fingerprint>`. After successful authentication, use `client.id` as the primary correlation ID.
-
-Inbound HTTP requests and WebSocket connections receive a gateway-owned UUID4 in `scope["state"]["request_id"]` via `RequestIdMiddleware`. This identifier is local to the gateway and unrelated to OpenClaw `req_id`, `turn_id`, or `session_key`. Source IP resolution for HTTP and WebSocket must go through `resolve_client_ip()` so `X-Real-IP` is trusted only from `TRUSTED_PROXIES`.
-
-User transcripts must not be logged at INFO or above. DEBUG transcript logs must be deliberately truncated; the current maximum for final transcriptions is 40 characters. This also covers `PipelineTracker.record()`: it logs `meta` at INFO and the events are persisted in `SessionRecord` (visible in `/admin/sessions`), so callers must never put user text in `meta` — record `text_len=len(text)` instead, as `transcription_partial` and `transcription_final` do (issue #133). INFO logs of `send` and barge-in likewise carry only the length.
-
----
-
-## Testing
-
-Tests live in `tests/integration/` and `tests/unit/`.
-
-- **Integration tests** use SQLite in-memory (via `StaticPool`) injected by the `db_engine` fixture. There are no HTTP mocks for client auth — the DB is seeded directly. WebSocket tests use `starlette.testclient.TestClient` with fake WebSocket servers in background threads.
-- **Unit tests** (`tests/unit/`) test bridge behavior (barge-in, disconnect, send guards, watchdog, push) using lightweight mock objects without a running app.
-
-### Key fixtures (`tests/integration/conftest.py`)
-
-| Fixture | Scope | autouse | Purpose |
-|---|---|---|---|
-| `db_engine` | function | ✓ | Creates `sqlite:///:memory:` with `StaticPool`, monkeypatches `src.db.database._engine` |
-| `clear_db_cache` | function | ✓ | Clears `db_client._session_cache` before/after each test |
-| `configure_admin_token` | function | ✓ | Sets `settings.ADMIN_TOKEN = "test-admin-token"` |
-| `seed_client` | function | ✗ | Inserts the standard test `ClientRecord` (`VALID_KEY`, `CLIENT_ID`) — only used where needed |
-| `mock_services` | function | ✗ | `respx` mock for transcriber + TTS health checks only |
-| `client` | function | ✗ | Full `TestClient(app)` with seeded client + mock orchestrator |
-
-The `StaticPool` is required for SQLite `:memory:` so all connections share one database (the default creates a new empty DB per connection).
-
-`seed_client` is **not** autouse — admin tests need an empty DB. Add it as a parameter only to tests that send a WS handshake with `VALID_KEY`.
-
-### OpenClaw tests
-
-`OpenClawClient` tests (`test_openclaw_client.py`) use `SmartFakeWS` — a queue-backed fake WebSocket that auto-responds to the v4 handshake (challenge → connect → hello-ok → agents.list → subscribe ack) and per-test `chat.send` sequences. Constructor accepts `hello_ok_payload`/`agents_list_payload` overrides (for exercising the agents-roster-fetch path) and `chat_responses`/`tool_calls` (for turn content and `session.tool` events).
-
-`ReconnectingOpenClawClient` tests (`test_reconnecting_openclaw.py`) stub `OpenClawClient` to test backoff, DEGRADED state, and the `on_disconnect` hook contract.
