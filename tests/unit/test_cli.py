@@ -129,3 +129,21 @@ def test_unknown_key_error_does_not_echo_the_key(capsys):
     err = capsys.readouterr().err
     assert key[:6] not in err
     assert fingerprint_key(key) in err
+
+
+def test_add_client_strips_agent_and_rejects_empty_agent(capsys):
+    """#239: --agent se recorta como en el admin REST; vacío tras recortar -> error, sin fila."""
+    import pytest
+
+    e = _engine()
+    _run(["add-client", "--name", "HA", "--agent", "  home  "], e)
+    with Session(e) as s:
+        assert s.exec(select(ClientRecord)).one().default_agent == "home"
+
+    e = _engine()
+    with pytest.raises(SystemExit) as exc:
+        _run(["add-client", "--name", "X", "--agent", "   "], e)
+    assert exc.value.code != 0
+    assert "--agent" in capsys.readouterr().err
+    with Session(e) as s:
+        assert s.exec(select(ClientRecord)).all() == []

@@ -25,7 +25,7 @@ ClientType = Literal["ha", "esp32", "web", "app"]
 # desbordes de entero en SQLite (OverflowError -> 500) y valores absurdos.
 _Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 _Text = Annotated[str, StringConstraints(min_length=1, max_length=200)]
-_Agent = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+AgentName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 _VadThold = Annotated[float, Field(ge=0.0, le=1.0)]
 _Speed = Annotated[float, Field(gt=0.0, le=10.0)]
 _Seconds = Annotated[float, Field(gt=0.0, le=86_400.0)]
@@ -55,8 +55,8 @@ class ClientCreate(BaseModel):
     name: _Name
     client_key: str | None = None  # si se omite (o es ""), se genera uno aleatorio
     client_type: ClientType | None = None
-    default_agent: _Agent | None = None
-    allowed_agents: list[_Agent] | None = None
+    default_agent: AgentName | None = None
+    allowed_agents: list[AgentName] | None = None
     # Pipeline config
     stt_language: _Text = "es"
     stt_vad_thold: _VadThold = 0.0
@@ -83,8 +83,8 @@ class ClientUpdate(BaseModel):
     name: _Name | None = None
     is_active: bool | None = None
     client_type: ClientType | None = None
-    default_agent: _Agent | None = None
-    allowed_agents: list[_Agent] | None = None
+    default_agent: AgentName | None = None
+    allowed_agents: list[AgentName] | None = None
     stt_language: _Text | None = None
     stt_vad_thold: _VadThold | None = None
     tts_voice: _Text | None = None
