@@ -95,10 +95,8 @@ class JotaBridge:
         self._sender: OutboundSender = sender or DirectSender(client_ws)
         self.handshake: Handshake = handshake
         self.orchestrator: OrchestratorProtocol = orchestrator  # injected, not created here
-        # Cada turno TTS y cada sesión STT nueva usa el proveedor VIGENTE de `speech`; una
-        # sesión STT ya abierta conserva el suyo hasta que termina.
-        self._speech = speech
-        self._session_stt: SpeechToTextProvider | None = None  # el que abrió la sesión
+        self.tts: TextToSpeechProvider = speech.tts
+        self._stt: SpeechToTextProvider = speech.stt
         self.tracker: PipelineTracker = tracker
         self._client_registry = client_registry
         self._turn_registry = turn_registry  # solo para el máximo de la cola de turno (#219)
@@ -179,22 +177,13 @@ class JotaBridge:
         self._last_audio_at: float | None = None
         self._audio_burst_start: float | None = None
 
-    @property
-    def tts(self) -> TextToSpeechProvider:
-        return self._speech.tts
-
-    @property
-    def _stt(self) -> SpeechToTextProvider:
-        return self._speech.stt
-
     async def connect_internal_services(self):
         """Inicializa clientes de microservicios dependiendo del handshake."""
         if self.handshake.input_mode == "audio":
             # Las callbacks se entregan al abrir la sesión (no en run()): el bucle de
             # entrada del cliente arranca antes que run() y el primer evento no puede
             # quedarse sin destinatario.
-            self._session_stt = self._stt
-            self.transcriber = self._session_stt.open_session(
+            self.transcriber = self._stt.open_session(
                 client=self.client,
                 params=SttParams(self.config.stt_language, self.config.stt_vad_thold),
                 callbacks=SttCallbacks(
@@ -498,7 +487,7 @@ class JotaBridge:
         return {
             "barge_in": bool(self.config.barge_in_enabled)
             and transcriber_live
-            and (self._session_stt or self._stt).capabilities.partials,
+            and self._stt.capabilities.partials,
             "tts": tts_live,
             "transcriber": transcriber_live,
         }
@@ -638,10 +627,10 @@ class JotaBridge:
                 continue
             elapsed = now - last
             timeout = self.config.silence_timeout_s
-            if last == burst_start and self._session_stt is not None:
+            if last == burst_start:
                 # First window after the burst opened: a provider that needs a while to
                 # return its first result (`warmup_s`; jota = 0) isn't blamed for it.
-                timeout += self._session_stt.capabilities.warmup_s
+                timeout += self._stt.capabilities.warmup_s
 
             if elapsed > timeout:
                 silence_count += 1

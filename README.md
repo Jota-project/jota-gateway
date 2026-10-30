@@ -66,7 +66,6 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la guía completa 
 | `/admin/transcriber/status` | GET | Estado del proveedor STT activo (`provider`; con jota, reachability en vivo; con ElevenLabs, salud cacheada + `counters`) |
 | `/admin/tts/status` | GET | Estado del proveedor TTS activo (`provider`, breaker, último error; con ElevenLabs, `counters`) |
 | `/admin/speech` | GET | Proveedores de voz activos (`stt`, `tts`) y puerta de audio efectiva |
-| `/admin/speech` | PUT | Cambia el proveedor STT y/o TTS en caliente (`{"stt_provider":"jota"\|"elevenlabs","tts_provider":...}`); no se persiste: al reiniciar mandan las variables de entorno. 422 si falta configuración, 503 si el nuevo proveedor no arranca (no cambia nada) |
 | `/admin/clients` | GET | Lista clientes |
 | `/admin/clients` | POST | Crear cliente (`client_key` generado o provisto) |
 | `/admin/clients/{id}` | GET | Detalle de un cliente |
@@ -177,7 +176,7 @@ El STT y el TTS pasan por una capa de proveedores (`src/services/speech/`). Los 
 | `STT_AUDIO_GATE` | `energy` | Puerta de energía del STT de ElevenLabs (solo se envía audio mientras se habla); `off` la quita. jota no la usa |
 | `STT_GATE_RMS_DBFS` | `-45` | Umbral de la puerta de energía |
 
-`ELEVENLABS_BASE_URL` y `ELEVENLABS_TTS_MODEL` están en `.env.sample`; el resto de ajustes de ElevenLabs son constantes del adaptador (`src/services/speech/elevenlabs/`). El cambio en caliente se hace con `PUT /admin/speech`. Con el plan Creator, ElevenLabs conserva el audio y las transcripciones (la retención cero es solo enterprise).
+`ELEVENLABS_BASE_URL` y `ELEVENLABS_TTS_MODEL` están en `.env.sample`; el resto de ajustes de ElevenLabs son constantes del adaptador (`src/services/speech/elevenlabs/`). El proveedor se elige con `STT_PROVIDER`/`TTS_PROVIDER` al arrancar; cambiarlo exige reiniciar. Con el plan Creator, ElevenLabs conserva el audio y las transcripciones (la retención cero es solo enterprise).
 
 `silence_timeout_s` y `max_silence_turns` (umbral del watchdog de silencio) son campos de configuración **por cliente** en la base de datos, no variables de entorno globales — ver `ClientRecord` en `CLAUDE.md`.
 

@@ -123,9 +123,10 @@ async def _lifespan_body(app: FastAPI):
         except Exception as e:
             logger.error("Speech provider %s failed to start (%s)", provider.name, describe_error(e))
     # Wired after start() on purpose (same reason as the orchestrator): a first-time
-    # success must not broadcast a spurious "restored". The holder rewires them on a swap.
-    speech = SpeechProviders(settings, stt, tts)
-    speech.set_state_listeners(_broadcaster("transcriber"), _broadcaster("tts"))
+    # success must not broadcast a spurious "restored".
+    stt.on_state_change = _broadcaster("transcriber")
+    tts.on_state_change = _broadcaster("tts")
+    speech = SpeechProviders(stt, tts)
 
     app.state.openclaw = openclaw
     app.state.speech = speech

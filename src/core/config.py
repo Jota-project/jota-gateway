@@ -35,8 +35,7 @@ class Settings(BaseSettings):
     TTS_WS_URL: str = "localhost:8005"
     TTS_TOKEN: str = "gateway"
 
-    # Proveedores de voz (src/services/speech/). El valor de arranque se puede cambiar en
-    # caliente con PUT /admin/speech (no se persiste: al reiniciar rigen estos).
+    # Proveedores de voz (src/services/speech/). Se eligen al arrancar; cambiarlos = reiniciar.
     STT_PROVIDER: Literal["jota", "elevenlabs"] = "jota"
     TTS_PROVIDER: Literal["jota", "elevenlabs"] = "jota"
     ELEVENLABS_API_KEY: SecretStr | None = None

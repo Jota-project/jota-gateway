@@ -5,6 +5,9 @@ import pytest
 
 from src.core.config import settings
 from src.services.reconnection import ConnectionState
+from src.services.speech.elevenlabs.stt import ElevenLabsSttProvider
+from src.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
+from src.services.speech.registry import SpeechProviders
 
 
 def test_app_state_has_stt_and_tts_providers(client):
@@ -67,54 +70,19 @@ def test_admin_status_includes_provider(client):
     assert client.get("/admin/tts/status", headers=h).json()["provider"] == "jota"
 
 
-def _fake_builders(monkeypatch):
-    from src.services.speech import factory
-    from tests.unit.test_speech_registry import NamedStt, NamedTts
-
-    monkeypatch.setitem(factory.PROVIDER_BUILDERS["stt"], "fake", lambda s: NamedStt("fake"))
-    monkeypatch.setitem(factory.PROVIDER_BUILDERS["tts"], "fake", lambda s: NamedTts("fake"))
-
-
 def test_admin_speech_requires_token(client):
     assert client.get("/admin/speech").status_code == 422
-    assert client.put("/admin/speech", json={}).status_code == 422
     bad = {"X-Admin-Token": "wrong"}
     assert client.get("/admin/speech", headers=bad).status_code == 401
-    assert client.put("/admin/speech", json={}, headers=bad).status_code == 401
 
 
-def test_admin_speech_get_and_put_swap(client, monkeypatch):
-    _fake_builders(monkeypatch)
+def test_admin_speech_get_is_read_only(client):
+    """#269: el proveedor se elige al arrancar; no hay cambio en caliente."""
     h = {"X-Admin-Token": "test-admin-token"}
     body = client.get("/admin/speech", headers=h).json()
     assert body["stt"]["provider"] == "jota" and body["tts"]["provider"] == "jota"
     assert body["audio_gate"] == "off"
-    r = client.put("/admin/speech", json={"tts_provider": "fake"}, headers=h)
-    assert r.status_code == 200 and r.json() == {"stt": "jota", "tts": "fake"}
-    assert client.get("/admin/speech", headers=h).json()["tts"]["provider"] == "fake"
-    assert client.app.state.speech.tts.name == "fake"
-
-
-def test_swap_rejected_without_key_returns_422_and_keeps_current(client):
-    h = {"X-Admin-Token": "test-admin-token"}
-    r = client.put("/admin/speech", json={"stt_provider": "elevenlabs"}, headers=h)
-    assert r.status_code == 422
-    assert "ELEVENLABS_API_KEY" in r.text
-    assert client.get("/admin/speech", headers=h).json()["stt"]["provider"] == "jota"
-
-
-def test_swap_with_failing_start_returns_503_naming_only_provider(client, monkeypatch):
-    from src.services.speech import factory
-    from tests.unit.test_speech_registry import FailingStartTts
-
-    bad = FailingStartTts("bad")
-    monkeypatch.setitem(factory.PROVIDER_BUILDERS["tts"], "bad", lambda s: bad)
-    h = {"X-Admin-Token": "test-admin-token"}
-    r = client.put("/admin/speech", json={"tts_provider": "bad"}, headers=h)
-    assert r.status_code == 503
-    assert "secret-detail" not in r.text and "bad" in r.text
-    assert client.app.state.speech.tts.name == "jota"
-    assert bad.closed == 1
+    assert client.put("/admin/speech", json={}, headers=h).status_code == 405
 
 
 def test_admin_tts_status_exposes_counters_only_for_providers_that_have_them(client, monkeypatch):
@@ -123,10 +91,9 @@ def test_admin_tts_status_exposes_counters_only_for_providers_that_have_them(cli
     h = {"X-Admin-Token": "test-admin-token"}
     assert "counters" not in client.get("/admin/tts/status", headers=h).json()
     monkeypatch.setattr(settings, "ELEVENLABS_API_KEY", SecretStr("k"))
-    monkeypatch.setattr(settings, "ELEVENLABS_TTS_DEFAULT_VOICE", "gc61tTk93h3LBXPxew2V")
     monkeypatch.setattr(settings, "ELEVENLABS_BASE_URL", "ws://127.0.0.1:1")  # nada escucha
-    r = client.put("/admin/speech", json={"tts_provider": "elevenlabs"}, headers=h)
-    assert r.status_code == 200
+    speech = client.app.state.speech
+    client.app.state.speech = SpeechProviders(speech.stt, ElevenLabsTtsProvider(settings))
     body = client.get("/admin/tts/status", headers=h).json()
     assert body["provider"] == "elevenlabs"
     assert body["counters"] == {"capacity_refusals": 0, "provider_429": 0, "auth_errors": 0}
@@ -141,8 +108,8 @@ def test_admin_transcriber_status_exposes_counters_only_for_providers_that_have_
     assert "counters" not in client.get("/admin/transcriber/status", headers=h).json()
     monkeypatch.setattr(settings, "ELEVENLABS_API_KEY", SecretStr("k"))
     monkeypatch.setattr(settings, "ELEVENLABS_BASE_URL", "ws://127.0.0.1:1")  # nada escucha
-    r = client.put("/admin/speech", json={"stt_provider": "elevenlabs"}, headers=h)
-    assert r.status_code == 200
+    speech = client.app.state.speech
+    client.app.state.speech = SpeechProviders(ElevenLabsSttProvider(settings), speech.tts)
     body = client.get("/admin/transcriber/status", headers=h).json()
     assert body["provider"] == "elevenlabs"
     assert body["counters"] == {

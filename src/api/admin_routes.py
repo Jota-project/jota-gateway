@@ -34,17 +34,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from src.api.deps import get_admin_auth
-from src.core.startup_checks import SpeechConfigError
 from src.db.database import get_db_session
 from src.db.models import ClientRecord
 from src.models.admin_schemas import ClientCreate, ClientResponse, ClientUpdate
 from src.services.reconnection import ServiceStatus
-from src.services.speech.registry import SpeechSwapError
 from src.services.stats import gateway_stats
 
 _ROTATE_KEY_ATTEMPTS = 3
@@ -361,13 +358,8 @@ async def get_tts_status(request: Request) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Proveedores de voz — estado y cambio en caliente (no se persiste)
+# Proveedores de voz — estado (se eligen al arrancar con STT_PROVIDER/TTS_PROVIDER)
 # ---------------------------------------------------------------------------
-
-
-class SpeechSwap(BaseModel):
-    stt_provider: str | None = None
-    tts_provider: str | None = None
 
 
 @router.get("/speech")
@@ -379,25 +371,6 @@ async def get_speech(request: Request) -> dict:
         # La puerta solo existe en el STT de ElevenLabs: con jota es siempre "off".
         "audio_gate": getattr(speech.stt, "audio_gate", "off"),
     }
-
-
-@router.put("/speech")
-async def put_speech(body: SpeechSwap, request: Request) -> dict:
-    """Cambia el proveedor de STT y/o TTS sin reiniciar. No se persiste: al reiniciar el
-    gateway vuelven a regir STT_PROVIDER/TTS_PROVIDER. Un TTS cambia en el turno
-    siguiente; una sesión STT ya abierta conserva su proveedor hasta cerrarse."""
-    try:
-        return await request.app.state.speech.swap(
-            stt_name=body.stt_provider, tts_name=body.tts_provider
-        )
-    except SpeechConfigError as e:
-        # El mensaje nombra el setting, nunca su valor.
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)) from e
-    except SpeechSwapError as e:
-        # Nombra solo el proveedor, nunca el texto de la excepción original.
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)) from None
-    except ValueError as e:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)) from e
 
 
 # ---------------------------------------------------------------------------

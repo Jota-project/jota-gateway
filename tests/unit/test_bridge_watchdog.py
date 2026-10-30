@@ -588,7 +588,7 @@ async def test_watchdog_extends_first_window_after_burst_by_stt_warmup(monkeypat
     monkeypatch.setattr(bridge_module, "_WATCHDOG_POLL_S", 0.05)
     config = ClientConfig(silence_timeout_s=0.05, max_silence_turns=1)
     bridge, ws, transcriber = _make_bridge(config=config)
-    bridge._session_stt = SimpleNamespace(capabilities=SttCapabilities(partials=True, warmup_s=0.5))
+    bridge._stt = SimpleNamespace(capabilities=SttCapabilities(partials=True, warmup_s=0.5))
     t0 = time.monotonic()
     bridge._last_audio_at = bridge._audio_burst_start = t0
     bridge._audio_burst_start = t0

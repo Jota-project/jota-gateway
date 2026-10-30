@@ -8,7 +8,7 @@ from src.services.speech.factory import build_stt_provider
 
 
 def speech_providers(tts=None, stt=None) -> SimpleNamespace:
-    """Como `SpeechProviders`: `.tts`/`.stt` vigentes (asignables para simular un swap)."""
+    """Como `SpeechProviders`: `.tts`/`.stt`."""
     return SimpleNamespace(
         tts=tts if tts is not None else AsyncMock(),
         stt=stt if stt is not None else build_stt_provider(settings),
