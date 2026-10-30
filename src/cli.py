@@ -5,21 +5,33 @@ CLI de gestión de clientes jota-gateway.
 Uso: python src/cli.py <command> [options]
 """
 
+import argparse
 import secrets
 import sys
 from typing import get_args
 
+from pydantic import TypeAdapter, ValidationError
 from sqlmodel import Session, select
 
 from src.core.logging import fingerprint_key
 from src.db.database import get_engine, run_migrations
 from src.db.models import ClientRecord
-from src.models.admin_schemas import ClientType
+from src.models.admin_schemas import AgentName, ClientType
+
+_AGENT = TypeAdapter(AgentName)
 
 
 def _get_engine():
     """Indirection para monkeypatching en tests."""
     return get_engine()
+
+
+def _agent(value: str) -> str:
+    """--agent con la misma validación que el admin REST (#233, #239): recorte, no vacío."""
+    try:
+        return _AGENT.validate_python(value)
+    except ValidationError:
+        raise argparse.ArgumentTypeError("vacío o de más de 200 caracteres") from None
 
 
 def _require(session: Session, client_key: str) -> ClientRecord:
@@ -91,8 +103,6 @@ def cmd_delete(client_key: str, engine) -> None:
 
 
 def run(argv: list[str]) -> None:
-    import argparse
-
     p = argparse.ArgumentParser(prog="python src/cli.py")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -102,7 +112,7 @@ def run(argv: list[str]) -> None:
         "--key", dest="client_key", help="client_key exacto a usar (si se omite, se genera uno)"
     )
     a.add_argument("--type", dest="client_type", choices=get_args(ClientType))
-    a.add_argument("--agent")
+    a.add_argument("--agent", type=_agent)
 
     sub.add_parser("list-clients")
 
