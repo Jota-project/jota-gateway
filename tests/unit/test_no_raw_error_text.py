@@ -17,7 +17,7 @@ from src.services import transcriber_client as tc_mod
 from src.services import tts_client as tts_mod
 from src.services.openclaw.client import OpenClawClient
 from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
-from src.services.openclaw.registry import ClientRegistry
+from src.services.openclaw.registry import ClientRegistry, TurnRegistry
 from src.services.protocol import OrchestratorEvent
 from src.services.reconnection import ConnectionState, describe_error
 from src.services.speech.ports import SttCallbacks, SttParams
@@ -266,3 +266,62 @@ async def test_registry_shutdown_drain_failure_logs_type_only(caplog):
     await reg.close_all_sessions(status="shutdown", timeout=1.0)
     assert SECRET not in _logged(caplog)
 
+
+
+async def test_openclaw_ping_failure_logs_type_only(caplog):
+    caplog.set_level(logging.DEBUG)
+    client = OpenClawClient("h", 1, "t", TurnRegistry(), AsyncMock())
+    client._ws = AsyncMock()
+    client._ws.send.side_effect = _boom
+    assert await client.ping() is False
+    assert SECRET not in _logged(caplog)
+    assert "RuntimeError" in _logged(caplog)
+    assert client._health_futures == {}
+
+
+async def test_openclaw_on_disconnect_failure_is_logged_by_type(caplog):
+    caplog.set_level(logging.DEBUG)
+    client = OpenClawClient("h", 1, "t", TurnRegistry(), AsyncMock())
+
+    class _Closed:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    client._ws = _Closed()
+    client.on_disconnect = _boom
+    await client._listen()  # no lanza: el fallo del hook queda en el log
+    assert SECRET not in _logged(caplog)
+    assert "on_disconnect" in _logged(caplog)
+
+
+async def test_registry_broadcast_failure_logs_type_only(caplog):
+    caplog.set_level(logging.DEBUG)
+    reg = ClientRegistry()
+    bridge = AsyncMock()
+    bridge.notify_service_status.side_effect = _boom
+    reg.register("u", bridge)
+    await reg.broadcast_status("orchestrator", "unavailable")
+    assert SECRET not in _logged(caplog)
+    assert "RuntimeError" in _logged(caplog)
+
+
+async def test_openclaw_reconnect_task_failure_logs_type_only(monkeypatch, caplog):
+    """#221: la tarea de reconexión lleva done-callback; su fallo no se pierde."""
+    caplog.set_level(logging.DEBUG)
+
+    async def _boom_async(*a, **k):
+        raise RuntimeError(SECRET)
+
+    monkeypatch.setattr("src.services.openclaw.reconnecting.reconnect_with_backoff", _boom_async)
+    roc = ReconnectingOpenClawClient(AsyncMock(spec=OpenClawClient), "oc")
+    roc._ensure_reconnecting()
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert roc._reconnect_task.done()
+    assert SECRET not in _logged(caplog)
+    assert any(
+        r.levelno == logging.WARNING and "RuntimeError" in r.getMessage() for r in caplog.records
+    )

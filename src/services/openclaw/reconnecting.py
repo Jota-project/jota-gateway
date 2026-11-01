@@ -20,8 +20,18 @@ from src.services.reconnection import (
     reconnect_with_backoff,
     traceback_no_message,
 )
+from src.services.teardown import Teardown
 
 logger = logging.getLogger(__name__)
+
+
+def _log_task_failure(task: asyncio.Task) -> None:
+    """Done-callback de las tareas de fondo (#221): su fallo se registra por tipo, también
+    cuando nadie las espera (una tarea reemplazada o cancelada sin await)."""
+    exc = None if task.cancelled() else task.exception()
+    if exc is not None:
+        logger.warning("OpenClaw: tarea de fondo falló (%s)", describe_error(exc))
+        logger.debug("OpenClaw: %s", traceback_no_message(exc))
 
 
 class ReconnectingOpenClawClient:
@@ -56,6 +66,7 @@ class ReconnectingOpenClawClient:
         self._reconnect_job_id: str = ""
         self._reconnect_exhausted: bool = False
         self._slow_retry_task: asyncio.Task | None = None
+        self._closed = False  # G-52: tras close() nada vuelve a lanzar la reconexión
         # Register disconnect callback so the inner client notifies us on unexpected drops.
         self._client.on_disconnect = self._handle_disconnect
 
@@ -67,7 +78,7 @@ class ReconnectingOpenClawClient:
             self.gateway_info = await self._client.connect()
             self._health.mark_connected()
             self._reconnect_exhausted = False
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: el fallo arranca el reintento
             # Type/stable code only (#228): the text can carry OpenClaw-provided content.
             self._last_error = describe_error(e)
             logger.error(
@@ -77,17 +88,16 @@ class ReconnectingOpenClawClient:
             self._ensure_reconnecting()
 
     async def close(self) -> None:
-        slow = self._slow_retry_task
-        self._cancel_slow_retry()
-        if slow is not None:
-            await asyncio.gather(slow, return_exceptions=True)
-        if self._reconnect_task and not self._reconnect_task.done():
-            self._reconnect_task.cancel()
-            try:
-                await self._reconnect_task
-            except asyncio.CancelledError:
-                pass
-        await self._client.close()
+        self._closed = True
+        slow, self._slow_retry_task = self._slow_retry_task, None
+        # G-52 (#221): Teardown termina el cierre aunque cancelen a quien llama y relanza
+        # esa cancelación al final. Las tareas de reintento pueden estar cerrando un socket
+        # a medio handshake (hasta el close_timeout de 10 s de websockets): de ahí los 12 s.
+        # El cierre del cliente interno ya acota sus propios pasos (2+2+12 s).
+        async with Teardown(f"[{self._name}] close") as td:
+            await td.cancel(slow, "reintento lento", timeout=12.0)
+            await td.cancel(self._reconnect_task, "reconexión", timeout=12.0)
+            await td.step(self._client.close(), "cierre del cliente OpenClaw")
 
     async def ping(self) -> bool:
         if self.state != ConnectionState.CONNECTED:
@@ -120,7 +130,7 @@ class ReconnectingOpenClawClient:
                     yield event
         except asyncio.CancelledError:
             raise
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: el turno cede orchestrator_error
             logger.warning("[%s] stream_response error (%s)", self._name, type(e).__name__)
             logger.debug(
                 "[%s] stream_response traceback (no message): %s", self._name, traceback_no_message(e)
@@ -151,12 +161,13 @@ class ReconnectingOpenClawClient:
         # that flag only ever becomes True inside _reconnect_loop(), which
         # _ensure_reconnecting() itself only starts after assigning a fresh
         # _reconnect_job_id below.
-        if self._reconnect_exhausted:
+        if self._reconnect_exhausted or self._closed:
             return self._reconnect_job_id
         if not self._reconnect_task or self._reconnect_task.done():
             self._reconnect_job_id = str(uuid.uuid4())
             self._set_state(ConnectionState.RECONNECTING)
             self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+            self._reconnect_task.add_done_callback(_log_task_failure)
         return self._reconnect_job_id
 
     async def _reconnect_loop(self) -> None:
@@ -176,8 +187,11 @@ class ReconnectingOpenClawClient:
             self._start_slow_retry()
 
     def _start_slow_retry(self) -> None:
+        if self._closed:
+            return
         if self._slow_retry_task is None or self._slow_retry_task.done():
             self._slow_retry_task = asyncio.create_task(self._slow_retry_loop())
+            self._slow_retry_task.add_done_callback(_log_task_failure)
 
     def _cancel_slow_retry(self) -> None:
         task, self._slow_retry_task = self._slow_retry_task, None
@@ -198,7 +212,7 @@ class ReconnectingOpenClawClient:
                 self.gateway_info = await self._client.connect()
             except asyncio.CancelledError:
                 raise
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — frontera: un intento fallido se reintenta
                 self._health.mark_attempt_failed(describe_error(e))
                 logger.warning(
                     "[%s] degraded retry %d failed: %s",

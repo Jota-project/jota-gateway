@@ -275,3 +275,97 @@ async def test_stream_response_closes_inner_generator_on_early_exit():
         "inner OpenClawClient generator's finally (TurnRegistry.unregister) "
         "never ran synchronously — it was abandoned instead of closed"
     )
+
+
+class _SlowToStopWS:
+    """Socket del que el listener tarda en soltar al cancelarlo (cierre en curso)."""
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.05)
+            raise
+
+    async def close(self):
+        pass
+
+
+async def test_close_does_not_hang_when_cancel_lands_inside_connect(monkeypatch):
+    """G-52 (#221): si la cancelación de close() cae dentro del connect() de la reconexión
+    (mientras desmonta el listener anterior), no se pierde. Antes el listener se tragaba
+    su cancelación, el bucle seguía reintentando y close() esperaba hasta max_duration."""
+    from src.services.openclaw.dispatcher import FrameDispatcher
+    from src.services.openclaw.registry import ClientRegistry, TurnRegistry
+
+    turns = TurnRegistry()
+    inner = OpenClawClient("127.0.0.1", 1, "t", turns, FrameDispatcher(turns, ClientRegistry()))
+    inner._ws = _SlowToStopWS()
+    inner._listener_task = asyncio.create_task(inner._listen())
+    await asyncio.sleep(0)
+
+    async def refused(*_a, **_k):
+        raise OSError("refused")
+
+    monkeypatch.setattr("websockets.connect", refused)
+    roc = ReconnectingOpenClawClient(inner, "test", initial_backoff=0.01, max_duration=300.0)
+    roc._ensure_reconnecting()
+    await asyncio.sleep(0.01)  # la reconexión está en connect() → _cancel_and_close()
+
+    closer = asyncio.create_task(roc.close())
+    await asyncio.wait({closer}, timeout=1.0)
+    try:
+        assert closer.done(), "close() se quedó esperando a la reconexión"
+        assert roc._reconnect_task.done()
+    finally:
+        roc._reconnect_task.cancel()
+        await asyncio.wait({closer}, timeout=1.0)
+
+
+async def test_after_close_nothing_starts_a_reconnect():
+    """G-52 (#221): tras close(), ni ping(), ni stream_response(), ni una caída avisada
+    por el cliente interno vuelven a crear la tarea de reconexión."""
+    inner = make_mock_client(GATEWAY_INFO)
+    roc = ReconnectingOpenClawClient(inner, "test")  # sin connect(): DEGRADED
+    await roc.close()
+
+    assert await roc.ping() is False
+    events = [e async for e in roc.stream_response("hola", session_key="agent:main:u")]
+    inner.on_disconnect()
+    roc.trigger_reconnect()
+    await asyncio.sleep(0.01)
+
+    assert events[0].content == "orchestrator_unavailable"
+    assert roc._reconnect_task is None
+    inner.connect.assert_not_called()
+
+
+async def test_close_does_not_swallow_callers_cancellation():
+    """G-52 (#221): si cancelan a quien llama a close() mientras espera a la reconexión,
+    el cierre termina y la cancelación sale (antes `except CancelledError: pass`)."""
+    inner = make_mock_client(GATEWAY_INFO)
+    connecting = asyncio.Event()
+
+    async def slow_connect():
+        connecting.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.05)  # tarda en soltar: la cancelación del closer llega aquí
+            raise
+
+    inner.connect.side_effect = slow_connect
+    roc = ReconnectingOpenClawClient(inner, "test")
+    roc._ensure_reconnecting()
+    await connecting.wait()
+
+    closer = asyncio.create_task(roc.close())
+    await asyncio.sleep(0.01)
+    closer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closer
+    assert roc._reconnect_task.done()
+    inner.close.assert_awaited_once()

@@ -68,3 +68,31 @@ async def test_connect_closes_socket_when_challenge_fails():
             ).connect()
 
     assert fake_ws.closed, "Socket must be closed when challenge fails"
+
+
+@pytest.mark.asyncio
+async def test_connect_cancelled_during_handshake_closes_socket():
+    """#221: si cancelan connect() con el socket ya abierto, el socket se cierra."""
+    fake_ws = FakeOCSocket(fail_at="never")  # recv() espera el challenge para siempre
+    turn_reg = TurnRegistry()
+    client = OpenClawClient(
+        host="test",
+        port=1,
+        token="x",
+        turn_registry=turn_reg,
+        dispatcher=FrameDispatcher(turn_registry=turn_reg, client_registry=ClientRegistry()),
+    )
+
+    async def fake_connect(uri, **kwargs):
+        return fake_ws
+
+    with patch("websockets.connect", side_effect=fake_connect):
+        task = asyncio.create_task(client.connect())
+        while fake_ws._step == 0:
+            await asyncio.sleep(0.001)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert fake_ws.closed
+    assert client._ws is None
