@@ -79,7 +79,7 @@ async def test_silence_timeout_reason(monkeypatch):
     async def _fast_sleep(_):
         bridge._last_audio_at = time.monotonic()  # cliente enviando audio sin transcripción
 
-    monkeypatch.setattr("src.services.bridge.asyncio.sleep", _fast_sleep)
+    monkeypatch.setattr("src.services.bridge._sleep", _fast_sleep)
     await asyncio.wait_for(bridge._transcription_watchdog(), timeout=2.0)
     assert _end_meta(bridge)["reason"] == "silence_timeout"
     assert _closed() == {"silence_timeout": 1}

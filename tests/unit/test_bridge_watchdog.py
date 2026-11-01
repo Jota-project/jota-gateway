@@ -58,7 +58,7 @@ async def test_watchdog_notifies_client_after_silence_timeout():
     transcriber.last_transcript_at = None
     bridge.close_all = AsyncMock()
 
-    with patch("src.services.bridge.asyncio.sleep", new=AsyncMock(return_value=None)):
+    with patch("src.services.bridge._sleep", new=AsyncMock(return_value=None)):
         await asyncio.wait_for(bridge._transcription_watchdog(), timeout=3.0)
 
     ws.send_json.assert_called_once()
@@ -77,7 +77,7 @@ async def test_watchdog_exits_if_transcriber_disconnects():
 
     transcriber.state = ConnectionState.DEGRADED
 
-    with patch("src.services.bridge.asyncio.sleep", new=AsyncMock(return_value=None)):
+    with patch("src.services.bridge._sleep", new=AsyncMock(return_value=None)):
         await asyncio.wait_for(bridge._transcription_watchdog(), timeout=2.0)
 
 
@@ -97,7 +97,7 @@ async def test_watchdog_closes_session_after_max_silence_turns():
 
     bridge.close_all = _fake_close
 
-    with patch("src.services.bridge.asyncio.sleep", new=AsyncMock(return_value=None)):
+    with patch("src.services.bridge._sleep", new=AsyncMock(return_value=None)):
         await asyncio.wait_for(bridge._transcription_watchdog(), timeout=3.0)
 
     assert close_called, "close_all debería haberse llamado tras max_silence_turns"
@@ -132,11 +132,10 @@ async def test_watchdog_resets_count_when_transcription_arrives():
 
             transcriber.state = ConnectionState.DEGRADED  # stop the loop cleanly
 
-    with patch("src.services.bridge.asyncio.sleep", new=_controlled_sleep):
+    with patch("src.services.bridge._sleep", new=_controlled_sleep):
         # NOTE: must directly `await` the watchdog coroutine, not wrap it in
-        # `asyncio.create_task` + an outer polling loop — patching
-        # `asyncio.sleep` globally means a non-suspending mock never actually
-        # yields control back to the scheduler, so a separately-created task
+        # `asyncio.create_task` + an outer polling loop — a non-suspending
+        # `_sleep` never yields control back to the scheduler, so a separately-created task
         # never gets to run at all (verified: deliberately breaking the
         # watchdog's RECONNECTING handling didn't fail the old version of this
         # test). Direct await drives the loop for real.
@@ -176,7 +175,7 @@ async def test_watchdog_pauses_but_does_not_exit_when_reconnecting():
 
     bridge.close_all = _fake_close
 
-    with patch("src.services.bridge.asyncio.sleep", new=_controlled_sleep):
+    with patch("src.services.bridge._sleep", new=_controlled_sleep):
         # See NOTE above test_watchdog_resets_count_when_transcription_arrives —
         # direct await, not create_task + outer polling loop.
         await asyncio.wait_for(bridge._transcription_watchdog(), timeout=2.0)
@@ -222,7 +221,7 @@ async def test_watchdog_does_not_close_immediately_after_reconnect_with_stale_ti
 
     bridge.close_all = _fake_close
 
-    with patch("src.services.bridge.asyncio.sleep", new=_controlled_sleep):
+    with patch("src.services.bridge._sleep", new=_controlled_sleep):
         # See NOTE above test_watchdog_resets_count_when_transcription_arrives —
         # direct await, not create_task + outer polling loop.
         await asyncio.wait_for(bridge._transcription_watchdog(), timeout=2.0)
@@ -315,7 +314,7 @@ async def test_idle_watchdog_does_not_close_during_active_turn(monkeypatch):
         if ticks["n"] >= 3:
             raise RuntimeError("stop-test")  # bounded termination, see below
 
-    with patch("src.services.bridge.asyncio.sleep", new=_controlled_sleep):
+    with patch("src.services.bridge._sleep", new=_controlled_sleep):
         with pytest.raises(RuntimeError, match="stop-test"):
             await asyncio.wait_for(bridge._idle_watchdog(), timeout=2.0)
 
@@ -357,7 +356,7 @@ async def test_idle_watchdog_closes_once_active_turn_finishes_and_idle_elapses(m
             assert not close_called, "must not close on the first tick — turn still active"
             active_turn.done.return_value = True  # turn finishes between checks
 
-    with patch("src.services.bridge.asyncio.sleep", new=_controlled_sleep):
+    with patch("src.services.bridge._sleep", new=_controlled_sleep):
         await asyncio.wait_for(bridge._idle_watchdog(), timeout=2.0)
 
     assert close_called, "watchdog must close once the turn finished and idle time elapsed"

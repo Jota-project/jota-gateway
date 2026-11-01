@@ -11,6 +11,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Tests swap this name; patching asyncio.sleep would change it process-wide.
+_sleep = asyncio.sleep
+
 
 class ConnectionState(Enum):
     CONNECTED = "CONNECTED"
@@ -189,7 +192,7 @@ async def reconnect_with_backoff(
             logger.warning("[%s] reconnect exhausted — DEGRADED.", label)
             return False
 
-        await asyncio.sleep(backoff)
+        await _sleep(backoff)
         backoff = min(backoff * 2, max_backoff)
 
 

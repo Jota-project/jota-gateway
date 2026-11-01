@@ -42,6 +42,8 @@ logger = logging.getLogger(__name__)
 # longer than `silence_timeout_s` is one strike (and one `degraded` notice), so
 # `max_silence_turns` counts ticks, not whole `silence_timeout_s` windows.
 _WATCHDOG_POLL_S = 2
+# Tests swap this name for a virtual clock; patching asyncio.sleep would change it process-wide.
+_sleep = asyncio.sleep
 
 
 def _tool_call_message(turn_id: str | None, tool_call: ToolCallEvent) -> dict:
@@ -480,7 +482,7 @@ class JotaBridge:
         """Notifica al cliente si hay silencio prolongado; cierra tras max_silence_turns consecutivos."""
         # Esperar a que el cliente empiece a enviar audio antes de vigilar
         while self._last_audio_at is None:
-            await asyncio.sleep(0.5)
+            await _sleep(0.5)
             if not self.transcriber or self.transcriber.state == ConnectionState.DEGRADED:
                 return
 
@@ -490,7 +492,7 @@ class JotaBridge:
         recovery_baseline: float | None = None
 
         while True:
-            await asyncio.sleep(_WATCHDOG_POLL_S)
+            await _sleep(_WATCHDOG_POLL_S)
             if not self.transcriber or self.transcriber.state == ConnectionState.DEGRADED:
                 return
             if self.transcriber.state != ConnectionState.CONNECTED:
@@ -620,13 +622,13 @@ class JotaBridge:
                 ):
                     # Not idle — a turn/push is actively in flight. Re-check
                     # shortly rather than closing or resetting the full window.
-                    await asyncio.sleep(2)
+                    await _sleep(2)
                     continue
                 logger.info(f"[{self.client_id}] Idle timeout — cerrando sesión.")
                 self.note_close_reason("idle_timeout")
                 await self.close_all()
                 return
-            await asyncio.sleep(remaining)
+            await _sleep(remaining)
 
     async def _session_revalidation_loop(self) -> None:
         """Revalida la sesión contra la BD cada SESSION_REVALIDATE_INTERVAL_S (G-06, #218).
@@ -638,7 +640,7 @@ class JotaBridge:
         #265), así que un cambio desde /admin o la CLI se ve en el siguiente tick.
         """
         while True:
-            await asyncio.sleep(settings.SESSION_REVALIDATE_INTERVAL_S)
+            await _sleep(settings.SESSION_REVALIDATE_INTERVAL_S)
             try:
                 current, _ = await db_client.get_session(self.client.client_key)
                 if current.id != self.client.id:

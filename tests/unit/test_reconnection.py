@@ -124,7 +124,7 @@ async def test_backoff_loop_doubles_sleep_up_to_cap(monkeypatch):
     async def fake_sleep(d):
         sleeps.append(d)
 
-    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr("src.services.reconnection._sleep", fake_sleep)
     calls = 0
 
     async def attempt():
