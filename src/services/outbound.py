@@ -48,7 +48,7 @@ class OutboundSender(Protocol):
 
 
 class DirectSender:
-    """Passthrough: writes straight to the socket. Default for bridge/tracker."""
+    """Passthrough: writes straight to the socket. Default for PipelineTracker (/v1 sessions)."""
 
     def __init__(self, ws):
         self._ws = ws

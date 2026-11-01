@@ -1,7 +1,7 @@
 """ChatTextTracker / missing_tail (#241, #243): every tracker case lives here.
 
 The stream (`stream_response`) and push (`deliver_push`) wiring keep two tests each, in
-tests/integration/test_openclaw_final_text_241.py and tests/unit/test_bridge_push_delta_243.py.
+tests/integration/test_openclaw_real_ws.py and tests/unit/test_bridge_push.py.
 """
 
 import logging

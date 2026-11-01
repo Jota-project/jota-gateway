@@ -2,48 +2,39 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
-from src.models.schemas import Client, ClientConfig, Handshake
-from src.services.bridge import JotaBridge
-from src.services.openclaw.registry import ClientRegistry
+import pytest
+
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.reconnection import ConnectionState
-from tests.fakes.speech import speech_providers
-
-_CLIENT = Client(id="hab_sito", client_key="test-key", is_active=True)
-_CONFIG = ClientConfig()
+from tests.fakes.bridge import sent
 
 
-def _make_bridge(input_mode="text", output_mode=None):
-    if output_mode is None:
-        output_mode = ["text"]
-    ws = AsyncMock()
-    registry = MagicMock()
-    tracker = PipelineTracker(
-        session_id="test:hc",
-        client_id="hab_sito",
-        input_mode=input_mode,
-        output_mode=output_mode,
-        registry=registry,
-    )
-    handshake = Handshake(client_key="test-key", input_mode=input_mode, output_mode=output_mode)
-    orch = AsyncMock()
-    orch.ping = AsyncMock(return_value=True)
-    bridge = JotaBridge(
-        client=_CLIENT,
-        config=_CONFIG,
-        client_ws=ws,
-        orchestrator=orch,
-        speech=speech_providers(),
-        tracker=tracker,
-        handshake=handshake,
-        client_registry=ClientRegistry(),
-        default_agent="main",
-    )
-    return bridge, ws, orch
+@pytest.fixture
+def make_hc_bridge(make_bridge):
+    def _make(input_mode="text", output_mode=("text",)):
+        tracker = PipelineTracker(
+            session_id="test:hc",
+            client_id="hab_sito",
+            input_mode=input_mode,
+            output_mode=list(output_mode),
+            registry=MagicMock(),
+        )
+        orch = AsyncMock()
+        orch.ping = AsyncMock(return_value=True)
+        bridge, ws = make_bridge(
+            client_id="hab_sito",
+            input_mode=input_mode,
+            output_mode=output_mode,
+            tracker=tracker,
+            orchestrator=orch,
+        )
+        return bridge, ws, orch
+
+    return _make
 
 
-async def test_health_check_returns_full_snapshot_when_audio_and_tts_ok():
-    bridge, ws, orch = _make_bridge(input_mode="audio", output_mode=["audio", "text"])
+async def test_health_check_returns_full_snapshot_when_audio_and_tts_ok(make_hc_bridge):
+    bridge, ws, orch = make_hc_bridge(input_mode="audio", output_mode=["audio", "text"])
     bridge.transcriber = MagicMock()
     bridge.transcriber.state = ConnectionState.CONNECTED
 
@@ -53,8 +44,8 @@ async def test_health_check_returns_full_snapshot_when_audio_and_tts_ok():
     assert result == {"barge_in": True, "tts": True, "transcriber": True}
 
 
-async def test_health_check_returns_tts_false_when_ping_fails():
-    bridge, ws, orch = _make_bridge(input_mode="audio", output_mode=["audio", "text"])
+async def test_health_check_returns_tts_false_when_ping_fails(make_hc_bridge):
+    bridge, ws, orch = make_hc_bridge(input_mode="audio", output_mode=["audio", "text"])
     bridge.transcriber = MagicMock()
     bridge.transcriber.state = ConnectionState.CONNECTED
 
@@ -62,32 +53,24 @@ async def test_health_check_returns_tts_false_when_ping_fails():
     result = await bridge.health_check()
 
     assert result == {"barge_in": True, "tts": False, "transcriber": True}
-    status_calls = [c.args[0] for c in ws.send_json.call_args_list]
-    assert any(
-        call["type"] == "status" and call["service"] == "tts" and call["state"] == "unavailable"
-        for call in status_calls
-    )
+    await sent(bridge)
+    assert {"type": "status", "service": "tts", "state": "unavailable"} in ws.of("status")
 
 
-async def test_health_check_returns_transcriber_false_when_degraded():
-    bridge, ws, orch = _make_bridge(input_mode="audio", output_mode=["text"])
+async def test_health_check_returns_transcriber_false_when_degraded(make_hc_bridge):
+    bridge, ws, orch = make_hc_bridge(input_mode="audio", output_mode=["text"])
     bridge.transcriber = MagicMock()
     bridge.transcriber.state = ConnectionState.DEGRADED
 
     result = await bridge.health_check()
 
     assert result == {"barge_in": False, "tts": False, "transcriber": False}
-    status_calls = [c.args[0] for c in ws.send_json.call_args_list]
-    assert any(
-        call["type"] == "status"
-        and call["service"] == "transcriber"
-        and call["state"] == "unavailable"
-        for call in status_calls
-    )
+    await sent(bridge)
+    assert {"type": "status", "service": "transcriber", "state": "unavailable"} in ws.of("status")
 
 
-async def test_health_check_returns_all_false_for_text_only_handshake():
-    bridge, ws, orch = _make_bridge(input_mode="text", output_mode=["text"])
+async def test_health_check_returns_all_false_for_text_only_handshake(make_hc_bridge):
+    bridge, ws, orch = make_hc_bridge(input_mode="text", output_mode=["text"])
     bridge.transcriber = None
 
     result = await bridge.health_check()
@@ -95,12 +78,12 @@ async def test_health_check_returns_all_false_for_text_only_handshake():
     assert result == {"barge_in": False, "tts": False, "transcriber": False}
 
 
-async def test_health_check_returns_none_when_orchestrator_unavailable():
-    bridge, ws, orch = _make_bridge()
+async def test_health_check_returns_none_when_orchestrator_unavailable(make_hc_bridge):
+    bridge, ws, orch = make_hc_bridge()
     orch.ping = AsyncMock(return_value=False)
 
     result = await bridge.health_check()
 
     assert result is None
-    payload = ws.send_json.call_args_list[0].args[0]
-    assert payload == {"type": "status", "service": "orchestrator", "state": "unavailable"}
+    msgs = await sent(bridge)
+    assert msgs[0] == {"type": "status", "service": "orchestrator", "state": "unavailable"}

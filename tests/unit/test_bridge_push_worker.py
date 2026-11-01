@@ -6,30 +6,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.core.config import settings
-from src.models.schemas import Client, ClientConfig, Handshake
-from src.services.bridge import JotaBridge
-from src.services.openclaw.registry import ClientRegistry
-from tests.fakes.speech import speech_providers
 
 
-def make_bridge():
-    client = Client(id="hab_sito", client_key="key-123", is_active=True)
-    handshake = Handshake(
-        client_key="key-123", input_mode="text", output_mode=["text"], agent="main"
-    )
-    tts = AsyncMock()
-    tts.connect = AsyncMock(return_value=None)
-    return JotaBridge(
-        client=client,
-        config=ClientConfig(),
-        client_ws=AsyncMock(),
-        orchestrator=AsyncMock(),
-        speech=speech_providers(tts=tts),
-        tracker=AsyncMock(),
-        handshake=handshake,
-        client_registry=ClientRegistry(),
-        default_agent="main",
-    )
+@pytest.fixture
+def make_push_bridge(make_bridge):
+    return lambda: make_bridge(client_id="hab_sito")[0]
 
 
 def _record_executors(bridge, order):
@@ -51,9 +32,8 @@ def _record_executors(bridge, order):
     bridge.on_push_turn_end = end
 
 
-@pytest.mark.asyncio
-async def test_worker_is_lazy_and_supervised():
-    bridge = make_bridge()
+async def test_worker_is_lazy_and_supervised(make_push_bridge):
+    bridge = make_push_bridge()
     assert bridge._push_worker is None
     assert not [t for t in bridge.tasks if t.get_name() == "push_worker"]
 
@@ -66,9 +46,8 @@ async def test_worker_is_lazy_and_supervised():
     await bridge.close_all()
 
 
-@pytest.mark.asyncio
-async def test_enqueue_push_runs_events_in_fifo_order_and_is_non_blocking():
-    bridge = make_bridge()
+async def test_enqueue_push_runs_events_in_fifo_order_and_is_non_blocking(make_push_bridge):
+    bridge = make_push_bridge()
     order: list = []
     _record_executors(bridge, order)
 
@@ -92,9 +71,8 @@ async def test_enqueue_push_runs_events_in_fifo_order_and_is_non_blocking():
     await bridge.close_all()
 
 
-@pytest.mark.asyncio
-async def test_slow_handler_does_not_block_the_caller_and_keeps_order():
-    bridge = make_bridge()
+async def test_slow_handler_does_not_block_the_caller_and_keeps_order(make_push_bridge):
+    bridge = make_push_bridge()
     order: list = []
     _record_executors(bridge, order)
     gate = asyncio.Event()
@@ -117,9 +95,8 @@ async def test_slow_handler_does_not_block_the_caller_and_keeps_order():
     await bridge.close_all()
 
 
-@pytest.mark.asyncio
-async def test_handler_exception_does_not_kill_the_worker():
-    bridge = make_bridge()
+async def test_handler_exception_does_not_kill_the_worker(make_push_bridge):
+    bridge = make_push_bridge()
     order: list = []
     _record_executors(bridge, order)
 
@@ -138,9 +115,8 @@ async def test_handler_exception_does_not_kill_the_worker():
     await bridge.close_all()
 
 
-@pytest.mark.asyncio
-async def test_burst_of_events_keeps_order_and_drains_pending():
-    bridge = make_bridge()
+async def test_burst_of_events_keeps_order_and_drains_pending(make_push_bridge):
+    bridge = make_push_bridge()
     order: list = []
     _record_executors(bridge, order)
 
@@ -153,9 +129,8 @@ async def test_burst_of_events_keeps_order_and_drains_pending():
     await bridge.close_all()
 
 
-@pytest.mark.asyncio
-async def test_close_all_cancels_worker_before_closing_push_tts():
-    bridge = make_bridge()
+async def test_close_all_cancels_worker_before_closing_push_tts(make_push_bridge):
+    bridge = make_push_bridge()
     order: list = []
     mock_tts = AsyncMock()
 
@@ -184,8 +159,7 @@ async def test_close_all_cancels_worker_before_closing_push_tts():
     assert bridge._push_worker.done()
 
 
-@pytest.mark.asyncio
-async def test_close_all_completes_while_worker_waits_for_audio_drain(monkeypatch):
+async def test_close_all_completes_while_worker_waits_for_audio_drain(make_push_bridge, monkeypatch):
     """Review focus 1: the real on_push_turn_end is parked on the audio task when
     close_all() cancels the worker — that cancellation must not be swallowed.
 
@@ -193,7 +167,7 @@ async def test_close_all_completes_while_worker_waits_for_audio_drain(monkeypatc
     close_all's own worker wait are both capped at 30s (pinned below)."""
     monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 30)
     monkeypatch.setattr(settings, "SESSION_TEARDOWN_S", 30)
-    bridge = make_bridge()
+    bridge = make_push_bridge()
     bridge._push_turn_open = True
     bridge._push_turn_id = "t-1"
     bridge._push_tts = AsyncMock()
@@ -215,10 +189,9 @@ async def test_close_all_completes_while_worker_waits_for_audio_drain(monkeypatc
     assert stuck.cancelled()
 
 
-@pytest.mark.asyncio
-async def test_enqueue_push_after_close_is_a_noop():
+async def test_enqueue_push_after_close_is_a_noop(make_push_bridge):
     """Review focus 2: a late frame for an already closed/unregistered bridge."""
-    bridge = make_bridge()
+    bridge = make_push_bridge()
     await bridge.close_all()
 
     bridge.enqueue_push("chat", {"deltaText": "late"})
@@ -228,9 +201,8 @@ async def test_enqueue_push_after_close_is_a_noop():
     assert bridge._push_queue.empty()
 
 
-@pytest.mark.asyncio
-async def test_close_all_discards_backlog():
-    bridge = make_bridge()
+async def test_close_all_discards_backlog(make_push_bridge):
+    bridge = make_push_bridge()
     order: list = []
     _record_executors(bridge, order)
     gate = asyncio.Event()
@@ -251,12 +223,11 @@ async def test_close_all_discards_backlog():
     await asyncio.wait_for(bridge.push_idle(), timeout=1.0)  # nothing left unfinished
 
 
-@pytest.mark.asyncio
-async def test_run_ends_when_client_disconnects_even_if_push_worker_spawned_first():
+async def test_run_ends_when_client_disconnects_even_if_push_worker_spawned_first(make_push_bridge):
     """F1: a push arriving between connect_internal_services() and run() spawns the
     worker into self.tasks[0]; run() must still await the client input loop."""
-    bridge = make_bridge()
-    bridge.client_ws.receive = AsyncMock(return_value={"type": "websocket.disconnect"})
+    bridge = make_push_bridge()
+    bridge.client_ws.inbox.put_nowait({"type": "websocket.disconnect"})
     bridge.enqueue_push("chat", {"deltaText": "x"})
 
     loop = asyncio.get_running_loop()
@@ -269,9 +240,8 @@ async def test_run_ends_when_client_disconnects_even_if_push_worker_spawned_firs
     assert bridge._closed is True
 
 
-@pytest.mark.asyncio
-async def test_push_pending_peak():
-    bridge = make_bridge()
+async def test_push_pending_peak(make_push_bridge):
+    bridge = make_push_bridge()
 
     async def idle():
         await asyncio.Event().wait()

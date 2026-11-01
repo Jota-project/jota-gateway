@@ -5,52 +5,23 @@ import json
 import logging
 from unittest.mock import AsyncMock
 
+import pytest
 import websockets
 
 from src.core.config import settings
-from src.models.schemas import Client, ClientConfig, Handshake
-from src.services.bridge import JotaBridge
-from src.services.openclaw.registry import ClientRegistry
 from src.services.protocol import OrchestratorEvent
 from src.services.tts_client import TTSClient
-from tests.fakes.speech import speech_providers
+from tests.fakes.bridge import sent, tokens
 
 
-class _WS:
-    def __init__(self):
-        self.sent = []
+@pytest.fixture
+def make_tts_bridge(make_bridge):
+    def _make(tts_client):
+        tts = AsyncMock()
+        tts.connect = AsyncMock(return_value=tts_client)
+        return make_bridge(output_mode=("text", "audio"), tts=tts)
 
-    async def send_json(self, p):
-        self.sent.append(p)
-
-    async def send_bytes(self, b):
-        self.sent.append(b)
-
-
-def _stream(*tokens):
-    async def _s(*a, **k):
-        for t in tokens:
-            yield OrchestratorEvent(type="token", content=t)
-
-    return _s
-
-
-def _bridge(ws, tts_client):
-    tts = AsyncMock()
-    tts.connect = AsyncMock(return_value=tts_client)
-    b = JotaBridge(
-        client=Client(id="u", client_key="k", is_active=True),
-        config=ClientConfig(),
-        client_ws=ws,
-        orchestrator=AsyncMock(),
-        speech=speech_providers(tts=tts),
-        tracker=AsyncMock(),
-        handshake=Handshake(client_key="k", input_mode="text", output_mode=["text", "audio"]),
-        client_registry=ClientRegistry(),
-        default_agent="main",
-    )
-    b.transcriber = None
-    return b
+    return _make
 
 
 async def _run_bounded(bridge, timeout):
@@ -64,7 +35,7 @@ async def _run_bounded(bridge, timeout):
     await task
 
 
-async def test_alive_tts_that_never_sends_done_ends_turn_by_cap(monkeypatch, caplog):
+async def test_alive_tts_that_never_sends_done_ends_turn_by_cap(make_tts_bridge, monkeypatch, caplog):
     monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 0.2)
     server_closed = asyncio.Event()
 
@@ -82,19 +53,18 @@ async def test_alive_tts_that_never_sends_done_ends_turn_by_cap(monkeypatch, cap
         port = server.sockets[0].getsockname()[1]
         tts_client = TTSClient(url=f"127.0.0.1:{port}", token="t", client_id="c1")
         await tts_client.connect()
-        ws = _WS()
-        bridge = _bridge(ws, tts_client)
-        bridge.orchestrator.stream_response = _stream("hola")
+        bridge, ws = make_tts_bridge(tts_client)
+        bridge.orchestrator.stream_response = tokens("hola")
 
         with caplog.at_level(logging.WARNING):
             await _run_bounded(bridge, 3.0)
 
-        assert ws.sent[-1] == {"type": "turn_end", "turn_id": "t-1"}
+        assert (await sent(bridge))[-1] == {"type": "turn_end", "turn_id": "t-1"}
         await asyncio.wait_for(server_closed.wait(), timeout=2.0)
     assert any("TTS" in r.getMessage() for r in caplog.records)
 
 
-async def test_hung_send_text_chunk_and_end_do_not_wedge_turn(monkeypatch):
+async def test_hung_send_text_chunk_and_end_do_not_wedge_turn(make_tts_bridge, monkeypatch):
     monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 0.1)
 
     async def hang(*a, **k):
@@ -109,21 +79,17 @@ async def test_hung_send_text_chunk_and_end_do_not_wedge_turn(monkeypatch):
     tts_client.end = hang
     tts_client.close = hang
     tts_client.get_audio_stream = audio
-    ws = _WS()
-    bridge = _bridge(ws, tts_client)
-    bridge.orchestrator.stream_response = _stream("a", "b")
+    bridge, ws = make_tts_bridge(tts_client)
+    bridge.orchestrator.stream_response = tokens("a", "b")
 
     await _run_bounded(bridge, 3.0)
 
-    assert ws.sent[-1] == {"type": "turn_end", "turn_id": "t-1"}
+    assert (await sent(bridge))[-1] == {"type": "turn_end", "turn_id": "t-1"}
     # text tokens still reached the client despite the dead TTS
-    assert [m["text"] for m in ws.sent if isinstance(m, dict) and m["type"] == "token"] == [
-        "a",
-        "b",
-    ]
+    assert [m["text"] for m in ws.of("token")] == ["a", "b"]
 
 
-async def test_healthy_slow_tts_is_not_truncated_by_idle_cap(monkeypatch):
+async def test_healthy_slow_tts_is_not_truncated_by_idle_cap(make_tts_bridge, monkeypatch):
     """The cap after the last token is per inactivity: a TTS that keeps emitting
     chunks for longer than the cap (no pause > cap) must be delivered in full."""
     monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 0.5)
@@ -136,18 +102,18 @@ async def test_healthy_slow_tts_is_not_truncated_by_idle_cap(monkeypatch):
 
     tts_client = AsyncMock()
     tts_client.get_audio_stream = audio
-    ws = _WS()
-    bridge = _bridge(ws, tts_client)
-    bridge.orchestrator.stream_response = _stream("a")
+    bridge, ws = make_tts_bridge(tts_client)
+    bridge.orchestrator.stream_response = tokens("a")
 
     await _run_bounded(bridge, 5.0)
 
+    await sent(bridge)
     chunks = [m for m in ws.sent if isinstance(m, bytes)]
     assert len(chunks) == total
     assert ws.sent[-1] == {"type": "turn_end", "turn_id": "t-1"}
 
 
-async def _cancel_turn_during(monkeypatch, *, tokens_block):
+async def _cancel_turn_during(make_tts_bridge, monkeypatch, *, tokens_block):
     monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 5.0)
 
     async def audio():
@@ -156,8 +122,7 @@ async def _cancel_turn_during(monkeypatch, *, tokens_block):
 
     tts_client = AsyncMock()
     tts_client.get_audio_stream = audio
-    ws = _WS()
-    bridge = _bridge(ws, tts_client)
+    bridge, _ = make_tts_bridge(tts_client)
     entered = asyncio.Event()
 
     async def stream(*a, **k):
@@ -184,9 +149,9 @@ async def _cancel_turn_during(monkeypatch, *, tokens_block):
     assert leftover == []
 
 
-async def test_barge_in_cancel_during_tokens_closes_tts_no_orphans(monkeypatch):
-    await _cancel_turn_during(monkeypatch, tokens_block=True)
+async def test_barge_in_cancel_during_tokens_closes_tts_no_orphans(make_tts_bridge, monkeypatch):
+    await _cancel_turn_during(make_tts_bridge, monkeypatch, tokens_block=True)
 
 
-async def test_barge_in_cancel_during_audio_wait_closes_tts_no_orphans(monkeypatch):
-    await _cancel_turn_during(monkeypatch, tokens_block=False)
+async def test_barge_in_cancel_during_audio_wait_closes_tts_no_orphans(make_tts_bridge, monkeypatch):
+    await _cancel_turn_during(make_tts_bridge, monkeypatch, tokens_block=False)

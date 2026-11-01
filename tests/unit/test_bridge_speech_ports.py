@@ -2,12 +2,12 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
-from src.models.schemas import Client, ClientConfig, Handshake
-from src.services.bridge import JotaBridge
-from src.services.openclaw.registry import ClientRegistry
+import pytest
+
+from src.models.schemas import ClientConfig
 from src.services.reconnection import ConnectionState
 from src.services.speech.ports import SttCapabilities
-from tests.fakes.speech import speech_providers
+from tests.fakes.bridge import sent
 
 
 class FakeSession:
@@ -67,23 +67,25 @@ class FakeStt:
         pass
 
 
-def _bridge(mock_tracker, stt=None, **cfg):
-    return JotaBridge(
-        client=Client(id="c1", client_key="k", is_active=True),
-        config=ClientConfig(stt_language="en", stt_vad_thold=0.3, **cfg),
-        client_ws=AsyncMock(),
-        orchestrator=AsyncMock(),
-        speech=speech_providers(stt=stt),
-        tracker=mock_tracker,
-        handshake=Handshake(client_key="k", input_mode="audio", output_mode=["audio", "text"]),
-        client_registry=ClientRegistry(),
-        default_agent="main",
-    )
+@pytest.fixture
+def make_ports_bridge(make_bridge, mock_tracker):
+    def _make(stt=None, **cfg):
+        bridge, _ = make_bridge(
+            client_id="c1",
+            config=ClientConfig(stt_language="en", stt_vad_thold=0.3, **cfg),
+            tracker=mock_tracker,
+            input_mode="audio",
+            output_mode=("audio", "text"),
+            stt=stt,
+        )
+        return bridge
+
+    return _make
 
 
-async def test_bridge_uses_injected_stt_provider(mock_tracker):
+async def test_bridge_uses_injected_stt_provider(make_ports_bridge):
     stt = FakeStt()
-    bridge = _bridge(mock_tracker, stt)
+    bridge = make_ports_bridge(stt)
     await bridge.connect_internal_services()
     assert len(stt.opened) == 1
     client, params, _ = stt.opened[0]
@@ -94,17 +96,16 @@ async def test_bridge_uses_injected_stt_provider(mock_tracker):
     assert bridge.transcriber is stt.session
 
 
-async def test_stt_callbacks_available_before_run(mock_tracker):
+async def test_stt_callbacks_available_before_run(make_ports_bridge):
     """Foco 5: un evento emitido dentro de start() llega al bridge, sin run()."""
     stt = FakeStt(emit_in_start=("hola", False))
-    bridge = _bridge(mock_tracker, stt, barge_in_enabled=False)
+    bridge = make_ports_bridge(stt, barge_in_enabled=False)
     await bridge.connect_internal_services()
-    sent = [c.args[0] for c in bridge.client_ws.send_json.await_args_list]
-    assert {"type": "transcription_partial", "text": "hola"} in sent
+    assert {"type": "transcription_partial", "text": "hola"} in await sent(bridge)
 
 
-async def test_barge_in_capability_false_without_partials(mock_tracker):
-    bridge = _bridge(mock_tracker, FakeStt(partials=False))
+async def test_barge_in_capability_false_without_partials(make_ports_bridge):
+    bridge = make_ports_bridge(FakeStt(partials=False))
     bridge.transcriber = MagicMock(state=ConnectionState.CONNECTED)
     bridge.tts.probe = AsyncMock(return_value=True)
     bridge.orchestrator.ping = AsyncMock(return_value=True)

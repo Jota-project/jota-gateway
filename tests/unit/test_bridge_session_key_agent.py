@@ -2,14 +2,12 @@
 
 from src.models.schemas import Handshake
 from src.services.protocol import OrchestratorEvent
-from tests.unit.test_bridge_m6c_turns import _bridge
 
 
-async def test_session_key_uses_stripped_resolved_agent():
+async def test_session_key_uses_stripped_resolved_agent(make_bridge):
     """Hallazgo 6: `" main "` valida como `main` y debe dar la misma sesión de OpenClaw."""
-    bridge, _ = _bridge()
-    bridge.handshake = Handshake(
-        client_key="k", input_mode="text", output_mode=["text"], agent=" main "
+    bridge, _ = make_bridge(
+        handshake=Handshake(client_key="k", input_mode="text", output_mode=["text"], agent=" main ")
     )
     captured = {}
 

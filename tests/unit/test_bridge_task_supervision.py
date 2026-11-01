@@ -6,26 +6,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.models.schemas import Client, ClientConfig, Handshake
-from src.services.bridge import JotaBridge
-from src.services.openclaw.registry import ClientRegistry
+from src.models.schemas import ClientConfig, Handshake
 from src.services.reconnection import ConnectionState
-from tests.fakes.speech import speech_providers
 
 
 @pytest.fixture
-def bridge(mock_tracker):
-    return JotaBridge(
-        client=Client(id="c1", client_key="k", is_active=True),
-        config=ClientConfig(),
-        client_ws=AsyncMock(),
-        orchestrator=AsyncMock(),
-        speech=speech_providers(),
-        tracker=mock_tracker,
-        handshake=Handshake(client_key="k", input_mode="text", output_mode=["text"]),
-        client_registry=ClientRegistry(),
-        default_agent="main",
-    )
+async def bridge(make_bridge):
+    b, _ = make_bridge(client_id="c1")
+    return b
 
 
 async def test_crashed_session_task_is_logged_with_its_name(bridge, caplog):

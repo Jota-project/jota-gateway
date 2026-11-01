@@ -4,12 +4,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.core.config import settings
-from src.models.schemas import Client, ClientConfig, Handshake
-from src.services.bridge import JotaBridge
+from src.models.schemas import ClientConfig
 from src.services.openclaw.dispatcher import FrameDispatcher
 from src.services.openclaw.registry import ClientRegistry, TurnRegistry
 from src.services.reconnection import ConnectionState, ServiceStatus
-from tests.fakes.speech import speech_providers
+from tests.fakes.bridge import sent
 
 
 def make_dispatcher():
@@ -29,33 +28,16 @@ def _connected_status() -> ServiceStatus:
     )
 
 
-def make_real_bridge(client_id="hab_sito", push_enabled=True, tool_calls_enabled=False):
+@pytest.fixture
+def make_real_bridge(make_bridge):
     """A real JotaBridge (not AsyncMock) so dispatcher tests can exercise
-    _push_allowed() gating — mirrors tests/unit/test_bridge_push.py's
-    make_bridge(), kept local here to stay self-contained (issue #109)."""
-    client = Client(id=client_id, client_key="key-123", is_active=True)
-    config = ClientConfig(push_enabled=push_enabled, tool_calls_enabled=tool_calls_enabled)
-    ws = AsyncMock()
-    orchestrator = AsyncMock()
-    orchestrator.ping = AsyncMock(return_value=True)
-    tracker = AsyncMock()
-    handshake = Handshake(
-        client_key="key-123", input_mode="text", output_mode=["text"], agent="main"
-    )
-    tts = AsyncMock()
-    tts.connect = AsyncMock(return_value=None)
-    bridge = JotaBridge(
-        client=client,
-        config=config,
-        client_ws=ws,
-        orchestrator=orchestrator,
-        speech=speech_providers(tts=tts),
-        tracker=tracker,
-        handshake=handshake,
-        client_registry=ClientRegistry(),
-        default_agent="main",
-    )
-    return bridge, ws
+    _push_allowed() gating (issue #109)."""
+
+    def _make(push_enabled=True, tool_calls_enabled=False):
+        config = ClientConfig(push_enabled=push_enabled, tool_calls_enabled=tool_calls_enabled)
+        return make_bridge(client_id="hab_sito", config=config)
+
+    return _make
 
 
 @pytest.mark.asyncio
@@ -306,12 +288,12 @@ async def test_session_tool_no_session_key_ignored():
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_chat_event_push_disabled_client_receives_nothing():
+async def test_dispatcher_chat_event_push_disabled_client_receives_nothing(make_real_bridge):
     """#109: a chat push event routed through the real dispatcher→bridge
     wiring for a push_enabled=False client, with NO turn_start ever sent,
     must not reach the client — the acceptance criterion verbatim."""
     dispatcher, _, client_reg = make_dispatcher()
-    bridge, ws = make_real_bridge(push_enabled=False)
+    bridge, _ = make_real_bridge(push_enabled=False)
     client_reg.register("hab_sito", bridge)
 
     payload = {"sessionKey": "agent:main:hab_sito", "runId": "r1", "seq": 1, "deltaText": "Push!"}
@@ -319,14 +301,14 @@ async def test_dispatcher_chat_event_push_disabled_client_receives_nothing():
     await dispatcher.dispatch(frame)
     await bridge.push_idle()
 
-    ws.send_json.assert_not_awaited()
+    assert await sent(bridge) == []
     await bridge.close_all()
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_session_tool_push_disabled_client_receives_nothing():
+async def test_dispatcher_session_tool_push_disabled_client_receives_nothing(make_real_bridge):
     dispatcher, _, client_reg = make_dispatcher()
-    bridge, ws = make_real_bridge(push_enabled=False, tool_calls_enabled=True)
+    bridge, _ = make_real_bridge(push_enabled=False, tool_calls_enabled=True)
     client_reg.register("hab_sito", bridge)
 
     payload = {
@@ -342,12 +324,12 @@ async def test_dispatcher_session_tool_push_disabled_client_receives_nothing():
     await dispatcher.dispatch(frame)
     await bridge.push_idle()
 
-    ws.send_json.assert_not_awaited()
+    assert await sent(bridge) == []
     await bridge.close_all()
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_full_push_lifecycle_disabled_client_receives_nothing():
+async def test_dispatcher_full_push_lifecycle_disabled_client_receives_nothing(make_real_bridge):
     """Full agent start → chat → tool → agent end sequence through the real
     dispatcher for a push_enabled=False client: zero frames at any point,
     not just the first one — on_push_turn_start's own gate (Task-1-independent,
@@ -356,7 +338,7 @@ async def test_dispatcher_full_push_lifecycle_disabled_client_receives_nothing()
     in between, and that nothing leaks around the (correctly) skipped
     turn_start/turn_end pair."""
     dispatcher, _, client_reg = make_dispatcher()
-    bridge, ws = make_real_bridge(push_enabled=False, tool_calls_enabled=True)
+    bridge, _ = make_real_bridge(push_enabled=False, tool_calls_enabled=True)
     client_reg.register("hab_sito", bridge)
 
     await dispatcher.dispatch(
@@ -393,13 +375,13 @@ async def test_dispatcher_full_push_lifecycle_disabled_client_receives_nothing()
 
     await bridge.push_idle()
 
-    ws.send_json.assert_not_awaited()
+    assert await sent(bridge) == []
     assert bridge._push_turn_open is False
     await bridge.close_all()
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_agent_lifecycle_suppressed_full_sequence_with_active_turn():
+async def test_dispatcher_agent_lifecycle_suppressed_full_sequence_with_active_turn(make_real_bridge):
     """#112: agent.start + chat + session.tool + agent.end interleaved with
     an active normal turn must never open/close a push turn. The normal
     turn's own turn_start/turn_end is sent by _call_orchestrator (bridge.py),
@@ -407,7 +389,7 @@ async def test_dispatcher_agent_lifecycle_suppressed_full_sequence_with_active_t
     dispatcher contributes zero extra client-facing frames and that all
     content still reaches the normal turn's queue."""
     dispatcher, turn_reg, client_reg = make_dispatcher()
-    bridge, ws = make_real_bridge(push_enabled=True, tool_calls_enabled=True)
+    bridge, _ = make_real_bridge(push_enabled=True, tool_calls_enabled=True)
     client_reg.register("hab_sito", bridge)
     q = turn_reg.register("req-1", "agent:main:hab_sito")
 
@@ -472,19 +454,19 @@ async def test_dispatcher_agent_lifecycle_suppressed_full_sequence_with_active_t
 
     await bridge.push_idle()
     assert bridge._push_turn_open is False
-    ws.send_json.assert_not_awaited()
+    assert await sent(bridge) == []
     await bridge.close_all()
 
 
 @pytest.mark.asyncio
-async def test_agent_lifecycle_end_closes_push_turn_opened_before_normal_turn():
+async def test_agent_lifecycle_end_closes_push_turn_opened_before_normal_turn(make_real_bridge):
     """#112 final-review regression test: a push turn that opened *before* a
     normal turn registers for the same session_key must still be closable by
     its own agent end — suppressing "end" symmetrically with "start" (the
     original implementation) would orphan it: dangling turn_end, leaked TTS,
     push path dead for the rest of the session."""
     dispatcher, turn_reg, client_reg = make_dispatcher()
-    bridge, ws = make_real_bridge(push_enabled=True)
+    bridge, _ = make_real_bridge(push_enabled=True)
     client_reg.register("hab_sito", bridge)
 
     # Genuine push starts first — no normal turn registered yet.
@@ -514,19 +496,19 @@ async def test_agent_lifecycle_end_closes_push_turn_opened_before_normal_turn():
 
     await bridge.push_idle()
     assert bridge._push_turn_open is False
-    ws.send_json.assert_any_call({"type": "turn_end", "turn_id": push_turn_id})
+    assert {"type": "turn_end", "turn_id": push_turn_id} in await sent(bridge)
     await bridge.close_all()
 
 
 @pytest.mark.asyncio
-async def test_dispatch_agent_end_does_not_wait_for_slow_tts_drain(monkeypatch):
+async def test_dispatch_agent_end_does_not_wait_for_slow_tts_drain(make_real_bridge, monkeypatch):
     """#130 S3a — el motivo de todo el cambio: un push cuyo audio TTS tarda en
     drenar no debe retener a dispatch() (y por tanto a _listen y al resto de
     sesiones multiplexadas)."""
     # Pinned so the proof does not depend on the default drain timeout.
     monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 30)
     dispatcher, _, client_reg = make_dispatcher()
-    bridge, ws = make_real_bridge(push_enabled=True)
+    bridge, _ = make_real_bridge(push_enabled=True)
     client_reg.register("hab_sito", bridge)
     stuck = asyncio.create_task(asyncio.sleep(3600))
     bridge._push_tts = AsyncMock()
@@ -555,12 +537,12 @@ async def test_dispatch_agent_end_does_not_wait_for_slow_tts_drain(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_keeps_the_112_decision_synchronous_in_listen():
+async def test_dispatch_keeps_the_112_decision_synchronous_in_listen(make_real_bridge):
     """The normal-turn check happens when the frame arrives (in _listen), not when
     the worker later runs: a turn registered *after* dispatch must not retroactively
     suppress an already-enqueued start."""
     dispatcher, turn_reg, client_reg = make_dispatcher()
-    bridge, ws = make_real_bridge(push_enabled=True)
+    bridge, _ = make_real_bridge(push_enabled=True)
     client_reg.register("hab_sito", bridge)
 
     await dispatcher.dispatch(
