@@ -1,3 +1,10 @@
+## [1.21.3](https://github.com/Jota-project/jota-gateway/compare/v1.21.2...v1.21.3) (2026-11-01)
+
+
+### Bug Fixes
+
+* **voz:** política de errores y cancelación en STT/TTS y reconexión ([#221](https://github.com/Jota-project/jota-gateway/issues/221) 2/6) ([#288](https://github.com/Jota-project/jota-gateway/issues/288)) ([29c0f17](https://github.com/Jota-project/jota-gateway/commit/29c0f174acdec2ce27544d753b8cf7104f1d115d)), closes [#287](https://github.com/Jota-project/jota-gateway/issues/287)
+
 ## [1.21.2](https://github.com/Jota-project/jota-gateway/compare/v1.21.1...v1.21.2) (2026-10-28)
 
 
