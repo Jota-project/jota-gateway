@@ -143,15 +143,14 @@ async def test_watchdog_does_not_close_during_a_20s_turn_with_2s_timeout_3_strik
     """Literal acceptance test: audio session, 20 s turn, silence_timeout_s=2,
     max_silence_turns=3 -> not closed. Virtual clock; audio keeps flowing so the
     only thing protecting the session is the in-flight turn."""
-    real_sleep = asyncio.sleep
     clock = FakeClock()
 
     async def fake_sleep(d):
         clock.t += d
-        await real_sleep(0)
+        await asyncio.sleep(0)
 
     monkeypatch.setattr(bridge_module, "time", SimpleNamespace(monotonic=lambda: clock.t))
-    monkeypatch.setattr(bridge_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(bridge_module, "_sleep", fake_sleep)
     bridge, _ = _bridge(ClientConfig(silence_timeout_s=2, max_silence_turns=3))
     start = clock.t
     bridge._last_audio_at = bridge._audio_burst_start = start
@@ -168,14 +167,14 @@ async def test_watchdog_does_not_close_during_a_20s_turn_with_2s_timeout_3_strik
 
     async def turn():
         while clock.t < start + 20:
-            await real_sleep(0)
+            await asyncio.sleep(0)
 
     bridge._active_turn = asyncio.create_task(turn())
 
     async def streamer():
         while True:
             bridge._last_audio_at = clock.t
-            await real_sleep(0)
+            await asyncio.sleep(0)
 
     s = asyncio.create_task(streamer())
     wd = asyncio.create_task(bridge._transcription_watchdog())
@@ -192,16 +191,13 @@ async def test_watchdog_does_not_close_during_a_20s_turn_with_2s_timeout_3_strik
     assert any(e[0] == "close" for e in events)
 
 
-_REAL_SLEEP = asyncio.sleep  # captured at import, before any test patches it
-
-
 async def _until(pred):
     while not pred():
-        await _REAL_SLEEP(0)
+        await asyncio.sleep(0)
 
 
 # ── #227: idle persistent sessions ───────────────────────────────────────────
-# Virtual time (#266): the bridge's `time.monotonic` and `asyncio.sleep` only advance
+# Virtual time (#266): the bridge's `time.monotonic` and `_sleep` only advance
 # when the test calls `advance`, so the result never depends on how busy the machine is.
 
 
@@ -211,7 +207,7 @@ class VClock:
         self._timers: list = []
         self._seq = 0
         monkeypatch.setattr(bridge_module, "time", SimpleNamespace(monotonic=lambda: self.t))
-        monkeypatch.setattr(bridge_module.asyncio, "sleep", self.sleep)
+        monkeypatch.setattr(bridge_module, "_sleep", self.sleep)
 
     async def sleep(self, d):
         fut = asyncio.get_running_loop().create_future()
@@ -222,7 +218,7 @@ class VClock:
     @staticmethod
     async def _settle():
         for _ in range(50):  # let every ready task run to its next timer/queue wait
-            await _REAL_SLEEP(0)
+            await asyncio.sleep(0)
 
     async def advance(self, until):
         await self._settle()
