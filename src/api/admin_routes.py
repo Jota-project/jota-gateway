@@ -393,7 +393,7 @@ def _build_state(app: FastAPI) -> dict[str, Any]:
                 summary = _session_summary(record)
                 row["started_at"] = summary["started_at"]
                 row["last_latencies"] = summary["last_latencies"]
-        except Exception as e:  # una sesión rota no tumba la instantánea entera
+        except Exception as e:  # noqa: BLE001 — una sesión rota no tumba la instantánea entera
             logger.debug("snapshot de sesión omitido: %s", type(e).__name__)
             continue
         sessions.append(row)

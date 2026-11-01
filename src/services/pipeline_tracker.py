@@ -91,8 +91,8 @@ class PipelineTracker:
                         "turn": self._turn,
                     }
                 )
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001 — informativo: nunca rompe el pipeline
+                logger.debug("pipeline_event no enviado (%s)", type(e).__name__)
 
         return event
 

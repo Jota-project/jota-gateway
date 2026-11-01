@@ -338,3 +338,26 @@ async def test_openclaw_reconnect_task_failure_logs_type_only(monkeypatch, caplo
     assert any(
         r.levelno == logging.WARNING and "RuntimeError" in r.getMessage() for r in caplog.records
     )
+
+
+async def test_ready_ping_failure_logs_type_only(caplog):
+    """/ready: la sonda que lanza se registra en DEBUG por tipo; la respuesta no cambia."""
+    from types import SimpleNamespace
+
+    from fastapi import Response
+
+    from src.api.health_routes import ready
+
+    caplog.set_level(logging.DEBUG)
+    failing = AsyncMock(side_effect=RuntimeError(SECRET))
+    state = SimpleNamespace(
+        openclaw=SimpleNamespace(ping=failing),
+        speech=SimpleNamespace(
+            stt=SimpleNamespace(probe=failing), tts=SimpleNamespace(probe=failing)
+        ),
+    )
+    response = Response()
+    body = await ready(SimpleNamespace(app=SimpleNamespace(state=state)), response)
+    assert body["status"] == "unavailable" and response.status_code == 503
+    assert SECRET not in _logged(caplog)
+    assert _logged(caplog).count("RuntimeError") == 3
