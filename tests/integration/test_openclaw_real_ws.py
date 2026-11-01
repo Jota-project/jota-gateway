@@ -266,3 +266,57 @@ async def test_clean_close_fires_on_disconnect_after_error_all_and_new_connectio
         ]
     finally:
         await roc.close()
+
+
+# ── Escenarios del arnés e2e (M7a) ────────────────────────────────
+
+
+async def test_fail_ends_turn_with_stable_orchestrator_error(server):
+    client, _ = make_client(server.port)
+    await client.connect()
+    try:
+        events = await asyncio.wait_for(run_turn(client, SK_A, "fail"), 5)
+        assert errors(events) == ["orchestrator_error"] and tokens(events) == ""
+    finally:
+        await client.close()
+
+
+async def test_drop_mid_turn_delivers_delta_then_disconnect_error(server):
+    client, turns = make_client(server.port)
+    await client.connect()
+    try:
+        events = await asyncio.wait_for(run_turn(client, SK_A, "drop"), 5)
+        assert tokens(events) == "reply-drop"
+        assert errors(events) == ["orchestrator_disconnected"]
+        assert turns.get_queue_by_session(SK_A) is None
+    finally:
+        await client.close()
+
+
+async def test_push_reaches_registered_bridge_in_order(server):
+    class FakeBridge:
+        def __init__(self):
+            self.calls = []
+
+        def enqueue_push(self, kind, payload):
+            self.calls.append((kind, payload))
+
+    client, _ = make_client(server.port)
+    bridge = FakeBridge()
+    client._dispatcher._clients.register("client-a", bridge)
+    await client.connect()
+    try:
+        await server.push(SK_A, "hola")
+        for _ in range(100):
+            if len(bridge.calls) >= 4:
+                break
+            await asyncio.sleep(0.02)
+        assert [k for k, _ in bridge.calls] == ["turn_start", "chat", "chat", "turn_end"]
+        assert bridge.calls[1][1]["deltaText"] == "hola" and bridge.calls[2][1]["state"] == "final"
+    finally:
+        await client.close()
+
+
+async def test_push_without_open_connection_raises(server):
+    with pytest.raises(RuntimeError):
+        await server.push(SK_A, "x")

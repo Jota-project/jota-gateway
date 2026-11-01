@@ -19,6 +19,9 @@ class FakeOpenClawServer:
     close     -> cierra la conexión con 1000 sin responder
     huge      -> un frame de ~26 MiB (supera el límite de 25 MiB: cierre 1009)
     big       -> ack started, un delta de `big_bytes` y final
+    fail      -> `res` ok:false con `error.code` (turno de error: orchestrator_error)
+    drop      -> ack started, un delta y cierra la conexión con 1011 (caída a mitad de turno)
+    push(sk, text) -> agent start, chat delta, chat final, agent end, sin `chat.send`
     """
 
     def __init__(self, hello_payload=None, big_bytes=2 * MIB):
@@ -34,6 +37,7 @@ class FakeOpenClawServer:
         }
         self._server = None
         self._tasks: set[asyncio.Task] = set()
+        self._conns: set = set()
         self.port = 0
 
     async def __aenter__(self):
@@ -59,8 +63,22 @@ class FakeOpenClawServer:
             }
         )
 
+    async def push(self, sk, text):
+        """Turno push: lo inicia OpenClaw, sin `chat.send`. Emite en las conexiones abiertas."""
+        if not self._conns:
+            raise RuntimeError("no hay conexión abierta para el push")
+        agent = lambda phase: json.dumps(  # noqa: E731
+            {"type": "event", "event": "agent", "payload": {"sessionKey": sk, "data": {"phase": phase}}}
+        )
+        for ws in list(self._conns):
+            await ws.send(agent("start"))
+            await ws.send(self._chat(sk, "delta", text))
+            await ws.send(self._chat(sk, "final"))
+            await ws.send(agent("end"))
+
     async def _handler(self, ws):
         self.connections += 1
+        self._conns.add(ws)
         await ws.send(json.dumps({"type": "event", "event": "connect.challenge", "payload": {}}))
         try:
             async for raw in ws:
@@ -80,12 +98,18 @@ class FakeOpenClawServer:
                     task.add_done_callback(self._tasks.discard)
         except websockets.ConnectionClosed:
             pass
+        finally:
+            self._conns.discard(ws)
 
     async def _chat_send(self, ws, rid, params):
         sk, text = params["sessionKey"], params["message"]
         try:
             if text == "close":
                 await ws.close(1000)
+                return
+            if text == "fail":
+                error = {"code": "UNAVAILABLE", "message": "provider exploded"}
+                await ws.send(json.dumps({"type": "res", "id": rid, "ok": False, "error": error}))
                 return
             if text == "accepted":
                 await ws.send(self._res(rid, {"status": "accepted"}))
@@ -104,6 +128,10 @@ class FakeOpenClawServer:
                     json.dumps({"type": "event", "event": "agent", "payload": {"sessionKey": _SK_B, "data": None}})
                 )
                 await ws.send(json.dumps({"type": "res", "id": "x", "payload": None}))
+            if text == "drop":
+                await ws.send(self._chat(sk, "delta", "reply-drop"))
+                await ws.close(1011)
+                return
             if text == "huge":
                 await ws.send(self._chat(sk, "delta", "SECRETCONTENT" * (2 * MIB)))
                 return
