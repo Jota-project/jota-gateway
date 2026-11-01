@@ -43,10 +43,14 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+# BLE001/S110/S112/B904/RUF006/ASYNC/TID251: política de errores y cancelación (#221,
+# vault «JGW Decisión - Política de errores y cancelación»). TRY400 queda fuera a
+# propósito: logger.exception volcaría el texto de la excepción.
+select = [
+    "E", "F", "W", "I", "UP", "B", "SIM", "RUF",
+    "BLE001", "S110", "S112", "ASYNC", "TID251",
+]
 ignore = [
-    "BLE001",
-    "S110",
     "TRY002",
     "TRY203",
     "TRY004",
@@ -58,14 +62,27 @@ ignore = [
     "SIM102",
     "SIM117",
     "SIM105",
-    "B904",
     "B905",
     "RUF002",
+    # API propia con parámetro `timeout` (outbound, registry, openclaw client).
+    "ASYNC109",
 ]
 
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"contextlib.suppress".msg = "Es un `except: pass` invisible; usa try/except con log (#221)."
+
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["E501", "SIM105"]
+"tests/**" = ["E501", "SIM105", "BLE001", "S110", "S112", "B904", "ASYNC", "TID251"]
 "src/**" = ["E501"]
+# Pendientes de revisar con la política de #221: cada PR de la serie quita los suyos.
+"src/services/{tts_client,tts_reconnecting,transcriber_client,transcriber_reconnecting,reconnection}.py" = ["BLE001", "S110", "S112", "B904", "ASYNC", "RUF006"]
+"src/services/speech/**" = ["BLE001", "S110", "S112", "B904", "ASYNC", "RUF006"]
+"src/services/openclaw/**" = ["BLE001", "S110", "S112", "B904", "ASYNC", "RUF006"]
+"src/services/bridge.py" = ["BLE001", "S110", "S112", "B904", "ASYNC", "RUF006"]
+"src/main.py" = ["BLE001", "S110", "S112", "B904", "ASYNC", "RUF006"]
+"src/api/**" = ["BLE001", "S110", "S112", "B904", "ASYNC", "RUF006"]
+"src/core/transport.py" = ["BLE001", "S110", "S112", "B904", "ASYNC", "RUF006"]
+"src/services/{outbound,pipeline_tracker}.py" = ["BLE001", "S110", "S112", "B904", "ASYNC", "RUF006"]
 
 [tool.mypy]
 python_version = "3.12"
