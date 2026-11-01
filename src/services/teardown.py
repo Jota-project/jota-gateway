@@ -54,6 +54,9 @@ class Teardown:
     def __init__(self, label: str) -> None:
         self._label = label
         self.cancelled = False
+        # La CancelledError recibida, para relanzar la misma: anyio (Starlette) solo
+        # absorbe la que lleva el mensaje de su cancel scope.
+        self._cancel_exc: asyncio.CancelledError | None = None
 
     async def __aenter__(self) -> "Teardown":
         return self
@@ -67,9 +70,11 @@ class Teardown:
         # cancel_requested(): una cancelación que algún paso se tragó por su cuenta
         # sigue pendiente en el contador y tampoco se pierde.
         if exc_type is None and (self.cancelled or cancel_requested()):
-            raise asyncio.CancelledError
+            raise self._cancel_exc or asyncio.CancelledError()
 
-    def _note_cancel(self, what: str) -> None:
+    def _note_cancel(self, what: str, exc: asyncio.CancelledError) -> None:
+        if self._cancel_exc is None:
+            self._cancel_exc = exc
         if not self.cancelled:
             logger.debug(
                 "%s: cancelación externa durante %s; se termina el cierre y se relanza",
@@ -113,9 +118,9 @@ class Teardown:
                 break
             try:
                 await asyncio.wait({task}, timeout=remaining)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as cancel:
                 # asyncio.wait no propaga nada de la tarea: solo puede ser ajena.
-                self._note_cancel(what)
+                self._note_cancel(what, cancel)
         if not task.done():
             logger.warning("%s: %s no terminó en %ss", self._label, what, timeout)
             return

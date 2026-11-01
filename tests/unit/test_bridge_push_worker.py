@@ -192,7 +192,7 @@ async def test_close_all_completes_while_worker_waits_for_audio_drain(monkeypatc
     Proof: close_all() finishes within 2s although the worker's audio drain and
     close_all's own worker wait are both capped at 30s (pinned below)."""
     monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 30)
-    monkeypatch.setattr(settings, "SHUTDOWN_DRAIN_S", 30)
+    monkeypatch.setattr(settings, "SESSION_TEARDOWN_S", 30)
     bridge = make_bridge()
     bridge._push_turn_open = True
     bridge._push_turn_id = "t-1"

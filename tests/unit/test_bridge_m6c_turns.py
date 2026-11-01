@@ -141,7 +141,7 @@ async def test_concurrent_cancels_do_not_lose_a_new_turn():
 
 
 async def test_send_during_close_all_does_not_start_or_replace_a_turn(monkeypatch):
-    monkeypatch.setattr(settings, "SHUTDOWN_DRAIN_S", 5.0)
+    monkeypatch.setattr(settings, "SESSION_TEARDOWN_S", 5.0)
     bridge, ws = _bridge()
     release = asyncio.Event()
     calls = []
@@ -157,16 +157,18 @@ async def test_send_during_close_all_does_not_start_or_replace_a_turn(monkeypatc
     first = bridge._active_turn
 
     closer = asyncio.create_task(bridge.close_all())
-    await asyncio.sleep(0.05)  # close_all is now draining the turn
+    await asyncio.sleep(0)  # close_all has started (_closing is set)
     ws.inbox.put_nowait({"type": "websocket.message", "text": json.dumps({"type": "send", "text": "two"})})
     ws.inbox.put_nowait({"type": "websocket.disconnect"})
     await bridge._client_input_loop()
+    await asyncio.wait_for(closer, timeout=2.0)
 
     assert len(calls) == 1, "a turn was created while the session was closing"
-    assert not first.cancelled(), "the draining turn was cancelled by a new send"
-    release.set()
-    await asyncio.wait_for(closer, timeout=2.0)
-    assert bridge._active_turn is None or bridge._active_turn.done()
+    # 7d (#223): close_all cancels the turn itself; the send neither replaced it
+    # nor started another one.
+    assert bridge._active_turn is first
+    assert first.cancelled()
+    assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1"}]
 
 
 async def test_close_all_twice_closes_microservices_once():
@@ -365,7 +367,7 @@ async def test_push_turn_seq_wraps_in_audio_header():
 
 
 async def test_disconnected_client_cancels_its_turn_instead_of_draining(monkeypatch):
-    monkeypatch.setattr(settings, "SHUTDOWN_DRAIN_S", 30.0)
+    monkeypatch.setattr(settings, "SESSION_TEARDOWN_S", 30.0)
     bridge, ws = _bridge()
     started = asyncio.Event()
     closed = asyncio.Event()
@@ -422,7 +424,7 @@ async def test_client_gone_during_a_turn_cancels_the_orchestrator_stream():
 async def test_close_all_starting_while_a_send_waits_for_the_cancel_leaves_no_turn(monkeypatch):
     """G-09 (review): `_start_turn` must re-check `_closing` after awaiting the
     cancellation of the previous turn, inside the lock."""
-    monkeypatch.setattr(settings, "SHUTDOWN_DRAIN_S", 5.0)
+    monkeypatch.setattr(settings, "SESSION_TEARDOWN_S", 5.0)
     bridge, _ = _bridge()
     gate = asyncio.Event()
     new_turns = []

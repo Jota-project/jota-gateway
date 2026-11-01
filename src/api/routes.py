@@ -19,6 +19,7 @@ from src.services.outbound import ClientGone, QueuedSender
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.reconnection import describe_error, traceback_no_message
 from src.services.stats import gateway_stats
+from src.services.teardown import Teardown
 
 logger = logging.getLogger(__name__)
 
@@ -228,13 +229,14 @@ async def gateway_websocket(websocket: WebSocket):
             )
             logger.debug(f"[{client.id}] puente principal: {traceback_no_message(e)}")
     finally:
-        await bridge.close_all(status="error")
-        # close_all() queued session_end; drain it before the socket goes away.
-        await sender.aclose(settings.SHUTDOWN_DRAIN_S)  # never raises Exception (contract)
-        if "DISCONNECTED" not in websocket.client_state.name:
-            try:
-                await websocket.close()
-            except Exception:
-                pass
-
-        logger.info(f"[{client.id}] --- Sesión de entrada WebSocket Concluida ---")
+        # Each step runs even if this handler is cancelled; the cancellation is
+        # re-raised at the end (#221). close_all() bounds each of its own steps.
+        async with Teardown(f"[{client.id}] fin de sesión") as td:
+            await td.step(bridge.close_all(status="error"), "close_all")
+            # close_all() queued session_end; drain it before the socket goes away.
+            await td.step(sender.aclose(settings.SESSION_TEARDOWN_S), "drenado de la salida")
+            if "DISCONNECTED" not in websocket.client_state.name:
+                await td.step(
+                    websocket.close(), "cierre del WebSocket", settings.SESSION_TEARDOWN_S
+                )
+            logger.info(f"[{client.id}] --- Sesión de entrada WebSocket Concluida ---")

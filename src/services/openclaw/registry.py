@@ -4,8 +4,7 @@ import time
 from typing import Any
 
 from src.core.config import settings
-from src.services.reconnection import describe_error, traceback_no_message
-from src.services.session_registry import SessionStatus
+from src.services.reconnection import describe_error
 
 logger = logging.getLogger(__name__)
 
@@ -207,44 +206,3 @@ class ClientRegistry:
                 await bridge.notify_service_status(service, state)
             except Exception as e:  # noqa: BLE001 — frontera: una sesión rota no bloquea al resto
                 logger.debug("broadcast_status: notify failed (%s)", describe_error(e))
-
-    async def close_all_sessions(self, status: SessionStatus, timeout: float) -> None:
-        """Drain every registered session concurrently, each bounded by
-        `timeout`. Used by the app lifespan on shutdown (issue #110) so N
-        active sessions each get a full close_all() attempt in parallel
-        instead of the shutdown window being divided — or multiplied —
-        across them serially.
-
-        Mirrors broadcast_status's isolation contract: one session that
-        raises, or never finishes its own teardown, must not block or delay
-        the others, or the shutdown sequence itself. Never raises.
-        """
-        bridges = list(self._clients.items())
-        if not bridges:
-            return
-
-        async def _drain(client_id: str, bridge: Any) -> None:
-            try:
-                # El motivo se anota a la entrada de close_all (#219): gana a una
-                # desconexión del cliente que llegue durante el drenaje.
-                reason = "shutdown" if status == "shutdown" else None
-                await asyncio.wait_for(
-                    bridge.close_all(status=status, reason=reason), timeout=timeout
-                )
-            except TimeoutError:
-                logger.warning(
-                    "ClientRegistry.close_all_sessions: client_id=%s did not close "
-                    "within timeout=%.1fs during shutdown",
-                    client_id,
-                    timeout,
-                )
-            except Exception as e:  # noqa: BLE001 — close_all_sessions lo retira PR 4 (#221)
-                logger.error(
-                    "ClientRegistry.close_all_sessions: error closing client_id=%s during "
-                    "shutdown (%s)",
-                    client_id,
-                    describe_error(e),
-                )
-                logger.debug("close_all_sessions: %s", traceback_no_message(e))
-
-        await asyncio.gather(*(_drain(client_id, bridge) for client_id, bridge in bridges))

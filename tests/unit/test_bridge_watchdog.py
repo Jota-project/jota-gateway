@@ -536,9 +536,8 @@ async def test_run_launches_idle_watchdog_that_closes_the_session(monkeypatch, m
 
     start = time_module.monotonic()
     # Generous outer safety net — NOT the mechanism under test. If the idle
-    # watchdog isn't wired in, this will still eventually "complete" via
-    # wait_for's own cancellation being absorbed by run()'s cleanup, but only
-    # after ~2s — the elapsed assertion below is what actually catches that.
+    # watchdog isn't wired in, wait_for cancels run() after ~2s and this raises
+    # TimeoutError (run() no longer swallows the cancellation, #221).
     await asyncio.wait_for(bridge.run(), timeout=2.0)
     elapsed = time_module.monotonic() - start
 

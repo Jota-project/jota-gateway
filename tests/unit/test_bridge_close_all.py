@@ -17,7 +17,10 @@ import pytest
 from src.models.schemas import Client, ClientConfig, Handshake
 from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
+from src.services.outbound import QueuedSender
+from src.services.protocol import OrchestratorEvent
 from tests.fakes.speech import speech_providers
+from tests.unit.test_bridge_m6c_turns import RecWS, _bridge
 
 _CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
 _CONFIG = ClientConfig()
@@ -90,22 +93,17 @@ async def test_close_all_second_call_status_does_not_override_first(bridge):
     assert call_args.args[1] == "completed"
 
 
-async def test_close_all_completes_teardown_after_earlier_call_is_interrupted(bridge):
-    """The `_closed` guard used to be set *before* any teardown I/O ran, so if
-    the first call was interrupted mid-teardown (e.g. task cancellation during
-    app shutdown), every later call — including the routes.py outer-finally
-    safety net that issue #101 added specifically to guarantee cleanup — became
-    a silent no-op forever, and tracker.close() (which marks the session closed
-    in SessionRegistry) never ran."""
+async def test_close_all_step_that_raises_cancelled_error_does_not_abort_teardown(bridge):
+    """#101/#221: a teardown step failing with its own CancelledError (here the push
+    TTS close) is a cleanup failure, not a cancellation of the caller: close_all()
+    finishes (tracker closed, `_closed`) and does not raise. A later call is a no-op."""
     bridge._push_tts = AsyncMock()
     bridge._push_tts.close.side_effect = asyncio.CancelledError()
 
-    with pytest.raises(asyncio.CancelledError):
-        await bridge.close_all()
-
-    bridge._push_tts = None
     await bridge.close_all()
 
+    assert bridge._closed is True
+    await bridge.close_all()
     bridge.tracker._registry.close.assert_called_once()
 
 
@@ -152,56 +150,48 @@ async def test_late_close_of_old_bridge_keeps_reconnected_session(mock_tracker):
     old_bridge.client_ws.send_json.assert_not_awaited()
 
 
-async def test_close_all_bounds_wait_on_hanging_active_turn(bridge, monkeypatch):
-    """#115: si _active_turn nunca termina, close_all() no debe colgarse —
-    lo cancela tras SHUTDOWN_DRAIN_S en vez de esperar para siempre.
-
-    This test discriminates fixed vs unfixed code by measuring elapsed time:
-    - With the fix (asyncio.wait_for bound): completes in ~0.05s
-    - Without the fix (unbounded await): would hang until outer safety net times out
-    Assertion: elapsed time proves the bound was applied, not just that the
-    task was cancelled eventually by something else."""
+async def test_close_all_bounds_wait_on_a_turn_that_ignores_cancellation(bridge, monkeypatch):
+    """#115/#221: close_all() cancels the turn in flight; a turn that does not honour
+    the cancellation is abandoned after SESSION_TEARDOWN_S, never awaited forever."""
     from src.core.config import settings
 
-    monkeypatch.setattr(settings, "SHUTDOWN_DRAIN_S", 0.05)
+    monkeypatch.setattr(settings, "SESSION_TEARDOWN_S", 0.05)
+    release = asyncio.Event()
 
-    gate = asyncio.Event()
+    async def _stubborn():
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue  # ignores the cancellation
 
-    async def _blocking():
-        await gate.wait()
-
-    hanging_turn = asyncio.create_task(_blocking())
-    bridge._active_turn = hanging_turn
+    turn = asyncio.create_task(_stubborn())
+    await asyncio.sleep(0)
+    bridge._active_turn = turn
 
     start = time.monotonic()
-    # Outer safety net (generous limit to prevent test from hanging forever,
-    # but not the thing that should bound close_all()).
     await asyncio.wait_for(bridge.close_all(), timeout=2.0)
-    elapsed = time.monotonic() - start
-
-    # With the fix, close_all() respects SHUTDOWN_DRAIN_S=0.05s and returns quickly.
-    # Without the fix, it would await forever, and this assertion would fail.
-    assert elapsed < 0.5, f"close_all() took {elapsed:.2f}s — likely unbounded"
-    assert hanging_turn.cancelled()
+    assert time.monotonic() - start < 0.5
+    assert bridge._closed is True
+    release.set()
+    await turn
 
 
-async def test_close_all_does_not_cancel_turn_that_finishes_before_drain(bridge, monkeypatch):
-    """Caso de control: un turno que termina por sí solo antes del drain no
-    se ve afectado por el cambio."""
+async def test_close_all_cancels_the_turn_in_flight_instead_of_waiting(bridge, monkeypatch):
+    """7d / G-23 (#223): close_all() no longer drains a live turn for up to 30 s; it
+    cancels it right away."""
     from src.core.config import settings
 
-    monkeypatch.setattr(settings, "SHUTDOWN_DRAIN_S", 1.0)
+    monkeypatch.setattr(settings, "SESSION_TEARDOWN_S", 30.0)
+    turn = asyncio.create_task(asyncio.sleep(3600))
+    await asyncio.sleep(0)
+    bridge._active_turn = turn
 
-    async def _quick():
-        return "done"
+    start = time.monotonic()
+    await asyncio.wait_for(bridge.close_all(), timeout=2.0)
 
-    quick_turn = asyncio.create_task(_quick())
-    bridge._active_turn = quick_turn
-
-    await asyncio.wait_for(bridge.close_all(), timeout=1.0)
-
-    assert quick_turn.done()
-    assert not quick_turn.cancelled()
+    assert time.monotonic() - start < 0.5
+    assert turn.cancelled()
 
 
 async def test_close_all_completes_when_called_from_its_own_tracked_task(bridge):
@@ -254,21 +244,15 @@ async def test_close_all_cancels_and_awaits_other_tracked_tasks(bridge):
     assert finished is True
 
 
-async def test_close_all_absorbs_external_cancellation_at_tasks_gather(bridge):
-    """A cancellation delivered to the CALLER while close_all() is awaiting the
-    asyncio.gather(...) of its cancelled watcher tasks must not escape.
+async def test_close_all_finishes_teardown_then_reraises_external_cancellation(bridge):
+    """#221: a cancellation delivered to the CALLER while close_all() waits for its
+    cancelled session tasks is not swallowed any more. close_all() still finishes every
+    step (tracker closed, `_closed`) and then re-raises it.
 
-    asyncio.gather(return_exceptions=True) still re-raises CancelledError if
-    the awaiting task itself is cancelled at that moment. This is exactly what
-    happens when starlette's TestClient/uvicorn cancel the WebSocket endpoint
-    task right after ws.close() — the exit-stack cancellation lands while
-    close_all() is suspended on this gather (issue #115's _idle_watchdog added
-    a long-lived cancellable task that makes the window real), and the
-    CancelledError propagates out through run()'s finally, aborting teardown.
-    close_all() must absorb it so tracker.close()/_closed=True still run, and
-    the error must not reach the caller."""
-    parent = asyncio.current_task()
+    close_all() runs in its own task, cancelled by the child from its `finally`
+    (mirrors uvicorn/TestClient cancelling the endpoint right after ws.close())."""
     cancelled = False
+    closer: asyncio.Task | None = None
 
     async def _long_watchdog():
         nonlocal cancelled
@@ -276,18 +260,105 @@ async def test_close_all_absorbs_external_cancellation_at_tasks_gather(bridge):
             await asyncio.sleep(3600)
         finally:
             cancelled = True
-            # The child's cancellation completes while the caller is already
-            # suspended awaiting the gather — cancelling the caller here lands
-            # the CancelledError at that exact await, mirroring an external
-            # task.cancel() from the server/test framework.
-            parent.cancel()
+            assert closer is not None
+            closer.cancel()
 
     task = asyncio.create_task(_long_watchdog())
     bridge.tasks.append(task)
     await asyncio.sleep(0)  # let the watchdog reach its await
 
-    await bridge.close_all()  # must not raise CancelledError
+    closer = asyncio.create_task(bridge.close_all())
+    with pytest.raises(asyncio.CancelledError):
+        await closer
 
     assert cancelled is True
     assert bridge._closed is True
     bridge.tracker._registry.close.assert_called_once()
+    await bridge.close_all()  # no-op: the safety net of #101 does not repeat the teardown
+    bridge.tracker._registry.close.assert_called_once()
+
+
+# ── #221 4/6: what the client sees when the gateway closes the session ──────
+
+
+async def test_turn_cancelled_by_close_all_still_sends_its_turn_end():
+    """Invariant: exactly one turn_end per turn_start, also when close_all() cancels
+    the turn while the socket is still open."""
+    ws = RecWS()
+    sender = QueuedSender(ws)
+    b, _ = _bridge(ws, sender=sender)
+    started = asyncio.Event()
+
+    async def stream(*a, **k):
+        yield OrchestratorEvent(type="token", content="hi")
+        started.set()
+        await asyncio.sleep(3600)
+
+    b.orchestrator.stream_response = stream
+    b._active_turn = asyncio.create_task(b._call_orchestrator("x"))
+    await asyncio.wait_for(started.wait(), 2)
+
+    await asyncio.wait_for(b.close_all(), timeout=2.0)
+    await sender.aclose(1.0)
+
+    assert ws.of("turn_start") == [{"type": "turn_start", "turn_id": "t-1", "turn_seq": 1}]
+    assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1"}]
+
+
+async def test_close_all_sends_turn_end_of_an_open_push_turn():
+    """A push turn left open (agent start without its end) gets its turn_end on close."""
+    ws = RecWS()
+    sender = QueuedSender(ws)
+    b, _ = _bridge(ws, sender=sender)
+    b.config.push_enabled = True
+    await b.on_push_turn_start("sk")
+
+    await b.close_all()
+    await sender.aclose(1.0)
+
+    assert [m["turn_id"] for m in ws.of("turn_start")] == ["t-1"]
+    assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1"}]
+    assert b._push_turn_open is False
+
+
+async def test_input_loop_crash_closes_the_session_as_error():
+    """G-26: a crash of the input loop ends the session with status `error`."""
+    b, ws = _bridge()
+
+    async def boom():
+        raise RuntimeError("receive failed")
+
+    ws.receive = boom
+    await asyncio.wait_for(b.run(), timeout=2.0)
+
+    assert b.tracker.close.await_args.kwargs["status"] == "error"
+    assert b.tracker.close.await_args.kwargs["reason"] == "error"
+
+
+async def test_cancelling_run_closes_the_session_as_error_and_propagates():
+    """G-26 + #221: an external cancellation of run() closes the session with status
+    `error`, finishes the teardown and is re-raised."""
+    b, _ = _bridge()
+    runner = asyncio.create_task(b.run())
+    await asyncio.sleep(0.05)
+    runner.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(runner, timeout=2.0)
+
+    assert b._closed is True
+    assert b.tracker.close.await_args.kwargs["status"] == "error"
+
+
+async def test_idle_close_ends_run_normally_as_completed(monkeypatch):
+    """The idle watchdog cancels the input loop from close_all(): that is our own
+    cancellation, so run() returns normally and the session stays `completed`."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
+    b, _ = _bridge()
+
+    await asyncio.wait_for(b.run(), timeout=2.0)
+
+    assert b.tracker.close.await_args.kwargs["status"] == "completed"
+    assert b.tracker.close.await_args.kwargs["reason"] == "idle_timeout"

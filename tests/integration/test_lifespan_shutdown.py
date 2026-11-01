@@ -1,14 +1,8 @@
-"""Issue #110: lifespan shutdown must drain active bridges, cancel/await
-notification tasks, close OpenClaw only after sessions have drained, and
-dispose the DB engine — instead of relying on Uvicorn's external
-cancellation to clean any of this up.
-
-Uses a bridge registered directly into app.state.client_registry (rather
-than a real, still-open WebSocket session) so the test is deterministic and
-cannot hang the suite if the fix regresses — see the plan doc for why a
-real open-WebSocket-across-shutdown spike was rejected (it reproducibly
-hung the *pre-fix* code indefinitely, since nothing cancelled the blocked
-receive() loop).
+"""Issue #110 / #221: lifespan shutdown unhooks the state-change broadcasts, closes
+the speech providers and OpenClaw, cancels pending notification tasks and disposes
+the DB engine, even if a step fails. Sessions are not drained here any more: uvicorn
+closes every WebSocket (1012) and waits for its handler before the lifespan shutdown
+(the end-to-end shutdown with an open session is in tests/integration/harness/).
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -19,48 +13,31 @@ from src.main import app
 from tests.integration.conftest import _configure_app_mocks
 
 
-def test_lifespan_shutdown_drains_bridges_closes_openclaw_and_disposes_engine(
+def test_lifespan_shutdown_unhooks_broadcasts_closes_openclaw_and_disposes_engine(
     mock_services, mock_registry, seed_client, monkeypatch
 ):
+    """G-68: the state-change hooks are disconnected before the services close, so a
+    service closing during shutdown cannot schedule a notification task that outlives
+    the loop. The lifespan no longer drains sessions (#221): uvicorn already closed
+    them (1012) before the lifespan shutdown runs."""
     _configure_app_mocks(mock_registry, monkeypatch)
     dispose_mock = MagicMock()
     monkeypatch.setattr("src.main.dispose_engine", dispose_mock)
-    openclaw_close_count_during_drain = None
+    hooks_at_close = {}
 
-    async def _record_openclaw_close_count(*args, **kwargs):
-        nonlocal openclaw_close_count_during_drain
-        openclaw_close_count_during_drain = mock_registry.close.await_count
+    async def _record_hooks(*args, **kwargs):
+        hooks_at_close["openclaw"] = app.state.openclaw.on_state_change
+        hooks_at_close["stt"] = app.state.speech.stt.on_state_change
+        hooks_at_close["tts"] = app.state.speech.tts.on_state_change
 
-    with TestClient(app, client=("127.0.0.1", 50000)):
-        fake_bridge = AsyncMock()
-        fake_bridge.close_all.side_effect = _record_openclaw_close_count
-        app.state.client_registry.register("fake-client", fake_bridge)
-        # __exit__ below triggers the real ASGI lifespan shutdown sequence.
-
-    fake_bridge.close_all.assert_awaited_once_with(status="shutdown", reason="shutdown")
-    mock_registry.close.assert_awaited_once()
-    dispose_mock.assert_called_once()
-    assert openclaw_close_count_during_drain == 0, (
-        "OpenClaw was closed before (or during) the bridge drain — "
-        "sessions must finish draining before OpenClaw closes"
-    )
-
-
-def test_lifespan_shutdown_closes_openclaw_even_if_a_bridge_fails_to_drain(
-    mock_services, mock_registry, seed_client, monkeypatch
-):
-    """One session that errors or times out on shutdown must not prevent
-    OpenClaw from closing or the DB engine from being disposed."""
-    _configure_app_mocks(mock_registry, monkeypatch)
-    dispose_mock = MagicMock()
-    monkeypatch.setattr("src.main.dispose_engine", dispose_mock)
+    mock_registry.close = AsyncMock(side_effect=_record_hooks)
 
     with TestClient(app, client=("127.0.0.1", 50000)):
-        broken_bridge = AsyncMock()
-        broken_bridge.close_all.side_effect = RuntimeError("boom")
-        app.state.client_registry.register("broken-client", broken_bridge)
+        assert app.state.openclaw.on_state_change is not None
+        assert app.state.speech.stt.on_state_change is not None
 
     mock_registry.close.assert_awaited_once()
+    assert hooks_at_close == {"openclaw": None, "stt": None, "tts": None}
     dispose_mock.assert_called_once()
 
 

@@ -96,6 +96,18 @@ def warn_insecure_tokens(settings) -> list[str]:
     return flagged
 
 
+def warn_deprecated_settings(settings) -> list[str]:
+    """WARNING por cada ajuste obsoleto que aún venga definido. Devuelve sus nombres."""
+    flagged: list[str] = []
+    if settings.SHUTDOWN_DRAIN_S is not None:
+        flagged.append("SHUTDOWN_DRAIN_S")
+        logger.warning(
+            "SHUTDOWN_DRAIN_S está obsoleto y se ignora: el cierre de una sesión cancela el "
+            "turno en curso y cada paso lo acota SESSION_TEARDOWN_S. Bórralo del .env."
+        )
+    return flagged
+
+
 def _lock_path(database_url: str) -> Path | None:
     url = make_url(database_url)
     if url.get_backend_name() != "sqlite" or not url.database or url.database == ":memory:":
@@ -140,7 +152,8 @@ def release_single_process_lock(handle: IO | None) -> None:
     try:
         if fcntl is not None:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    except OSError:
-        pass
+    except OSError as e:
+        # El proceso sale justo después y el SO suelta el lock igualmente.
+        logger.debug("No se pudo soltar el lock de proceso único (%s)", type(e).__name__)
     finally:
         handle.close()

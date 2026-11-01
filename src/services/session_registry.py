@@ -6,7 +6,7 @@ if TYPE_CHECKING:
     from src.services.pipeline_tracker import PipelineEvent, PipelineTracker
 
 
-SessionStatus = Literal["active", "completed", "error", "shutdown", "revoked"]
+SessionStatus = Literal["active", "completed", "error", "revoked"]
 
 
 @dataclass
