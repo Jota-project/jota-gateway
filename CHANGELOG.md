@@ -1,3 +1,10 @@
+## [1.21.8](https://github.com/Jota-project/jota-gateway/compare/v1.21.7...v1.21.8) (2026-11-01)
+
+
+### Bug Fixes
+
+* **openclaw:** un fallo del agente tras aceptar el turno lo cierra ya ([#301](https://github.com/Jota-project/jota-gateway/issues/301)) ([0fe06ed](https://github.com/Jota-project/jota-gateway/commit/0fe06edef4cb77db4a687f00b0e35798d423ae02)), closes [#300](https://github.com/Jota-project/jota-gateway/issues/300)
+
 ## [1.21.7](https://github.com/Jota-project/jota-gateway/compare/v1.21.6...v1.21.7) (2026-11-01)
 
 
