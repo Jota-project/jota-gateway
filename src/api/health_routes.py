@@ -10,8 +10,13 @@ All ok → 200 "ok"
 """
 
 import asyncio
+import logging
 
 from fastapi import APIRouter, Request, Response
+
+from src.services.reconnection import describe_error
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -25,7 +30,8 @@ async def _ping_orchestrator(request: Request) -> str:
     try:
         ok = await request.app.state.openclaw.ping()
         return "ok" if ok else "unavailable"
-    except Exception:
+    except Exception as e:  # noqa: BLE001 — sonda de salud: cualquier fallo es «unavailable»
+        logger.debug("/ready: ping del orquestador falló (%s)", describe_error(e))
         return "unavailable"
 
 
@@ -48,13 +54,16 @@ async def ready(request: Request, response: Response) -> dict:
         return_exceptions=True,
     )
 
-    def _resolve(r) -> str:
-        return "unavailable" if isinstance(r, Exception) else r
+    def _resolve(name: str, r) -> str:
+        if isinstance(r, BaseException):
+            logger.debug("/ready: sonda de %s falló (%s)", name, describe_error(r))
+            return "unavailable"
+        return r
 
     services = {
-        "orchestrator": _resolve(results[0]),
-        "transcriber": _resolve(results[1]),
-        "tts": _resolve(results[2]),
+        "orchestrator": _resolve("orchestrator", results[0]),
+        "transcriber": _resolve("transcriber", results[1]),
+        "tts": _resolve("tts", results[2]),
     }
 
     if services["orchestrator"] == "unavailable":

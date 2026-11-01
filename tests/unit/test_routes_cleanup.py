@@ -9,6 +9,7 @@ and lets us assert on cleanup deterministically.
 """
 
 import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -149,3 +150,40 @@ async def test_session_end_reaches_client_before_socket_close():
     end_idx = [i for i, e in enumerate(log) if "session_end" in e]
     assert end_idx, log
     assert end_idx[-1] < log.index("close")
+
+
+@pytest.mark.parametrize(
+    ("failing", "registered"), [("PipelineTracker", False), ("JotaBridge", True)]
+)
+async def test_session_construction_failure_closes_writer_and_session(
+    monkeypatch, caplog, failing, registered
+):
+    """G-24 (#221): if building the session fails after the sender's writer task started,
+    nothing is left behind: writer closed, session not "active", socket closed 1011 with
+    the documented reason, and the log carries the exception type, never its text."""
+    secret = "texto-interno-que-no-debe-salir"
+    senders: list[routes.QueuedSender] = []
+
+    class _Sender(routes.QueuedSender):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            senders.append(self)
+
+    def _boom(*a, **k):
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(routes, "QueuedSender", _Sender)
+    monkeypatch.setattr(routes, failing, _boom)
+    app_state, _ = _make_app_state(orchestrator_ping_result=True)
+    ws = FakeWebSocket(HANDSHAKE_TEXT, app_state)
+
+    with caplog.at_level(logging.DEBUG):
+        await routes.gateway_websocket(ws)
+
+    assert len(senders) == 1 and senders[0]._writer.done()
+    sessions = app_state.session_registry.get_all()
+    assert len(sessions) == (1 if registered else 0)
+    assert all(s.status == "error" for s in sessions)
+    assert ws.closed_with == (1011, "Problema estableciendo microservicios internos del hub.")
+    assert "RuntimeError" in caplog.text
+    assert secret not in caplog.text

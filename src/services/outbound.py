@@ -175,7 +175,7 @@ class QueuedSender:
                         await self._ws.send_json(item)
                     else:
                         await self._ws.send_bytes(item)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — frontera: el writer registra y para
                 # TimeoutError is an OSError: only OUR timeout expiring means "slow
                 # client"; a send that raises TimeoutError itself is an ordinary failure.
                 if timeout.expired():
@@ -199,7 +199,7 @@ class QueuedSender:
         if self._on_slow is not None:
             try:
                 await self._on_slow()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — frontera: callback externo
                 logger.warning("Outbound: on_slow falló (%s).", type(e).__name__)
 
     def _discard_pending(self) -> None:

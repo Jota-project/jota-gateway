@@ -132,28 +132,46 @@ async def gateway_websocket(websocket: WebSocket):
         )
 
     sender = QueuedSender(websocket, on_slow=_on_slow_client)
-    tracker = PipelineTracker(
-        session_id=session_id,
-        client_id=client.id,
-        input_mode=handshake.input_mode,
-        output_mode=handshake.output_mode,
-        registry=session_registry,
-        sender=sender,
-    )
-    session_registry.register(tracker)
-    bridge = JotaBridge(
-        client=client,
-        config=config,
-        client_ws=websocket,
-        orchestrator=openclaw,
-        speech=app_state.speech,
-        tracker=tracker,
-        handshake=handshake,
-        client_registry=app_state.client_registry,
-        default_agent=resolved_agent,
-        sender=sender,
-        turn_registry=getattr(app_state, "turn_registry", None),
-    )
+    # G-24 (#221): the writer task is already running; if building the rest fails, close
+    # it and the session instead of leaving them orphaned. Construction is synchronous,
+    # so only an Exception can land here.
+    try:
+        tracker = PipelineTracker(
+            session_id=session_id,
+            client_id=client.id,
+            input_mode=handshake.input_mode,
+            output_mode=handshake.output_mode,
+            registry=session_registry,
+            sender=sender,
+        )
+        session_registry.register(tracker)
+        bridge = JotaBridge(
+            client=client,
+            config=config,
+            client_ws=websocket,
+            orchestrator=openclaw,
+            speech=app_state.speech,
+            tracker=tracker,
+            handshake=handshake,
+            client_registry=app_state.client_registry,
+            default_agent=resolved_agent,
+            sender=sender,
+            turn_registry=getattr(app_state, "turn_registry", None),
+        )
+    except Exception as e:  # noqa: BLE001 — frontera: sesión a medio construir
+        logger.error(f"[{client.id}] Fallo al construir la sesión: {describe_error(e)}")
+        logger.debug(f"[{client.id}] construcción de la sesión: {traceback_no_message(e)}")
+        async with Teardown(f"[{client.id}] sesión a medio construir") as td:
+            session_registry.close(session_id, "error")  # no-op si no llegó a registrarse
+            await td.step(sender.aclose(settings.SESSION_TEARDOWN_S), "cierre de la salida")
+            await td.step(
+                websocket.close(
+                    code=1011, reason="Problema estableciendo microservicios internos del hub."
+                ),
+                "cierre del WebSocket",
+                settings.SESSION_TEARDOWN_S,
+            )
+        return
 
     # One single try/finally covers setup (connect_internal_services, health
     # check, ready send) and bridge.run(): any early return/exception below
@@ -166,7 +184,7 @@ async def gateway_websocket(websocket: WebSocket):
     try:
         try:
             await bridge.connect_internal_services()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: el arranque fallido cierra con 1011
             logger.error(
                 f"[{client.id}] Fallo al inicializar puentes internos: {describe_error(e)}"
             )
@@ -214,7 +232,7 @@ async def gateway_websocket(websocket: WebSocket):
                 }
             )
             await sender.flush()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: sin `ready` no hay sesión
             logger.warning(f"[{client.id}] Failed to send ready: {describe_error(e)}")
             bridge.note_close_reason("client_disconnect" if isinstance(e, ClientGone) else "error")
             return
@@ -222,7 +240,7 @@ async def gateway_websocket(websocket: WebSocket):
         # 4. LANZAR LOOPS CONCURRENTES
         try:
             await bridge.run()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: el finally cierra la sesión
             logger.error(
                 f"[{client.id}] Error crítico de Runtime en el Puente Principal: "
                 f"{describe_error(e)}"

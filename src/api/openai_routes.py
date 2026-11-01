@@ -18,6 +18,8 @@ from src.services.openclaw.client import _traceback_no_message
 from src.services.openclaw.registry import TURN_IN_PROGRESS_ERROR
 from src.services.orchestration import OrchestratorError, call_orchestrator
 from src.services.pipeline_tracker import PipelineTracker
+from src.services.reconnection import describe_error
+from src.services.session_registry import SessionStatus
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +72,7 @@ async def resolve_ha_caller(request: Request) -> HACaller:
         try:
             client, config = await db_client.get_session(client_key)
         except (ClientNotFound, ClientInactive):
-            raise HTTPException(status_code=401, detail="authentication required")
+            raise HTTPException(status_code=401, detail="authentication required") from None
         return HACaller(client=client, config=config)
 
     ip = resolve_client_ip(request)
@@ -186,6 +188,8 @@ async def chat_completions(
 
             async def _run():
                 nonlocal orchestrator_error, error_message
+                # G-26 (#221): solo un turno terminado es `completed`; cancelado, `error`.
+                status: SessionStatus = "error"
                 try:
                     await call_orchestrator(
                         orchestrator,
@@ -199,22 +203,22 @@ async def chat_completions(
                     logger.error("HTTP orchestrator error (%s)", e)
                     orchestrator_error = e
                     error_message = str(e)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — frontera: el SSE cierra con internal_error
                     # Cualquier otro fallo no es un éxito truncado (#217, G-37): se cierra como
                     # error sin filtrar el detalle interno al cliente.
                     _log_unexpected_error(e)
                     orchestrator_error = e
                     error_message = "internal_error"
+                else:
+                    status = "completed"
                 finally:
                     await queue.put(
                         None
                     )  # sentinel siempre primero — garantiza que el generador puede avanzar
                     try:
-                        await tracker.close(
-                            status="error" if orchestrator_error is not None else "completed"
-                        )
-                    except Exception:
-                        pass
+                        await tracker.close(status=status)
+                    except Exception as e:  # noqa: BLE001 — limpieza: va a DEBUG
+                        logger.debug("HTTP tracker close failed (%s)", describe_error(e))
 
             task = asyncio.create_task(_run())
             try:
@@ -226,10 +230,11 @@ async def chat_completions(
             finally:
                 if not task.done():
                     task.cancel()
-                    try:
-                        await task
-                    except (asyncio.CancelledError, Exception):
-                        pass
+                    # asyncio.wait no relanza la cancelación esperada de `task`; una ajena
+                    # (cancelan a quien cierra el stream) sí se propaga (#221).
+                    await asyncio.wait({task})
+                    if not task.cancelled() and (e := task.exception()) is not None:
+                        logger.debug("HTTP stream turn failed (%s)", describe_error(e))
 
             if orchestrator_error is not None:
                 error = {
@@ -264,6 +269,7 @@ async def chat_completions(
         tokens.append(t)
 
     orchestrator_error: Exception | None = None
+    status: SessionStatus = "error"  # G-26 (#221): una cancelación no es un éxito
     try:
         await call_orchestrator(
             orchestrator,
@@ -275,12 +281,14 @@ async def chat_completions(
     except OrchestratorError as e:
         logger.error("HTTP orchestrator error (%s)", e)
         orchestrator_error = e
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — frontera: 502 con internal_error
         # Any other exception (RuntimeError included) may carry raw text: never relayed.
         _log_unexpected_error(e)
         orchestrator_error = RuntimeError("internal_error")
+    else:
+        status = "completed"
     finally:
-        await tracker.close(status="error" if orchestrator_error is not None else "completed")
+        await tracker.close(status=status)
 
     if orchestrator_error:
         if str(orchestrator_error) == TURN_IN_PROGRESS_ERROR:

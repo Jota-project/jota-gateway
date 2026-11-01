@@ -45,7 +45,7 @@ def abort_client_transport(websocket: Any) -> bool:
         return False
     try:
         transport.abort()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — frontera: un abort fallido solo se registra
         # The middleware stores whatever `.transport` the bound `send.__self__` has.
         logger.warning("abort_client_transport: abort falló (%s).", type(e).__name__)
         return False
@@ -65,16 +65,16 @@ async def drop_slow_client(
         if record is not None:
             try:
                 await record()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — frontera: el abort va igual
                 logger.warning("drop_slow_client: record falló (%s).", type(e).__name__)
         try:
             await asyncio.wait_for(
                 websocket.close(code=1013, reason="client too slow"), timeout=SLOW_CLOSE_GRACE_S
             )
-        except Exception:
+        except Exception as e:  # noqa: BLE001 — cortesía: el abort de abajo es la salida real
             # TimeoutError (close stuck behind the unread data), WebSocketDisconnect,
             # RuntimeError (already closed): the abort below is the real exit either way.
-            pass
+            logger.debug("drop_slow_client: close(1013) falló (%s).", type(e).__name__)
     finally:
         # In a `finally` so that if this callback is itself cancelled part-way (e.g.
         # QueuedSender.aclose()'s timeout cancelling the writer inside on_slow), the
