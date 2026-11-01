@@ -14,41 +14,14 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.models.schemas import Client, ClientConfig, Handshake
-from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
 from src.services.reconnection import ConnectionState, to_wire_state
 from src.services.tts_reconnecting import ReconnectingTTSClient
-from tests.fakes.speech import speech_providers
-
-_CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
-_CONFIG = ClientConfig()
-
-
-def _make_bridge(output_mode: list[str], tts) -> JotaBridge:
-    return JotaBridge(
-        client=_CLIENT,
-        config=_CONFIG,
-        client_ws=AsyncMock(),
-        orchestrator=AsyncMock(),
-        speech=speech_providers(tts=tts),
-        tracker=AsyncMock(),
-        handshake=Handshake(client_key="test-key", input_mode="text", output_mode=output_mode),
-        client_registry=ClientRegistry(),
-        default_agent="main",
-    )
-
-
-def _tts_status_messages(bridge: JotaBridge) -> list[dict]:
-    return [
-        call.args[0]
-        for call in bridge.client_ws.send_json.await_args_list
-        if call.args[0].get("type") == "status" and call.args[0].get("service") == "tts"
-    ]
+from tests.fakes.bridge import sent
 
 
 @pytest.mark.asyncio
-async def test_tts_outage_and_recovery_broadcasts_to_all_registered_bridges():
+async def test_tts_outage_and_recovery_broadcasts_to_all_registered_bridges(make_bridge):
     """Mirrors main.py's lifespan wiring: ReconnectingTTSClient.on_state_change
     is wired to ClientRegistry.broadcast_status, so an idle bridge that never
     attempts a turn itself still learns about an outage and recovery driven
@@ -64,7 +37,7 @@ async def test_tts_outage_and_recovery_broadcasts_to_all_registered_bridges():
 
     tts.on_state_change = _on_tts_state_change
 
-    idle_bridge = _make_bridge(output_mode=["audio", "text"], tts=AsyncMock())
+    idle_bridge, ws = make_bridge(output_mode=("audio", "text"), tts=AsyncMock())
     registry.register("idle-client", idle_bridge)
 
     with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
@@ -80,7 +53,8 @@ async def test_tts_outage_and_recovery_broadcasts_to_all_registered_bridges():
         await tts.connect(voice=None, speed=None, client_id="other-session")
         await asyncio.sleep(0.01)
 
-    assert _tts_status_messages(idle_bridge) == [
+    await sent(idle_bridge)
+    assert [m for m in ws.of("status") if m["service"] == "tts"] == [
         {"type": "status", "service": "tts", "state": "reconnecting"},
         {"type": "status", "service": "tts", "state": "restored"},
     ]

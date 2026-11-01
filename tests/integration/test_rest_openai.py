@@ -1,5 +1,11 @@
 # tests/integration/test_rest_openai.py
+import json
+import logging
+
+from sqlmodel import Session
+
 from src.core.config import settings
+from src.db.models import ClientRecord
 from src.main import app
 from src.services.protocol import OrchestratorEvent
 from tests.integration.conftest import CLIENT_ID
@@ -634,3 +640,312 @@ def test_non_streaming_orchestrator_error_records_session_as_error(client, mock_
     ]
     assert len(http_sessions) == 1
     assert http_sessions[0].status == "error"
+
+
+# ── Alias de modelo `jota-gateway` y errores no-RuntimeError ──────────────────
+
+BODY = {"messages": [{"role": "user", "content": "Hola"}], "stream": False}
+
+
+def _capture_session_key(mock_orchestrator):
+    captured = {}
+
+    async def _stream(text, session_key=None):
+        captured["session_key"] = session_key
+        yield OrchestratorEvent(type="token", content="ok")
+        yield OrchestratorEvent(type="status", content="done")
+
+    mock_orchestrator.stream_response = _stream
+    return captured
+
+
+def test_model_alias_jota_gateway_with_bearer_returns_200(
+    client_untrusted, ha_bearer_headers, mock_orchestrator
+):
+    from src.core.session_key import make_session_key
+
+    captured = _capture_session_key(mock_orchestrator)
+    r = client_untrusted.post(
+        "/v1/chat/completions",
+        json={**BODY, "model": "jota-gateway"},
+        headers=ha_bearer_headers,
+    )
+    assert r.status_code == 200, r.text
+    # Sin agente explícito -> cascada: default de OpenClaw ("main").
+    assert captured["session_key"] == make_session_key("main", CLIENT_ID)
+
+
+def test_model_alias_uses_client_default_agent_in_cascade(
+    client_untrusted, ha_bearer_headers, mock_orchestrator, db_engine
+):
+    from src.core.session_key import make_session_key
+
+    with Session(db_engine) as s:
+        rec = s.get(ClientRecord, CLIENT_ID)
+        rec.default_agent = "a"
+        s.add(rec)
+        s.commit()
+    captured = _capture_session_key(mock_orchestrator)
+    r = client_untrusted.post(
+        "/v1/chat/completions",
+        json={**BODY, "model": "jota-gateway"},
+        headers=ha_bearer_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert captured["session_key"] == make_session_key("a", CLIENT_ID)
+
+
+def test_model_alias_respects_allowed_agents_of_cascade_default(
+    client_untrusted, ha_bearer_headers, mock_orchestrator, db_engine
+):
+    """El alias no es un bypass: la allowlist sigue aplicando al agente resuelto."""
+    with Session(db_engine) as s:
+        rec = s.get(ClientRecord, CLIENT_ID)
+        rec.allowed_agents = '["a"]'
+        s.add(rec)
+        s.commit()
+    r = client_untrusted.post(
+        "/v1/chat/completions",
+        json={**BODY, "model": "jota-gateway"},
+        headers=ha_bearer_headers,
+    )
+    assert r.status_code == 403
+    assert r.json()["reason"] == "agent_not_permitted"
+
+
+def test_real_agent_as_model_still_works_and_unknown_still_403(
+    client_untrusted, ha_bearer_headers, mock_orchestrator
+):
+    from src.core.session_key import make_session_key
+
+    captured = _capture_session_key(mock_orchestrator)
+    r = client_untrusted.post(
+        "/v1/chat/completions", json={**BODY, "model": "a"}, headers=ha_bearer_headers
+    )
+    assert r.status_code == 200
+    assert captured["session_key"] == make_session_key("a", CLIENT_ID)
+
+    r = client_untrusted.post(
+        "/v1/chat/completions", json={**BODY, "model": "nope"}, headers=ha_bearer_headers
+    )
+    assert r.status_code == 403
+    assert r.json()["reason"] == "agent_not_available"
+
+
+def test_streaming_non_runtime_error_ends_as_error_with_done(client, mock_orchestrator):
+    async def _boom(*args, **kwargs):
+        yield OrchestratorEvent(type="token", content="parcial")
+        raise ValueError("boom interno")
+
+    mock_orchestrator.stream_response = _boom
+    with client.stream(
+        "POST", "/v1/chat/completions", json={**BODY, "model": "openclaw", "stream": True}
+    ) as r:
+        r.read()
+        body = r.text
+
+    payloads = _parse_sse_payloads(body)
+    assert payloads[-1]["choices"][0]["finish_reason"] == "error"
+    assert "error" in payloads[-2]
+    assert "boom interno" not in body  # no filtrar detalles internos
+    assert not any(p.get("choices", [{}])[0].get("finish_reason") == "stop" for p in payloads)
+    assert body.rstrip().endswith("data: [DONE]")
+
+
+def test_non_streaming_non_runtime_error_returns_502(client, mock_orchestrator):
+    async def _boom(*args, **kwargs):
+        raise ValueError("boom interno")
+        yield  # pragma: no cover
+
+    mock_orchestrator.stream_response = _boom
+    r = client.post("/v1/chat/completions", json={**BODY, "model": "openclaw"})
+    assert r.status_code == 502, r.text
+    assert "boom interno" not in r.text
+
+
+def test_non_runtime_error_message_never_reaches_logs_stream_and_non_stream(
+    client, mock_orchestrator, caplog
+):
+    """Higiene de logs: solo el tipo de la excepción, nunca su mensaje (puede llevar texto
+    de usuario), ni en el traceback a DEBUG."""
+    import logging
+    import traceback
+
+    marker = "SECRET-USER-TEXT"
+    caplog.set_level(logging.DEBUG)
+
+    async def _boom(*args, **kwargs):
+        raise ValueError(marker)
+        yield  # pragma: no cover
+
+    mock_orchestrator.stream_response = _boom
+    r = client.post("/v1/chat/completions", json={**BODY, "model": "openclaw"})
+    assert r.status_code == 502
+    with client.stream(
+        "POST", "/v1/chat/completions", json={**BODY, "model": "openclaw", "stream": True}
+    ) as r2:
+        r2.read()
+
+    assert "ValueError" in caplog.text  # sí se registra el tipo
+    assert marker not in caplog.text
+    for rec in caplog.records:
+        assert marker not in rec.getMessage()
+        if rec.exc_info:
+            assert marker not in "".join(traceback.format_exception(*rec.exc_info))
+
+
+MARK = "SECRET-INTERNAL"
+
+
+def _ids(r):
+    return [m["id"] for m in r.json()["data"]]
+
+
+# ── #234: /v1/models lista el roster ──────────────────────────────────────────
+
+
+def test_models_lists_alias_and_roster_agents_for_bearer_caller(
+    client_untrusted, ha_bearer_headers
+):
+    r = client_untrusted.get("/v1/models", headers=ha_bearer_headers)
+    assert r.status_code == 200
+    assert _ids(r) == ["jota-gateway", "main", "a", "openclaw"]
+    assert all(m["object"] == "model" for m in r.json()["data"])
+
+
+def test_models_for_legacy_trusted_caller_lists_only_alias(client):
+    """Origen confiable SIN Bearer: chat ignora body.model y usa el agente por defecto, así
+    que no se anuncian agentes que no se podrían elegir."""
+    assert _ids(client.get("/v1/models")) == ["jota-gateway"]
+
+
+def _chat_session_key(c, mock_orchestrator, model, headers=None):
+    captured = {}
+
+    async def _stream(text, session_key=None):
+        captured["sk"] = session_key
+        yield OrchestratorEvent(type="token", content="ok")
+        yield OrchestratorEvent(type="status", content="done")
+
+    mock_orchestrator.stream_response = _stream
+    r = c.post("/v1/chat/completions", json={**BODY, "model": model}, headers=headers or {})
+    assert r.status_code == 200, r.text
+    return captured["sk"]
+
+
+def test_models_chat_coherence_bearer_every_listed_model_selects_that_agent(
+    client_untrusted, ha_bearer_headers, mock_orchestrator
+):
+    for mid in _ids(client_untrusted.get("/v1/models", headers=ha_bearer_headers)):
+        sk = _chat_session_key(client_untrusted, mock_orchestrator, mid, ha_bearer_headers)
+        expected = "main" if mid == "jota-gateway" else mid
+        assert sk.split(":")[1] == expected
+
+
+def test_models_chat_coherence_legacy_listed_model_is_what_chat_uses(
+    client, mock_orchestrator
+):
+    listed = _ids(client.get("/v1/models"))
+    assert listed == ["jota-gateway"]
+    # Un agente real no listado se ignora en la rama legacy: cae al agente por defecto.
+    assert _chat_session_key(client, mock_orchestrator, "a").split(":")[1] == "main"
+    assert _chat_session_key(client, mock_orchestrator, listed[0]).split(":")[1] == "main"
+
+
+def test_models_respects_allowed_agents_of_authenticated_client(
+    client_untrusted, ha_bearer_headers, db_engine
+):
+    with Session(db_engine) as s:
+        rec = s.get(ClientRecord, CLIENT_ID)
+        rec.allowed_agents = '["a"]'
+        s.add(rec)
+        s.commit()
+    r = client_untrusted.get("/v1/models", headers=ha_bearer_headers)
+    assert _ids(r) == ["jota-gateway", "a"]
+
+
+def test_models_with_empty_allowed_agents_lists_only_alias(
+    client_untrusted, ha_bearer_headers, db_engine
+):
+    with Session(db_engine) as s:
+        rec = s.get(ClientRecord, CLIENT_ID)
+        rec.allowed_agents = "[]"
+        s.add(rec)
+        s.commit()
+    r = client_untrusted.get("/v1/models", headers=ha_bearer_headers)
+    assert _ids(r) == ["jota-gateway"]
+
+
+def test_models_without_allowed_agents_restriction_lists_full_roster(
+    client_untrusted, ha_bearer_headers
+):
+    r = client_untrusted.get("/v1/models", headers=ha_bearer_headers)
+    assert _ids(r) == ["jota-gateway", "main", "a", "openclaw"]
+
+
+def test_models_without_roster_lists_only_alias(client, mock_orchestrator):
+    mock_orchestrator.gateway_info = None
+    assert _ids(client.get("/v1/models")) == ["jota-gateway"]
+
+
+def test_models_with_empty_roster_lists_only_alias(client, mock_orchestrator):
+    mock_orchestrator.gateway_info.agents = []
+    assert _ids(client.get("/v1/models")) == ["jota-gateway"]
+
+
+def test_models_never_duplicates_the_alias(client_untrusted, ha_bearer_headers, mock_orchestrator):
+    mock_orchestrator.gateway_info.agents.append("jota-gateway")
+    ids = _ids(client_untrusted.get("/v1/models", headers=ha_bearer_headers))
+    assert ids.count("jota-gateway") == 1 and len(ids) > 1
+
+
+# ── #228: lo que ve un llamador de /v1 ────────────────────────────────────────
+
+
+def test_orchestrator_error_event_code_reaches_v1_caller(client, mock_orchestrator):
+    async def _stream(*a, **k):
+        yield OrchestratorEvent(type="error", content="orchestrator_error")
+
+    mock_orchestrator.stream_response = _stream
+    r = client.post("/v1/chat/completions", json=BODY)
+    assert r.status_code == 502
+    assert r.json() == {"error": "orchestrator_error"}
+
+
+def test_foreign_runtimeerror_text_never_reaches_v1_caller_nor_logs(
+    client, mock_orchestrator, caplog
+):
+    caplog.set_level(logging.DEBUG, logger="src")
+
+    async def _stream(*a, **k):
+        raise RuntimeError(MARK)
+        yield  # pragma: no cover
+
+    mock_orchestrator.stream_response = _stream
+    r = client.post("/v1/chat/completions", json=BODY)
+    assert r.status_code == 502
+    assert MARK not in r.text
+    assert r.json() == {"error": "internal_error"}
+    assert MARK not in "\n".join(
+        x.getMessage() for x in caplog.records if x.name.startswith("src")
+    )
+
+
+def test_foreign_runtimeerror_text_never_reaches_v1_stream(client, mock_orchestrator, caplog):
+    caplog.set_level(logging.DEBUG, logger="src")
+
+    async def _stream(*a, **k):
+        raise RuntimeError(MARK)
+        yield  # pragma: no cover
+
+    mock_orchestrator.stream_response = _stream
+    r = client.post("/v1/chat/completions", json={**BODY, "stream": True})
+    assert MARK not in r.text
+    payloads = _parse_sse_payloads(r.text)
+    assert any(
+        isinstance(p, dict) and p.get("error", {}).get("message") == "internal_error"
+        for p in payloads
+    ), json.dumps(payloads)
+    assert MARK not in "\n".join(
+        x.getMessage() for x in caplog.records if x.name.startswith("src")
+    )

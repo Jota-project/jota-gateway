@@ -4,31 +4,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.models.schemas import Client, ClientConfig, Handshake
-from src.services.bridge import JotaBridge
-from src.services.openclaw.registry import ClientRegistry
-from tests.fakes.speech import speech_providers
-
-_CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
-_CONFIG = ClientConfig()
-
 
 @pytest.fixture
-def bridge(mock_tracker):
-    ws = AsyncMock()
-    b = JotaBridge(
-        client=_CLIENT,
-        config=_CONFIG,
-        client_ws=ws,
-        orchestrator=AsyncMock(),
-        speech=speech_providers(),
-        tracker=mock_tracker,
-        handshake=Handshake(client_key="test-key", input_mode="audio", output_mode=["text"]),
-        client_registry=ClientRegistry(),
-        default_agent="main",
-    )
-    b.transcriber = MagicMock()
-    b.transcriber._is_ready = True
+async def bridge(make_bridge):
+    transcriber = MagicMock()
+    transcriber._is_ready = True
+    b, _ = make_bridge(input_mode="audio", transcriber=transcriber)
     return b
 
 

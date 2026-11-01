@@ -1,96 +1,66 @@
 import asyncio
+import functools
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
 
-from src.models.schemas import Client, ClientConfig, Handshake
-from src.services.bridge import JotaBridge
+from src.models.schemas import ClientConfig
 from src.services.openclaw.registry import ClientRegistry
-from tests.fakes.speech import speech_providers
+from tests.fakes.bridge import sent, wait_until
 
 
-def make_bridge(output_mode=("text",), client_id="hab_sito", tts=None):
-    client = Client(id=client_id, client_key="key-123", is_active=True)
-    config = ClientConfig()
-    ws = AsyncMock()
-    orchestrator = AsyncMock()
-    orchestrator.ping = AsyncMock(return_value=True)
-    tracker = AsyncMock()
-    handshake = Handshake(
-        client_key="key-123",
-        input_mode="text",
-        output_mode=list(output_mode),
-        agent="main",
-    )
-    client_registry = ClientRegistry()
-    if tts is None:
-        tts = AsyncMock()
-        tts.connect = AsyncMock(return_value=None)
-    bridge = JotaBridge(
-        client=client,
-        config=config,
-        client_ws=ws,
-        orchestrator=orchestrator,
-        speech=speech_providers(tts=tts),
-        tracker=tracker,
-        handshake=handshake,
-        client_registry=client_registry,
-        default_agent="main",
-    )
-    return bridge, client_registry
+@pytest.fixture
+def make_push_bridge(make_bridge):
+    return functools.partial(make_bridge, client_id="hab_sito")
 
 
-@pytest.mark.asyncio
-async def test_connect_registers_in_client_registry():
-    bridge, registry = make_bridge()
+async def test_connect_registers_in_client_registry(make_push_bridge):
+    registry = ClientRegistry()
+    bridge, _ = make_push_bridge(client_registry=registry)
     await bridge.connect_internal_services()
     assert registry.get("hab_sito") is bridge
 
 
-@pytest.mark.asyncio
-async def test_close_unregisters_from_client_registry():
-    bridge, registry = make_bridge()
+async def test_close_unregisters_from_client_registry(make_push_bridge):
+    registry = ClientRegistry()
+    bridge, _ = make_push_bridge(client_registry=registry)
     await bridge.connect_internal_services()
-    bridge.tracker.close = AsyncMock()
     await bridge.close_all()
     assert registry.get("hab_sito") is None
 
 
-@pytest.mark.asyncio
-async def test_deliver_push_text_sends_push_message():
-    bridge, _ = make_bridge(output_mode=("text",))
+async def test_deliver_push_text_sends_push_message(make_push_bridge):
+    bridge, _ = make_push_bridge(output_mode=("text",))
     bridge._push_turn_id = "t-1"
     bridge._push_turn_open = True
     payload = {"sessionKey": "agent:main:hab_sito", "deltaText": "Buenos días!"}
     await bridge.deliver_push(payload)
-    bridge.client_ws.send_json.assert_awaited_once_with(
+    assert await sent(bridge) == [
         {
             "type": "token",
             "turn_id": "t-1",
             "text": "Buenos días!",
         }
-    )
+    ]
 
 
-@pytest.mark.asyncio
-async def test_deliver_push_empty_delta_ignored():
-    bridge, _ = make_bridge(output_mode=("text",))
+async def test_deliver_push_empty_delta_ignored(make_push_bridge):
+    bridge, _ = make_push_bridge(output_mode=("text",))
     bridge._push_turn_open = True
     payload = {"sessionKey": "agent:main:hab_sito", "deltaText": ""}
     await bridge.deliver_push(payload)
-    bridge.client_ws.send_json.assert_not_awaited()
+    assert await sent(bridge) == []
 
 
-@pytest.mark.asyncio
-async def test_on_push_turn_start_no_audio_does_nothing():
-    bridge, _ = make_bridge(output_mode=("text",))
+async def test_on_push_turn_start_no_audio_does_nothing(make_push_bridge):
+    bridge, _ = make_push_bridge(output_mode=("text",))
     await bridge.on_push_turn_start("agent:main:hab_sito")
     assert bridge._push_tts is None
 
 
-@pytest.mark.asyncio
-async def test_on_push_turn_end_closes_push_tts():
-    bridge, _ = make_bridge(output_mode=("audio", "text"))
+async def test_on_push_turn_end_closes_push_tts(make_push_bridge):
+    bridge, _ = make_push_bridge(output_mode=("audio", "text"))
     mock_tts = AsyncMock()
     bridge._push_tts = mock_tts
     bridge._push_audio_task = None  # no audio task in this scenario
@@ -106,14 +76,13 @@ async def aiter(items):
         yield item
 
 
-@pytest.mark.asyncio
-async def test_on_push_turn_start_audio_creates_tts_and_pipe():
+async def test_on_push_turn_start_audio_creates_tts_and_pipe(make_push_bridge):
     mock_tts_client = AsyncMock()
     mock_tts_client.get_audio_stream = lambda: aiter([])
     tts_wrapper = AsyncMock()
     tts_wrapper.connect = AsyncMock(return_value=mock_tts_client)
 
-    bridge, _ = make_bridge(output_mode=("audio", "text"), tts=tts_wrapper)
+    bridge, _ = make_push_bridge(output_mode=("audio", "text"), tts=tts_wrapper)
     await bridge.on_push_turn_start("agent:main:hab_sito")
 
     tts_wrapper.connect.assert_awaited_once()
@@ -121,60 +90,53 @@ async def test_on_push_turn_start_audio_creates_tts_and_pipe():
     assert bridge._push_audio_task is not None
 
 
-@pytest.mark.asyncio
-async def test_push_audio_pipe_forwards_chunks_with_header():
+async def test_push_audio_pipe_forwards_chunks_with_header(make_push_bridge):
     """Audio chunks from TTS include [0xA1][turn_seq uint16 BE] header."""
-    import asyncio
-
     chunks = [b"\x00\x01", b"\x02\x03"]
     mock_tts_client = AsyncMock()
     mock_tts_client.get_audio_stream = lambda: aiter(chunks)
     tts_wrapper = AsyncMock()
     tts_wrapper.connect = AsyncMock(return_value=mock_tts_client)
 
-    bridge, _ = make_bridge(output_mode=("audio", "text"), tts=tts_wrapper)
+    bridge, ws = make_push_bridge(output_mode=("audio", "text"), tts=tts_wrapper)
     await bridge.on_push_turn_start("agent:main:hab_sito")
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-    calls = [c.args[0] for c in bridge.client_ws.send_bytes.await_args_list]
+    await wait_until(lambda: sum(isinstance(m, bytes) for m in ws.sent) == 2)
+    audio = [m for m in ws.sent if isinstance(m, bytes)]
     expected_header = bytes([0xA1]) + (1).to_bytes(2, "big")
-    assert calls == [expected_header + b"\x00\x01", expected_header + b"\x02\x03"]
+    assert audio == [expected_header + b"\x00\x01", expected_header + b"\x02\x03"]
 
 
-@pytest.mark.asyncio
-async def test_on_push_turn_start_sends_turn_start_message():
+async def test_on_push_turn_start_sends_turn_start_message(make_push_bridge):
     """on_push_turn_start sends turn_start JSON message to client."""
-    bridge, _ = make_bridge(output_mode=("text",))
+    bridge, _ = make_push_bridge(output_mode=("text",))
     await bridge.on_push_turn_start("agent:main:hab_sito")
-    bridge.client_ws.send_json.assert_awaited_once_with(
+    assert await sent(bridge) == [
         {
             "type": "turn_start",
             "turn_id": "t-1",
             "turn_seq": 1,
         }
-    )
+    ]
 
 
-@pytest.mark.asyncio
-async def test_on_push_turn_end_sends_turn_end_message():
+async def test_on_push_turn_end_sends_turn_end_message(make_push_bridge):
     """on_push_turn_end sends turn_end JSON message to client."""
-    bridge, _ = make_bridge(output_mode=("text",))
+    bridge, _ = make_push_bridge(output_mode=("text",))
     bridge._push_turn_id = "t-1"
     bridge._push_turn_open = (
         True  # a turn_end is only valid if a turn_start came before (issue #84)
     )
     await bridge.on_push_turn_end("agent:main:hab_sito")
-    bridge.client_ws.send_json.assert_awaited_once_with(
+    assert await sent(bridge) == [
         {
             "type": "turn_end",
             "turn_id": "t-1",
         }
-    )
+    ]
 
 
-@pytest.mark.asyncio
-async def test_deliver_push_with_tts_sends_to_tts():
-    bridge, _ = make_bridge(output_mode=("audio", "text"))
+async def test_deliver_push_with_tts_sends_to_tts(make_push_bridge):
+    bridge, _ = make_push_bridge(output_mode=("audio", "text"))
     bridge._push_turn_id = "t-1"
     bridge._push_turn_open = True
     mock_tts = AsyncMock()
@@ -184,61 +146,28 @@ async def test_deliver_push_with_tts_sends_to_tts():
     mock_tts.send_text_chunk.assert_awaited_once_with("Hola!")
 
 
-@pytest.mark.asyncio
-async def test_on_push_turn_end_no_tts_is_noop():
-    bridge, _ = make_bridge()
+async def test_on_push_turn_end_no_tts_is_noop(make_push_bridge):
+    bridge, _ = make_push_bridge()
     assert bridge._push_tts is None
     await bridge.on_push_turn_end("agent:main:hab_sito")  # must not raise
     assert bridge._push_tts is None
 
 
-@pytest.mark.asyncio
-async def test_push_disabled_ignores_push_turn_start():
+async def test_push_disabled_ignores_push_turn_start(make_push_bridge):
     """push_enabled=False hace que on_push_turn_start no haga nada."""
-    client = Client(id="ha", client_key="ha-key", is_active=True)
-    config = ClientConfig(push_enabled=False)
-    ws = AsyncMock()
-    handshake = Handshake(client_key="ha-key", input_mode="text", output_mode=["text"])
-    bridge = JotaBridge(
-        client=client,
-        config=config,
-        client_ws=ws,
-        orchestrator=AsyncMock(),
-        speech=speech_providers(),
-        tracker=AsyncMock(),
-        handshake=handshake,
-        client_registry=ClientRegistry(),
-        default_agent="main",
-    )
+    bridge, _ = make_push_bridge(client_id="ha", config=ClientConfig(push_enabled=False))
     await bridge.on_push_turn_start("agent:main:ha")
-    ws.send_json.assert_not_awaited()
+    assert await sent(bridge) == []
     assert bridge._push_turn_id is None
 
 
-@pytest.mark.asyncio
-async def test_deliver_push_tool_call_forwarded_when_enabled():
-    client = Client(id="hab_sito", client_key="key-123", is_active=True)
-    config = ClientConfig(tool_calls_enabled=True)
-    ws = AsyncMock()
-    handshake = Handshake(
-        client_key="key-123", input_mode="text", output_mode=["text"], agent="main"
-    )
-    bridge = JotaBridge(
-        client=client,
-        config=config,
-        client_ws=ws,
-        orchestrator=AsyncMock(),
-        speech=speech_providers(),
-        tracker=AsyncMock(),
-        handshake=handshake,
-        client_registry=ClientRegistry(),
-        default_agent="main",
-    )
+async def test_deliver_push_tool_call_forwarded_when_enabled(make_push_bridge):
+    bridge, _ = make_push_bridge(config=ClientConfig(tool_calls_enabled=True))
     bridge._push_turn_id = "t-1"
     bridge._push_turn_open = True
     data = {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {"command": "ls"}}
     await bridge.deliver_push_tool_call(data)
-    ws.send_json.assert_awaited_once_with(
+    assert await sent(bridge) == [
         {
             "type": "tool_call",
             "turn_id": "t-1",
@@ -249,71 +178,27 @@ async def test_deliver_push_tool_call_forwarded_when_enabled():
             "result": None,
             "is_error": None,
         }
-    )
+    ]
 
 
-@pytest.mark.asyncio
-async def test_deliver_push_tool_call_not_forwarded_when_disabled():
-    client = Client(id="hab_sito", client_key="key-123", is_active=True)
-    config = ClientConfig(tool_calls_enabled=False)
-    ws = AsyncMock()
-    handshake = Handshake(
-        client_key="key-123", input_mode="text", output_mode=["text"], agent="main"
-    )
-    bridge = JotaBridge(
-        client=client,
-        config=config,
-        client_ws=ws,
-        orchestrator=AsyncMock(),
-        speech=speech_providers(),
-        tracker=AsyncMock(),
-        handshake=handshake,
-        client_registry=ClientRegistry(),
-        default_agent="main",
-    )
+async def test_deliver_push_tool_call_not_forwarded_when_disabled(make_push_bridge):
+    bridge, _ = make_push_bridge(config=ClientConfig(tool_calls_enabled=False))
     bridge._push_turn_id = "t-1"
     bridge._push_turn_open = True
     data = {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {}}
     await bridge.deliver_push_tool_call(data)
-    ws.send_json.assert_not_awaited()
+    assert await sent(bridge) == []
 
 
-@pytest.mark.asyncio
-async def test_deliver_push_tool_call_malformed_payload_ignored():
-    client = Client(id="hab_sito", client_key="key-123", is_active=True)
-    config = ClientConfig(tool_calls_enabled=True)
-    ws = AsyncMock()
-    handshake = Handshake(
-        client_key="key-123", input_mode="text", output_mode=["text"], agent="main"
-    )
-    bridge = JotaBridge(
-        client=client,
-        config=config,
-        client_ws=ws,
-        orchestrator=AsyncMock(),
-        speech=speech_providers(),
-        tracker=AsyncMock(),
-        handshake=handshake,
-        client_registry=ClientRegistry(),
-        default_agent="main",
-    )
+async def test_deliver_push_tool_call_malformed_payload_ignored(make_push_bridge):
+    bridge, _ = make_push_bridge(config=ClientConfig(tool_calls_enabled=True))
     bridge._push_turn_id = "t-1"
     bridge._push_turn_open = True
     await bridge.deliver_push_tool_call({"phase": "update"})  # must not raise
-    ws.send_json.assert_not_awaited()
+    assert await sent(bridge) == []
 
 
-def _send_json_turn_frames(ws_mock):
-    """Return only the frames with type turn_start/turn_end the bridge sent."""
-    return [
-        c.args[0]
-        for c in ws_mock.send_json.await_args_list
-        if c.args[0].get("type") in ("turn_start", "turn_end")
-    ]
-
-
-@pytest.mark.asyncio
-async def test_multiple_push_starts_and_ends_collapse_to_single_pair():
+async def test_multiple_push_starts_and_ends_collapse_to_single_pair(make_push_bridge):
     """Reproduces issue #84 verbatim from the jota-voice client log:
 
     ```
@@ -337,8 +222,7 @@ async def test_multiple_push_starts_and_ends_collapse_to_single_pair():
     are dropped, and only the first end emits turn_end. End events that
     arrive after the turn is already closed are also dropped.
     """
-    bridge, _ = make_bridge(output_mode=("text",))
-    ws = bridge.client_ws
+    bridge, ws = make_push_bridge(output_mode=("text",))
 
     # The exact sequence from the issue log: 4 starts in a row, then 3 ends.
     await bridge.on_push_turn_start("agent:main:hab_sito")
@@ -349,25 +233,24 @@ async def test_multiple_push_starts_and_ends_collapse_to_single_pair():
     await bridge.on_push_turn_end("agent:main:hab_sito")
     await bridge.on_push_turn_end("agent:main:hab_sito")
 
-    frames = _send_json_turn_frames(ws)
-    starts = [f for f in frames if f["type"] == "turn_start"]
-    ends = [f for f in frames if f["type"] == "turn_end"]
+    await sent(bridge)
+    starts = ws.of("turn_start")
+    ends = ws.of("turn_end")
 
     assert len(starts) == 1, f"expected 1 turn_start, got {len(starts)}: {starts}"
     assert len(ends) == 1, f"expected 1 turn_end, got {len(ends)}: {ends}"
     assert starts[0]["turn_id"] == ends[0]["turn_id"] == "t-1", (
-        f"all frames must share turn_id t-1, got: {frames}"
+        f"all frames must share turn_id t-1, got: {ws.sent}"
     )
 
 
-@pytest.mark.asyncio
-async def test_first_push_start_assigns_turn_seq_subsequent_does_not():
+async def test_first_push_start_assigns_turn_seq_subsequent_does_not(make_push_bridge):
     """Issue #84 — only the FIRST agent start opens a logical turn and
     consumes a turn_seq. Subsequent agent starts (intermediate tool steps)
     must not increment _turn_seq further, so the client sees one stable
     turn_id for the whole multi-step reply.
     """
-    bridge, _ = make_bridge(output_mode=("text",))
+    bridge, ws = make_push_bridge(output_mode=("text",))
     assert bridge._turn_seq == 0
 
     await bridge.on_push_turn_start("agent:main:hab_sito")
@@ -379,11 +262,8 @@ async def test_first_push_start_assigns_turn_seq_subsequent_does_not():
 
     # Wire-level check: after 3 starts, the client must see exactly one turn_start.
     # Strengthens the test — without the fix, three start frames would be sent.
-    starts = [
-        c.args[0]
-        for c in bridge.client_ws.send_json.await_args_list
-        if c.args[0].get("type") == "turn_start"
-    ]
+    await sent(bridge)
+    starts = ws.of("turn_start")
     assert len(starts) == 1, f"expected 1 turn_start after 3 starts, got {len(starts)}: {starts}"
 
     assert bridge._turn_seq == 1, (
@@ -393,125 +273,59 @@ async def test_first_push_start_assigns_turn_seq_subsequent_does_not():
     assert bridge._push_turn_id == "t-1"
 
 
-@pytest.mark.asyncio
-async def test_on_push_turn_end_with_no_open_turn_does_not_emit():
+async def test_on_push_turn_end_with_no_open_turn_does_not_emit(make_push_bridge):
     """Issue #84 — an agent end arriving without a matching agent start
     (orphan, or after close_all reset) must not emit a turn_end frame to
     the client. Guards the early-return branch added to on_push_turn_end.
     """
-    bridge, _ = make_bridge(output_mode=("text",))
+    bridge, _ = make_push_bridge(output_mode=("text",))
     assert bridge._push_turn_open is False
     bridge._push_turn_id = "t-1"  # simulate stale state from before reset
 
     await bridge.on_push_turn_end("agent:main:hab_sito")
 
-    assert bridge.client_ws.send_json.await_count == 0, (
-        "on_push_turn_end with no open turn must not emit any frame"
-    )
+    assert await sent(bridge) == [], "on_push_turn_end with no open turn must not emit any frame"
     # Flag must stay False (we never set it True).
     assert bridge._push_turn_open is False
 
 
-@pytest.mark.asyncio
-async def test_deliver_push_rejected_when_push_disabled():
-    """#109: push_enabled=False must block deliver_push even if _push_turn_open
-    is (incorrectly, or from stale state) True."""
-    client = Client(id="hab_sito", client_key="key-123", is_active=True)
-    config = ClientConfig(push_enabled=False)
-    ws = AsyncMock()
-    handshake = Handshake(
-        client_key="key-123", input_mode="text", output_mode=["text"], agent="main"
+_TOKEN = {"sessionKey": "agent:main:hab_sito", "deltaText": "Buenos días!"}
+_TOOL = {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {"command": "ls"}}
+
+
+@pytest.mark.parametrize(
+    ("deliver", "payload", "push_enabled", "stale_open"),
+    [
+        # #109: push_enabled=False blocks it even with a stale/inconsistent open turn
+        pytest.param("deliver_push", _TOKEN, False, True, id="token-push-disabled"),
+        # #109 core bug: no turn_start was ever sent, so a frame would leak outside
+        # any turn_start/turn_end envelope with a stale/None turn_id
+        pytest.param("deliver_push", _TOKEN, True, False, id="token-no-turn-open"),
+        pytest.param("deliver_push_tool_call", _TOOL, False, True, id="tool-push-disabled"),
+        pytest.param("deliver_push_tool_call", _TOOL, True, False, id="tool-no-turn-open"),
+    ],
+)
+async def test_deliver_push_is_rejected_outside_an_allowed_turn(
+    make_push_bridge, deliver, payload, push_enabled, stale_open
+):
+    bridge, _ = make_push_bridge(
+        config=ClientConfig(push_enabled=push_enabled, tool_calls_enabled=True)
     )
-    bridge = JotaBridge(
-        client=client,
-        config=config,
-        client_ws=ws,
-        orchestrator=AsyncMock(),
-        speech=speech_providers(),
-        tracker=AsyncMock(),
-        handshake=handshake,
-        client_registry=ClientRegistry(),
-        default_agent="main",
-    )
-    bridge._push_turn_id = "t-1"
-    bridge._push_turn_open = True  # simulates stale/inconsistent state — must still be blocked
-    payload = {"sessionKey": "agent:main:hab_sito", "deltaText": "Buenos días!"}
-    await bridge.deliver_push(payload)
-    ws.send_json.assert_not_awaited()
+    if stale_open:
+        bridge._push_turn_id = "t-1"
+        bridge._push_turn_open = True
+    await getattr(bridge, deliver)(payload)
+    assert await sent(bridge) == []
 
 
-@pytest.mark.asyncio
-async def test_deliver_push_rejected_when_no_turn_open():
-    """#109 core bug: push_enabled=True but no turn_start was ever sent
-    (on_push_turn_start never ran) — deliver_push must not leak a token
-    frame with a stale/None turn_id outside any turn_start/turn_end envelope."""
-    bridge, _ = make_bridge(output_mode=("text",))
-    assert bridge._push_turn_open is False
-    payload = {"sessionKey": "agent:main:hab_sito", "deltaText": "Buenos días!"}
-    await bridge.deliver_push(payload)
-    bridge.client_ws.send_json.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_deliver_push_tool_call_rejected_when_push_disabled():
-    client = Client(id="hab_sito", client_key="key-123", is_active=True)
-    config = ClientConfig(push_enabled=False, tool_calls_enabled=True)
-    ws = AsyncMock()
-    handshake = Handshake(
-        client_key="key-123", input_mode="text", output_mode=["text"], agent="main"
-    )
-    bridge = JotaBridge(
-        client=client,
-        config=config,
-        client_ws=ws,
-        orchestrator=AsyncMock(),
-        speech=speech_providers(),
-        tracker=AsyncMock(),
-        handshake=handshake,
-        client_registry=ClientRegistry(),
-        default_agent="main",
-    )
-    bridge._push_turn_id = "t-1"
-    bridge._push_turn_open = True
-    data = {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {"command": "ls"}}
-    await bridge.deliver_push_tool_call(data)
-    ws.send_json.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_deliver_push_tool_call_rejected_when_no_turn_open():
-    client = Client(id="hab_sito", client_key="key-123", is_active=True)
-    config = ClientConfig(tool_calls_enabled=True)  # push_enabled defaults True
-    ws = AsyncMock()
-    handshake = Handshake(
-        client_key="key-123", input_mode="text", output_mode=["text"], agent="main"
-    )
-    bridge = JotaBridge(
-        client=client,
-        config=config,
-        client_ws=ws,
-        orchestrator=AsyncMock(),
-        speech=speech_providers(),
-        tracker=AsyncMock(),
-        handshake=handshake,
-        client_registry=ClientRegistry(),
-        default_agent="main",
-    )
-    assert bridge._push_turn_open is False
-    data = {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": {"command": "ls"}}
-    await bridge.deliver_push_tool_call(data)
-    ws.send_json.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_on_push_turn_end_bounds_audio_drain(monkeypatch):
+async def test_on_push_turn_end_bounds_audio_drain(make_push_bridge, monkeypatch):
     """#130 S3a: la espera de la síntesis TTS está acotada por
     PUSH_TTS_DRAIN_TIMEOUT_S. Al vencer se cancela el audio, se cierra el TTS y
     el turn_end se envía igualmente."""
     from src.core.config import settings
 
     monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 0.05)
-    bridge, _ = make_bridge(output_mode=("audio", "text"))
+    bridge, ws = make_push_bridge(output_mode=("audio", "text"))
     mock_tts = AsyncMock()
     bridge._push_tts = mock_tts
     bridge._push_turn_id = "t-1"
@@ -523,6 +337,44 @@ async def test_on_push_turn_end_bounds_audio_drain(monkeypatch):
 
     assert stuck.cancelled()
     mock_tts.close.assert_awaited_once()
-    bridge.client_ws.send_json.assert_any_call({"type": "turn_end", "turn_id": "t-1"})
+    assert {"type": "turn_end", "turn_id": "t-1"} in await sent(bridge)
     assert bridge._push_turn_open is False
     assert bridge._push_tts is None
+
+
+# ── #241/#243: cableado de ChatTextTracker en deliver_push (casos del tracker en test_chat_text.py)
+
+
+def _m(text):
+    return {"role": "assistant", "content": [{"type": "text", "text": text}]}
+
+
+def _final(text):
+    return {"state": "final", "message": _m(text)}
+
+
+def _open(bridge):
+    bridge._push_turn_open = True
+    bridge._push_turn_id = "t-1"
+
+
+async def test_push_captured_sequence_with_snapshots(make_push_bridge):
+    bridge, ws = make_push_bridge()
+    _open(bridge)
+    await bridge.deliver_push({"state": "delta", "deltaText": "1, 2, 3,", "message": _m("1, 2, 3,")})
+    await bridge.deliver_push(
+        {"state": "delta", "deltaText": "", "replace": True, "message": _m("")}
+    )
+    await bridge.deliver_push(_final("1, 2, 3, 4, 5"))
+    assert [m["text"] for m in await sent(bridge)] == ["1, 2, 3,", " 4, 5"]
+
+
+async def test_push_final_retracted_to_prefix_emits_nothing(make_push_bridge, caplog):
+    caplog.set_level(logging.DEBUG)
+    bridge, ws = make_push_bridge()
+    _open(bridge)
+    await bridge.deliver_push({"state": "delta", "deltaText": "SECRETO, mundo. Adios"})
+    await bridge.deliver_push(_final("SECRETO, mundo."))
+    assert [m["text"] for m in await sent(bridge)] == ["SECRETO, mundo. Adios"]
+    assert "diverges" not in caplog.text
+    assert "SECRETO" not in caplog.text

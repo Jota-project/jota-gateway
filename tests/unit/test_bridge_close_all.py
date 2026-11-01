@@ -10,56 +10,32 @@ first call's status must win.
 
 import asyncio
 import time
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.models.schemas import Client, ClientConfig, Handshake
-from src.services.bridge import JotaBridge
 from src.services.openclaw.registry import ClientRegistry
-from src.services.outbound import QueuedSender
 from src.services.protocol import OrchestratorEvent
-from tests.fakes.speech import speech_providers
-from tests.unit.test_bridge_m6c_turns import RecWS, _bridge
-
-_CLIENT = Client(id="test-uuid", client_key="test-key", is_active=True)
-_CONFIG = ClientConfig()
+from tests.fakes.bridge import sent
 
 
 @pytest.fixture
-def bridge(mock_tracker):
-    ws = AsyncMock()
-    registry = ClientRegistry()
-    b = JotaBridge(
-        client=_CLIENT,
-        config=_CONFIG,
-        client_ws=ws,
-        orchestrator=AsyncMock(),
-        speech=speech_providers(),
-        tracker=mock_tracker,
-        handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text"]),
-        client_registry=registry,
-        default_agent="main",
-    )
-    registry.register(b.client_id, b)
+async def bridge(make_bridge, mock_tracker):
+    b, _ = make_bridge(client_id="test-uuid", tracker=mock_tracker, register=True)
     return b
 
 
-async def test_close_all_twice_does_not_raise(bridge):
-    await bridge.close_all()
-    await bridge.close_all()
+async def test_close_all_twice_has_the_effects_of_one(bridge):
+    """Also the M6 exit-gate mutant on the `_closed` guard."""
+    bridge.transcriber = MagicMock()
+    bridge.transcriber.close = AsyncMock()
 
+    await bridge.close_all()
+    await bridge.close_all()  # must not raise
 
-async def test_close_all_twice_only_records_one_session_end_event(bridge):
-    await bridge.close_all()
-    await bridge.close_all()
-    session_end_events = [e for e in bridge.tracker.events if e.stage == "session_end"]
-    assert len(session_end_events) == 1
-
-
-async def test_close_all_twice_only_calls_registry_close_once(bridge):
-    await bridge.close_all()
-    await bridge.close_all()
+    assert bridge._closed is True
+    assert bridge.transcriber.close.await_count == 1
+    assert [e.stage for e in bridge.tracker.events].count("session_end") == 1
     bridge.tracker._registry.close.assert_called_once()
 
 
@@ -107,7 +83,7 @@ async def test_close_all_step_that_raises_cancelled_error_does_not_abort_teardow
     bridge.tracker._registry.close.assert_called_once()
 
 
-async def test_late_close_of_old_bridge_keeps_reconnected_session(mock_tracker):
+async def test_late_close_of_old_bridge_keeps_reconnected_session(make_bridge, mock_tracker):
     """Issue #113 reconnect race, end to end through JotaBridge.close_all().
 
     A client disconnects and reconnects: the new session registers a second
@@ -118,21 +94,8 @@ async def test_late_close_of_old_bridge_keeps_reconnected_session(mock_tracker):
     """
     registry = ClientRegistry()
 
-    def _make_bridge():
-        return JotaBridge(
-            client=_CLIENT,
-            config=_CONFIG,
-            client_ws=AsyncMock(),
-            orchestrator=AsyncMock(),
-            speech=speech_providers(),
-            tracker=mock_tracker,
-            handshake=Handshake(client_key="test-key", input_mode="text", output_mode=["text"]),
-            client_registry=registry,
-            default_agent="main",
-        )
-
-    old_bridge = _make_bridge()
-    new_bridge = _make_bridge()
+    old_bridge, _ = make_bridge(tracker=mock_tracker, client_registry=registry)
+    new_bridge, _ = make_bridge(tracker=mock_tracker, client_registry=registry)
     registry.register(old_bridge.client_id, old_bridge)
     registry.register(new_bridge.client_id, new_bridge)  # reconnect overwrites
 
@@ -144,10 +107,10 @@ async def test_late_close_of_old_bridge_keeps_reconnected_session(mock_tracker):
 
     # ...and still receives status broadcasts (old bridge's ws must not).
     await registry.broadcast_status("orchestrator", "restored")
-    new_bridge.client_ws.send_json.assert_awaited_once_with(
+    assert await sent(new_bridge) == [
         {"type": "status", "service": "orchestrator", "state": "restored"}
-    )
-    old_bridge.client_ws.send_json.assert_not_awaited()
+    ]
+    assert await sent(old_bridge) == []
 
 
 async def test_close_all_bounds_wait_on_a_turn_that_ignores_cancellation(bridge, monkeypatch):
@@ -281,12 +244,10 @@ async def test_close_all_finishes_teardown_then_reraises_external_cancellation(b
 # ── #221 4/6: what the client sees when the gateway closes the session ──────
 
 
-async def test_turn_cancelled_by_close_all_still_sends_its_turn_end():
+async def test_turn_cancelled_by_close_all_still_sends_its_turn_end(make_bridge):
     """Invariant: exactly one turn_end per turn_start, also when close_all() cancels
     the turn while the socket is still open."""
-    ws = RecWS()
-    sender = QueuedSender(ws)
-    b, _ = _bridge(ws, sender=sender)
+    b, ws = make_bridge()
     started = asyncio.Event()
 
     async def stream(*a, **k):
@@ -299,31 +260,29 @@ async def test_turn_cancelled_by_close_all_still_sends_its_turn_end():
     await asyncio.wait_for(started.wait(), 2)
 
     await asyncio.wait_for(b.close_all(), timeout=2.0)
-    await sender.aclose(1.0)
+    await sent(b)
 
     assert ws.of("turn_start") == [{"type": "turn_start", "turn_id": "t-1", "turn_seq": 1}]
     assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1"}]
 
 
-async def test_close_all_sends_turn_end_of_an_open_push_turn():
+async def test_close_all_sends_turn_end_of_an_open_push_turn(make_bridge):
     """A push turn left open (agent start without its end) gets its turn_end on close."""
-    ws = RecWS()
-    sender = QueuedSender(ws)
-    b, _ = _bridge(ws, sender=sender)
+    b, ws = make_bridge()
     b.config.push_enabled = True
     await b.on_push_turn_start("sk")
 
     await b.close_all()
-    await sender.aclose(1.0)
+    await sent(b)
 
     assert [m["turn_id"] for m in ws.of("turn_start")] == ["t-1"]
     assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1"}]
     assert b._push_turn_open is False
 
 
-async def test_input_loop_crash_closes_the_session_as_error():
+async def test_input_loop_crash_closes_the_session_as_error(make_bridge):
     """G-26: a crash of the input loop ends the session with status `error`."""
-    b, ws = _bridge()
+    b, ws = make_bridge()
 
     async def boom():
         raise RuntimeError("receive failed")
@@ -335,10 +294,10 @@ async def test_input_loop_crash_closes_the_session_as_error():
     assert b.tracker.close.await_args.kwargs["reason"] == "error"
 
 
-async def test_cancelling_run_closes_the_session_as_error_and_propagates():
+async def test_cancelling_run_closes_the_session_as_error_and_propagates(make_bridge):
     """G-26 + #221: an external cancellation of run() closes the session with status
     `error`, finishes the teardown and is re-raised."""
-    b, _ = _bridge()
+    b, _ = make_bridge()
     runner = asyncio.create_task(b.run())
     await asyncio.sleep(0.05)
     runner.cancel()
@@ -350,13 +309,13 @@ async def test_cancelling_run_closes_the_session_as_error_and_propagates():
     assert b.tracker.close.await_args.kwargs["status"] == "error"
 
 
-async def test_idle_close_ends_run_normally_as_completed(monkeypatch):
+async def test_idle_close_ends_run_normally_as_completed(make_bridge, monkeypatch):
     """The idle watchdog cancels the input loop from close_all(): that is our own
     cancellation, so run() returns normally and the session stays `completed`."""
     from src.core.config import settings
 
     monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
-    b, _ = _bridge()
+    b, _ = make_bridge()
 
     await asyncio.wait_for(b.run(), timeout=2.0)
 
@@ -400,7 +359,7 @@ class _TtsProvider:
 
 @pytest.mark.parametrize("close_s", [0.05, 1.0], ids=["tts_rapido", "tts_lento"])
 async def test_turn_abandoned_by_close_all_keeps_one_turn_end_before_session_end(
-    close_s, monkeypatch
+    close_s, make_bridge, monkeypatch
 ):
     """#221 4/6: when the cancelled turn's TTS cleanup outlasts SESSION_TEARDOWN_S,
     close_all() abandons it but still sends its turn_end before session_end; when
@@ -408,14 +367,10 @@ async def test_turn_abandoned_by_close_all_keeps_one_turn_end_before_session_end
     from src.core.config import settings
 
     monkeypatch.setattr(settings, "SESSION_TEARDOWN_S", 0.3)
-    ws = RecWS()
-    sender = QueuedSender(ws)
-    b, _ = _bridge(
-        ws, sender=sender, output_mode=("text", "audio"), tts=_TtsProvider(_SlowCloseTts(close_s))
-    )
+    b, ws = make_bridge(output_mode=("text", "audio"), tts=_TtsProvider(_SlowCloseTts(close_s)))
 
     async def tracker_close(status, **meta):
-        await sender.send_json({"type": "session_end"})
+        await b._sender.send_json({"type": "session_end"})
 
     b.tracker.close.side_effect = tracker_close
     started = asyncio.Event()
@@ -435,7 +390,7 @@ async def test_turn_abandoned_by_close_all_keeps_one_turn_end_before_session_end
     # its finally must not send a second turn_end.
     await asyncio.wait({turn}, timeout=close_s + 1.0)
     assert turn.done()
-    await sender.aclose(1.0)
+    await b._sender.aclose(1.0)
 
     types = ws.types()
     assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1"}]
@@ -465,18 +420,14 @@ class _StreamingSlowEndTts:
         pass
 
 
-async def test_abandoned_turn_sends_no_audio_after_its_turn_end(monkeypatch):
+async def test_abandoned_turn_sends_no_audio_after_its_turn_end(make_bridge, monkeypatch):
     """#221 4/6: once close_all() has sent the abandoned turn's turn_end, that turn's
     still-running TTS audio must not reach the client (nothing of a turn after its
     turn_end)."""
     from src.core.config import settings
 
     monkeypatch.setattr(settings, "SESSION_TEARDOWN_S", 0.3)
-    ws = RecWS()
-    sender = QueuedSender(ws)
-    b, _ = _bridge(
-        ws,
-        sender=sender,
+    b, ws = make_bridge(
         output_mode=("text", "audio"),
         tts=_TtsProvider(_StreamingSlowEndTts(end_s=1.0, every=0.02)),
     )
@@ -487,7 +438,7 @@ async def test_abandoned_turn_sends_no_audio_after_its_turn_end(monkeypatch):
     b.transcriber = _SlowCloseTranscriber()
 
     async def tracker_close(status, **meta):
-        await sender.send_json({"type": "session_end"})
+        await b._sender.send_json({"type": "session_end"})
 
     b.tracker.close.side_effect = tracker_close
     started = asyncio.Event()
@@ -503,7 +454,7 @@ async def test_abandoned_turn_sends_no_audio_after_its_turn_end(monkeypatch):
     await asyncio.sleep(0.05)
 
     await b.close_all()
-    await sender.aclose(1.0)
+    await b._sender.aclose(1.0)
     await asyncio.sleep(1.2)
 
     labels = [m["type"] if isinstance(m, dict) else "audio" for m in ws.sent]

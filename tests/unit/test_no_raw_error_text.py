@@ -24,7 +24,7 @@ from src.services.speech.ports import SttCallbacks, SttParams
 from src.services.transcriber_client import TranscriberClient
 from src.services.transcriber_reconnecting import ReconnectingTranscriberClient
 from src.services.tts_client import TTSClient
-from tests.unit.test_bridge_m6c_turns import _bridge
+from tests.fakes.bridge import sent
 
 SECRET = "SECRET-INTERNAL"
 
@@ -35,9 +35,9 @@ def _logged(caplog) -> str:
     return "\n".join(fmt.format(r) for r in caplog.records if r.levelno >= logging.DEBUG)
 
 
-async def test_turn_error_from_raw_runtime_error_is_internal_error(caplog):
+async def test_turn_error_from_raw_runtime_error_is_internal_error(make_bridge, caplog):
     caplog.set_level(logging.DEBUG)
-    bridge, ws = _bridge()
+    bridge, ws = make_bridge()
 
     async def s(*a, **k):
         raise RuntimeError(SECRET)
@@ -45,6 +45,7 @@ async def test_turn_error_from_raw_runtime_error_is_internal_error(caplog):
 
     bridge.orchestrator.stream_response = s
     await bridge._call_orchestrator("x")
+    await sent(bridge)
 
     err = ws.of("error")[0]
     assert err["code"] == "TURN_ERROR" and err["message"] == "internal_error"
@@ -53,14 +54,15 @@ async def test_turn_error_from_raw_runtime_error_is_internal_error(caplog):
     assert SECRET not in _logged(caplog)
 
 
-async def test_turn_error_relays_orchestrator_error_code():
-    bridge, ws = _bridge()
+async def test_turn_error_relays_orchestrator_error_code(make_bridge):
+    bridge, ws = make_bridge()
 
     async def s(*a, **k):
         yield OrchestratorEvent(type="error", content="turn_timeout")
 
     bridge.orchestrator.stream_response = s
     await bridge._call_orchestrator("x")
+    await sent(bridge)
 
     assert ws.of("error")[0]["message"] == "turn_timeout"
 
@@ -195,22 +197,28 @@ def _boom(*a, **k):
     raise RuntimeError(SECRET)
 
 
+def _failing_sender():
+    sender = AsyncMock()
+    sender.send_json.side_effect = _boom
+    return sender
+
+
 async def _raise_secret():
     raise RuntimeError(SECRET)
 
 
-async def test_bridge_input_loop_error_logs_type_only(caplog):
+async def test_bridge_input_loop_error_logs_type_only(make_bridge, caplog):
     caplog.set_level(logging.DEBUG)
-    bridge, ws = _bridge()
+    bridge, ws = make_bridge()
     ws.receive = _raise_secret
     await bridge._client_input_loop()
     assert SECRET not in _logged(caplog)
     assert "RuntimeError at " in _logged(caplog)
 
 
-async def test_bridge_supervised_task_crash_logs_type_only(caplog):
+async def test_bridge_supervised_task_crash_logs_type_only(make_bridge, caplog):
     caplog.set_level(logging.DEBUG)
-    bridge, _ = _bridge()
+    bridge, _ = make_bridge()
     task = bridge._spawn(_raise_secret(), "some_task")
     await asyncio.gather(task, return_exceptions=True)
     await asyncio.sleep(0)  # done-callback
@@ -218,21 +226,17 @@ async def test_bridge_supervised_task_crash_logs_type_only(caplog):
     assert SECRET not in _logged(caplog)
 
 
-async def test_bridge_transcription_send_failure_logs_type_only(caplog):
+async def test_bridge_transcription_send_failure_logs_type_only(make_bridge, caplog):
     caplog.set_level(logging.DEBUG)
-    bridge, _ = _bridge()
-    bridge._sender = AsyncMock()
-    bridge._sender.send_json.side_effect = _boom
+    bridge, _ = make_bridge(sender=_failing_sender())
     await bridge._on_transcription("hola", True)
     assert SECRET not in _logged(caplog)
 
 
-async def test_bridge_failed_client_sends_log_type_only(caplog):
+async def test_bridge_failed_client_sends_log_type_only(make_bridge, caplog):
     # #221: a send to a client that went away is DEBUG with the type, never silent.
     caplog.set_level(logging.DEBUG)
-    bridge, _ = _bridge()
-    bridge._sender = AsyncMock()
-    bridge._sender.send_json.side_effect = _boom
+    bridge, _ = make_bridge(sender=_failing_sender())
     await bridge.notify_service_status("tts", "degraded")
     await bridge._send_invalid_message()
     logged = _logged(caplog)
@@ -240,9 +244,9 @@ async def test_bridge_failed_client_sends_log_type_only(caplog):
     assert SECRET not in logged
 
 
-async def test_bridge_close_all_failed_active_turn_logs_type_only(caplog):
+async def test_bridge_close_all_failed_active_turn_logs_type_only(make_bridge, caplog):
     caplog.set_level(logging.DEBUG)
-    bridge, _ = _bridge()
+    bridge, _ = make_bridge()
 
     async def _turn():
         await asyncio.sleep(0.01)
@@ -270,15 +274,14 @@ async def test_transcriber_listen_crash_logs_no_message(caplog):
     assert SECRET not in _logged(caplog)
 
 
-async def test_close_all_step_failure_logs_type_only(caplog):
+async def test_close_all_step_failure_logs_type_only(make_bridge, caplog):
     caplog.set_level(logging.DEBUG)
-    bridge, _ = _bridge()
+    bridge, _ = make_bridge()
     bridge.transcriber = AsyncMock()
     bridge.transcriber.close.side_effect = _boom
     await bridge.close_all()
     assert bridge._closed is True
     assert SECRET not in _logged(caplog)
-
 
 
 async def test_openclaw_ping_failure_logs_type_only(caplog):

@@ -3,17 +3,15 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from tests.unit.test_bridge_m6c_turns import _bridge
 
-
-async def test_cancel_right_after_tts_connect_closes_the_stream():
+async def test_cancel_right_after_tts_connect_closes_the_stream(make_bridge):
     stream = MagicMock()
     stream.close = AsyncMock()
     tts = MagicMock()
     tts.name = "elevenlabs"
     tts.resolve_voice = MagicMock(return_value="v")
     tts.connect = AsyncMock(return_value=stream)
-    bridge, _ws = _bridge(output_mode=("audio", "text"), tts=tts)
+    bridge, _ws = make_bridge(output_mode=("audio", "text"), tts=tts)
     in_record = asyncio.Event()
 
     async def blocking_record(name, **kw):

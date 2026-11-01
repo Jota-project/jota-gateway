@@ -14,7 +14,7 @@ from src.services.openclaw.chat_text import ChatTextTracker
 from src.services.openclaw.models import ToolCallEvent
 from src.services.openclaw.registry import ClientRegistry, TurnRegistry
 from src.services.orchestration import OrchestratorError
-from src.services.outbound import ClientGone, DirectSender, OutboundSender
+from src.services.outbound import ClientGone, OutboundSender
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.protocol import OrchestratorProtocol
 from src.services.reconnection import (
@@ -82,7 +82,7 @@ class JotaBridge:
         handshake: Handshake,
         client_registry: ClientRegistry,
         default_agent: str,
-        sender: OutboundSender | None = None,
+        sender: OutboundSender,
         turn_registry: TurnRegistry | None = None,
     ):
         # Contada al crearse: toda sesión que luego cierra close_all() cuenta como abierta,
@@ -94,7 +94,7 @@ class JotaBridge:
         self.client_ws = client_ws
         # All client-bound writes go through the sender so their order across tasks
         # is the enqueue order (issue #130 S1). client_ws stays for receive()/close.
-        self._sender: OutboundSender = sender or DirectSender(client_ws)
+        self._sender: OutboundSender = sender
         self.handshake: Handshake = handshake
         self.orchestrator: OrchestratorProtocol = orchestrator  # injected, not created here
         self.tts: TextToSpeechProvider = speech.tts

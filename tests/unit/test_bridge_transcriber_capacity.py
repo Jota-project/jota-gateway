@@ -6,40 +6,30 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.models.schemas import Client, ClientConfig, Handshake
-from src.services.bridge import JotaBridge
-from src.services.openclaw.registry import ClientRegistry
+from src.models.schemas import ClientConfig
 from src.services.reconnection import ConnectionState
-from tests.fakes.speech import speech_providers
+from tests.fakes.bridge import sent
 
 
 @pytest.fixture
-def bridge(mock_tracker):
-    b = JotaBridge(
-        client=Client(id="c1", client_key="k", is_active=True),
+async def bridge(make_bridge, mock_tracker):
+    transcriber = MagicMock()
+    transcriber.state = ConnectionState.CONNECTED
+    transcriber.last_transcript_at = None
+    b, _ = make_bridge(
+        client_id="c1",
         config=ClientConfig(silence_timeout_s=1, max_silence_turns=2),
-        client_ws=AsyncMock(),
-        orchestrator=AsyncMock(),
-        speech=speech_providers(),
         tracker=mock_tracker,
-        handshake=Handshake(client_key="k", input_mode="audio", output_mode=["text"]),
-        client_registry=ClientRegistry(),
-        default_agent="main",
+        input_mode="audio",
+        transcriber=transcriber,
     )
-    b.transcriber = MagicMock()
-    b.transcriber.state = ConnectionState.CONNECTED
-    b.transcriber.last_transcript_at = None
     return b
-
-
-def _sent(bridge):
-    return [c.args[0] for c in bridge.client_ws.send_json.await_args_list]
 
 
 async def test_busy_notifies_degraded_with_code(bridge):
     await bridge._on_transcriber_status("busy", "gpu_saturated")
 
-    assert _sent(bridge) == [
+    assert (await sent(bridge)) == [
         {
             "type": "status",
             "service": "transcriber",
@@ -54,33 +44,33 @@ async def test_ok_after_busy_notifies_restored(bridge):
     await bridge._on_transcriber_status("busy", "gpu_saturated")
     await bridge._on_transcriber_status("ok", None)
 
-    assert _sent(bridge)[-1] == {"type": "status", "service": "transcriber", "state": "restored"}
+    assert (await sent(bridge))[-1] == {"type": "status", "service": "transcriber", "state": "restored"}
 
 
 async def test_duplicate_busy_and_initial_ok_are_not_notified(bridge):
     await bridge._on_transcriber_status("ok", None)
-    assert _sent(bridge) == []
+    assert (await sent(bridge)) == []
 
     await bridge._on_transcriber_status("busy", "gpu_saturated")
     await bridge._on_transcriber_status("busy", "gpu_saturated")
-    assert len(_sent(bridge)) == 1
+    assert len(await sent(bridge)) == 1
 
     await bridge._on_transcriber_status("ok", None)
     await bridge._on_transcriber_status("ok", None)
-    assert len(_sent(bridge)) == 2
+    assert len(await sent(bridge)) == 2
 
 
 async def test_unknown_state_is_ignored(bridge):
     await bridge._on_transcriber_status("on_fire", None)
 
-    assert _sent(bridge) == []
+    assert (await sent(bridge)) == []
     assert bridge._transcriber_busy is False
 
 
 async def test_warning_goes_through_notify_service_status(bridge):
     await bridge._on_transcriber_warning("buffer_full", None)
 
-    assert _sent(bridge) == [
+    assert (await sent(bridge)) == [
         {
             "type": "status",
             "service": "transcriber",
@@ -114,7 +104,7 @@ async def test_watchdog_does_not_count_silence_while_transcriber_busy(bridge):
         await asyncio.wait_for(bridge._transcription_watchdog(), timeout=2.0)
 
     bridge.close_all.assert_not_awaited()
-    assert not any(m.get("state") == "degraded" for m in _sent(bridge))
+    assert not any(m.get("state") == "degraded" for m in await sent(bridge))
 
 
 async def test_watchdog_grants_fresh_baseline_after_busy_clears(bridge):

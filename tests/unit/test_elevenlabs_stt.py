@@ -16,6 +16,7 @@ from src.services.reconnection import ConnectionState
 from src.services.speech.elevenlabs import stt as stt_mod
 from src.services.speech.elevenlabs.stt import ElevenLabsSttProvider
 from src.services.speech.ports import SttCallbacks, SttParams
+from tests.fakes.bridge import wait_until
 from tests.fakes.elevenlabs_stt import FakeElevenLabsStt
 
 KEY = "fake-el-key-SECRET-0123456789"
@@ -85,13 +86,6 @@ def open_session(provider, rec: Rec, cid="c1"):
     return s
 
 
-async def wait_until(pred, timeout=2.0):
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        if pred():
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError("condición no cumplida a tiempo")
 
 
 @pytest.fixture(autouse=True)
@@ -461,20 +455,19 @@ async def test_partial_transcript_updates_last_transcript_at(env):
     assert s.last_transcript_at is not None
 
 
-async def test_bridge_watchdog_not_triggered_by_partials_without_commit(env, monkeypatch):
+async def test_bridge_watchdog_not_triggered_by_partials_without_commit(env, monkeypatch, make_bridge):
     """Habla continua: llegan parciales pero ningún commit; el watchdog no puede dar strikes."""
     from unittest.mock import AsyncMock
 
     import src.services.bridge as bridge_module
     from src.models.schemas import ClientConfig
     from src.services.speech.elevenlabs.stt import _Upstream
-    from tests.unit.test_bridge_watchdog import _make_bridge
+    from tests.fakes.bridge import sent
 
     monkeypatch.setattr(bridge_module, "_WATCHDOG_POLL_S", 0.05)
     _fake, _p, s, _r = await env()
     config = ClientConfig(silence_timeout_s=0.1, max_silence_turns=1)
-    bridge, ws, _t = _make_bridge(config=config)
-    bridge.transcriber = s
+    bridge, ws = make_bridge(input_mode="audio", config=config, transcriber=s)
     bridge._audio_burst_start = time.monotonic()
     bridge._last_audio_at = float("inf")
     bridge.close_all = AsyncMock()
@@ -486,7 +479,7 @@ async def test_bridge_watchdog_not_triggered_by_partials_without_commit(env, mon
         while time.monotonic() < end:
             await s._on_message(up, {"message_type": "partial_transcript", "text": "hablando"})
             await asyncio.sleep(0.02)
-        degraded = [c for c in ws.send_json.call_args_list if c[0][0].get("state") == "degraded"]
+        degraded = [m for m in await sent(bridge) if m.get("state") == "degraded"]
         assert degraded == []
         bridge.close_all.assert_not_awaited()
     finally:
