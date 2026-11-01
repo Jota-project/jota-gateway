@@ -1145,6 +1145,8 @@ class JotaBridge:
                 if _first_chunk:
                     await self.tracker.record("tts_first_chunk")
                     _first_chunk = False
+                if self._turn_end_sent_at_close == turn_id:
+                    return  # close_all() already ended this turn: nothing after its turn_end
                 try:
                     await self._sender.send_bytes(header + chunk)
                 except Exception as e:

@@ -440,3 +440,72 @@ async def test_turn_abandoned_by_close_all_keeps_one_turn_end_before_session_end
     types = ws.types()
     assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1"}]
     assert types.index("turn_end") < types.index("session_end")
+
+
+class _StreamingSlowEndTts:
+    """TTS whose end() is slow and keeps streaming audio until it finishes."""
+
+    def __init__(self, end_s: float, every: float) -> None:
+        self.end_s, self.every = end_s, every
+        self.done = False
+
+    async def send_text_chunk(self, t):
+        pass
+
+    async def end(self):
+        await asyncio.sleep(self.end_s)
+        self.done = True
+
+    async def get_audio_stream(self):
+        while not self.done:
+            await asyncio.sleep(self.every)
+            yield b"\x00" * 10
+
+    async def close(self):
+        pass
+
+
+async def test_abandoned_turn_sends_no_audio_after_its_turn_end(monkeypatch):
+    """#221 4/6: once close_all() has sent the abandoned turn's turn_end, that turn's
+    still-running TTS audio must not reach the client (nothing of a turn after its
+    turn_end)."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "SESSION_TEARDOWN_S", 0.3)
+    ws = RecWS()
+    sender = QueuedSender(ws)
+    b, _ = _bridge(
+        ws,
+        sender=sender,
+        output_mode=("text", "audio"),
+        tts=_TtsProvider(_StreamingSlowEndTts(end_s=1.0, every=0.02)),
+    )
+    class _SlowCloseTranscriber:
+        async def close(self):
+            await asyncio.sleep(0.2)  # widens the window after turn_end
+
+    b.transcriber = _SlowCloseTranscriber()
+
+    async def tracker_close(status, **meta):
+        await sender.send_json({"type": "session_end"})
+
+    b.tracker.close.side_effect = tracker_close
+    started = asyncio.Event()
+
+    async def stream(*a, **k):
+        yield OrchestratorEvent(type="token", content="hi")
+        started.set()
+        await asyncio.sleep(3600)
+
+    b.orchestrator.stream_response = stream
+    b._active_turn = asyncio.create_task(b._call_orchestrator("x"))
+    await asyncio.wait_for(started.wait(), 2)
+    await asyncio.sleep(0.05)
+
+    await b.close_all()
+    await sender.aclose(1.0)
+    await asyncio.sleep(1.2)
+
+    labels = [m["type"] if isinstance(m, dict) else "audio" for m in ws.sent]
+    assert labels.count("turn_end") == 1
+    assert "audio" not in labels[labels.index("turn_end") + 1 :], labels
