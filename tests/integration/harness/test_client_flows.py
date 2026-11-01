@@ -127,3 +127,33 @@ async def test_orchestrator_failure_ends_the_turn_and_the_session_goes_on(harnes
     second = of_type(msgs, "turn_start")[1]
     assert tokens(msgs, second["turn_id"]) == "reply-otra vez"
     assert_turns_paired(msgs)
+
+
+async def test_agent_failing_after_accepting_ends_the_turn_at_once(harness):
+    # #300: OpenClaw acepta el turno y luego el agente falla (chat state:error).
+    client = await harness.connect()
+    await client.send({"type": "send", "text": "agent_error"})
+    msgs = await client.collect(turn_ended, timeout=3)
+
+    (start,) = of_type(msgs, "turn_start")
+    assert turn_errors(msgs) == [("TURN_ERROR", "orchestrator_error", False)]
+    assert of_type(msgs, "error")[0]["turn_id"] == start["turn_id"]
+    assert [t for t in client.raw_texts if "No API key" in t] == []
+
+    await client.send({"type": "send", "text": "otra vez"})
+    msgs = await client.collect(lambda m: len(of_type(m, "turn_end")) == 2)
+    second = of_type(msgs, "turn_start")[1]
+    assert tokens(msgs, second["turn_id"]) == "reply-otra vez"
+    assert_turns_paired(msgs)
+
+
+async def test_failing_push_still_ends_its_turn(harness):
+    # #300: un push cuyo agente falla acaba en agent phase:error, no en end.
+    client = await harness.connect()
+    await harness.push("recordatorio", end=False)
+    await client.collect(lambda m: bool(of_type(m, "turn_start")))
+    await harness.push_fail()
+    msgs = await client.collect(turn_ended, timeout=3)
+
+    assert len(of_type(msgs, "turn_end")) == 1
+    assert_turns_paired(msgs)

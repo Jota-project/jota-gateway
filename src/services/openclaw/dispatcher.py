@@ -115,7 +115,8 @@ class FrameDispatcher:
                 logger.debug("agent start suppressed: turn aborted for overflow sk=%s", sk)
                 return
             bridge.enqueue_push("turn_start", sk)
-        elif phase == "end":
+        elif phase in ("end", "error"):
+            # "error" (#300): a failed run ends with it instead of "end".
             # Always forwarded, never suppressed: on_push_turn_end() already
             # no-ops when no push turn is open (issue #84's orphan-end
             # branch), so a start suppressed above never produces a

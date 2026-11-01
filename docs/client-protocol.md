@@ -465,7 +465,7 @@ El `message` de un `TURN_ERROR` es siempre uno de estos códigos fijos, nunca el
 |---|---|
 | `orchestrator_unavailable` | El orquestador (OpenClaw) no está conectado o está reconectando al empezar el turno |
 | `orchestrator_send_failed` | El gateway no pudo escribir la petición del turno al orquestador (conexión rota) |
-| `orchestrator_error` | OpenClaw rechazó el turno (`res` con `ok:false`) o falló algo interno en el camino hacia él |
+| `orchestrator_error` | OpenClaw rechazó el turno (`res` con `ok:false`), el agente falló después de aceptarlo, o falló algo interno en el camino hacia él |
 | `orchestrator_disconnected` | La conexión con el orquestador se cerró con el turno en vuelo |
 | `turn_timeout` | El orquestador no mandó nada durante `TURN_TIMEOUT_S` (§13) |
 | `turn_overflow` | El gateway no pudo procesar los eventos del turno al ritmo de llegada (§13) |

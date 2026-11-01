@@ -21,12 +21,15 @@ class FakeOpenClawServer:
     big       -> ack started, un delta de `big_bytes` y final
     fail      -> `res` ok:false con `error.code` (turno de error: orchestrator_error)
     drop      -> ack started, un delta y cierra la conexión con 1011 (caída a mitad de turno)
+    agent_error -> ack started, `agent` phase error y `chat` state error con `errorMessage`
+                 (el agente falla tras aceptar el turno; 2026.10.5, issue #300)
     wait*     -> ack started y se queda en cola hasta `finish_next()` (o `release`); entonces
                  emite su respuesta como una ejecución del agente: agent start, delta
                  `reply-<texto>`, final, agent end. Ignora `chat.abort`, como un run cuya
                  respuesta ya iba en camino cuando llegó el abort.
     push(sk, text, end=True) -> agent start, chat delta, chat final y agent end, sin
-                 `chat.send`; con `end=False` el push queda abierto hasta `push_end(sk)`.
+                 `chat.send`; con `end=False` el push queda abierto hasta `push_end(sk)`
+                 o `push_fail(sk)`.
 
     Cada `chat.send` y cada push tienen su `runId` (en el ack y en sus eventos), como el real.
     """
@@ -71,6 +74,11 @@ class FakeOpenClawServer:
         return json.dumps({"type": "event", "event": "chat", "payload": payload})
 
     @staticmethod
+    def _chat_error(sk, run_id):
+        payload = {"sessionKey": sk, "runId": run_id, "state": "error", "errorMessage": "No API key found"}
+        return json.dumps({"type": "event", "event": "chat", "payload": payload})
+
+    @staticmethod
     def _agent(sk, phase, run_id):
         payload = {"sessionKey": sk, "runId": run_id, "data": {"phase": phase}}
         return json.dumps({"type": "event", "event": "agent", "payload": payload})
@@ -97,6 +105,13 @@ class FakeOpenClawServer:
         for ws in list(self._conns):
             await ws.send(self._chat(sk, "final", run_id=run_id))
             await ws.send(self._agent(sk, "end", run_id))
+
+    async def push_fail(self, sk):
+        """El push abierto de `sk` falla: agent error y chat error, sin final ni end."""
+        run_id = self._open_pushes.pop(sk)
+        for ws in list(self._conns):
+            await ws.send(self._agent(sk, "error", run_id))
+            await ws.send(self._chat_error(sk, run_id))
 
     async def wait_held(self, n, timeout=5.0):
         """Espera a que haya `n` ejecuciones `wait*` en cola (su `chat.send` ya llegó)."""
@@ -181,6 +196,10 @@ class FakeOpenClawServer:
                     json.dumps({"type": "event", "event": "agent", "payload": {"sessionKey": _SK_B, "data": None}})
                 )
                 await ws.send(json.dumps({"type": "res", "id": "x", "payload": None}))
+            if text == "agent_error":
+                await ws.send(self._agent(sk, "error", run_id))
+                await ws.send(self._chat_error(sk, run_id))
+                return
             if text == "drop":
                 await ws.send(self._chat(sk, "delta", "reply-drop", run_id))
                 await ws.close(1011)

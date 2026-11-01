@@ -97,6 +97,9 @@ class Harness:
     async def push_end(self, agent: str = "main") -> None:
         await self.openclaw.push_end(make_session_key(agent, CLIENT_ID))
 
+    async def push_fail(self, agent: str = "main") -> None:
+        await self.openclaw.push_fail(make_session_key(agent, CLIENT_ID))
+
 
 def of_type(messages: list[Message], kind: str) -> list[dict]:
     return [m for m in messages if isinstance(m, dict) and m.get("type") == kind]

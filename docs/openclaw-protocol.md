@@ -141,6 +141,23 @@ old `res`-based completion (`status: "done"`) was removed on 2026-10-28 (issue #
 > Since 2026.10.5 `final` also carries the full reply text and no `deltaText` — see
 > "Breaking change — OpenClaw 2026.10.5" below.
 
+### Agent failure after the turn was accepted (2026-11-01, server 2026.10.5, issue #300)
+
+When the agent fails after `chat.send` was accepted (`res ok`, `status: "started"`), for
+example with no provider credentials, there is no `final` and no `agent` `phase: "end"`.
+Observed on green-house (structure only):
+
+1. `chat` `state: "status"` (`preparing_workspace`, `preparing_context`);
+2. `agent` with `data.phase` `model`, then `fallback_step`, then **`error`** (`data` has
+   `error`, `startedAt`, `endedAt`, `executionSettled`); no `start` phase was seen;
+3. `chat` **`state: "error"`** with `errorMessage` (and `runId`, `seq`).
+
+How the gateway reacts: a `chat` `state: "error"` ends a normal turn at once with
+`orchestrator_error` and without `chat.abort` (the run is already over); `errorMessage` never
+reaches the client or the logs. An `agent` `phase: "error"` closes a push turn the same way as
+`end`. Before #300 the normal turn waited for `turn_timeout` (`TURN_TIMEOUT_S`, 120 s) and a
+failed push stayed open.
+
 ---
 
 ## Breaking change — OpenClaw 2026.10.5 (2026-10-20, issue #241)
@@ -467,7 +484,8 @@ Full notes in the vault (`JGW Observaciones 2026-10 - OpenClaw y cliente lento e
   run id is known before any event of the run.
 - **Non-terminal `chat` states exist:** `state:"status"` with `phase`
   (`preparing_workspace`, `preparing_context`, `starting_model`). Terminal states seen:
-  `final` (with `stopReason`) and `aborted`; `error` was not observed here. Do **not** treat
+  `final` (with `stopReason`) and `aborted`; `error` was not observed here (it was later, on
+  2026-11-01: see "Agent failure after the turn was accepted"). Do **not** treat
   "anything but `delta`" as terminal.
 - **`chat.abort`:** `chat` `state:"aborted"` (+ `stopReason`, and `message` if text had
   started) arrives 9–28 ms after the abort, then `agent` `lifecycle end` and the
@@ -492,6 +510,8 @@ lost. Fix belongs to M9 (correlate by `runId`; issue #202).
 
 ## Change log of this file
 
+- **2026-11-01**: added "Agent failure after the turn was accepted" (issue #300): `chat`
+  `state: "error"` and `agent` `phase: "error"` are terminal.
 - **2026-10-28**: minimum supported server is now **2026.6.11** (issue #262). Removed the
   pre-2026.6.11 compatibility: a `res` with `ok:true` + `status: "done"` no longer ends a turn
   (only `chat` `state: "final"` or a `res` with `ok:false` does), and `hello-ok`'s
