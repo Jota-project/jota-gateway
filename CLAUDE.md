@@ -75,6 +75,7 @@ Breaking any of these is a bug, whatever the change is for.
 - **Exactly one `turn_end` per `turn_start`**, normal or push, on every path (end, error, cancel, barge-in, replacing `send`, final transcription, close). `turn_seq` is masked `& 0xFFFF` in both `turn_start` and the audio header.
 - **All client output goes through the session's `QueuedSender`** (total order = enqueue order); `notify_service_status()` is the single point for `status` messages.
 - **Only the orchestrator is fatal** (health check before `ready` → 1011). STT/TTS failures degrade the session and are reported with `status`; they never close it.
+- **No error is lost, no foreign cancellation is swallowed** (#221). Catch only at boundaries (service wrappers, session, lifespan); everything else propagates. A broad `except` logs the type (`describe_error`) and carries `# noqa: BLE001 — <why it is a boundary>`; `except: pass` and `contextlib.suppress` are lint errors. Teardown goes through `services/teardown.py` (`Teardown`): it finishes every step and re-raises a foreign `CancelledError` at the end.
 - **OpenClaw drift:** when you discover a protocol change, inconsistency or undocumented event shape, update `docs/openclaw-protocol.md` (dated, server version if known, "Breaking change — vX.Y.Z" style). That file is the source of truth for the protocol; this one only says how the code reacts.
 - `.env.sample` must list every `Settings` field with its default; `/admin/*` input is validated in `admin_schemas.py` (new client type → extend `ClientType`).
 
