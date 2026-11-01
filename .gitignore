@@ -12,3 +12,7 @@ docs/superpowers/specs/
 
 # coverage
 .coverage
+
+# salida de pip/setuptools y ajustes locales de Claude Code
+build/
+.claude/
