@@ -1,3 +1,10 @@
+## [1.21.5](https://github.com/Jota-project/jota-gateway/compare/v1.21.4...v1.21.5) (2026-11-01)
+
+
+### Bug Fixes
+
+* **cierre:** cierre de sesión con Teardown y sin drenado en el apagado ([#221](https://github.com/Jota-project/jota-gateway/issues/221) 4/6, [#223](https://github.com/Jota-project/jota-gateway/issues/223)) ([#290](https://github.com/Jota-project/jota-gateway/issues/290)) ([d3a2041](https://github.com/Jota-project/jota-gateway/commit/d3a2041eb048e0f93d3e7e57c2f7eac00d3c743e)), closes [#101](https://github.com/Jota-project/jota-gateway/issues/101) [#287](https://github.com/Jota-project/jota-gateway/issues/287)
+
 ## [1.21.4](https://github.com/Jota-project/jota-gateway/compare/v1.21.3...v1.21.4) (2026-11-01)
 
 
