@@ -265,12 +265,12 @@ class JotaBridge:
             q = self._sender.queue_stats()
             meta["sender_peak_msgs"] = int(q["peak_msgs"])
             meta["sender_peak_bytes"] = int(q["peak_bytes"])
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — una métrica nunca impide el cierre
             logger.debug(f"[{self.client_id}] sender_peak no disponible: {type(e).__name__}")
         if self._turn_registry is not None:
             try:
                 meta["turn_queue_peak"] = self._turn_registry.pop_peak(self._session_key())
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — una métrica nunca impide el cierre
                 logger.debug(f"[{self.client_id}] turn_queue_peak no disponible: {type(e).__name__}")
         return meta
 
@@ -319,10 +319,8 @@ class JotaBridge:
                     self._turn_end_sent_at_close = turn_id
                     try:
                         await self._sender.send_json({"type": "turn_end", "turn_id": turn_id})
-                    except Exception as e:
-                        logger.debug(
-                            f"[{self.client_id}] turn_end del turno al cerrar: {type(e).__name__}"
-                        )
+                    except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+                        self._log_send_failed("turn_end al cerrar", e)
 
                 # The push worker before the _push_tts / audio task it may be driving
                 # (issue #130 S3a). It is also in self.tasks, cancelled later.
@@ -343,7 +341,7 @@ class JotaBridge:
                         await self._sender.send_json(
                             {"type": "turn_end", "turn_id": self._push_turn_id}
                         )
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
                         logger.debug(
                             f"[{self.client_id}] turn_end del push al cerrar: {type(e).__name__}"
                         )
@@ -436,13 +434,14 @@ class JotaBridge:
         return (await self._cancel_turn())[0]
 
     async def _cancel_and_wait(self, turn: asyncio.Task) -> None:
-        turn.cancel()
-        try:
-            await turn
-        except (asyncio.CancelledError, Exception):
-            pass
+        # Sin tope, como antes: el turno nuevo no arranca hasta que el viejo terminó.
+        # Si cancelan a quien llama, se termina de esperar y se relanza (#221). Solo esa
+        # cancelación: una heredada (cancelling() > 0) no debe tumbar el STT en un barge-in.
+        td = Teardown(f"[{self.client_id}] cancelar turno")
+        await td.cancel(turn, "turno anterior")
         if self._active_turn is turn:
             self._active_turn = None
+        td.raise_if_cancelled()
 
     async def _start_turn(self, text: str) -> None:
         """Replace the active turn (if any) with a new one for `text`.
@@ -649,7 +648,7 @@ class JotaBridge:
             except (ClientNotFound, ClientInactive):
                 await self._revoke_session()
                 return
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — frontera: un fallo transitorio no cierra la sesión
                 logger.warning(
                     f"[{self.client_id}] Revalidación de sesión fallida "
                     f"({type(e).__name__}); se reintenta."
@@ -668,7 +667,7 @@ class JotaBridge:
                 self.client_ws.close(code=1008, reason="revoked"),
                 timeout=settings.CLIENT_SEND_TIMEOUT_S,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
             logger.debug(f"[{self.client_id}] close 1008 revoked falló: {type(e).__name__}")
         await self.close_all(status="revoked", reason="revoked")
 
@@ -699,11 +698,20 @@ class JotaBridge:
             logger.debug(f"[{self.client_id}] '{t.get_name()}': {traceback_no_message(exc)}")
             if t.get_name() == "idle_watchdog":
                 self.note_close_reason("error")
-                closer = asyncio.create_task(self.close_all(), name="idle_watchdog_close")
-                self._background_tasks.add(closer)
-                closer.add_done_callback(self._background_tasks.discard)
+                self._spawn_background(self.close_all(), "idle_watchdog_close")
 
         task.add_done_callback(_on_done)
+
+    def _spawn_background(self, coro, name: str) -> None:
+        """Fire-and-forget task, supervised: its failure is logged by type (#221)."""
+        task = asyncio.create_task(coro, name=name)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        self._supervise(task)
+
+    def _log_send_failed(self, what: str, e: BaseException) -> None:
+        # Casi siempre es un cliente que ya se fue: DEBUG con el tipo, nunca el texto (#221).
+        logger.debug(f"[{self.client_id}] envío de {what} al cliente falló: {describe_error(e)}")
 
     async def run(self):
         self._session_start = time.monotonic()
@@ -747,7 +755,7 @@ class JotaBridge:
                 raise
             # Si no, la cancelación es nuestra: un close_all() (watchdog, revocación)
             # canceló el bucle de entrada. Fin normal; el motivo ya está anotado.
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: el crash cierra la sesión como error
             self.note_close_reason("error")
             logger.error(f"[{self.client_id}] client_input_loop crasheó: {describe_error(e)}")
             logger.debug(f"[{self.client_id}] client_input_loop: {traceback_no_message(e)}")
@@ -786,7 +794,8 @@ class JotaBridge:
                     try:
                         json_msg = json.loads(text_data)
                         parsed = True
-                    except Exception:
+                    except (ValueError, RecursionError):
+                        # No es JSON (RecursionError: anidamiento excesivo, `[[[[…`).
                         json_msg = None
                         parsed = False
 
@@ -822,7 +831,7 @@ class JotaBridge:
             logger.info(f"[{self.client_id}] Cliente físico desconectado.")
             self._client_gone = True
             self._note_disconnect_code(e.code)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: el bucle de entrada termina la sesión
             self.note_close_reason("error")
             logger.error(f"[{self.client_id}] Error en input loop: {describe_error(e)}")
             logger.debug(f"[{self.client_id}] input loop: {traceback_no_message(e)}")
@@ -852,8 +861,8 @@ class JotaBridge:
                     "fatal": False,
                 }
             )
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+            self._log_send_failed("INVALID_MESSAGE", e)
 
     async def _on_transcriber_warning(self, code: str, message: str | None):
         """Reenvía warnings del transcriber al cliente (e.g. buffer_full)."""
@@ -897,15 +906,15 @@ class JotaBridge:
             payload["message"] = message
         try:
             await self._sender.send_json(payload)
-        except Exception:
+        except Exception as e:
             if propagate:
                 raise
-            # cliente desconectado
+            self._log_send_failed(f"status {service}", e)
 
     def _on_transcriber_state_change(self, state: ConnectionState) -> None:
-        task = asyncio.create_task(self.notify_service_status("transcriber", to_wire_state(state)))
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        self._spawn_background(
+            self.notify_service_status("transcriber", to_wire_state(state)), "transcriber_status"
+        )
 
     async def _on_transcription(self, text: str, is_final: bool):
         """Callback dispatched by TranscriberClient on every transcription event.
@@ -918,8 +927,9 @@ class JotaBridge:
             # Forward partial to client for live display
             try:
                 await self._sender.send_json({"type": "transcription_partial", "text": text})
-            except Exception:
-                return  # client disconnected
+            except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+                self._log_send_failed("transcription_partial", e)
+                return
             await self.tracker.record("transcription_partial", text_len=len(text))
 
             # Barge-in: interrupt active turn if enabled and partial is substantial enough
@@ -936,8 +946,8 @@ class JotaBridge:
                     try:
                         # After the cancelled turn's own turn_end (G-10).
                         await self._sender.send_json(interrupted)
-                    except Exception:
-                        pass
+                    except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+                        self._log_send_failed("interrupted", e)
             return  # partials never reach the orchestrator
 
         await self.tracker.record("transcription_final", text_len=len(text))
@@ -948,7 +958,7 @@ class JotaBridge:
         logger.debug(f"[{self.client_id}] Transcripción final: '{text[:40]}'")
         try:
             await self._sender.send_json({"type": "transcription", "text": text})
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
             logger.warning(
                 f"[{self.client_id}] send_json(transcription) falló: {describe_error(e)}"
             )
@@ -973,7 +983,8 @@ class JotaBridge:
             await self._sender.send_json(
                 {"type": "turn_start", "turn_id": turn_id, "turn_seq": turn_seq}
             )
-        except Exception:
+        except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+            self._log_send_failed("turn_start", e)
             return
         gateway_stats.turn_started("normal")
 
@@ -982,7 +993,7 @@ class JotaBridge:
         self._active_turn_id = turn_id
         try:
             await self._run_turn(text, turn_id, turn_seq)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: un turno roto no cierra la sesión
             if not isinstance(e, ClientGone):
                 # Type name only: the message may carry user text.
                 logger.error(f"[{self.client_id}] Turno falló: {type(e).__name__}")
@@ -997,16 +1008,16 @@ class JotaBridge:
                             "turn_id": turn_id,
                         }
                     )
-                except Exception:
-                    pass
+                except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+                    self._log_send_failed("TURN_ERROR", e)
         finally:
             if self._active_turn_id == turn_id:
                 self._active_turn_id = None
             if self._turn_end_sent_at_close != turn_id:
                 try:
                     await self._sender.send_json({"type": "turn_end", "turn_id": turn_id})
-                except Exception:
-                    pass
+                except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+                    self._log_send_failed("turn_end", e)
 
     async def _run_turn(self, text: str, turn_id: str, turn_seq: int) -> None:
         from src.services.orchestration import call_orchestrator
@@ -1030,8 +1041,11 @@ class JotaBridge:
                         await asyncio.wait_for(
                             tts.close(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:  # noqa: BLE001 — limpieza: el fallo se registra
+                        logger.debug(
+                            f"[{self.client_id}] cierre del TTS del turno cancelado: "
+                            f"{describe_error(e)}"
+                        )
                     raise
 
         session_key = self._session_key()
@@ -1069,15 +1083,15 @@ class JotaBridge:
             except ClientGone:
                 self._client_gone = True
                 raise
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+                self._log_send_failed("token", e)
             if tts_live:
                 try:
                     await asyncio.wait_for(
                         tts_live.send_text_chunk(token_text),
                         timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S,
                     )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — frontera: el TTS caído no rompe el turno
                     await _drop_tts(f"send_text_chunk {type(e).__name__}")
 
         async def _on_tool_call(tool_call: ToolCallEvent):
@@ -1090,8 +1104,8 @@ class JotaBridge:
             except ClientGone:
                 self._client_gone = True
                 raise
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+                self._log_send_failed("tool_call", e)
 
         async def pipe_tokens():
             try:
@@ -1125,15 +1139,15 @@ class JotaBridge:
                             "turn_id": turn_id,
                         }
                     )
-                except Exception:
-                    pass
+                except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+                    self._log_send_failed("TURN_ERROR", e)
             finally:
                 if tts_live:
                     try:
                         await asyncio.wait_for(
                             tts_live.end(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
                         )
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001 — frontera: el TTS caído no rompe el turno
                         await _drop_tts(f"end {type(e).__name__}")
 
         async def pipe_audio():
@@ -1149,9 +1163,10 @@ class JotaBridge:
                     return  # close_all() already ended this turn: nothing after its turn_end
                 try:
                     await self._sender.send_bytes(header + chunk)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
                     if isinstance(e, ClientGone):
                         self._client_gone = True
+                    self._log_send_failed("audio", e)
                     return
             await self.tracker.record("tts_done")
 
@@ -1184,7 +1199,7 @@ class JotaBridge:
                     )
                 try:
                     await asyncio.wait_for(tts.close(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — limpieza: el fallo se registra
                     logger.warning(
                         f"[{self.client_id}] TTS close del turno falló ({type(e).__name__})"
                     )
@@ -1235,8 +1250,8 @@ class JotaBridge:
                     "turn_seq": turn_seq,
                 }
             )
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+            self._log_send_failed("turn_start del push", e)
 
         if "audio" not in self.handshake.output_mode:
             return
@@ -1258,10 +1273,13 @@ class JotaBridge:
             async for chunk in tts.get_audio_stream():
                 try:
                     await self._sender.send_bytes(header + chunk)
-                except Exception:
+                except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+                    self._log_send_failed("audio del push", e)
                     return
 
-        self._push_audio_task = asyncio.create_task(_pipe_push_audio())
+        # Supervisada: _drop_push_tts puede abandonarla sin recoger su resultado (#221).
+        self._push_audio_task = asyncio.create_task(_pipe_push_audio(), name="push_audio")
+        self._supervise(self._push_audio_task)
 
     async def deliver_push(self, payload: dict) -> None:
         if not self._push_allowed():
@@ -1279,8 +1297,8 @@ class JotaBridge:
                         "text": delta,
                     }
                 )
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+                self._log_send_failed("token del push", e)
         tts = self._push_tts
         if tts:
             t0 = time.monotonic()
@@ -1290,7 +1308,7 @@ class JotaBridge:
                 await asyncio.wait_for(
                     tts.send_text_chunk(delta), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — frontera: el TTS caído no rompe el push
                 # Issue #199: a hung/failed push TTS must not wedge the worker nor
                 # log one warning per token. Drop it; the turn continues text-only.
                 await self._drop_push_tts(f"send_text_chunk {type(e).__name__}")
@@ -1320,8 +1338,8 @@ class JotaBridge:
             await asyncio.wait({audio_task}, timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
         try:
             await asyncio.wait_for(tts.close(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 — limpieza: el fallo se registra
+            logger.debug(f"[{self.client_id}] cierre del TTS de push abandonado: {describe_error(e)}")
 
     async def deliver_push_tool_call(self, data: dict) -> None:
         if not self._push_allowed():
@@ -1333,8 +1351,8 @@ class JotaBridge:
             return
         try:
             await self._sender.send_json(_tool_call_message(self._push_turn_id, tool_call))
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+            self._log_send_failed("tool_call del push", e)
 
     async def on_push_turn_end(self, session_key: str) -> None:
         # Issue #84: if no push turn is open, this agent end has no matching
@@ -1348,7 +1366,7 @@ class JotaBridge:
             t0 = time.monotonic()
             try:
                 await asyncio.wait_for(tts.end(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — frontera: el TTS caído no rompe el push
                 # Issue #199: end() hung or failed — no audio to wait for.
                 await self._drop_push_tts(f"end {type(e).__name__}")
             finally:
@@ -1373,9 +1391,6 @@ class JotaBridge:
                     audio_task.cancel()
                     # Issue #204: bounded, an audio ignoring cancellation can't hang us.
                     await asyncio.wait({audio_task}, timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
-            if audio_task.done():
-                # Retrieves the outcome so nothing is reported as "never retrieved".
-                await asyncio.gather(audio_task, return_exceptions=True)
         self._push_audio_task = None
         self._add_push_ms("drain_ms", t0)
         if self._push_tts is not None:
@@ -1384,8 +1399,8 @@ class JotaBridge:
                 await asyncio.wait_for(
                     self._push_tts.close(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
                 )
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001 — limpieza: el fallo se registra
+                logger.debug(f"[{self.client_id}] cierre del TTS del push: {describe_error(e)}")
             self._push_tts = None
             self._add_push_ms("close_ms", t0)
 
@@ -1397,8 +1412,8 @@ class JotaBridge:
             )
         try:
             await self._sender.send_json({"type": "turn_end", "turn_id": self._push_turn_id})
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+            self._log_send_failed("turn_end del push", e)
         self._push_turn_open = False
         self._push_turn_opened_at = None
 
@@ -1438,7 +1453,7 @@ class JotaBridge:
                     await self.on_push_turn_end(arg)
                 else:
                     logger.warning(f"[{self.client_id}] push event desconocido: {kind!r}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — frontera: un evento roto no para el worker
                 # Type name only: the payload may carry user text.
                 logger.warning(f"[{self.client_id}] push {kind} falló: {type(e).__name__}")
             finally:

@@ -72,6 +72,15 @@ class Teardown:
         if exc_type is None and (self.cancelled or cancel_requested()):
             raise self._cancel_exc or asyncio.CancelledError()
 
+    def raise_if_cancelled(self) -> None:
+        """Relanza solo la cancelación recibida durante este `Teardown`, no una heredada.
+
+        Para esperas fuera de un cierre (p. ej. el barge-in), donde una cancelación
+        que otro se tragó antes no debe tumbar la tarea que espera.
+        """
+        if self.cancelled:
+            raise self._cancel_exc or asyncio.CancelledError()
+
     def _note_cancel(self, what: str, exc: asyncio.CancelledError) -> None:
         if self._cancel_exc is None:
             self._cancel_exc = exc
