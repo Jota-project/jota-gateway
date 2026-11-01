@@ -86,9 +86,13 @@ class Harness:
         client.ready = of_type(client.messages, "ready")[0]
         return client
 
-    async def push(self, text: str, agent: str = "main") -> None:
-        """El orquestador inicia un turno por su cuenta para el cliente de prueba."""
-        await self.openclaw.push(make_session_key(agent, CLIENT_ID), text)
+    async def push(self, text: str, agent: str = "main", end: bool = True) -> None:
+        """El orquestador inicia un turno por su cuenta para el cliente de prueba
+        (con `end=False` lo deja abierto hasta `push_end`)."""
+        await self.openclaw.push(make_session_key(agent, CLIENT_ID), text, end=end)
+
+    async def push_end(self, agent: str = "main") -> None:
+        await self.openclaw.push_end(make_session_key(agent, CLIENT_ID))
 
 
 def of_type(messages: list[Message], kind: str) -> list[dict]:

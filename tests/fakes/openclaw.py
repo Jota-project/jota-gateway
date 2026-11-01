@@ -21,7 +21,14 @@ class FakeOpenClawServer:
     big       -> ack started, un delta de `big_bytes` y final
     fail      -> `res` ok:false con `error.code` (turno de error: orchestrator_error)
     drop      -> ack started, un delta y cierra la conexión con 1011 (caída a mitad de turno)
-    push(sk, text) -> agent start, chat delta, chat final, agent end, sin `chat.send`
+    wait*     -> ack started y se queda en cola hasta `finish_next()` (o `release`); entonces
+                 emite su respuesta como una ejecución del agente: agent start, delta
+                 `reply-<texto>`, final, agent end. Ignora `chat.abort`, como un run cuya
+                 respuesta ya iba en camino cuando llegó el abort.
+    push(sk, text, end=True) -> agent start, chat delta, chat final y agent end, sin
+                 `chat.send`; con `end=False` el push queda abierto hasta `push_end(sk)`.
+
+    Cada `chat.send` y cada push tienen su `runId` (en el ack y en sus eventos), como el real.
     """
 
     def __init__(self, hello_payload=None, big_bytes=2 * MIB):
@@ -39,6 +46,9 @@ class FakeOpenClawServer:
         self._tasks: set[asyncio.Task] = set()
         self._conns: set = set()
         self.port = 0
+        self._runs = 0
+        self._held: list[tuple[asyncio.Event, asyncio.Event]] = []  # (seguir, terminado)
+        self._open_pushes: dict[str, str] = {}  # sessionKey -> runId del push abierto
 
     async def __aenter__(self):
         self._server = await websockets.serve(self._handler, "127.0.0.1", 0, max_size=64 * MIB)
@@ -54,27 +64,57 @@ class FakeOpenClawServer:
         return json.dumps({"type": "res", "id": req_id, "ok": ok, "payload": payload})
 
     @staticmethod
-    def _chat(sk, state, text=""):
-        return json.dumps(
-            {
-                "type": "event",
-                "event": "chat",
-                "payload": {"sessionKey": sk, "state": state, "deltaText": text},
-            }
-        )
+    def _chat(sk, state, text="", run_id=None):
+        payload = {"sessionKey": sk, "state": state, "deltaText": text}
+        if run_id is not None:
+            payload["runId"] = run_id
+        return json.dumps({"type": "event", "event": "chat", "payload": payload})
 
-    async def push(self, sk, text):
+    @staticmethod
+    def _agent(sk, phase, run_id):
+        payload = {"sessionKey": sk, "runId": run_id, "data": {"phase": phase}}
+        return json.dumps({"type": "event", "event": "agent", "payload": payload})
+
+    def _new_run(self) -> str:
+        self._runs += 1
+        return f"run-{self._runs}"
+
+    async def push(self, sk, text, end=True):
         """Turno push: lo inicia OpenClaw, sin `chat.send`. Emite en las conexiones abiertas."""
         if not self._conns:
             raise RuntimeError("no hay conexión abierta para el push")
-        agent = lambda phase: json.dumps(  # noqa: E731
-            {"type": "event", "event": "agent", "payload": {"sessionKey": sk, "data": {"phase": phase}}}
-        )
+        run_id = self._new_run()
         for ws in list(self._conns):
-            await ws.send(agent("start"))
-            await ws.send(self._chat(sk, "delta", text))
-            await ws.send(self._chat(sk, "final"))
-            await ws.send(agent("end"))
+            await ws.send(self._agent(sk, "start", run_id))
+            await ws.send(self._chat(sk, "delta", text, run_id))
+        self._open_pushes[sk] = run_id
+        if end:
+            await self.push_end(sk)
+
+    async def push_end(self, sk):
+        """Cierra el push abierto de `sk` (chat final y agent end)."""
+        run_id = self._open_pushes.pop(sk)
+        for ws in list(self._conns):
+            await ws.send(self._chat(sk, "final", run_id=run_id))
+            await ws.send(self._agent(sk, "end", run_id))
+
+    async def wait_held(self, n, timeout=5.0):
+        """Espera a que haya `n` ejecuciones `wait*` en cola (su `chat.send` ya llegó)."""
+        async with asyncio.timeout(timeout):
+            while len(self._held) < n:
+                await asyncio.sleep(0.005)
+
+    async def finish_next(self):
+        """Deja terminar la ejecución `wait*` más antigua y espera a que salga su respuesta."""
+        go, done = self._held.pop(0)
+        go.set()
+        await done.wait()
+
+    async def _until_go(self, go):
+        waits = {asyncio.ensure_future(go.wait()), asyncio.ensure_future(self.release.wait())}
+        _, pending = await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+        for w in pending:
+            w.cancel()
 
     async def _handler(self, ws):
         self.connections += 1
@@ -103,6 +143,7 @@ class FakeOpenClawServer:
 
     async def _chat_send(self, ws, rid, params):
         sk, text = params["sessionKey"], params["message"]
+        run_id = self._new_run()
         try:
             if text == "close":
                 await ws.close(1000)
@@ -112,9 +153,21 @@ class FakeOpenClawServer:
                 await ws.send(json.dumps({"type": "res", "id": rid, "ok": False, "error": error}))
                 return
             if text == "accepted":
-                await ws.send(self._res(rid, {"status": "accepted"}))
+                await ws.send(self._res(rid, {"runId": run_id, "status": "accepted"}))
             else:
-                await ws.send(self._res(rid, {"status": "started"}))
+                await ws.send(self._res(rid, {"runId": run_id, "status": "started"}))
+            if text.startswith("wait"):
+                go, done = asyncio.Event(), asyncio.Event()
+                self._held.append((go, done))
+                try:
+                    await self._until_go(go)
+                    await ws.send(self._agent(sk, "start", run_id))
+                    await ws.send(self._chat(sk, "delta", f"reply-{text}", run_id))
+                    await ws.send(self._chat(sk, "final", run_id=run_id))
+                    await ws.send(self._agent(sk, "end", run_id))
+                finally:
+                    done.set()
+                return
             if text == "hold":
                 await self.release.wait()
             elif text == "malformed":
@@ -129,17 +182,17 @@ class FakeOpenClawServer:
                 )
                 await ws.send(json.dumps({"type": "res", "id": "x", "payload": None}))
             if text == "drop":
-                await ws.send(self._chat(sk, "delta", "reply-drop"))
+                await ws.send(self._chat(sk, "delta", "reply-drop", run_id))
                 await ws.close(1011)
                 return
             if text == "huge":
-                await ws.send(self._chat(sk, "delta", "SECRETCONTENT" * (2 * MIB)))
+                await ws.send(self._chat(sk, "delta", "SECRETCONTENT" * (2 * MIB), run_id))
                 return
             if text == "big":
-                await ws.send(self._chat(sk, "delta", "x" * self.big_bytes))
-                await ws.send(self._chat(sk, "final"))
+                await ws.send(self._chat(sk, "delta", "x" * self.big_bytes, run_id))
+                await ws.send(self._chat(sk, "final", run_id=run_id))
             else:
-                await ws.send(self._chat(sk, "delta", f"reply-{text}"))
-                await ws.send(self._chat(sk, "final"))
+                await ws.send(self._chat(sk, "delta", f"reply-{text}", run_id))
+                await ws.send(self._chat(sk, "final", run_id=run_id))
         except websockets.ConnectionClosed:
             pass
