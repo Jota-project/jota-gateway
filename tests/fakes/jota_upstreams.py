@@ -9,8 +9,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+from http import HTTPStatus
 
 import websockets
+
+
+def _ready_ok(connection, request):
+    """`GET /ready` -> 200, como los servicios reales (el gateway lo usa en `probe()`)."""
+    if request.path == "/ready":
+        return connection.respond(HTTPStatus.OK, "ok\n")
+    return None
 
 
 class FakeTranscriber:
@@ -46,7 +54,9 @@ class FakeTranscriber:
             pass
 
     async def start(self) -> None:
-        self._server = await websockets.serve(self._handler, "127.0.0.1", 0)
+        self._server = await websockets.serve(
+            self._handler, "127.0.0.1", 0, process_request=_ready_ok
+        )
         self.port = self._server.sockets[0].getsockname()[1]
 
     async def stop(self) -> None:
@@ -81,7 +91,9 @@ class FakeTts:
             pass
 
     async def start(self) -> None:
-        self._server = await websockets.serve(self._handler, "127.0.0.1", 0)
+        self._server = await websockets.serve(
+            self._handler, "127.0.0.1", 0, process_request=_ready_ok
+        )
         self.port = self._server.sockets[0].getsockname()[1]
 
     async def stop(self) -> None:
