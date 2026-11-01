@@ -42,6 +42,7 @@ class TranscriberClient:
 
     async def connect(self, language: str = "es", token: str = "", vad_thold: float = 0.0):
         """Abre el socket y manda el Handshake inicial de config."""
+        ok = False
         try:
             self.ws = await websockets.connect(f"ws://{self.url}/api/stt")
 
@@ -65,6 +66,7 @@ class TranscriberClient:
                 logger.info(
                     f"[{self.client_id}] Transcriber listo. session_id={self._session_id!r}"
                 )
+                ok = True
             elif msg.type == "error":
                 # Solo el código: el `message` del transcriber no sale a logs ni a last_error (#238).
                 raise TranscriberHandshakeError(msg.code)
@@ -73,13 +75,17 @@ class TranscriberClient:
 
         except Exception as e:
             logger.error(f"[{self.client_id}] Error conectando a Transcriber: {describe_error(e)}")
-            if self.ws is not None:
+            raise
+        finally:
+            # También si cancelan connect() (#221): el socket abierto no se queda sin dueño.
+            if not ok and self.ws is not None:
                 try:
                     await self.ws.close()
-                except Exception:
-                    pass
+                except Exception as e:  # noqa: BLE001 — limpieza tras un connect fallido
+                    logger.debug(
+                        f"[{self.client_id}] Cierre del socket tras connect fallido: {describe_error(e)}"
+                    )
                 self.ws = None
-            raise
 
     async def send_audio(self, audio_bytes: bytes):
         """Envía ráfagas PCM crudas al transcriptor si está habilitado."""
@@ -186,7 +192,7 @@ class TranscriberClient:
             # so no state check is needed. A failure is logged (type only), never swallowed.
             try:
                 await self.ws.close()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — limpieza: el fallo se registra
                 logger.warning(
                     f"[{self.client_id}] Transcriber close falló ({type(e).__name__})"
                 )

@@ -78,7 +78,8 @@ async def ping_ready(url: str) -> bool:
         async with httpx.AsyncClient() as client:
             r = await client.get(f"http://{url}/ready", timeout=5.0)
             return r.is_success
-    except Exception:
+    except Exception as e:  # noqa: BLE001 — sonda de salud: cualquier fallo es «no listo»
+        logger.debug("ping_ready %s failed: %s", url, describe_error(e))
         return False
 
 
@@ -118,7 +119,15 @@ class ServiceHealth:
             return
         self.state = state
         if self.on_state_change:
-            self.on_state_change(state)
+            # G-53 (#221): the hook is the caller's code; its failure is logged here and
+            # never counts as a failed reconnect attempt nor escapes the reconnect task.
+            try:
+                self.on_state_change(state)
+            except Exception as e:  # noqa: BLE001 — frontera: hook externo de estado
+                logger.warning(
+                    "[%s] on_state_change hook failed (%s)", self.name, describe_error(e)
+                )
+                logger.debug("[%s] on_state_change: %s", self.name, traceback_no_message(e))
 
     def mark_connected(self) -> None:
         # Fields first, hook last: a callback calling status() sees the final state.
@@ -163,7 +172,7 @@ async def reconnect_with_backoff(
             return True
         except asyncio.CancelledError:
             raise
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: un intento fallido se reintenta
             # Stable description only (#228): the exception text can carry server-provided
             # content and would otherwise end up in `last_error` (/admin) and the logs.
             reason = describe_error(e)

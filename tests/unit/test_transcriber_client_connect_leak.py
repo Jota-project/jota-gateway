@@ -88,3 +88,21 @@ async def test_connect_succeeds_when_ready_arrives_in_time(monkeypatch):
 
     assert client._is_ready
     assert not fake_ws.closed
+
+
+@pytest.mark.asyncio
+async def test_connect_cancelled_closes_socket():
+    """#221: si cancelan connect() con el socket ya abierto, el socket se cierra."""
+    fake_ws = FakeSocket()  # recv() se queda esperando `ready`
+
+    with patch("websockets.connect", side_effect=lambda url: fake_ws):
+        client = TranscriberClient(url="test:1", client_id="c1")
+        task = asyncio.create_task(client.connect())
+        while not fake_ws.sent_frames:
+            await asyncio.sleep(0.001)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert fake_ws.closed
+    assert client.ws is None

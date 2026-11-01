@@ -196,7 +196,7 @@ class ElevenLabsTtsStream:
                     )
                 except asyncio.CancelledError:
                     raise
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — frontera: _connect_failed registra y degrada
                     self._p._connect_failed(self._gate_token, classify_exception(e), e)
                     return
                 self._ws = ws
@@ -320,7 +320,7 @@ class ElevenLabsTtsStream:
             pass
         except asyncio.CancelledError:
             raise
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: el lector cierra el stream, no la sesión
             logger.warning("ElevenLabs TTS: lectura abortada (%s)", describe_error(e))
             return "error"
         return classify_close(ws.close_code, ws.close_reason)
@@ -512,7 +512,7 @@ class ElevenLabsTtsProvider(ProbedProvider):
             # Conectó y nadie rechazó las credenciales en el plazo: el servicio responde.
             self._record_success()
             return True
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: la sonda nunca lanza; _connect_failed registra
             self._connect_failed(token, classify_exception(e), e)
             return False
         if clean:

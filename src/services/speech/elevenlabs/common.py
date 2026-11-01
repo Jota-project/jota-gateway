@@ -60,8 +60,8 @@ def api_key(settings) -> str:
 async def close_ws(ws) -> None:
     try:
         await asyncio.wait_for(ws.close(), CLOSE_GRACE_S)
-    except Exception:  # incluye TimeoutError
-        pass
+    except Exception as e:  # noqa: BLE001 — limpieza; incluye TimeoutError
+        logger.debug("ElevenLabs: cierre del socket falló (%s)", describe_error(e))
 
 
 async def json_messages(ws) -> AsyncIterator[dict]:
@@ -103,7 +103,7 @@ class ProbedProvider:
     async def start(self) -> None:
         try:
             await self.probe()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: start() nunca lanza (contrato)
             logger.warning("%r: probe de arranque falló (%s)", self, describe_error(e))
 
     async def aclose(self) -> None:
