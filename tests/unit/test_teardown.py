@@ -84,6 +84,24 @@ async def test_double_foreign_cancel_still_finishes_the_teardown():
     assert ran == ["after"]
 
 
+async def test_reraised_cancellation_keeps_its_message():
+    """anyio's cancel scopes (Starlette's TestClient, #221) only swallow a
+    CancelledError that carries their own message: re-raise the original."""
+    started = asyncio.Event()
+
+    async def closer() -> None:
+        async with Teardown("t") as td:
+            started.set()
+            await td.step(_sleep_forever(), "paso", timeout=0.05)
+
+    task = asyncio.create_task(closer())
+    await started.wait()
+    task.cancel("Cancelled via cancel scope 1")
+    with pytest.raises(asyncio.CancelledError) as info:
+        await task
+    assert info.value.args == ("Cancelled via cancel scope 1",)
+
+
 async def test_cancel_swallowed_by_a_step_is_still_reraised():
     started = asyncio.Event()
 

@@ -71,6 +71,9 @@ class Harness:
         self.transcriber: FakeTranscriber = transcriber
         self.tts: FakeTts = tts
         self.clients: list[HarnessClient] = []
+        # El uvicorn del gateway y su hilo, para apagarlo desde un test.
+        self.server: uvicorn.Server | None = None
+        self.thread: threading.Thread | None = None
 
     async def connect(
         self, input_mode: str = "text", output_mode: tuple[str, ...] = ("text",)
@@ -163,6 +166,7 @@ async def harness(seed_client, monkeypatch):
                 await asyncio.sleep(0.01)  # el loop del test sigue atendiendo a los falsos
 
             h = Harness(srv.servers[0].sockets[0].getsockname()[1], openclaw, transcriber, tts)
+            h.server, h.thread = srv, thread
             try:
                 yield h
             finally:

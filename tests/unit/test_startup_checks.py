@@ -13,6 +13,7 @@ from src.core.startup_checks import (
     SingleProcessLockError,
     acquire_single_process_lock,
     release_single_process_lock,
+    warn_deprecated_settings,
     warn_insecure_tokens,
 )
 
@@ -23,6 +24,23 @@ def _settings(**kw) -> Settings:
     base = {"ADMIN_TOKEN": SECRET, "OPENCLAW_TOKEN": SECRET, "TTS_TOKEN": SECRET}
     base.update(kw)
     return Settings(_env_file=None, **base)
+
+
+def test_obsolete_shutdown_drain_s_is_accepted_and_warned(tmp_path, caplog):
+    """#221: SHUTDOWN_DRAIN_S is ignored, but an old .env that still sets it must not
+    stop the gateway from starting (pydantic-settings rejects unknown .env keys)."""
+    env = tmp_path / ".env"
+    env.write_text("SHUTDOWN_DRAIN_S=30.0\n", encoding="utf-8")
+    caplog.set_level(logging.WARNING)
+
+    assert warn_deprecated_settings(Settings(_env_file=env)) == ["SHUTDOWN_DRAIN_S"]
+    assert any("SHUTDOWN_DRAIN_S" in r.getMessage() for r in caplog.records)
+
+
+def test_no_deprecation_warning_by_default(caplog):
+    caplog.set_level(logging.WARNING)
+    assert warn_deprecated_settings(_settings()) == []
+    assert caplog.records == []
 
 
 def test_no_warning_when_tokens_are_set(caplog):

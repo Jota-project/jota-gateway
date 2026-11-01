@@ -34,6 +34,7 @@ from src.services.speech.ports import (
 )
 from src.services.speech.registry import SpeechProviders
 from src.services.stats import CloseReason, gateway_stats
+from src.services.teardown import Teardown, cancel_requested
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,6 @@ def _tool_call_message(turn_id: str | None, tool_call: ToolCallEvent) -> dict:
 
 
 _REASON_BY_STATUS: dict[str, CloseReason] = {
-    "shutdown": "shutdown",
     "revoked": "revoked",
     "error": "error",
 }
@@ -142,7 +142,6 @@ class JotaBridge:
         # Unbounded on purpose in S3a (bounding it is S3b).
         self._push_queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
         self._push_worker: asyncio.Task | None = None
-        self._push_accepting: bool = True
         # Events enqueued and not yet finished, and since when the backlog is
         # non-empty: _idle_watchdog() counts a bounded pending backlog as in flight.
         self._push_pending: int = 0
@@ -151,15 +150,13 @@ class JotaBridge:
         # Guards close_all() so it's safe to call more than once (issue #101):
         # routes.py's outer try/finally always calls it on the way out, even
         # when bridge.run() already called it from its own internal finally.
-        # _closed is only set True once teardown fully completes; _close_lock
-        # serializes concurrent callers so a call interrupted mid-teardown
-        # doesn't race a second one, and a later call retries instead of
-        # observing a half-finished, permanently-poisoned guard.
+        # _closed is set once every teardown step ran (even if the caller was
+        # cancelled meanwhile, #221); _close_lock serializes concurrent callers.
         self._closed: bool = False
         self._close_lock = asyncio.Lock()
         # Set on entry to close_all() and never reset: from then on no new turn may
-        # start (G-09, #215). Distinct from `_closed`, which only flips once teardown
-        # completes so an interrupted close_all() can be retried (#101).
+        # start (G-09, #215) and no push event is accepted. Distinct from `_closed`,
+        # which only flips once every teardown step ran.
         self._closing: bool = False
         # Motivo de cierre (#219): la primera nota gana; se fija en session_end una vez.
         self._close_reason: CloseReason | None = None
@@ -169,8 +166,11 @@ class JotaBridge:
         self._turn_lock = asyncio.Lock()
         # Id of the turn currently running (set after its turn_start is enqueued).
         self._active_turn_id: str | None = None
+        # Turn whose turn_end close_all() already sent because it abandoned the turn
+        # at SESSION_TEARDOWN_S: its own finally must not send it again.
+        self._turn_end_sent_at_close: str | None = None
         # True once the client is known to be gone (disconnect seen by the input loop,
-        # or ClientGone from the sender): its turn is cancelled, not drained (G-18).
+        # or ClientGone from the sender): its turn stops sending (G-18).
         self._client_gone: bool = False
         # Audio activity, for the silence watchdog (#227): last audio frame, and the
         # first frame of the current burst (a frame after an idle gap starts a new one).
@@ -275,25 +275,25 @@ class JotaBridge:
         return meta
 
     async def close_all(
-        self, status: SessionStatus = "completed", reason: CloseReason | None = None
+        self, status: SessionStatus | None = None, reason: CloseReason | None = None
     ):
         """Tear down every microservice client and mark the session closed.
 
         Idempotent — the second call in a row is a no-op, and the *first
-        call to finish* wins the `status`. Callable from three independent
-        sites (the silence watchdog, run()'s own finally, and routes.py's
-        outer finally on the setup-phase paths from issue #101) without
-        knowing whether one of the others already ran.
+        call to finish* wins the `status`. Callable from several independent
+        sites (the watchdogs, run()'s own finally, and routes.py's outer
+        finally on the setup-phase paths from issue #101) without knowing
+        whether one of the others already ran. Without an explicit `status`,
+        a session whose close reason is `error` ends as `error` (G-26), any
+        other as `completed`.
 
-        `_closed` is only set to True once teardown actually completes — not
-        at entry — and the whole body is serialized by `_close_lock`. If a
-        call is interrupted mid-teardown (e.g. cancelled during shutdown), it
-        never sets `_closed`, so the next call retries the teardown instead of
-        silently no-op'ing forever (issue #101 follow-up: the eager guard used
-        to defeat the very safety net routes.py relies on).
+        Every step runs to the end, each bounded by SESSION_TEARDOWN_S, even if
+        the caller is cancelled meanwhile (#221): `_closed` is set before that
+        cancellation is re-raised, so the routes.py safety net (#101) does not
+        repeat the teardown.
         """
         # Before taking the lock, so a `send` arriving while another close_all() is
-        # draining the turn is already refused (G-09).
+        # running is already refused (G-09), and push intake stops.
         self._closing = True
         self.note_close_reason(reason)
         if self._turn_in_flight_at_close is None:
@@ -301,156 +301,78 @@ class JotaBridge:
         async with self._close_lock:
             if self._closed:
                 return
+            if status is None:
+                status = "error" if self._close_reason == "error" else "completed"
 
             self._client_registry.unregister(self.client_id, self)
-            # Await (don't cancel outright) the active turn so the orchestrator
-            # response is delivered before we tear down microservice clients.
-            # The wait is bounded by SHUTDOWN_DRAIN_S (default 30s), not truly
-            # unbounded/natural — it's a safety net, primarily relevant when a
-            # turn is genuinely stuck rather than merely slow. TURN_TIMEOUT_S's
-            # idle-reset semantics mean a turn making steady progress (events
-            # keep arriving within TURN_TIMEOUT_S of each other) can still be
-            # running when close_all() is called for an unrelated reason (e.g.
-            # client disconnect) — SHUTDOWN_DRAIN_S gives it room to finish
-            # naturally without holding up shutdown forever if it never does.
-            # Explicit cancellation otherwise only happens via
-            # _cancel_active_turn() (barge-in) or task cancellation from outside.
-            if self._active_turn and not self._active_turn.done() and self._client_gone:
-                # G-18: nobody is listening any more, so draining the turn would only
-                # hold the teardown for up to SHUTDOWN_DRAIN_S. Cancel it (the
-                # orchestrator stream's aclose sends chat.abort).
+            limit = settings.SESSION_TEARDOWN_S
+            async with Teardown(f"[{self.client_id}] close_all") as td:
+                # 7d / G-23: the turn in flight is cancelled, never drained. Its own
+                # finally sends its turn_end while the socket is still open (G-10), and
+                # the orchestrator stream's aclose sends chat.abort.
                 turn = self._active_turn
-                turn.cancel()
-                try:
-                    await asyncio.wait({turn}, timeout=settings.SHUTDOWN_DRAIN_S)
-                except asyncio.CancelledError:
-                    pass
-            elif self._active_turn and not self._active_turn.done():
-                try:
-                    await asyncio.wait_for(self._active_turn, timeout=settings.SHUTDOWN_DRAIN_S)
-                except asyncio.CancelledError:
-                    pass
-                except TimeoutError:
-                    # asyncio.wait_for() already cancelled _active_turn and
-                    # awaited that cancellation before raising — nothing left
-                    # to do here but log. No orphaned task.
-                    logger.warning(
-                        f"[{self.client_id}] _active_turn no terminó dentro de "
-                        f"SHUTDOWN_DRAIN_S={settings.SHUTDOWN_DRAIN_S}s — forzando cierre."
-                    )
-                except Exception as e:
-                    logger.error(f"[{self.client_id}] _active_turn falló: {describe_error(e)}")
-                    logger.debug(f"[{self.client_id}] _active_turn: {traceback_no_message(e)}")
-
-            # Stop push intake and the worker *before* touching _push_tts / the audio
-            # task it may be driving (issue #130 S3a). The worker is also in
-            # self.tasks (via _spawn), but cancelling it there would happen after
-            # _push_tts is closed. asyncio.wait + timeout (not a bare await) so a
-            # handler that failed to honour the cancellation can't hang teardown.
-            self._push_accepting = False
-            worker = self._push_worker
-            if (
-                worker is not None
-                and worker is not asyncio.current_task()
-                and not worker.done()
-            ):
-                worker.cancel()
-                try:
-                    await asyncio.wait({worker}, timeout=settings.SHUTDOWN_DRAIN_S)
-                except asyncio.CancelledError:
-                    logger.debug(
-                        f"[{self.client_id}] close_all: cancelación externa absorbida "
-                        f"durante el cierre del push worker."
-                    )
-                else:
-                    if not worker.done():
-                        logger.warning(
-                            f"[{self.client_id}] push worker no terminó dentro de "
-                            f"SHUTDOWN_DRAIN_S={settings.SHUTDOWN_DRAIN_S}s."
+                await td.cancel(turn, "turno activo", limit)
+                if turn is not None and not turn.done() and self._active_turn_id:
+                    # Abandoned at the limit (slow TTS cleanup): its finally would send
+                    # turn_end after session_end, into a closed sender. Send it now.
+                    turn_id = self._active_turn_id
+                    self._turn_end_sent_at_close = turn_id
+                    try:
+                        await self._sender.send_json({"type": "turn_end", "turn_id": turn_id})
+                    except Exception as e:
+                        logger.debug(
+                            f"[{self.client_id}] turn_end del turno al cerrar: {type(e).__name__}"
                         )
-            while not self._push_queue.empty():
-                self._push_queue.get_nowait()
-                self._push_queue.task_done()
-            self._push_pending = 0
-            self._push_pending_since = None
-            if self._push_audio_task and not self._push_audio_task.done():
-                self._push_audio_task.cancel()
-                try:
-                    await self._push_audio_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            if self._push_tts:
-                try:
-                    await self._push_tts.close()
-                except Exception:
-                    pass
-                self._push_tts = None
 
-            # Defensive reset — if the session ends between an agent start and its
-            # matching agent end (disconnect, orchestrator crash, reconnect mid-push),
-            # the flag would otherwise stay set forever, causing the next agent start
-            # received on this bridge instance to be silently dropped.
-            self._push_turn_open = False
-            self._push_turn_opened_at = None
+                # The push worker before the _push_tts / audio task it may be driving
+                # (issue #130 S3a). It is also in self.tasks, cancelled later.
+                await td.cancel(self._push_worker, "push worker", limit)
+                while not self._push_queue.empty():
+                    self._push_queue.get_nowait()
+                    self._push_queue.task_done()
+                self._push_pending = 0
+                self._push_pending_since = None
+                await td.cancel(self._push_audio_task, "audio del push", limit)
+                if self._push_tts:
+                    await td.step(self._push_tts.close(), "cierre del TTS del push", limit)
+                    self._push_tts = None
+                if self._push_turn_open:
+                    # A push turn left open (agent start without its end) still gets
+                    # its turn_end, after its last audio frame: never a lone turn_start.
+                    try:
+                        await self._sender.send_json(
+                            {"type": "turn_end", "turn_id": self._push_turn_id}
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            f"[{self.client_id}] turn_end del push al cerrar: {type(e).__name__}"
+                        )
+                self._push_turn_open = False
+                self._push_turn_opened_at = None
 
-            # Exclude the calling task from cancellation: _idle_watchdog and
-            # _transcription_watchdog both call close_all() on themselves
-            # (to end their own session). If close_all() cancelled its own
-            # caller here, the self-delivered CancelledError would land at
-            # the next real suspension point below (the transcriber.close()
-            # gather) and abort teardown before tracker.close()/_closed=True
-            # ever run. Awaiting the tasks we DO cancel guarantees nothing
-            # is left dangling when this method returns.
-            current_task = asyncio.current_task()
-            tasks_to_cancel = [
-                t for t in self.tasks if t is not current_task and not t.done()
-            ]
-            for task in tasks_to_cancel:
-                task.cancel()
-            if tasks_to_cancel:
-                try:
-                    await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
-                except asyncio.CancelledError:
-                    # asyncio.gather(return_exceptions=True) still re-raises
-                    # CancelledError when the *awaiting* task itself is cancelled
-                    # at that moment (e.g. server or test-framework task.cancel()
-                    # landing right after ws.close()). The caller cannot honor the
-                    # cancellation mid-teardown — the session is already closing —
-                    # so absorb it and finish teardown instead of letting it abort
-                    # tracker.close()/_closed=True below.
-                    logger.debug(
-                        f"[{self.client_id}] close_all: cancelación externa absorbida "
-                        f"durante el drenado de tareas."
-                    )
+                # Never the calling task: the watchdogs call close_all() on themselves.
+                # Cancel them all first, then wait them under one shared limit.
+                current_task = asyncio.current_task()
+                pending = [t for t in self.tasks if t is not current_task and not t.done()]
+                for task in pending:
+                    task.cancel()
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + limit
+                for task in pending:
+                    remaining = max(0.0, deadline - loop.time())
+                    await td.wait(task, f"tarea {task.get_name()}", remaining)
 
-            close_aws = []
-            if self.transcriber:
-                close_aws.append(self.transcriber.close())
+                if self.transcriber:
+                    await td.step(self.transcriber.close(), "cierre del transcriber", limit)
 
-            if close_aws:
-                try:
-                    await asyncio.gather(*close_aws, return_exceptions=True)
-                except asyncio.CancelledError:
-                    logger.debug(
-                        f"[{self.client_id}] close_all: cancelación externa absorbida "
-                        f"durante el cierre de microservicios."
-                    )
-
-            end_meta = self._session_end_meta(status)
-            if not self._close_counted:
-                self._close_counted = True
-                gateway_stats.session_closed(end_meta["reason"])
-            try:
-                await self.tracker.close(status=status, **end_meta)
-            except asyncio.CancelledError:
-                # Same reasoning as above — the session must still be marked
-                # closed so the routes.py outer-finally safety net (issue #101)
-                # does not see a half-torn-down session and retry forever.
-                logger.debug(
-                    f"[{self.client_id}] close_all: cancelación externa absorbida "
-                    f"durante el cierre del tracker."
+                end_meta = self._session_end_meta(status)
+                if not self._close_counted:
+                    self._close_counted = True
+                    gateway_stats.session_closed(end_meta["reason"])
+                await td.step(
+                    self.tracker.close(status=status, **end_meta), "cierre del tracker", limit
                 )
-            self._closed = True
+                self._closed = True
 
     async def health_check(self) -> dict[str, bool] | None:
         """Ping each microservice and return a snapshot of live capabilities.
@@ -526,7 +448,7 @@ class JotaBridge:
         """Replace the active turn (if any) with a new one for `text`.
 
         Refused once the session is closing (G-09): the input loop is still reading
-        while close_all() drains, and a turn created then would survive the teardown.
+        while close_all() runs, and a turn created then would survive the teardown.
         """
         if self._closing:
             logger.info(f"[{self.client_id}] send ignorado: la sesión se está cerrando.")
@@ -739,7 +661,7 @@ class JotaBridge:
         self.note_close_reason("revoked")
         logger.warning(f"[{self.client_id}] Cliente revocado (borrado/desactivado/clave rotada).")
         await self.tracker.record("session_revoked")
-        # Nadie autorizado escucha ya: el turno en curso se cancela, no se drena (G-18).
+        # Nadie autorizado escucha ya: close_all cancela el turno en curso (G-18).
         self._client_gone = True
         try:
             await asyncio.wait_for(
@@ -811,29 +733,26 @@ class JotaBridge:
 
         # El ciclo de vida de la sesión lo marca _client_input_loop.
         # listen_loop y watchdog corren en background y terminan solos sin cerrar la sesión.
+        status: SessionStatus | None = None
         try:
             await client_task
             # Terminó sola (no la canceló un watchdog ni el shutdown): el cliente se fue.
             self.note_close_reason("client_disconnect")
         except asyncio.CancelledError:
-            pass
+            if cancel_requested():
+                # Cancelación ajena de run() (G-26): la sesión acaba en error y la
+                # cancelación se relanza tras el cierre.
+                self.note_close_reason("error")
+                status = "error"
+                raise
+            # Si no, la cancelación es nuestra: un close_all() (watchdog, revocación)
+            # canceló el bucle de entrada. Fin normal; el motivo ya está anotado.
         except Exception as e:
             self.note_close_reason("error")
             logger.error(f"[{self.client_id}] client_input_loop crasheó: {describe_error(e)}")
             logger.debug(f"[{self.client_id}] client_input_loop: {traceback_no_message(e)}")
         finally:
-            try:
-                await self.close_all()
-            except asyncio.CancelledError:
-                # close_all() absorbs external cancellations at its own
-                # suspension points, but if one still leaks out (e.g. a future
-                # teardown step without a guard), run()'s finally must not let
-                # it propagate into the WebSocket endpoint — the session is
-                # already ending either way.
-                logger.debug(
-                    f"[{self.client_id}] run(): cancelación externa absorbida "
-                    f"durante el teardown."
-                )
+            await self.close_all(status=status)
 
     async def _client_input_loop(self):
         """Atrapa entradas del cliente (Micrófono o Texto)."""
@@ -1083,10 +1002,11 @@ class JotaBridge:
         finally:
             if self._active_turn_id == turn_id:
                 self._active_turn_id = None
-            try:
-                await self._sender.send_json({"type": "turn_end", "turn_id": turn_id})
-            except Exception:
-                pass
+            if self._turn_end_sent_at_close != turn_id:
+                try:
+                    await self._sender.send_json({"type": "turn_end", "turn_id": turn_id})
+                except Exception:
+                    pass
 
     async def _run_turn(self, text: str, turn_id: str, turn_seq: int) -> None:
         from src.services.orchestration import call_orchestrator
@@ -1138,7 +1058,7 @@ class JotaBridge:
         async def _on_token(token_text: str):
             # G-18: a gone client aborts the turn (raising unwinds call_orchestrator's
             # aclosing(), whose stream finally sends chat.abort) instead of letting it
-            # stream into the void and be drained for SHUTDOWN_DRAIN_S.
+            # stream into the void until close_all() cancels it.
             if self._client_gone:
                 raise ClientGone("cliente no disponible")
             try:
@@ -1225,6 +1145,8 @@ class JotaBridge:
                 if _first_chunk:
                     await self.tracker.record("tts_first_chunk")
                     _first_chunk = False
+                if self._turn_end_sent_at_close == turn_id:
+                    return  # close_all() already ended this turn: nothing after its turn_end
                 try:
                     await self._sender.send_bytes(header + chunk)
                 except Exception as e:
@@ -1488,7 +1410,7 @@ class JotaBridge:
         `arg` is what the matching handler takes (session_key for turn_*, the frame
         payload for chat/tool). No-op once the bridge is closing.
         """
-        if not self._push_accepting:
+        if self._closing:
             return
         if self._push_worker is None or self._push_worker.done():
             self._push_worker = self._spawn(self._push_worker_loop(), "push_worker")
@@ -1503,7 +1425,7 @@ class JotaBridge:
         await self._push_queue.join()
 
     async def _push_worker_loop(self) -> None:
-        while self._push_accepting:
+        while not self._closing:
             kind, arg = await self._push_queue.get()
             try:
                 if kind == "turn_start":

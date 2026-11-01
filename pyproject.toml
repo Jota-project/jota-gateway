@@ -76,7 +76,6 @@ ignore = [
 "src/**" = ["E501"]
 # Pendientes de revisar con la política de #221: cada PR de la serie quita los suyos.
 "src/services/bridge.py" = ["BLE001", "S110", "S112", "B904", "ASYNC", "RUF006"]
-"src/main.py" = ["BLE001", "S110", "S112", "B904", "ASYNC", "RUF006"]
 "src/api/**" = ["BLE001", "S110", "S112", "B904", "ASYNC", "RUF006"]
 "src/core/transport.py" = ["BLE001", "S110", "S112", "B904", "ASYNC", "RUF006"]
 "src/services/{outbound,pipeline_tracker}.py" = ["BLE001", "S110", "S112", "B904", "ASYNC", "RUF006"]

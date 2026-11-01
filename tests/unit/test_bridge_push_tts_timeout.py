@@ -190,7 +190,7 @@ async def test_worker_exits_when_not_accepting():
     bridge = make_bridge(output_mode=("text",))
 
     async def end_and_stop(sk):
-        bridge._push_accepting = False
+        bridge._closing = True
 
     bridge.on_push_turn_end = end_and_stop
     bridge.enqueue_push("turn_end", "sk")

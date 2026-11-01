@@ -78,7 +78,12 @@ class Settings(BaseSettings):
     HANDSHAKE_MAX_BYTES: int = Field(default=4096, gt=0)
     TURN_TIMEOUT_S: float = 120.0
     IDLE_TIMEOUT_S: float = 300.0
-    SHUTDOWN_DRAIN_S: float = 30.0
+    # Tope de cada paso del cierre de una sesión (cancelar el turno, el push, las tareas,
+    # cerrar el transcriber y el tracker) y del drenado de su cola de salida (#221).
+    SESSION_TEARDOWN_S: float = Field(default=5.0, gt=0)
+    # Obsoleto e ignorado (#221): el cierre ya no espera al turno en curso. Se acepta para
+    # que un .env antiguo no impida arrancar (avisa con un WARNING al arrancar).
+    SHUTDOWN_DRAIN_S: float | None = None
     LOG_FORMAT: Literal["text", "json"] = "text"
 
     # Drenado del audio TTS de un push al cerrar su turno (issue #130 S3a)

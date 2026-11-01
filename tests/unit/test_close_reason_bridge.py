@@ -121,13 +121,6 @@ async def test_session_counted_opened_without_run():
     assert snap["sessions_closed"] == {"error": 1}
 
 
-async def test_shutdown_reason():
-    bridge = _make_bridge()
-    await bridge._client_registry.close_all_sessions(status="shutdown", timeout=1.0)
-    assert _end_meta(bridge)["reason"] == "shutdown"
-    assert _closed() == {"shutdown": 1}
-
-
 async def test_reason_derived_from_status_when_not_noted():
     bridge = _make_bridge()
     await bridge.close_all(status="error")
@@ -148,27 +141,19 @@ async def test_first_close_reason_wins():
     assert _closed() == {"idle_timeout": 1}
 
 
-async def test_session_closed_counted_once_when_close_all_is_retried():
-    """#101: un close_all interrumpido se reintenta; el contador sube una sola vez."""
+async def test_session_closed_counted_once_when_tracker_close_fails():
+    """#101/#221: un paso del cierre que falla (aquí tracker.close) no aborta el cierre
+    ni se reintenta: el fallo va a DEBUG, la sesión queda cerrada y el contador sube
+    una sola vez aunque se llame otra vez a close_all."""
     bridge = _make_bridge()
-    real_close = bridge.tracker.close
-    calls = 0
 
-    async def _flaky_close(**kw):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise RuntimeError("boom")
-        await real_close(**kw)
+    async def _failing_close(**kw):
+        raise RuntimeError("boom")
 
-    bridge.tracker.close = _flaky_close
-    try:
-        await bridge.close_all(reason="idle_timeout")
-    except RuntimeError:
-        pass
-    assert not bridge._closed
-    await bridge.close_all()
+    bridge.tracker.close = _failing_close
+    await bridge.close_all(reason="idle_timeout")
     assert bridge._closed
+    await bridge.close_all()
     assert _closed() == {"idle_timeout": 1}
 
 

@@ -40,7 +40,7 @@ A BFF: the single entry point for Jota-Screen, jota-voice (Mac and Android/Termu
 
 | Path | Role |
 |---|---|
-| `main.py` | App + lifespan: lock and startup checks, migrations, builds OpenClaw and speech providers into `app.state`, wires state-change broadcasts, ordered shutdown (drain sessions → close speech providers → OpenClaw → dispose DB engine) |
+| `main.py` | App + lifespan: lock and startup checks, migrations, builds OpenClaw and speech providers into `app.state`, wires state-change broadcasts, ordered shutdown under `Teardown` (unhook broadcasts → close speech providers → OpenClaw → dispose DB engine; uvicorn has already closed every session with 1012) |
 | `api/routes.py` | `/ws/stream`: handshake (size, timeout, auth, agent policy) → `QueuedSender` → `PipelineTracker` → `JotaBridge` → health check → `ready` → `bridge.run()` |
 | `api/admin_routes.py` | `/admin/*` (`X-Admin-Token` via `api/deps.py`): client CRUD, sessions, service status, `GET /admin/speech`, `/admin/state` (+ SSE stream) |
 | `api/openai_routes.py` | `/v1/models`, `/v1/chat/completions` (Home Assistant); auth in `resolve_ha_caller` + `core/network.py` |

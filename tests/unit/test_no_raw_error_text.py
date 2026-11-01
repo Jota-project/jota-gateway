@@ -257,13 +257,13 @@ async def test_transcriber_listen_crash_logs_no_message(caplog):
     assert SECRET not in _logged(caplog)
 
 
-async def test_registry_shutdown_drain_failure_logs_type_only(caplog):
+async def test_close_all_step_failure_logs_type_only(caplog):
     caplog.set_level(logging.DEBUG)
-    reg = ClientRegistry()
-    bridge = AsyncMock()
-    bridge.close_all.side_effect = _boom
-    reg.register("u", bridge)
-    await reg.close_all_sessions(status="shutdown", timeout=1.0)
+    bridge, _ = _bridge()
+    bridge.transcriber = AsyncMock()
+    bridge.transcriber.close.side_effect = _boom
+    await bridge.close_all()
+    assert bridge._closed is True
     assert SECRET not in _logged(caplog)
 
 

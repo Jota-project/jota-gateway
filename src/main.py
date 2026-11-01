@@ -21,6 +21,7 @@ from src.core.startup_checks import (
     acquire_single_process_lock,
     check_speech_settings,
     release_single_process_lock,
+    warn_deprecated_settings,
     warn_insecure_tokens,
 )
 from src.core.transport import TransportCaptureMiddleware
@@ -38,6 +39,7 @@ from src.services.reconnection import (
 from src.services.session_registry import SessionRegistry
 from src.services.speech.factory import build_stt_provider, build_tts_provider
 from src.services.speech.registry import SpeechProviders
+from src.services.teardown import Teardown
 
 configure_logging(settings.LOG_FORMAT)
 logger = logging.getLogger(__name__)
@@ -65,6 +67,7 @@ async def _lifespan_body(app: FastAPI):
     logger.info("BD inicializada")
     warn_if_open_proxy_config()
     warn_insecure_tokens(settings)
+    warn_deprecated_settings(settings)
     # Fatal en arranque: un proveedor de pago mal configurado no debe esperar al primer uso.
     check_speech_settings(
         settings, stt_provider=settings.STT_PROVIDER, tts_provider=settings.TTS_PROVIDER
@@ -96,8 +99,14 @@ async def _lifespan_body(app: FastAPI):
     # nothing was ever broken.
     # `_notification_tasks` holds a strong reference to each fire-and-forget
     # broadcast task so the event loop's weak reference doesn't let it get
-    # GC'd mid-flight; discarded once the task completes.
+    # GC'd mid-flight; discarded (and its failure logged) once it completes.
     _notification_tasks: set[asyncio.Task] = set()
+
+    def _notification_done(task: asyncio.Task) -> None:
+        _notification_tasks.discard(task)
+        if not task.cancelled() and (e := task.exception()) is not None:
+            logger.warning("Aviso de estado a los clientes falló (%s)", describe_error(e))
+            logger.debug("aviso de estado: %s", traceback_no_message(e))
 
     def _broadcaster(service: str) -> Callable[[ConnectionState], None]:
         def _on_state_change(state: ConnectionState) -> None:
@@ -105,7 +114,7 @@ async def _lifespan_body(app: FastAPI):
                 client_registry.broadcast_status(service, to_wire_state(state))
             )
             _notification_tasks.add(task)
-            task.add_done_callback(_notification_tasks.discard)
+            task.add_done_callback(_notification_done)
 
         return _on_state_change
 
@@ -120,7 +129,7 @@ async def _lifespan_body(app: FastAPI):
     for provider in (stt, tts):
         try:
             await provider.start()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: solo OpenClaw es fatal (#110)
             logger.error("Speech provider %s failed to start (%s)", provider.name, describe_error(e))
     # Wired after start() on purpose (same reason as the orchestrator): a first-time
     # success must not broadcast a spurious "restored".
@@ -137,51 +146,24 @@ async def _lifespan_body(app: FastAPI):
     try:
         yield
     finally:
-        # 1. Drain active sessions first. Each bridge's close_all() has its
-        #    own inner bound on the _active_turn wait (SHUTDOWN_DRAIN_S, see
-        #    JotaBridge.close_all) — but the outer wait_for here uses the
-        #    same duration and starts at roughly the same time, so for a
-        #    genuinely stuck turn THIS bound is the one that actually fires:
-        #    close_all_sessions cancels a bridge's close_all() coroutine
-        #    while it's still suspended inside its own inner wait_for,
-        #    before transcriber.close()/tracker.close()/_closed=True ever
-        #    run for that session. Acceptable here — the process is exiting
-        #    right after regardless — but not something to rely on for a
-        #    mid-lifetime call to close_all_sessions, should one ever exist.
-        await client_registry.close_all_sessions(
-            status="shutdown", timeout=settings.SHUTDOWN_DRAIN_S
-        )
-
-        # 1b. Close the speech providers once the sessions that used them are gone.
-        for provider in (speech.stt, speech.tts):
-            try:
-                await provider.aclose()
-            except Exception as e:
-                logger.error(f"Error closing speech provider during shutdown: {describe_error(e)}")
-                logger.debug(f"speech provider close: {traceback_no_message(e)}")
-
-        # 2. Close OpenClaw now that active turns have drained.
-        try:
-            await openclaw.close()
-        except Exception as e:
-            logger.error(f"Error closing OpenClaw client during shutdown: {describe_error(e)}")
-            logger.debug(f"OpenClaw close: {traceback_no_message(e)}")
-
-        # 3. Cancel/await the orchestrator/TTS state-change broadcast tasks
-        #    created via on_state_change above. Done *after* closing
-        #    OpenClaw (not before): closing it cancels the only background
-        #    loop that could still schedule a new one
-        #    (ReconnectingOpenClawClient's own _reconnect_task, via
-        #    _set_state()) — so nothing can add to _notification_tasks
-        #    between here and the gather below.
-        for task in list(_notification_tasks):
-            if not task.done():
-                task.cancel()
-        if _notification_tasks:
-            await asyncio.gather(*_notification_tasks, return_exceptions=True)
-
-        # 4. Dispose the DB engine last — nothing above touches the DB.
-        dispose_engine()
+        # uvicorn closes every WebSocket (1012) and waits for its handler before this
+        # runs, so each session has already closed itself (close_all) by now.
+        # 1. Unhook the state-change broadcasts first (G-68): nothing closing below
+        #    may schedule a new notification task.
+        openclaw.on_state_change = None
+        stt.on_state_change = None
+        tts.on_state_change = None
+        # Every step runs even if the lifespan is cancelled; failures go to DEBUG (#221).
+        async with Teardown("apagado") as td:
+            # 2. Speech providers, then OpenClaw.
+            for provider in (speech.stt, speech.tts):
+                await td.step(provider.aclose(), f"cierre del proveedor {provider.name}")
+            await td.step(openclaw.close(), "cierre de OpenClaw")
+            # 3. Notification tasks still in flight.
+            for task in list(_notification_tasks):
+                await td.cancel(task, "aviso de estado")
+            # 4. Dispose the DB engine last — nothing above touches the DB.
+            dispose_engine()
 
 
 app = FastAPI(
