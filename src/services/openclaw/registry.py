@@ -205,8 +205,8 @@ class ClientRegistry:
         for bridge in list(self._clients.values()):
             try:
                 await bridge.notify_service_status(service, state)
-            except Exception:
-                pass  # one dead/misbehaving session must not block the rest
+            except Exception as e:  # noqa: BLE001 — frontera: una sesión rota no bloquea al resto
+                logger.debug("broadcast_status: notify failed (%s)", describe_error(e))
 
     async def close_all_sessions(self, status: SessionStatus, timeout: float) -> None:
         """Drain every registered session concurrently, each bounded by
@@ -238,7 +238,7 @@ class ClientRegistry:
                     client_id,
                     timeout,
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — close_all_sessions lo retira PR 4 (#221)
                 logger.error(
                     "ClientRegistry.close_all_sessions: error closing client_id=%s during "
                     "shutdown (%s)",

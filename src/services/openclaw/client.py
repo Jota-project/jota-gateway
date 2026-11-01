@@ -21,7 +21,8 @@ from src.services.openclaw.registry import (
     TurnRegistry,
 )
 from src.services.protocol import OrchestratorEvent
-from src.services.reconnection import traceback_no_message
+from src.services.reconnection import describe_error, traceback_no_message
+from src.services.teardown import Teardown
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,7 @@ class OpenClawClient:
         previous_agents = list(self.gateway_info.agents) if self.gateway_info else []
         limit = _frame_limit(self.gateway_info.max_payload if self.gateway_info else None)
         self._ws = await websockets.connect(self._uri, max_size=limit)
-        conn_err: Exception | None = None
+        ok = False
         try:
             raw = await asyncio.wait_for(self._ws.recv(), timeout=15.0)
             frame = self._parse_handshake_frame(raw)
@@ -183,16 +184,15 @@ class OpenClawClient:
                 f"(tick {self.gateway_info.tick_interval_ms}ms, "
                 f"default_agent={self.gateway_info.default_agent_id})"
             )
+            ok = True
             return self.gateway_info
-        except Exception as exc:
-            conn_err = exc
-            raise
         finally:
-            if conn_err is not None and self._ws is not None:
+            # También si cancelan connect() (#221): el socket abierto no se queda sin dueño.
+            if not ok and self._ws is not None:
                 try:
                     await self._ws.close()
-                except Exception:
-                    pass
+                except Exception as e:  # noqa: BLE001 — limpieza tras un connect fallido
+                    logger.debug("OpenClaw: cierre del socket tras connect fallido (%s)", describe_error(e))
                 self._ws = None
 
     @staticmethod
@@ -252,34 +252,23 @@ class OpenClawClient:
         await self._cancel_and_close()
 
     async def _cancel_and_close(self) -> None:
-        """Best-effort teardown, used by close() and by connect() before it
-        establishes a new connection — cancelling the old listener before the new
-        socket exists prevents it from ever racing the new handshake for
-        frames (issue #103).
+        """Teardown used by close() and by connect() before it establishes a new
+        connection — cancelling the old listener before the new socket exists prevents
+        it from ever racing the new handshake for frames (issue #103).
 
-        Note: _listen()/_keepalive_loop() swallow their own CancelledError
-        and return normally (see _listen()'s docstring) — so if the caller
-        of connect() (e.g. the background _reconnect_loop task) is itself
-        cancelled while suspended on `await task` here, asyncio can absorb
-        that outer cancellation rather than re-raising it, since the awaited
-        task completes without an exception. Bounded impact: the caller
-        simply keeps running until this teardown finishes, it isn't lost.
+        G-52 (#221): Teardown finishes every step even if the caller (e.g. the
+        background reconnect task) is cancelled meanwhile, then re-raises that
+        cancellation; failures of the old tasks go to DEBUG with their type. The 12 s
+        socket step sits above websockets' close_timeout (10 s).
         """
-        for task in (self._keepalive_task, self._listener_task):
-            if task and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except (Exception, asyncio.CancelledError):
-                    pass
-        self._keepalive_task = None
-        self._listener_task = None
-        if self._ws:
-            try:
-                await self._ws.close()
-            except Exception:
-                pass
-            self._ws = None
+        async with Teardown("OpenClaw close") as td:
+            await td.cancel(self._keepalive_task, "keepalive", timeout=2.0)
+            await td.cancel(self._listener_task, "listener", timeout=2.0)
+            self._keepalive_task = None
+            self._listener_task = None
+            if self._ws:
+                await td.step(self._ws.close(), "cierre del socket", timeout=12.0)
+                self._ws = None
 
     async def ping(self) -> bool:
         if not self._ws:
@@ -292,10 +281,11 @@ class OpenClawClient:
             await self._ws.send(json.dumps(frames.health(req_id)))
             res = await asyncio.wait_for(fut, timeout=5.0)
             return res.get("ok", False)
-        except Exception as e:
-            logger.debug(f"ping failed: {e}")
-            self._health_futures.pop(req_id, None)
+        except Exception as e:  # noqa: BLE001 — frontera: un ping fallido es `False`
+            logger.debug("ping failed (%s)", describe_error(e))
             return False
+        finally:
+            self._health_futures.pop(req_id, None)  # también si cancelan el ping
 
     async def stream_response(
         self,
@@ -322,7 +312,7 @@ class OpenClawClient:
                     json.dumps(frames.chat_send(req_id, session_key, text, str(uuid.uuid4())))
                 )
                 _sent = True
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — frontera: el turno cede orchestrator_send_failed
                 logger.warning("chat.send failed (%s)", type(e).__name__)
                 logger.debug("chat.send traceback (no message): %s", _traceback_no_message(e))
                 yield OrchestratorEvent(type="error", content=ORCHESTRATOR_SEND_FAILED_ERROR)
@@ -388,8 +378,8 @@ class OpenClawClient:
                     await asyncio.shield(
                         self._ws.send(json.dumps(frames.chat_abort(str(uuid.uuid4()), session_key)))
                     )
-                except Exception:
-                    pass
+                except Exception as e:  # noqa: BLE001 — limpieza: el turno ya terminó
+                    logger.debug("chat.abort failed (%s)", describe_error(e))
 
     async def _listen(self) -> None:
         try:
@@ -400,15 +390,9 @@ class OpenClawClient:
                 # session on it) down: drop it, log only the reason, never the content.
                 try:
                     await self._handle_raw_frame(raw)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — frontera: un frame malo no tumba la conexión
                     logger.warning("dropping malformed OpenClaw frame (%s)", type(e).__name__)
                     logger.debug("malformed frame traceback (no message): %s", _traceback_no_message(e))
-        except asyncio.CancelledError:
-            # Clean shutdown via close()/reconnect — do NOT call on_disconnect,
-            # that would wrongly trigger ReconnectingOpenClawClient's reconnect
-            # loop for an intentional teardown. The `finally` below still fails
-            # every in-flight turn (issue #103 follow-up).
-            return
         except ConnectionClosed as e:
             # Only the numeric close codes (never the reason text): the 1009 "too big"
             # case used to be diagnosable from the message, keep it diagnosable.
@@ -418,7 +402,7 @@ class OpenClawClient:
                 e.rcvd.code if e.rcvd else None,
                 e.sent.code if e.sent else None,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: la caída se avisa con on_disconnect
             logger.error("_listen error (%s)", type(e).__name__)
             logger.debug("_listen error traceback (no message): %s", _traceback_no_message(e))
         finally:
@@ -427,8 +411,14 @@ class OpenClawClient:
             # response — without error_all() it would wait TURN_TIMEOUT_S and keep its
             # session_key occupied (G-04). Stable message: no raw exception text.
             self._turn_registry.error_all(ORCHESTRATOR_DISCONNECTED_ERROR)
+        # A cancellation (clean close()/reconnect) propagates from the `finally` above and
+        # never gets here: on_disconnect would wrongly start the reconnect loop (#103).
         if self.on_disconnect:
-            self.on_disconnect()
+            try:
+                self.on_disconnect()
+            except Exception as e:  # noqa: BLE001 — frontera: hook del wrapper, la tarea no lo recoge
+                logger.warning("on_disconnect hook failed (%s)", describe_error(e))
+                logger.debug("on_disconnect traceback (no message): %s", traceback_no_message(e))
 
     async def _handle_raw_frame(self, raw: str | bytes) -> None:
         frame = json.loads(raw)
@@ -451,10 +441,7 @@ class OpenClawClient:
 
     async def _keepalive_loop(self) -> None:
         interval = self._keepalive_interval()
-        try:
-            while True:
-                await asyncio.sleep(interval)
-                if self._ws:
-                    await self.ping()
-        except asyncio.CancelledError:
-            return
+        while True:
+            await asyncio.sleep(interval)
+            if self._ws:
+                await self.ping()
