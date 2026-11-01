@@ -578,3 +578,76 @@ async def test_provider_warning_is_not_forwarded_as_degradation(env, caplog):
     assert rec.warnings == []
     assert rec.statuses == []
     assert "aviso informativo del proveedor" in caplog.text
+
+
+# --- #221: tareas de fondo supervisadas y cierre cancelado ---------------------------
+
+
+def _failure_logged(caplog, secret: str) -> bool:
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert secret not in logged
+    return any(
+        r.levelname == "WARNING" and "RuntimeError" in r.getMessage() for r in caplog.records
+    )
+
+
+async def test_spawned_task_failure_is_logged_by_type(env, caplog):
+    _fake, _p, s, _r = await env()
+
+    async def boom():
+        raise RuntimeError("texto-secreto")
+
+    with caplog.at_level(logging.DEBUG):
+        s._spawn(boom())
+        await asyncio.sleep(0.05)
+    assert _failure_logged(caplog, "texto-secreto")
+
+
+async def test_upstream_task_failure_is_logged_by_type(env, caplog, monkeypatch):
+    _fake, p, s, _r = await env()
+
+    async def boom(_up):
+        raise RuntimeError("texto-secreto")
+
+    monkeypatch.setattr(s, "_life_main", boom)
+    with caplog.at_level(logging.DEBUG):
+        await s.send_audio(frame())
+        await wait_until(lambda: s._life is not None and s._life.done())
+        await asyncio.sleep(0.01)
+    assert _failure_logged(caplog, "texto-secreto")
+    assert p._sem._value == stt_mod.MAX_SESSIONS  # el permiso se libera igual
+
+
+async def test_idle_loop_failure_is_logged_by_type(caplog, monkeypatch):
+    provider = ElevenLabsSttProvider(make_settings("ws://127.0.0.1:9"))
+    s = open_session(provider, Rec())
+
+    async def boom():
+        raise RuntimeError("texto-secreto")
+
+    monkeypatch.setattr(s, "_idle_loop", boom)
+    with caplog.at_level(logging.DEBUG):
+        runner = asyncio.create_task(s.run())
+        await asyncio.sleep(0.05)
+        await s.close()
+        await runner
+    assert _failure_logged(caplog, "texto-secreto")
+
+
+async def test_close_does_not_swallow_callers_cancellation(env, monkeypatch):
+    fake, _p, s, _r = await env()
+    await s.send_audio(frame())
+    await wait_until(lambda: fake.connections and s._conn is not None and s._conn.ready.is_set())
+    life = s._life
+
+    async def no_drain(_up):
+        return None  # la conexión sigue viva: close() espera a la tarea `life`
+
+    monkeypatch.setattr(s, "_drain_and_close", no_drain)
+    closer = asyncio.create_task(s.close())
+    await asyncio.sleep(0.05)
+    closer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closer
+    assert life is not None and life.done()
+    assert s._closed_evt.is_set()

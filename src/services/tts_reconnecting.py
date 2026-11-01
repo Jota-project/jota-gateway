@@ -56,7 +56,7 @@ class ReconnectingTTSClient:
         client = TTSClient(url=self._url, token=self._token, client_id=client_id)
         try:
             await client.connect(voice=voice, speed=speed)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: un TTS caído degrada, no rompe el turno
             self._record_failure(token, describe_error(e))
             return None
 

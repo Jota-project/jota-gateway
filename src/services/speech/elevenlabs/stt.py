@@ -31,6 +31,7 @@ from src.services.reconnection import (
     describe_error,
     health_attr,
     reconnect_with_backoff,
+    traceback_no_message,
 )
 from src.services.speech.audio import EnergyGate, f32le_to_s16le
 from src.services.speech.elevenlabs.common import (
@@ -43,9 +44,19 @@ from src.services.speech.elevenlabs.common import (
     ws_url,
 )
 from src.services.speech.ports import SttCallbacks, SttCapabilities, SttParams
+from src.services.teardown import Teardown
 
 logger = logging.getLogger(__name__)
 _warning_logged = [False]  # un único INFO por proceso para los avisos del proveedor
+
+
+def _log_task_failure(task: asyncio.Task) -> None:
+    """Done-callback de cada tarea de fondo (#221): su fallo se registra por tipo, nunca
+    se pierde ni sale como «Task exception was never retrieved» con el texto."""
+    exc = None if task.cancelled() else task.exception()
+    if exc is not None:
+        logger.warning("ElevenLabs STT: tarea de fondo falló (%s)", describe_error(exc))
+        logger.debug("ElevenLabs STT: %s", traceback_no_message(exc))
 
 MODEL_ID = "scribe_v2_realtime"
 AUDIO_FORMAT = "pcm_16000"
@@ -151,6 +162,7 @@ class ElevenLabsSttSession:
 
     async def run(self) -> None:
         idle = asyncio.get_running_loop().create_task(self._idle_loop())
+        idle.add_done_callback(_log_task_failure)
         try:
             await self._closed_evt.wait()
         finally:
@@ -195,8 +207,10 @@ class ElevenLabsSttSession:
         finally:
             self._closed_evt.set()
             self._p._sessions.discard(self)
-            for t in list(self._tasks):
-                t.cancel()
+            # `_life` también: si cancelaron el cierre a mitad del drenado, no queda viva.
+            for t in [*self._tasks, self._life]:
+                if t is not None:
+                    t.cancel()
 
     # --- buffer / apertura perezosa ---
 
@@ -209,6 +223,7 @@ class ElevenLabsSttSession:
         t = asyncio.get_running_loop().create_task(coro)
         self._tasks.add(t)
         t.add_done_callback(self._tasks.discard)
+        t.add_done_callback(_log_task_failure)
         return t
 
     async def _set_busy(self, cause: str) -> None:
@@ -226,7 +241,7 @@ class ElevenLabsSttSession:
     async def _notify_status(self, state: str, reason: str | None) -> None:
         try:
             await self._cb.on_status(state, reason)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: callback de la sesión
             logger.warning("ElevenLabs STT: on_status falló (%s)", describe_error(e))
 
     async def _ensure_upstream(self) -> None:
@@ -248,6 +263,7 @@ class ElevenLabsSttSession:
         task = asyncio.get_running_loop().create_task(self._life_main(up))
         self._life = task
         task.add_done_callback(lambda _t: self._release_permit(up))
+        task.add_done_callback(_log_task_failure)
         if self._busy_cause == "sem":
             await self._clear_busy()
 
@@ -308,7 +324,7 @@ class ElevenLabsSttSession:
                 return
             except asyncio.CancelledError:
                 raise
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — frontera: sin conexión la sesión degrada, no cae
                 logger.warning("ElevenLabs STT: conexión upstream falló (%s)", describe_error(e))
                 # Sin reintento en bucle: el audio en espera se descarta y el próximo, pasado
                 # el enfriamiento, vuelve a intentarlo.
@@ -367,7 +383,7 @@ class ElevenLabsSttSession:
             pass
         except asyncio.CancelledError:
             raise
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: el lector cierra la conexión, no la sesión
             logger.warning("ElevenLabs STT: lectura abortada (%s)", describe_error(e))
             up.outcome = "other"
             return
@@ -516,12 +532,10 @@ class ElevenLabsSttSession:
         if up is not None and life is not None and not life.done():
             up.draining = True
             await self._drain_and_close(up)
-            if not life.done():
-                try:
-                    await asyncio.wait_for(asyncio.shield(life), 1.5)
-                except (TimeoutError, asyncio.CancelledError, Exception):
-                    life.cancel()
-                    await asyncio.wait({life}, timeout=0.5)
+            # Teardown: si cancelan a quien cierra, se termina igual y se relanza (#221).
+            async with Teardown("ElevenLabs STT: cierre") as td:
+                await td.wait(life, "conexión upstream", timeout=1.5)
+                await td.cancel(life, "conexión upstream", timeout=0.5)
 
     async def _drain_and_close(self, up: _Upstream) -> None:
         """Confirma lo pendiente, espera el final (≤ DRAIN_S) y cierra la conexión."""
@@ -530,7 +544,7 @@ class ElevenLabsSttSession:
         try:
             if (self._uncommitted or self._buf) and not up.closing:
                 await self._drain(up, DRAIN_S)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — limpieza: el cierre sigue aunque falle el drenado
             logger.debug("ElevenLabs STT: drenado falló (%s)", describe_error(e))
         up.closing = True
         if up.ws is not None:
@@ -699,10 +713,13 @@ class ElevenLabsSttProvider(ProbedProvider):
                 return self._probe_failed(classify_exception(e), e)
             self._record_success()  # conectó y nadie rechazó las credenciales en el plazo
             return True
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: la sonda nunca lanza
             return self._probe_failed(classify_exception(e), e)
 
     def _probe_failed(self, kind: str, exc: BaseException | None) -> bool:
+        logger.debug(
+            "ElevenLabs STT: sonda falló (%s%s)", kind, f", {describe_error(exc)}" if exc else ""
+        )
         if kind in ("auth", "quota"):
             self._mark_terminal(kind)
             return False

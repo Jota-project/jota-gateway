@@ -8,7 +8,7 @@ from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
 from src.core.config import settings
-from src.services.reconnection import ping_ready, safe_code
+from src.services.reconnection import describe_error, ping_ready, safe_code
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +82,10 @@ class TTSClient:
             if not _authenticated and self.ws is not None:
                 try:
                     await self.ws.close(1000)
-                except Exception:
-                    pass
+                except Exception as e:  # noqa: BLE001 — limpieza tras un connect fallido
+                    logger.debug(
+                        "[%s] TTS close after failed connect: %s", self.client_id, describe_error(e)
+                    )
                 finally:
                     self.ws = None
 
@@ -149,7 +151,7 @@ class TTSClient:
             return
         try:
             await self.ws.close(1000)
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 — limpieza: el fallo se registra
+            logger.debug("[%s] TTS close failed: %s", self.client_id, describe_error(e))
 
     ping = staticmethod(ping_ready)  # GET /ready (503 "not_ready" sin motor cargado)

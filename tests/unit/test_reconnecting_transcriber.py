@@ -241,3 +241,47 @@ async def test_run_forwards_status_and_incomplete_callbacks_to_listen_loop():
     await w.run()
 
     assert received == {"status": on_status, "incomplete": on_incomplete}
+
+
+@pytest.mark.asyncio
+async def test_start_with_failing_state_hook_stays_connected():
+    """G-53: un hook que lanza tras conectar no convierte el éxito en fallo."""
+    w = _wrap()
+
+    def hook(_state):
+        raise RuntimeError("boom")
+
+    w.on_state_change = hook
+    with patch.object(w._client, "connect", new=AsyncMock()):
+        await w.start()
+    assert w.state == ConnectionState.CONNECTED
+    assert w._last_error is None
+
+
+@pytest.mark.asyncio
+async def test_close_does_not_swallow_callers_cancellation():
+    """G-52: si cancelan a quien llama a close(), el cierre termina y la cancelación sale."""
+    w = _wrap()
+    w.state = ConnectionState.CONNECTED
+    w._client.close = AsyncMock()
+    listening = asyncio.Event()
+
+    async def slow_to_stop_listen_loop(*_a):
+        listening.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.05)  # tarda en soltar: la cancelación del closer llega aquí
+            raise
+
+    w._client.listen_loop = slow_to_stop_listen_loop
+    runner = asyncio.create_task(w.run())
+    await listening.wait()
+
+    closer = asyncio.create_task(w.close())
+    await asyncio.sleep(0.01)
+    closer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closer
+    assert runner.done()
+    w._client.close.assert_awaited_once()

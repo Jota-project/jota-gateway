@@ -11,6 +11,7 @@ from src.services.reconnection import (
     traceback_no_message,
 )
 from src.services.speech.ports import SttCallbacks, SttParams
+from src.services.teardown import Teardown
 from src.services.transcriber_client import TranscriberClient
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ class ReconnectingTranscriberClient:
                 language=self._language, token=self._token, vad_thold=self._vad_thold
             )
             self._health.mark_connected()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — frontera: start() nunca lanza (contrato)
             self._last_error = describe_error(e)
             logger.error(
                 "[%s] transcriber initial connect failed: %s", self._client_id, describe_error(e)
@@ -88,18 +89,13 @@ class ReconnectingTranscriberClient:
 
     async def close(self) -> None:
         self._closed = True
-        current_task = asyncio.current_task()
-        if (
-            self._run_task is not None
-            and not self._run_task.done()
-            and self._run_task is not current_task
-        ):
-            self._run_task.cancel()
-            try:
-                await self._run_task
-            except asyncio.CancelledError:
-                pass
-        await self._client.close()
+        # G-52 (#221): Teardown termina el cierre aunque cancelen a quien llama y relanza
+        # esa cancelación al final. El listen loop suelta enseguida al cancelarse (2 s acota
+        # uno colgado); el cierre del socket tiene 12 s, por encima del close_timeout de
+        # websockets (10 s): un ws.close() cancelado deja de esperar sin cerrar el transporte.
+        async with Teardown(f"[{self._client_id}] transcriber close") as td:
+            await td.cancel(self._run_task, "bucle de escucha", timeout=2.0)
+            await td.step(self._client.close(), "cierre del socket", timeout=12.0)
 
     async def run(self) -> None:
         """Supervises the listen loop for the session's lifetime: listens,
@@ -122,7 +118,7 @@ class ReconnectingTranscriberClient:
                 )
             except asyncio.CancelledError:
                 raise
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — frontera: el fallo degrada, no cierra la sesión
                 # Unexpected failure (e.g. a bug in the transcription callback), not a
                 # connection drop: don't reconnect, don't close the session — degrade
                 # so the client gets `status unavailable` via on_state_change (#131).

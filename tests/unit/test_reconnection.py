@@ -152,6 +152,61 @@ async def test_backoff_loop_propagates_cancellation():
         )
 
 
+def _raising_hook(_state):
+    raise RuntimeError("texto-secreto-del-hook")
+
+
+def test_set_state_hook_failure_is_logged_by_type_and_not_raised(caplog):
+    """G-53: un hook `on_state_change` que lanza no rompe a quien cambia el estado."""
+    import logging
+
+    h = ServiceHealth("x", ConnectionState.CONNECTED)
+    h.on_state_change = _raising_hook
+    with caplog.at_level(logging.DEBUG):
+        h.set_state(ConnectionState.RECONNECTING)
+    assert h.state == ConnectionState.RECONNECTING
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "RuntimeError" in logged
+    assert "texto-secreto-del-hook" not in logged
+    assert any(r.levelname == "WARNING" for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_backoff_hook_failure_is_not_a_failed_attempt():
+    """G-53: si el hook lanza en mark_connected, el intento sigue siendo un éxito."""
+    h = ServiceHealth("x", ConnectionState.RECONNECTING)
+    h.on_state_change = _raising_hook
+    calls = 0
+
+    async def attempt():
+        nonlocal calls
+        calls += 1
+
+    ok = await reconnect_with_backoff(
+        attempt, h, initial_backoff=0.001, max_backoff=0.002, max_duration=5, label="x"
+    )
+    assert ok is True
+    assert calls == 1
+    assert h.reconnect_attempts == 0
+    assert h.state == ConnectionState.CONNECTED
+
+
+@pytest.mark.asyncio
+async def test_backoff_exhausted_with_failing_hook_returns_false():
+    """G-53: el hook que lanza al pasar a DEGRADED no saca la excepción de la tarea."""
+    h = ServiceHealth("x", ConnectionState.RECONNECTING)
+    h.on_state_change = _raising_hook
+
+    async def attempt():
+        raise OSError("down")
+
+    ok = await reconnect_with_backoff(
+        attempt, h, initial_backoff=0.001, max_backoff=0.002, max_duration=0, label="x"
+    )
+    assert ok is False
+    assert h.state == ConnectionState.DEGRADED
+
+
 # --- LazyBackoffGate (#152) -------------------------------------------------
 
 
