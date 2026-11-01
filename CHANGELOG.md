@@ -1,3 +1,10 @@
+## [1.21.7](https://github.com/Jota-project/jota-gateway/compare/v1.21.6...v1.21.7) (2026-11-01)
+
+
+### Bug Fixes
+
+* **rutas:** política de errores y cancelación en api, transporte y salida ([#221](https://github.com/Jota-project/jota-gateway/issues/221) 6/6) ([#292](https://github.com/Jota-project/jota-gateway/issues/292)) ([ed89673](https://github.com/Jota-project/jota-gateway/commit/ed89673ff38994054e5d5754aa6d3adf2c4e30e0)), closes [#287](https://github.com/Jota-project/jota-gateway/issues/287)
+
 ## [1.21.6](https://github.com/Jota-project/jota-gateway/compare/v1.21.5...v1.21.6) (2026-11-01)
 
 
