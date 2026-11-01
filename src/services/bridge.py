@@ -166,6 +166,9 @@ class JotaBridge:
         self._turn_lock = asyncio.Lock()
         # Id of the turn currently running (set after its turn_start is enqueued).
         self._active_turn_id: str | None = None
+        # Turn whose turn_end close_all() already sent because it abandoned the turn
+        # at SESSION_TEARDOWN_S: its own finally must not send it again.
+        self._turn_end_sent_at_close: str | None = None
         # True once the client is known to be gone (disconnect seen by the input loop,
         # or ClientGone from the sender): its turn stops sending (G-18).
         self._client_gone: bool = False
@@ -307,7 +310,19 @@ class JotaBridge:
                 # 7d / G-23: the turn in flight is cancelled, never drained. Its own
                 # finally sends its turn_end while the socket is still open (G-10), and
                 # the orchestrator stream's aclose sends chat.abort.
-                await td.cancel(self._active_turn, "turno activo", limit)
+                turn = self._active_turn
+                await td.cancel(turn, "turno activo", limit)
+                if turn is not None and not turn.done() and self._active_turn_id:
+                    # Abandoned at the limit (slow TTS cleanup): its finally would send
+                    # turn_end after session_end, into a closed sender. Send it now.
+                    turn_id = self._active_turn_id
+                    self._turn_end_sent_at_close = turn_id
+                    try:
+                        await self._sender.send_json({"type": "turn_end", "turn_id": turn_id})
+                    except Exception as e:
+                        logger.debug(
+                            f"[{self.client_id}] turn_end del turno al cerrar: {type(e).__name__}"
+                        )
 
                 # The push worker before the _push_tts / audio task it may be driving
                 # (issue #130 S3a). It is also in self.tasks, cancelled later.
@@ -336,13 +351,16 @@ class JotaBridge:
                 self._push_turn_opened_at = None
 
                 # Never the calling task: the watchdogs call close_all() on themselves.
-                # Cancel them all first, then wait each one (bounded).
+                # Cancel them all first, then wait them under one shared limit.
                 current_task = asyncio.current_task()
                 pending = [t for t in self.tasks if t is not current_task and not t.done()]
                 for task in pending:
                     task.cancel()
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + limit
                 for task in pending:
-                    await td.wait(task, f"tarea {task.get_name()}", limit)
+                    remaining = max(0.0, deadline - loop.time())
+                    await td.wait(task, f"tarea {task.get_name()}", remaining)
 
                 if self.transcriber:
                     await td.step(self.transcriber.close(), "cierre del transcriber", limit)
@@ -984,10 +1002,11 @@ class JotaBridge:
         finally:
             if self._active_turn_id == turn_id:
                 self._active_turn_id = None
-            try:
-                await self._sender.send_json({"type": "turn_end", "turn_id": turn_id})
-            except Exception:
-                pass
+            if self._turn_end_sent_at_close != turn_id:
+                try:
+                    await self._sender.send_json({"type": "turn_end", "turn_id": turn_id})
+                except Exception:
+                    pass
 
     async def _run_turn(self, text: str, turn_id: str, turn_seq: int) -> None:
         from src.services.orchestration import call_orchestrator

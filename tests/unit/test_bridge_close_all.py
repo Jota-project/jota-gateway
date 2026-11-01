@@ -362,3 +362,81 @@ async def test_idle_close_ends_run_normally_as_completed(monkeypatch):
 
     assert b.tracker.close.await_args.kwargs["status"] == "completed"
     assert b.tracker.close.await_args.kwargs["reason"] == "idle_timeout"
+
+
+class _SlowCloseTts:
+    """TTS stream whose close() takes `close_s` (jota's websockets close_timeout)."""
+
+    def __init__(self, close_s: float) -> None:
+        self.close_s = close_s
+        self._q: asyncio.Queue = asyncio.Queue()
+
+    async def send_text_chunk(self, t):
+        pass
+
+    async def end(self):
+        pass
+
+    async def get_audio_stream(self):
+        while (item := await self._q.get()) is not None:
+            yield item
+
+    async def close(self):
+        await asyncio.sleep(self.close_s)
+
+
+class _TtsProvider:
+    name = "fake"
+
+    def __init__(self, stream):
+        self.stream = stream
+
+    async def connect(self, **k):
+        return self.stream
+
+    def resolve_voice(self, v):
+        return v
+
+
+@pytest.mark.parametrize("close_s", [0.05, 1.0], ids=["tts_rapido", "tts_lento"])
+async def test_turn_abandoned_by_close_all_keeps_one_turn_end_before_session_end(
+    close_s, monkeypatch
+):
+    """#221 4/6: when the cancelled turn's TTS cleanup outlasts SESSION_TEARDOWN_S,
+    close_all() abandons it but still sends its turn_end before session_end; when
+    the cleanup is fast, there is no duplicate."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "SESSION_TEARDOWN_S", 0.3)
+    ws = RecWS()
+    sender = QueuedSender(ws)
+    b, _ = _bridge(
+        ws, sender=sender, output_mode=("text", "audio"), tts=_TtsProvider(_SlowCloseTts(close_s))
+    )
+
+    async def tracker_close(status, **meta):
+        await sender.send_json({"type": "session_end"})
+
+    b.tracker.close.side_effect = tracker_close
+    started = asyncio.Event()
+
+    async def stream(*a, **k):
+        yield OrchestratorEvent(type="token", content="hi")
+        started.set()
+        await asyncio.sleep(3600)
+
+    b.orchestrator.stream_response = stream
+    b._active_turn = asyncio.create_task(b._call_orchestrator("x"))
+    await asyncio.wait_for(started.wait(), 2)
+
+    await b.close_all()
+    turn = b._active_turn
+    # The abandoned turn finishes its cleanup while routes.py's sender is still open:
+    # its finally must not send a second turn_end.
+    await asyncio.wait({turn}, timeout=close_s + 1.0)
+    assert turn.done()
+    await sender.aclose(1.0)
+
+    types = ws.types()
+    assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1"}]
+    assert types.index("turn_end") < types.index("session_end")
