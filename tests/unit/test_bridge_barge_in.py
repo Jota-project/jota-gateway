@@ -46,6 +46,74 @@ def make_bridge(mock_tracker):
 # ── _cancel_active_turn ──────────────────────────────────────────────────────
 
 
+async def test_cancel_turn_caller_cancelled_while_waiting_is_not_swallowed(make_bridge):
+    """#221: a caller cancelled while it waits for the old turn to finish gets its
+    CancelledError, after the turn has finished and `_active_turn` was cleared."""
+    bridge = make_bridge()
+
+    async def slow_to_cancel():
+        try:
+            await asyncio.sleep(60)
+        finally:
+            await asyncio.shield(asyncio.sleep(0.05))
+
+    turn = asyncio.create_task(slow_to_cancel())
+    bridge._active_turn = turn
+    await asyncio.sleep(0)
+
+    caller = asyncio.create_task(bridge._cancel_turn())
+    await asyncio.sleep(0.01)
+    caller.cancel()
+    await asyncio.gather(caller, return_exceptions=True)
+
+    assert caller.cancelled()
+    assert turn.done()
+    assert bridge._active_turn is None
+
+
+async def test_inherited_cancellation_does_not_kill_the_barge_in_caller(make_bridge):
+    """#221: only a cancellation received *while waiting* is re-raised. A task that
+    carries an older, swallowed cancellation (cancelling() > 0) still completes the
+    barge-in instead of dying in it."""
+    bridge = make_bridge()
+    turn = asyncio.create_task(asyncio.sleep(60))
+    bridge._active_turn = turn
+    await asyncio.sleep(0)
+
+    async def caller_with_inherited_cancel() -> bool:
+        me = asyncio.current_task()
+        assert me is not None
+        me.cancel()
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            pass  # swallowed upstream: the counter stays at 1
+        assert me.cancelling() == 1
+        return await bridge._cancel_active_turn()
+
+    assert await asyncio.create_task(caller_with_inherited_cancel()) is True
+    assert turn.cancelled()
+    assert bridge._active_turn is None
+
+
+async def test_cancel_turn_logs_the_turn_failure_by_type(make_bridge, caplog):
+    bridge = make_bridge()
+
+    async def fails_on_cancel():
+        try:
+            await asyncio.sleep(60)
+        finally:
+            raise RuntimeError("secreto del turno")
+
+    bridge._active_turn = asyncio.create_task(fails_on_cancel())
+    await asyncio.sleep(0)
+    with caplog.at_level(logging.DEBUG, logger="src.services.teardown"):
+        assert await bridge._cancel_active_turn() is True
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "RuntimeError" in logged
+    assert "secreto" not in logged
+
+
 async def test_cancel_active_turn_returns_false_when_no_task(make_bridge):
     bridge = make_bridge()
     assert bridge._active_turn is None

@@ -227,6 +227,19 @@ async def test_bridge_transcription_send_failure_logs_type_only(caplog):
     assert SECRET not in _logged(caplog)
 
 
+async def test_bridge_failed_client_sends_log_type_only(caplog):
+    # #221: a send to a client that went away is DEBUG with the type, never silent.
+    caplog.set_level(logging.DEBUG)
+    bridge, _ = _bridge()
+    bridge._sender = AsyncMock()
+    bridge._sender.send_json.side_effect = _boom
+    await bridge.notify_service_status("tts", "degraded")
+    await bridge._send_invalid_message()
+    logged = _logged(caplog)
+    assert logged.count("RuntimeError") >= 2
+    assert SECRET not in logged
+
+
 async def test_bridge_close_all_failed_active_turn_logs_type_only(caplog):
     caplog.set_level(logging.DEBUG)
     bridge, _ = _bridge()

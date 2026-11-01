@@ -88,6 +88,30 @@ async def test_malformed_client_messages_get_a_non_fatal_error_and_the_session_g
     bridge.transcriber.send_end.assert_awaited_once()  # the loop survived all of them
 
 
+async def test_deeply_nested_json_is_treated_as_unparsed_text():
+    # json.loads raises RecursionError (not ValueError): the payload stays non-JSON
+    # and the session goes on, same as any other unparseable text.
+    bridge, ws = _bridge(input_mode="text")
+    bridge._start_turn = AsyncMock()
+    ws.inbox.put_nowait(_text("[" * 100_000))
+    ws.inbox.put_nowait({"type": "websocket.disconnect"})
+    await asyncio.wait_for(bridge._client_input_loop(), 2.0)
+    bridge._start_turn.assert_awaited_once()
+    assert bridge._close_reason is None
+
+
+async def test_a_parser_bug_is_not_mistaken_for_plain_text(monkeypatch):
+    # #221: only decoding errors mean "not JSON"; any other failure is a bug and
+    # ends the input loop as an error instead of becoming a turn.
+    bridge, ws = _bridge(input_mode="text")
+    bridge._start_turn = AsyncMock()
+    monkeypatch.setattr(bridge_module.json, "loads", MagicMock(side_effect=TypeError("x")))
+    ws.inbox.put_nowait(_text({"type": "send", "text": "hola"}))
+    await asyncio.wait_for(bridge._client_input_loop(), 2.0)
+    bridge._start_turn.assert_not_awaited()
+    assert bridge._close_reason == "error"
+
+
 async def test_non_string_send_text_never_reaches_the_orchestrator():
     bridge, ws = _bridge(input_mode="text")
     ws.inbox.put_nowait(_text({"type": "send", "text": ["x"]}))
