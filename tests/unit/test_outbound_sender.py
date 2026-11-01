@@ -6,7 +6,7 @@ import pytest
 from starlette.websockets import WebSocketDisconnect
 
 from src.core.config import settings
-from src.services.outbound import ClientGone, ClientSlow, DirectSender, QueuedSender
+from src.services.outbound import ClientGone, ClientSlow, QueuedSender
 
 
 class FakeWS:
@@ -32,22 +32,6 @@ class FakeWS:
 
     async def send_bytes(self, data):
         await self._send("bytes", data)
-
-
-async def test_direct_sender_forwards_to_ws():
-    ws = FakeWS()
-    s = DirectSender(ws)
-    await s.send_json({"a": 1})
-    await s.send_bytes(b"x")
-    await s.flush()
-    await s.aclose(1.0)
-    assert ws.sent == [("json", {"a": 1}), ("bytes", b"x")]
-
-
-async def test_direct_sender_propagates_ws_errors():
-    s = DirectSender(FakeWS(fail_on=1))
-    with pytest.raises(RuntimeError):
-        await s.send_json({"a": 1})
 
 
 async def test_queued_preserves_enqueue_order_across_concurrent_tasks():

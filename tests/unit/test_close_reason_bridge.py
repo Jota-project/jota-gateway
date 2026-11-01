@@ -11,10 +11,10 @@ from src.core.exceptions import ClientInactive
 from src.core.session_key import make_session_key
 from src.models.schemas import ClientConfig
 from src.services.openclaw.registry import TurnRegistry
-from src.services.outbound import DirectSender
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.reconnection import ConnectionState
 from src.services.stats import gateway_stats
+from tests.fakes.bridge import DirectSender
 
 
 @pytest.fixture

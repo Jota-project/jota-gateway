@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from src.services.outbound import DirectSender, QueuedSender
+from src.services.outbound import QueuedSender
 
 
 class BlockingWS:
@@ -69,7 +69,3 @@ async def test_discard_pending_resets_pending():
     await sender.aclose(1.0)
 
 
-def test_direct_sender_stats_zero():
-    assert DirectSender(None).queue_stats() == {
-        "pending_msgs": 0, "pending_bytes": 0, "peak_msgs": 0, "peak_bytes": 0,
-    }

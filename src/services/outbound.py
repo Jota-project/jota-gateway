@@ -47,28 +47,6 @@ class OutboundSender(Protocol):
     def queue_stats(self) -> dict: ...
 
 
-class DirectSender:
-    """Passthrough: writes straight to the socket. Default for PipelineTracker (/v1 sessions)."""
-
-    def __init__(self, ws):
-        self._ws = ws
-
-    async def send_json(self, payload: dict) -> None:
-        await self._ws.send_json(payload)
-
-    async def send_bytes(self, data: bytes) -> None:
-        await self._ws.send_bytes(data)
-
-    async def flush(self) -> None:
-        return None
-
-    async def aclose(self, timeout: float) -> None:
-        return None
-
-    def queue_stats(self) -> dict:
-        return {"pending_msgs": 0, "pending_bytes": 0, "peak_msgs": 0, "peak_bytes": 0}
-
-
 class QueuedSender:
     """FIFO sender: one unbounded queue and one writer task per session.
 

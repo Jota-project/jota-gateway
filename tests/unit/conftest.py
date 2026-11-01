@@ -2,9 +2,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.services.outbound import DirectSender
 from src.services.pipeline_tracker import PipelineTracker
 from tests.fakes import bridge as fake_bridge
+from tests.fakes.bridge import DirectSender
 
 
 @pytest.fixture

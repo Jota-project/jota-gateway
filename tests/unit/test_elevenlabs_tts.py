@@ -13,6 +13,7 @@ from src.services.reconnection import ConnectionState
 from src.services.speech.elevenlabs import common as common_mod
 from src.services.speech.elevenlabs import tts as tts_mod
 from src.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
+from tests.fakes.bridge import wait_until
 from tests.fakes.elevenlabs_tts import FakeElevenLabsTts
 
 KEY = "fake-el-key-SECRET-0123456789"
@@ -59,13 +60,6 @@ async def collect(stream, timeout=3):
     return await asyncio.wait_for(run(), timeout)
 
 
-async def wait_until(pred, timeout=2.0):
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        if pred():
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError("condición no cumplida a tiempo")
 
 
 @pytest.fixture

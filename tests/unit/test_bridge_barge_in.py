@@ -303,6 +303,7 @@ async def test_partial_with_active_turn_barges_in_from_the_client_threshold(
     assert msgs[0] == {"type": "transcription_partial", "text": text}
     assert msgs[1:] == ([{"type": "interrupted"}] if barges else [])
     assert turn.cancelled() is barges
+    assert (bridge._active_turn is None) is barges
     turn.cancel()
 
 

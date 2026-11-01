@@ -1,8 +1,8 @@
 from unittest.mock import AsyncMock, MagicMock
 
-from src.services.outbound import DirectSender
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.session_registry import SessionRegistry
+from tests.fakes.bridge import DirectSender
 
 
 def _make_tracker(session_id="s1", client_id="c1"):

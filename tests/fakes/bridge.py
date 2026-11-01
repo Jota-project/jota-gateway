@@ -78,7 +78,8 @@ def make_bridge(
         default_agent="main",
     )
     kwargs.update(overrides)
-    kwargs.setdefault("sender", QueuedSender(ws))
+    if "sender" not in kwargs:  # not setdefault: it would start a writer task nobody closes
+        kwargs["sender"] = QueuedSender(ws)
     bridge = JotaBridge(**kwargs)
     bridge.transcriber = transcriber
     if register:
@@ -87,11 +88,11 @@ def make_bridge(
 
 
 async def sent(bridge) -> list:
-    """Everything the client has received so far, after draining the sender."""
-    try:
-        await bridge._sender.flush()
-    except ClientGone:
-        return bridge.client_ws.sent  # broken sender: what got through is all there is
+    """Everything the client has received so far, after draining the sender.
+
+    Raises `ClientGone` if the sender broke: an empty list must mean "nothing was
+    sent", not "the sender dropped it". With a broken sender, read `ws.sent`."""
+    await bridge._sender.flush()
     return bridge.client_ws.sent
 
 
@@ -127,16 +128,43 @@ async def wait_until(pred, timeout=2.0):
 
 class GoneSender:
     """A sender whose client already left: every send raises `ClientGone`, as a broken
-    `QueuedSender` does. Use it as `make_bridge(sender=GoneSender())`."""
+    `QueuedSender` does. Use it as `make_bridge(sender=GoneSender())`; pass another
+    exception to reach the bridge's generic send-failure branches."""
+
+    def __init__(self, error: type[Exception] = ClientGone):
+        self._error = error
 
     async def send_json(self, payload: dict) -> None:
-        raise ClientGone("cliente no disponible")
+        raise self._error("cliente no disponible")
 
     async def send_bytes(self, data: bytes) -> None:
-        raise ClientGone("cliente no disponible")
+        raise self._error("cliente no disponible")
 
     async def flush(self) -> None:
-        raise ClientGone("cliente no disponible")
+        raise self._error("cliente no disponible")
+
+    async def aclose(self, timeout: float) -> None:
+        return None
+
+    def queue_stats(self) -> dict:
+        return {"pending_msgs": 0, "pending_bytes": 0, "peak_msgs": 0, "peak_bytes": 0}
+
+
+class DirectSender:
+    """Passthrough: writes straight to the socket, no queue. For tests of the
+    `PipelineTracker` alone; the bridge uses the real `QueuedSender`."""
+
+    def __init__(self, ws):
+        self._ws = ws
+
+    async def send_json(self, payload: dict) -> None:
+        await self._ws.send_json(payload)
+
+    async def send_bytes(self, data: bytes) -> None:
+        await self._ws.send_bytes(data)
+
+    async def flush(self) -> None:
+        return None
 
     async def aclose(self, timeout: float) -> None:
         return None

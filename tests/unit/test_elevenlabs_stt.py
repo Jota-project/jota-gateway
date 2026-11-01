@@ -16,6 +16,7 @@ from src.services.reconnection import ConnectionState
 from src.services.speech.elevenlabs import stt as stt_mod
 from src.services.speech.elevenlabs.stt import ElevenLabsSttProvider
 from src.services.speech.ports import SttCallbacks, SttParams
+from tests.fakes.bridge import wait_until
 from tests.fakes.elevenlabs_stt import FakeElevenLabsStt
 
 KEY = "fake-el-key-SECRET-0123456789"
@@ -85,13 +86,6 @@ def open_session(provider, rec: Rec, cid="c1"):
     return s
 
 
-async def wait_until(pred, timeout=2.0):
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        if pred():
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError("condición no cumplida a tiempo")
 
 
 @pytest.fixture(autouse=True)

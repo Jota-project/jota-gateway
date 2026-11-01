@@ -247,7 +247,7 @@ async def test_push_turn_seq_wraps_in_audio_header(make_bridge):
     bridge._turn_seq = 65535
 
     await bridge.on_push_turn_start("sk")
-    await asyncio.sleep(0.05)
+    await wait_until(lambda: any(isinstance(m, bytes) for m in ws.sent))
 
     await sent(bridge)
     frames = [m for m in ws.sent if isinstance(m, bytes)]

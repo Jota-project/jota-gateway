@@ -6,6 +6,7 @@ import pytest
 
 from src.models.schemas import ClientConfig
 from src.services.openclaw.models import ToolCallEvent
+from src.services.outbound import ClientGone
 from src.services.protocol import OrchestratorEvent
 from tests.fakes.bridge import GoneSender, sent
 
@@ -58,6 +59,10 @@ async def test_tool_call_forwarded_when_enabled(make_bridge):
     assert tool_call_msgs[0]["turn_id"] == "t-1"
 
 
+# A client that left (ClientGone) and any other send failure take different branches.
+_SEND_ERRORS = pytest.mark.parametrize("error", [ClientGone, RuntimeError])
+
+
 async def test_tool_call_not_forwarded_when_disabled(make_bridge):
     b, ws = make_bridge(config=ClientConfig(tool_calls_enabled=False))
     tc = ToolCallEvent(phase="start", name="exec", tool_call_id="call-1", args={"command": "ls"})
@@ -70,25 +75,28 @@ async def test_tool_call_not_forwarded_when_disabled(make_bridge):
     assert tool_call_msgs == []
 
 
-async def test_token_send_failure_does_not_propagate(make_bridge):
+@_SEND_ERRORS
+async def test_token_send_failure_does_not_propagate(make_bridge, error):
     """send_json raising inside _on_token must not crash _call_orchestrator."""
-    bridge, _ = make_bridge(output_mode=("text", "status"), sender=GoneSender())
+    bridge, _ = make_bridge(output_mode=("text", "status"), sender=GoneSender(error))
     bridge.orchestrator.stream_response = make_stream_with_token("hello")
 
     # Must not raise
     await bridge._call_orchestrator("test")
 
 
-async def test_event_send_failure_does_not_propagate(make_bridge):
+@_SEND_ERRORS
+async def test_event_send_failure_does_not_propagate(make_bridge, error):
     """send_json raising inside _on_event must not crash _call_orchestrator."""
-    bridge, _ = make_bridge(output_mode=("text", "status"), sender=GoneSender())
+    bridge, _ = make_bridge(output_mode=("text", "status"), sender=GoneSender(error))
     bridge.orchestrator.stream_response = make_stream_with_event("status", "thinking")
 
     # Must not raise
     await bridge._call_orchestrator("test")
 
 
-async def test_audio_send_failure_does_not_propagate(make_bridge):
+@_SEND_ERRORS
+async def test_audio_send_failure_does_not_propagate(make_bridge, error):
     """send_bytes raising inside pipe_audio must not crash _call_orchestrator."""
 
     class FakeTTS:

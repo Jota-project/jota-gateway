@@ -1,8 +1,8 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from src.services.outbound import DirectSender
 from src.services.pipeline_tracker import PipelineTracker
+from tests.fakes.bridge import DirectSender
 
 
 def _make_tracker(ws=None, output_mode=None):
