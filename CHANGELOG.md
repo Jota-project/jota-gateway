@@ -1,3 +1,10 @@
+## [1.21.4](https://github.com/Jota-project/jota-gateway/compare/v1.21.3...v1.21.4) (2026-11-01)
+
+
+### Bug Fixes
+
+* **openclaw:** política de errores y cancelación en el cliente de OpenClaw ([#221](https://github.com/Jota-project/jota-gateway/issues/221) 3/6) ([#289](https://github.com/Jota-project/jota-gateway/issues/289)) ([da54cc6](https://github.com/Jota-project/jota-gateway/commit/da54cc6a322550639817935745795fedacc1af0e))
+
 ## [1.21.3](https://github.com/Jota-project/jota-gateway/compare/v1.21.2...v1.21.3) (2026-11-01)
 
 
