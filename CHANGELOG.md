@@ -1,3 +1,10 @@
+## [1.21.6](https://github.com/Jota-project/jota-gateway/compare/v1.21.5...v1.21.6) (2026-11-01)
+
+
+### Bug Fixes
+
+* **bridge:** política de errores y cancelación en el resto del bridge ([#221](https://github.com/Jota-project/jota-gateway/issues/221) 5/6) ([#291](https://github.com/Jota-project/jota-gateway/issues/291)) ([443bb3e](https://github.com/Jota-project/jota-gateway/commit/443bb3e5ea14e00387027bebb6bf49d374c94fd6)), closes [#202](https://github.com/Jota-project/jota-gateway/issues/202)
+
 ## [1.21.5](https://github.com/Jota-project/jota-gateway/compare/v1.21.4...v1.21.5) (2026-11-01)
 
 
