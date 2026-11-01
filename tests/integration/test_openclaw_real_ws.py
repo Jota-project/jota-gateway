@@ -281,6 +281,20 @@ async def test_fail_ends_turn_with_stable_orchestrator_error(server):
         await client.close()
 
 
+async def test_agent_error_after_ack_ends_turn_with_stable_error(server, caplog):
+    # #300: el chat state:error termina el turno ya, sin esperar a turn_timeout.
+    caplog.set_level(logging.DEBUG)
+    client, turns = make_client(server.port)
+    await client.connect()
+    try:
+        events = await asyncio.wait_for(run_turn(client, SK_A, "agent_error"), 3)
+        assert errors(events) == ["orchestrator_error"] and tokens(events) == ""
+        assert turns.get_queue_by_session(SK_A) is None
+        assert "No API key" not in caplog.text
+    finally:
+        await client.close()
+
+
 async def test_drop_mid_turn_delivers_delta_then_disconnect_error(server):
     client, turns = make_client(server.port)
     await client.connect()

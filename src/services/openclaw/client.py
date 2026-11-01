@@ -346,6 +346,13 @@ class OpenClawClient:
                         _finished = True
                         yield OrchestratorEvent(type="status", content="done")
                         break
+                    if data.get("state") == "error":
+                        # #300: the agent failed after accepting the turn (no `final`
+                        # follows). errorMessage stays out of the client and the logs.
+                        _finished = True
+                        logger.warning("OpenClaw agent failed mid-turn (chat state=error)")
+                        yield OrchestratorEvent(type="error", content=ORCHESTRATOR_ERROR)
+                        break
                 elif kind == "tool":
                     tool_call = ToolCallEvent.from_session_tool_payload(data)
                     if tool_call is not None:
