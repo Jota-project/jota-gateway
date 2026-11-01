@@ -1,0 +1,171 @@
+"""Arnés e2e (M7a): el gateway real (uvicorn, app completa y lifespan) contra upstreams
+falsos, conducido como lo haría un cliente. Los tests solo miran lo que recibe el cliente.
+
+Dos loops: uvicorn corre en un hilo con el suyo; los falsos, en el del test. Nada aquí
+bloquea el loop del test (esperas con `asyncio.sleep` / `to_thread`).
+"""
+
+import asyncio
+import json
+import threading
+import time
+from collections.abc import Callable
+
+import pytest
+import uvicorn
+import websockets
+
+from src.core.config import settings
+from src.core.session_key import make_session_key
+from src.main import app
+from tests.fakes.jota_upstreams import FakeTranscriber, FakeTts
+from tests.fakes.openclaw import FakeOpenClawServer
+from tests.integration.conftest import CLIENT_ID, VALID_KEY
+
+Message = dict | bytes
+
+
+class HarnessClient:
+    """Un cliente WS real: guarda todo lo recibido (JSON como dict, audio como bytes)."""
+
+    def __init__(self, ws) -> None:
+        self.ws = ws
+        self.ready: dict = {}
+        self.messages: list[Message] = []
+        self.raw_texts: list[str] = []  # texto tal cual llegó, para buscar fugas
+
+    async def send(self, payload: dict) -> None:
+        await self.ws.send(json.dumps(payload))
+
+    async def send_audio(self, frame: bytes) -> None:
+        await self.ws.send(frame)
+
+    async def collect(
+        self, until: Callable[[list[Message]], bool] | None = None, timeout: float = 5.0
+    ) -> list[Message]:
+        """Recibe hasta que `until(self.messages)` se cumpla (o `timeout`; sin `until`,
+        recoge durante todo `timeout`). Devuelve todos los mensajes recibidos."""
+        deadline = time.monotonic() + timeout
+        while until is None or not until(self.messages):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                if until is None:
+                    return self.messages
+                raise AssertionError(f"timeout; recibido: {describe(self.messages)}")
+            try:
+                raw = await asyncio.wait_for(self.ws.recv(), timeout=remaining)
+            except TimeoutError:
+                continue
+            if isinstance(raw, bytes):
+                self.messages.append(raw)
+            else:
+                self.raw_texts.append(raw)
+                self.messages.append(json.loads(raw))
+        return self.messages
+
+
+class Harness:
+    def __init__(self, port, openclaw, transcriber, tts) -> None:
+        self.port = port
+        self.openclaw: FakeOpenClawServer = openclaw
+        self.transcriber: FakeTranscriber = transcriber
+        self.tts: FakeTts = tts
+        self.clients: list[HarnessClient] = []
+
+    async def connect(
+        self, input_mode: str = "text", output_mode: tuple[str, ...] = ("text",)
+    ) -> HarnessClient:
+        """Abre `/ws/stream`, hace el handshake y espera `ready` (admite `status` antes)."""
+        ws = await websockets.connect(f"ws://127.0.0.1:{self.port}/ws/stream")
+        client = HarnessClient(ws)
+        self.clients.append(client)
+        await client.send(
+            {"client_key": VALID_KEY, "input_mode": input_mode, "output_mode": list(output_mode)}
+        )
+        await client.collect(lambda m: bool(of_type(m, "ready")))
+        client.ready = of_type(client.messages, "ready")[0]
+        return client
+
+    async def push(self, text: str, agent: str = "main") -> None:
+        """El orquestador inicia un turno por su cuenta para el cliente de prueba."""
+        await self.openclaw.push(make_session_key(agent, CLIENT_ID), text)
+
+
+def of_type(messages: list[Message], kind: str) -> list[dict]:
+    return [m for m in messages if isinstance(m, dict) and m.get("type") == kind]
+
+
+def audio(messages: list[Message]) -> list[bytes]:
+    return [m for m in messages if isinstance(m, bytes)]
+
+
+def describe(messages: list[Message]) -> list[str]:
+    return [m.get("type", "?") if isinstance(m, dict) else f"<{len(m)} bytes>" for m in messages]
+
+
+def turn_ended(messages: list[Message]) -> bool:
+    """Todo `turn_start` recibido tiene ya su `turn_end` (y hubo al menos uno)."""
+    starts = {m["turn_id"] for m in of_type(messages, "turn_start")}
+    ends = {m["turn_id"] for m in of_type(messages, "turn_end")}
+    return bool(starts) and starts <= ends
+
+
+def assert_turns_paired(messages: list[Message]) -> None:
+    """Cada `turn_start` tiene exactamente un `turn_end` con el mismo `turn_id`, después."""
+    open_turns: set[str] = set()
+    started: list[str] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        if m.get("type") == "turn_start":
+            tid = m["turn_id"]
+            assert tid not in started, f"turn_start repetido: {tid}"
+            assert m["turn_seq"] == int(tid.removeprefix("t-")) & 0xFFFF
+            started.append(tid)
+            open_turns.add(tid)
+        elif m.get("type") == "turn_end":
+            tid = m["turn_id"]
+            assert tid in open_turns, f"turn_end sin turn_start abierto: {tid}"
+            open_turns.discard(tid)
+    assert not open_turns, f"turnos sin turn_end: {sorted(open_turns)}"
+
+
+@pytest.fixture
+async def harness(seed_client, monkeypatch):
+    transcriber, tts = FakeTranscriber(), FakeTts()
+    await transcriber.start()
+    await tts.start()
+    try:
+        async with FakeOpenClawServer() as openclaw:
+            # Antes de arrancar: el lifespan construye OpenClaw y los proveedores con estos valores.
+            monkeypatch.setattr(settings, "OPENCLAW_HOST", "127.0.0.1")
+            monkeypatch.setattr(settings, "OPENCLAW_PORT", openclaw.port)
+            monkeypatch.setattr(settings, "TRANSCRIBER_WS_URL", f"127.0.0.1:{transcriber.port}")
+            monkeypatch.setattr(settings, "TTS_WS_URL", f"127.0.0.1:{tts.port}")
+            monkeypatch.setattr(settings, "STT_PROVIDER", "jota")
+            monkeypatch.setattr(settings, "TTS_PROVIDER", "jota")
+
+            config = uvicorn.Config(
+                app, host="127.0.0.1", port=0, log_level="warning", loop="asyncio", lifespan="on"
+            )
+            srv = uvicorn.Server(config)
+            thread = threading.Thread(target=srv.run, daemon=True)
+            thread.start()
+            deadline = time.monotonic() + 10
+            while not srv.started:
+                if time.monotonic() > deadline or not thread.is_alive():
+                    raise RuntimeError("uvicorn no arrancó")
+                await asyncio.sleep(0.01)  # el loop del test sigue atendiendo a los falsos
+
+            h = Harness(srv.servers[0].sockets[0].getsockname()[1], openclaw, transcriber, tts)
+            try:
+                yield h
+            finally:
+                for c in h.clients:
+                    await c.ws.close()
+                openclaw.release.set()
+                srv.should_exit = True
+                await asyncio.to_thread(thread.join, 15)
+    finally:
+        await transcriber.stop()
+        await tts.stop()
