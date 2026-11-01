@@ -129,7 +129,7 @@ async def test_a_push_and_a_normal_turn_never_overlap(harness):
     await client.collect(lambda m: bool(of_type(m, "token")))
     await client.send({"type": "send", "text": "hola"})
     try:  # barrera: hoy el turno normal arranca; si M10 lo difiere, no llega nada y se sigue
-        await client.collect(lambda m: len(of_type(m, "turn_start")) == 2, timeout=1.0)
+        await client.collect(lambda m: len(of_type(m, "turn_start")) == 2, timeout=5.0)
     except AssertionError:
         pass
     await harness.push_end()

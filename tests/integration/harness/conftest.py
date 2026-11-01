@@ -158,6 +158,7 @@ async def harness(seed_client, monkeypatch):
             deadline = time.monotonic() + 10
             while not srv.started:
                 if time.monotonic() > deadline or not thread.is_alive():
+                    srv.should_exit = True
                     raise RuntimeError("uvicorn no arrancó")
                 await asyncio.sleep(0.01)  # el loop del test sigue atendiendo a los falsos
 
@@ -170,6 +171,8 @@ async def harness(seed_client, monkeypatch):
                 openclaw.release.set()
                 srv.should_exit = True
                 await asyncio.to_thread(thread.join, 15)
+                # un hilo vivo seguiría corriendo con los settings y la BD ya restaurados
+                assert not thread.is_alive(), "el gateway no se paró en 15 s"
     finally:
         await transcriber.stop()
         await tts.stop()
