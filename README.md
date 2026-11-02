@@ -66,18 +66,31 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la guía completa 
 | `/admin/transcriber/status` | GET | Estado del proveedor STT activo (`provider`; con jota, reachability en vivo; con ElevenLabs, salud cacheada + `counters`) |
 | `/admin/tts/status` | GET | Estado del proveedor TTS activo (`provider`, breaker, último error; con ElevenLabs, `counters`) |
 | `/admin/speech` | GET | Proveedores de voz activos (`stt`, `tts`) y puerta de audio efectiva |
-| `/admin/clients` | GET | Lista clientes |
-| `/admin/clients` | POST | Crear cliente (`client_key` generado o provisto) |
+| `/admin/clients` | GET | Lista clientes (sin `client_key`; la huella `key_fp`) |
+| `/admin/clients` | POST | Crear cliente; la respuesta trae su `client_key`, la única vez que se ve (se genera, o se importa una existente de ≥ 32 caracteres) |
 | `/admin/clients/{id}` | GET | Detalle de un cliente |
 | `/admin/clients/{id}` | PATCH | Actualizar cliente (campos parciales) |
 | `/admin/clients/{id}` | DELETE | Borrar cliente |
-| `/admin/clients/{id}/rotate-key` | POST | Rotar `client_key` |
-| `/admin/state` | GET | Instantánea viva: uptime, estado de servicios, contadores y una fila por sesión |
+| `/admin/clients/{id}/rotate-key` | POST | Rotar `client_key` (la respuesta trae la nueva) |
+| `/admin/state` | GET | Instantánea viva: versión, uptime, estado de servicios, contadores y una fila por sesión |
 | `/admin/state/stream` | GET | La misma instantánea por SSE cada segundo; cada stream termina solo a los 25 s, el cliente debe reconectar (`EventSource` lo hace solo) |
 
 Los tres endpoints `*/status` comparten la forma `{"name", "state", "connected_at", "reconnect_attempts", "last_error"}`; los de transcriber y TTS añaden `provider` y, con ElevenLabs, `counters`.
 
-Los campos de un cliente (`POST`/`PATCH /admin/clients`) están en `src/models/admin_schemas.py` y sus defaults en `src/db/models.py`. Desde la terminal: `python3 src/cli.py add-client --name … [--key …] [--type ha|esp32|web|app] [--agent …]`, `list-clients`, `activate-client`, `deactivate-client`, `delete-client <client_key>`.
+Los campos de un cliente (`POST`/`PATCH /admin/clients`) están en `src/models/admin_schemas.py` y sus defaults en `src/db/models.py`. Desde la terminal, con el gateway en marcha, `jota-gw` (todo pasa por esta API; la CLI no abre la BD):
+
+```bash
+jota-gw status                 # gateway, versión, orquestador, STT, TTS y sesiones
+jota-gw version
+jota-gw clients list           # nombre, id corto, tipo, activo, agente y huella fp
+jota-gw clients show <ref>     # <ref>: id, prefijo de id (≥ 4) o nombre
+jota-gw clients add --name … [--type ha|esp32|web|app] [--agent …] [--allowed-agent …] [--import-key]
+jota-gw clients edit <ref> [--name …] [--set tts_speed=1.2 …]
+jota-gw clients enable|disable <ref>
+jota-gw clients rotate-key|remove <ref>    # preguntan; --yes para scripts
+```
+
+Opciones globales: `--url` (`JOTA_GW_URL`, por defecto `http://127.0.0.1:8004`), `--token` (`JOTA_GW_TOKEN`; si no, `ADMIN_TOKEN` o `~/.jota-gateway/config.env`), `--json` y `--yes`. `--import-key` lee la clave de stdin, nunca de un argumento. Códigos de salida: 0 bien, 1 error, 2 uso incorrecto, 3 gateway inalcanzable. En Docker, hasta que la imagen traiga el ejecutable: `docker exec jota_gateway python -m src.cli …`.
 
 Auth: header `X-Admin-Token`. Sin header → 422. Token incorrecto → 401. `ADMIN_TOKEN` vacío → 503.
 
@@ -268,7 +281,7 @@ src/
 ├── db/
 │   ├── models.py            ClientRecord (SQLModel) — identidad y config por cliente
 │   └── database.py          get_engine() / run_migrations() / get_db_session()
-├── cli.py                   CLI — add-client / list-clients / (de)activate-client / delete-client
+├── cli/                     jota-gw — status, version y clients por la API /admin
 └── services/
     ├── bridge.py            JotaBridge — coordinador de sesión WS
     ├── db_client.py         DbClient — lee ClientRecord de SQLite local (singleton, sin caché)

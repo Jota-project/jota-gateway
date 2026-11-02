@@ -24,10 +24,10 @@ mypy                                                  # [tool.mypy] files = ["sr
 
 docker compose up
 
-# Clients from the terminal (src/cli.py; runs migrations first)
-python3 src/cli.py add-client --name "Jota-Screen" [--key <existing-key>] [--type ha|esp32|web|app] [--agent main]
-python3 src/cli.py list-clients
-python3 src/cli.py deactivate-client|activate-client|delete-client <client_key>
+# Admin CLI (needs the gateway running; talks to /admin, never to the DB)
+jota-gw status | version
+jota-gw clients list | show <ref> | add --name … | edit <ref> | enable|disable|rotate-key|remove <ref>
+docker exec jota_gateway python -m src.cli …         # inside the container, until 14c ships the binary
 ```
 
 CI (`.github/workflows/test.yml`) runs ruff, mypy and pytest over `tests/unit`, `tests/contract` and `tests/integration`: run all three locally before opening a PR. `tests/e2e` (marker `e2e_real`, real OpenClaw) and `tests/live` (marker `live`, real ElevenLabs, `JGW_LIVE=1`) only run on demand; see the README.
@@ -61,7 +61,7 @@ A BFF: the single entry point for Jota-Screen, jota-voice (Mac and Android/Termu
 | `services/speech/` | STT/TTS ports (`ports.py`), `factory.py`, `jota.py` (jota-transcriber/jota-speaker), `elevenlabs/`; `SpeechProviders` holder in `app.state.speech` |
 | `services/reconnection.py` | Shared `ConnectionState`, `ServiceHealth`, backoff loop, `describe_error()` |
 | `services/pipeline_tracker.py`, `session_registry.py`, `stats.py` | Per-session events/latencies, `/admin/sessions`, in-process counters |
-| `cli.py` | Client management from the terminal |
+| `cli/` | `jota-gw` admin CLI over `/admin` (click; `rich` and every command imported lazily, `--help` < 150 ms guarded by `tests/unit/test_cli_startup.py`) |
 
 Speech providers are chosen at startup with `STT_PROVIDER`/`TTS_PROVIDER` (`jota` or `elevenlabs`); changing them needs a restart (`GET /admin/speech` only reads). Every remaining ElevenLabs tunable is a module constant in `services/speech/elevenlabs/`.
 
@@ -70,7 +70,7 @@ Speech providers are chosen at startup with `STT_PROVIDER`/`TTS_PROVIDER` (`jota
 Breaking any of these is a bug, whatever the change is for.
 
 - **Service addresses are `host:port` without protocol** in every `Settings` field; each client adds `ws://`/`http://` itself. Never store full URLs in settings.
-- **`client_key` is a credential.** Never log it, in full or as a prefix; correlate with `fingerprint_key(value)` logged as `fp=<8 hex>`, and with `client.id` after auth. Pydantic validation errors must be logged as field + error type only (`input_value` would carry the key).
+- **`client_key` is a credential.** `/admin` returns it only on create and rotate (`ClientWithKey`); reads carry `key_fp`. Never log it, in full or as a prefix; correlate with `fingerprint_key(value)` logged as `fp=<8 hex>`, and with `client.id` after auth. Pydantic validation errors must be logged as field + error type only (`input_value` would carry the key).
 - **No user text in logs at INFO or above, nor in tracker `meta`** (it is logged at INFO and persisted in `SessionRecord`, visible in `/admin/sessions`): record lengths (`text_len=len(text)`). DEBUG transcripts are truncated (finals: 40 chars).
 - **Stable errors toward clients.** A client or a log never sees exception text or OpenClaw's raw error: turn errors use the fixed codes listed in `docs/client-protocol.md` §9 (`orchestrator_*`, `turn_timeout`, `turn_overflow`, `turn_in_progress`, `internal_error`); logs carry the exception type (`describe_error`, `traceback_no_message`) and `last_error` holds a code or a type name.
 - **Exactly one `turn_end` per `turn_start`**, normal or push, on every path (end, error, cancel, barge-in, replacing `send`, final transcription, close). `turn_seq` is masked `& 0xFFFF` in both `turn_start` and the audio header.

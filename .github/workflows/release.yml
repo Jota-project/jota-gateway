@@ -37,6 +37,7 @@ jobs:
         run: |
           npm install -g semantic-release \
           @semantic-release/changelog \
+          @semantic-release/exec \
           @semantic-release/git \
           @semantic-release/github
 

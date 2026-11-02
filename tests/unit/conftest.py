@@ -37,3 +37,15 @@ async def make_bridge():
     yield _make
     for bridge in built:
         await bridge._sender.aclose(1.0)
+
+
+@pytest.fixture()
+def use_api(monkeypatch):
+    """Sustituye el cliente HTTP de la CLI por un FakeApi (tests/fakes/cli_api.py)."""
+    from src.cli import api
+
+    def _use(fake):
+        monkeypatch.setattr(api, "from_context", lambda ctx: fake)
+        return fake
+
+    return _use

@@ -1,6 +1,6 @@
 [project]
 name = "jota-gateway"
-# Fijo a propósito: la versión real es el tag de git que crea semantic-release (CHANGELOG.md).
+# Fijo a propósito: la versión real es el tag de semantic-release, que la escribe en src/_version.py.
 version = "0.0.0"
 description = "BFF gateway for jota voice/text clients"
 readme = "README.md"
@@ -14,7 +14,12 @@ dependencies = [
     "httpx>=0.28.1",
     "sqlmodel>=0.0.39",
     "alembic>=1.18.5",
+    "click>=8.5.0",
+    "rich>=15.0.0",
 ]
+
+[project.scripts]
+jota-gw = "src.cli.__main__:main"
 
 [project.optional-dependencies]
 dev = [

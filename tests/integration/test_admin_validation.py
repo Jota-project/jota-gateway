@@ -10,7 +10,7 @@ from sqlmodel import SQLModel, create_engine
 ADMIN_TOKEN = "test-admin-token"
 HEADERS = {"x-admin-token": ADMIN_TOKEN}
 JSON_HEADERS = {**HEADERS, "content-type": "application/json"}
-SECRET_KEY = "dup-secret-key-0123456789abcdef"
+SECRET_KEY = "dup-secret-key-0123456789abcdef-0123"
 
 
 @pytest.fixture(autouse=True)
@@ -58,16 +58,24 @@ def test_create_duplicate_client_key_returns_409_without_leaking_key(http, caplo
             assert SECRET_KEY not in "".join(traceback.format_exception(*rec.exc_info))
 
 
-def test_create_empty_client_key_still_generates_one(http):
-    r = http.post("/admin/clients", json={"name": "A", "client_key": ""}, headers=HEADERS)
+def test_create_without_client_key_generates_one(http):
+    r = http.post("/admin/clients", json={"name": "A"}, headers=HEADERS)
     assert r.status_code == 201
     assert len(r.json()["client_key"]) > 20
 
 
-def test_create_short_client_key_is_accepted(http):
-    r = http.post("/admin/clients", json={"name": "A", "client_key": "abc"}, headers=HEADERS)
+@pytest.mark.parametrize("key", ["", "abc", "x" * 31])
+def test_create_empty_or_short_client_key_is_422(http, key):
+    # #293: la clave solo se importa (una existente) y con un mínimo; vacía no es «ausente».
+    r = http.post("/admin/clients", json={"name": "A", "client_key": key}, headers=HEADERS)
+    assert r.status_code == 422
+
+
+def test_create_imported_client_key_is_kept(http):
+    key = "imported-key-0123456789abcdefghij"
+    r = http.post("/admin/clients", json={"name": "A", "client_key": key}, headers=HEADERS)
     assert r.status_code == 201
-    assert r.json()["client_key"] == "abc"
+    assert r.json()["client_key"] == key
 
 
 @pytest.mark.parametrize(
