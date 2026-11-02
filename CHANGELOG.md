@@ -1,3 +1,10 @@
+# [1.22.0](https://github.com/Jota-project/jota-gateway/compare/v1.21.8...v1.22.0) (2026-11-02)
+
+
+### Features
+
+* **audio:** pacing del TTS al ritmo de reproducción (M7e) ([#304](https://github.com/Jota-project/jota-gateway/issues/304)) ([0585f24](https://github.com/Jota-project/jota-gateway/commit/0585f244a35c270947eea6c4f161d7a6dc61b781)), closes [#224](https://github.com/Jota-project/jota-gateway/issues/224) [#202](https://github.com/Jota-project/jota-gateway/issues/202)
+
 ## [1.21.8](https://github.com/Jota-project/jota-gateway/compare/v1.21.7...v1.21.8) (2026-11-01)
 
 
