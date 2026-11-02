@@ -600,9 +600,10 @@ class JotaBridge:
         reconnect happens between an agent start and its matching agent end —
         would otherwise gate this watchdog forever, leaking the session. A
         push only counts as "in flight" here while it's within its own
-        TURN_TIMEOUT_S grace period since it opened (`_push_turn_opened_at`);
-        past that, close_all()'s existing defensive reset handles clearing
-        the stale flag.
+        TURN_TIMEOUT_S grace period since it opened (`_push_turn_opened_at`),
+        or while its paced audio progressed within PUSH_TTS_DRAIN_TIMEOUT_S
+        (see `_turn_in_flight`); past that, close_all()'s existing defensive
+        reset handles clearing the stale flag.
         """
         while True:
             remaining = settings.IDLE_TIMEOUT_S - (
@@ -1295,8 +1296,7 @@ class JotaBridge:
             header = bytes([0xA1]) + turn_seq.to_bytes(2, "big")
             pacer = AudioPacer(settings.AUDIO_LEAD_S, settings.AUDIO_PACING_ENABLED)
             async for chunk in tts.get_audio_stream():
-                # Progress is stamped when a chunk is pulled: a single TTS chunk longer than
-                # PUSH_TTS_DRAIN_TIMEOUT_S would trip the idle cut (theoretical; chunks are small).
+                # Progress: every chunk pulled from the TTS and every paced frame sent.
                 self._push_audio_progress_at = time.monotonic()
                 if not chunk:
                     continue
