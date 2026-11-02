@@ -12,6 +12,9 @@ from src.services.reconnection import describe_error, ping_ready, safe_code
 
 logger = logging.getLogger(__name__)
 
+# shortcut: con un TTS más rápido que 1x, una respuesta de más de ~3,5 min llena la cola y se corta la síntesis; subir el tope o frenar la lectura si hace falta
+MAX_BUFFER_BYTES = 10 * 1024 * 1024
+
 
 class TTSClient:
     """
@@ -26,6 +29,9 @@ class TTSClient:
         self.token = token
         self.client_id = client_id
         self.ws: ClientConnection | None = None
+        self._out: asyncio.Queue[bytes | None] = asyncio.Queue()
+        self._buffered = 0
+        self._reader: asyncio.Task[None] | None = None
 
     async def connect(
         self,
@@ -111,44 +117,67 @@ class TTSClient:
         """
         Yields binary PCM16 audio frames. Skips JSON control messages.
         Stops on 'done', 'error', or ConnectionClosed.
+        El socket se lee por delante en `_read` (el consumidor va a ritmo de reproducción).
         """
         if not self.ws:
             return
+        if self._reader is None:
+            self._reader = asyncio.get_running_loop().create_task(self._read(self.ws))
+        while True:
+            item = await self._out.get()
+            if item is None:
+                self._out.put_nowait(None)  # otra iteración posterior también termina
+                return
+            self._buffered -= len(item)
+            yield item
+
+    async def _read(self, ws: ClientConnection) -> None:
+        """Vuelca el audio a la cola; siempre deja un `None` final para terminar el iterador."""
         try:
-            async for msg in self.ws:
+            async for msg in ws:
                 if isinstance(msg, bytes):
-                    yield msg
-                else:
-                    try:
-                        data = json.loads(msg)
-                    except json.JSONDecodeError:
+                    if self._buffered + len(msg) > MAX_BUFFER_BYTES:
                         logger.warning(
-                            "[%s] TTS unparseable frame descartado (non-JSON)", self.client_id
-                        )
-                        continue
-                    if not isinstance(data, dict):
-                        # G-66 (#214): skip it; log the type only, never the content.
-                        logger.warning(
-                            "[%s] TTS frame descartado: no es un objeto JSON (%s)",
+                            "[%s] TTS: el búfer de audio supera %d bytes; se corta la síntesis",
                             self.client_id,
-                            type(data).__name__,
+                            MAX_BUFFER_BYTES,
                         )
-                        continue
-                    msg_type = data.get("type")
-                    if msg_type == "done":
-                        break
-                    elif msg_type == "error":
-                        logger.warning("[%s] TTS error: %s", self.client_id, safe_code(data.get("code")))
-                        break
-                    else:
-                        logger.debug("[%s] TTS control frame: %s", self.client_id, msg_type)
+                        return
+                    self._buffered += len(msg)
+                    self._out.put_nowait(msg)
+                    continue
+                try:
+                    data = json.loads(msg)
+                except json.JSONDecodeError:
+                    logger.warning("[%s] TTS unparseable frame descartado (non-JSON)", self.client_id)
+                    continue
+                if not isinstance(data, dict):
+                    # G-66 (#214): skip it; log the type only, never the content.
+                    logger.warning(
+                        "[%s] TTS frame descartado: no es un objeto JSON (%s)",
+                        self.client_id,
+                        type(data).__name__,
+                    )
+                    continue
+                msg_type = data.get("type")
+                if msg_type == "done":
+                    return
+                if msg_type == "error":
+                    logger.warning("[%s] TTS error: %s", self.client_id, safe_code(data.get("code")))
+                    return
+                logger.debug("[%s] TTS control frame: %s", self.client_id, msg_type)
         except ConnectionClosed:
             logger.info("[%s] TTS audio stream ended (ConnectionClosed)", self.client_id)
+        finally:
+            self._out.put_nowait(None)
 
     async def close(self) -> None:
         """Close the WS with code 1000. No-op if ws is None."""
         if self.ws is None:
             return
+        if self._reader is not None and not self._reader.done():
+            self._reader.cancel()
+            await asyncio.wait({self._reader}, timeout=0.9)  # no traga una cancelación ajena
         try:
             await self.ws.close(1000)
         except Exception as e:  # noqa: BLE001 — limpieza: el fallo se registra
