@@ -460,3 +460,34 @@ async def test_abandoned_turn_sends_no_audio_after_its_turn_end(make_bridge, mon
     labels = [m["type"] if isinstance(m, dict) else "audio" for m in ws.sent]
     assert labels.count("turn_end") == 1
     assert "audio" not in labels[labels.index("turn_end") + 1 :], labels
+
+
+async def test_close_all_during_paced_audio_ends_promptly(make_bridge, monkeypatch):
+    """Foco 3 de 7e: con audio a ritmo en vuelo, close_all no espera al reloj del pacer."""
+    from unittest.mock import AsyncMock
+
+    from src.core.config import settings
+    from tests.fakes.bridge import tokens
+
+    monkeypatch.setattr(settings, "AUDIO_LEAD_S", 0.1)
+
+    async def audio():
+        for _ in range(50):  # 5 s de audio en trozos de 100 ms
+            yield b"\x01\x00" * 2400
+
+    tts_client = AsyncMock()
+    tts_client.get_audio_stream = audio
+    tts = AsyncMock()
+    tts.connect = AsyncMock(return_value=tts_client)
+    b, ws = make_bridge(output_mode=("text", "audio"), tts=tts)
+    b.orchestrator.stream_response = tokens("hi")
+    b._active_turn = asyncio.create_task(b._call_orchestrator("x"))
+    while not any(isinstance(m, bytes) for m in ws.sent):
+        await asyncio.sleep(0.01)
+
+    t0 = time.monotonic()
+    await asyncio.wait_for(b.close_all(), timeout=settings.SESSION_TEARDOWN_S)
+    await sent(b)
+
+    assert time.monotonic() - t0 < settings.SESSION_TEARDOWN_S
+    assert len(ws.of("turn_end")) == 1

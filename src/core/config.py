@@ -86,7 +86,8 @@ class Settings(BaseSettings):
     SHUTDOWN_DRAIN_S: float | None = None
     LOG_FORMAT: Literal["text", "json"] = "text"
 
-    # Drenado del audio TTS de un push al cerrar su turno (issue #130 S3a)
+    # Drenado del audio TTS de un push al cerrar su turno (issue #130 S3a): tope de tiempo
+    # sin progreso del TTS (se reinicia con cada trozo), no duración total
     PUSH_TTS_DRAIN_TIMEOUT_S: float = 30.0
 
     # Pacing del audio TTS (7e): el gateway envía a ritmo de reproducción, como mucho

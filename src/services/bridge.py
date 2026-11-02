@@ -15,6 +15,7 @@ from src.services.openclaw.models import ToolCallEvent
 from src.services.openclaw.registry import ClientRegistry, TurnRegistry
 from src.services.orchestration import OrchestratorError
 from src.services.outbound import ClientGone, OutboundSender
+from src.services.pacing import AudioPacer
 from src.services.pipeline_tracker import PipelineTracker
 from src.services.protocol import OrchestratorProtocol
 from src.services.reconnection import (
@@ -108,6 +109,8 @@ class JotaBridge:
         # Tiempos del TTS del push en curso (ms); None si el turno no tuvo TTS.
         self._push_tts_stats: dict[str, Any] | None = None
         self._push_audio_task: asyncio.Task | None = None
+        # Último trozo recibido del TTS del push; el drenado se acota por inactividad (7e).
+        self._push_audio_progress_at: float | None = None
 
         self.tasks: list[asyncio.Task] = []
         # Fire-and-forget tasks (status notifications, the idle-watchdog closer) are not
@@ -470,8 +473,11 @@ class JotaBridge:
     def _turn_in_flight(self) -> bool:
         """A normal turn is running, or a push turn is open (bounded by TURN_TIMEOUT_S
         like the idle watchdog's check, so an orphaned push can't pause silence
-        monitoring forever)."""
+        monitoring forever). With paced audio a push keeps sounding past that bound,
+        so a live push audio task also counts."""
         if self._active_turn is not None and not self._active_turn.done():
+            return True
+        if self._push_audio_task is not None and not self._push_audio_task.done():
             return True
         return self._push_turn_open and (
             self._push_turn_opened_at is None
@@ -1156,20 +1162,24 @@ class JotaBridge:
             nonlocal audio_progress_at
             header = bytes([0xA1]) + turn_seq.to_bytes(2, "big")
             _first_chunk = True
+            pacer = AudioPacer(settings.AUDIO_LEAD_S, settings.AUDIO_PACING_ENABLED)
             async for chunk in tts.get_audio_stream():
                 audio_progress_at = time.monotonic()
                 if _first_chunk:
                     await self.tracker.record("tts_first_chunk")
                     _first_chunk = False
-                if self._turn_end_sent_at_close == turn_id:
-                    return  # close_all() already ended this turn: nothing after its turn_end
-                try:
-                    await self._sender.send_bytes(header + chunk)
-                except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-                    if isinstance(e, ClientGone):
-                        self._client_gone = True
-                    self._log_send_failed("audio", e)
-                    return
+                if not chunk:
+                    continue
+                async for frame in pacer.frames(chunk):
+                    if self._turn_end_sent_at_close == turn_id:
+                        return  # close_all() already ended this turn: nothing after its turn_end
+                    try:
+                        await self._sender.send_bytes(header + frame)
+                    except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+                        if isinstance(e, ClientGone):
+                            self._client_gone = True
+                        self._log_send_failed("audio", e)
+                        return
             await self.tracker.record("tts_done")
 
         if tts:
@@ -1272,14 +1282,20 @@ class JotaBridge:
 
         async def _pipe_push_audio():
             header = bytes([0xA1]) + turn_seq.to_bytes(2, "big")
+            pacer = AudioPacer(settings.AUDIO_LEAD_S, settings.AUDIO_PACING_ENABLED)
             async for chunk in tts.get_audio_stream():
-                try:
-                    await self._sender.send_bytes(header + chunk)
-                except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-                    self._log_send_failed("audio del push", e)
-                    return
+                self._push_audio_progress_at = time.monotonic()
+                if not chunk:
+                    continue
+                async for frame in pacer.frames(chunk):
+                    try:
+                        await self._sender.send_bytes(header + frame)
+                    except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+                        self._log_send_failed("audio del push", e)
+                        return
 
         # Supervisada: _drop_push_tts puede abandonarla sin recoger su resultado (#221).
+        self._push_audio_progress_at = time.monotonic()
         self._push_audio_task = asyncio.create_task(_pipe_push_audio(), name="push_audio")
         self._supervise(self._push_audio_task)
 
@@ -1381,12 +1397,17 @@ class JotaBridge:
                 # task's own outcome, so an *external* cancellation of this
                 # coroutine (close_all() cancelling the push worker, #130 S3a)
                 # propagates instead of being mistaken for the audio task's.
-                done, _ = await asyncio.wait(
-                    {audio_task}, timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
-                )
-                if not done:
+                # Bounded by INACTIVITY (paced audio of a long push outlasts any absolute cap).
+                while not audio_task.done():
+                    idle_left = settings.PUSH_TTS_DRAIN_TIMEOUT_S - (
+                        time.monotonic() - (self._push_audio_progress_at or t0)
+                    )
+                    if idle_left <= 0:
+                        break
+                    await asyncio.wait({audio_task}, timeout=idle_left)
+                if not audio_task.done():
                     logger.warning(
-                        f"[{self.client_id}] push audio no terminó dentro de "
+                        f"[{self.client_id}] push audio sin progreso en "
                         f"PUSH_TTS_DRAIN_TIMEOUT_S={settings.PUSH_TTS_DRAIN_TIMEOUT_S}s "
                         f"— cancelando."
                     )

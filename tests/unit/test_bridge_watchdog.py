@@ -637,3 +637,23 @@ async def test_watchdog_does_not_close_during_a_20s_turn_with_2s_timeout_3_strik
 async def _until(pred):
     while not pred():
         await asyncio.sleep(0)
+
+
+async def test_push_with_audio_playing_counts_as_in_flight(make_wd_bridge, monkeypatch):
+    """Con pacing el audio de un push suena más allá de TURN_TIMEOUT_S: mientras su
+    tarea de audio viva, el push cuenta como turno en curso."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.1)
+    bridge, _, _ = make_wd_bridge()
+    bridge._push_turn_open = True
+    bridge._push_turn_opened_at = time.monotonic() - 1  # abierto hace más de TURN_TIMEOUT_S
+
+    bridge._push_audio_task = asyncio.create_task(asyncio.sleep(3600))
+    try:
+        assert bridge._turn_in_flight() is True
+    finally:
+        bridge._push_audio_task.cancel()
+        await asyncio.wait({bridge._push_audio_task})
+
+    assert bridge._turn_in_flight() is False
