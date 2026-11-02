@@ -7,13 +7,14 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-HEAVY = ("pydantic", "httpx", "sqlmodel", "fastapi", "rich")
+HEAVY = ("pydantic", "httpx", "sqlmodel", "fastapi", "rich", "questionary", "prompt_toolkit")
 
 # En un proceso nuevo: dentro de pytest el conftest ya ha cargado fastapi y pydantic.
 _PROBE = f"""
 import sys
 from src.cli.app import cli
 import src.cli.clients, src.cli.status, src.cli.version
+import src.cli.config, src.cli.doctor, src.cli.menu
 try:
     cli(["--help"], standalone_mode=False)
 except SystemExit:

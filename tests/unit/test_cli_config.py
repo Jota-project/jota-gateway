@@ -111,3 +111,9 @@ def test_cwd_dotenv_is_never_read_even_if_broken(tmp_path):
     )
     assert r.returncode == 0, r.stderr
     assert json.loads(r.stdout)["value"] == "(vacío)"
+
+
+def test_get_secret_plain_is_masked(home):
+    r = run("config", "get", "ADMIN_TOKEN")
+    assert r.exit_code == 0
+    assert SECRET not in r.output and "definido" in r.output
