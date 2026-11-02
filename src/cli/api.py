@@ -22,7 +22,7 @@ TIMEOUT_S = 5.0
 class ApiError(click.ClickException):
     def __init__(self, message: str, exit_code: int = 1) -> None:
         super().__init__(message)
-        self.exit_code = exit_code
+        self.exit_code = exit_code  # type: ignore[misc]  # click lo lee de la instancia
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
