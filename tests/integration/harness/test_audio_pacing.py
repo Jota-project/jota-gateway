@@ -93,3 +93,21 @@ async def test_long_push_audio_is_not_cut(paced, monkeypatch):
     end = next(i for i, m in enumerate(msgs) if isinstance(m, dict) and m["type"] == "turn_end")
     assert end > last_frame
     assert_turns_paired(msgs)
+
+
+async def test_push_waits_for_the_reply_being_spoken(paced):
+    client = await paced.connect(output_mode=("text", "audio"))
+    await client.send({"type": "send", "text": "hola"})
+    await client.collect(lambda m: len(audio(m)) >= 1)
+    await paced.push("aviso")
+    msgs = await client.collect(lambda m: len(of_type(m, "turn_end")) >= 2)
+
+    def index(kind):
+        return [i for i, m in enumerate(msgs) if isinstance(m, dict) and m["type"] == kind]
+
+    first_end, push_start = index("turn_end")[0], index("turn_start")[1]
+    assert first_end < push_start
+    push_seq = of_type(msgs, "turn_start")[1]["turn_seq"]
+    push_frames = [i for i, m in enumerate(msgs) if isinstance(m, bytes) and int.from_bytes(m[1:3], "big") == push_seq]
+    assert push_frames and min(push_frames) > first_end
+    assert_turns_paired(msgs)

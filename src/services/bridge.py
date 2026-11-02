@@ -1476,6 +1476,10 @@ class JotaBridge:
             kind, arg = await self._push_queue.get()
             try:
                 if kind == "turn_start":
+                    # A normal turn lives until its audio is sent: don't open a push over it.
+                    # asyncio.wait (not await): our own cancellation propagates, the turn's is not ours.
+                    while self._active_turn is not None and not self._active_turn.done():
+                        await asyncio.wait({self._active_turn})
                     await self.on_push_turn_start(arg)
                 elif kind == "chat":
                     await self.deliver_push(arg)
