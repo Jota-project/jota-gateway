@@ -111,3 +111,26 @@ async def test_push_waits_for_the_reply_being_spoken(paced):
     push_frames = [i for i, m in enumerate(msgs) if isinstance(m, bytes) and int.from_bytes(m[1:3], "big") == push_seq]
     assert push_frames and min(push_frames) > first_end
     assert_turns_paired(msgs)
+
+
+async def test_speaking_cuts_a_push_being_spoken(paced):
+    client = await paced.connect(output_mode=("text", "audio"))
+    await paced.push("aviso largo")
+    await client.collect(lambda m: len(audio(m)) >= 1)
+    await client.send({"type": "send", "text": "hola"})
+    msgs = await client.collect(lambda m: len(of_type(m, "turn_end")) >= 2)
+    await client.collect(timeout=0.3)  # un turn_end sobrante del push saltaría aquí
+
+    push, normal = of_type(msgs, "turn_start")
+    push_end = [m for m in of_type(msgs, "turn_end") if m["turn_id"] == push["turn_id"]]
+    assert len(push_end) == 1
+    pos = {id(m): i for i, m in enumerate(msgs)}
+    assert pos[id(push_end[0])] < pos[id(normal)]
+    late = [
+        m for m in msgs[pos[id(push_end[0])]:]
+        if isinstance(m, bytes) and int.from_bytes(m[1:3], "big") == push["turn_seq"]
+    ]
+    assert not late
+    assert "".join(t["text"] for t in of_type(msgs, "token") if t["turn_id"] == normal["turn_id"]) == "reply-hola"
+    assert not of_type(msgs, "error")
+    assert_turns_paired(msgs)

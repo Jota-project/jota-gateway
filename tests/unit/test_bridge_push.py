@@ -378,3 +378,34 @@ async def test_push_final_retracted_to_prefix_emits_nothing(make_push_bridge, ca
     assert [m["text"] for m in await sent(bridge)] == ["SECRETO, mundo. Adios"]
     assert "diverges" not in caplog.text
     assert "SECRETO" not in caplog.text
+
+
+# ── 7e: hablar a Jota corta un push que está sonando ──
+
+
+async def _hang():
+    await asyncio.sleep(3600)
+    yield b""
+
+
+async def test_cut_during_push_turn_end_sends_one_turn_end(make_push_bridge):
+    """Foco 1: un corte mientras on_push_turn_end espera un audio que no acaba."""
+    push_tts = AsyncMock()
+    push_tts.get_audio_stream = _hang
+    tts_wrapper = AsyncMock()
+    tts_wrapper.connect = AsyncMock(return_value=push_tts)
+    bridge, _ = make_push_bridge(output_mode=("audio", "text"), tts=tts_wrapper)
+    sk = bridge._session_key()
+    await bridge.on_push_turn_start(sk)
+
+    ending = asyncio.create_task(bridge.on_push_turn_end(sk))
+    await wait_until(lambda: push_tts.end.await_count == 1)
+    await asyncio.sleep(0.02)  # ya espera al audio
+    assert await bridge._cut_push() == "t-1"
+    await asyncio.wait_for(ending, 2)
+
+    assert [m for m in await sent(bridge) if m.get("type") == "turn_end"] == [
+        {"type": "turn_end", "turn_id": "t-1"}
+    ]
+    bridge.orchestrator.abort.assert_awaited_once_with(sk)
+    assert bridge._push_turn_open is False

@@ -377,6 +377,8 @@ El gateway detecta la parcial de transcripción y cancela el turno activo si el 
 
 `turn_id` es el turno cancelado (puede faltar si el turno aún no había enviado su `turn_start`). El gateway cierra todo turno cancelado con su propio `turn_end` **antes** de `interrupted`: el orden es `turn_end` (t-1) → `interrupted` (t-1) → `turn_start` (t-2).
 
+**Un push que está sonando también se corta** (§10): el barge-in, un `send` y un `cancel` lo cierran igual que a un turno normal. Recibes su `turn_end` (exactamente uno) antes de cualquier otra cosa del turno nuevo; en el barge-in, `interrupted` lleva el `turn_id` del push. Su audio deja de llegar. La transcripción final por sí sola no lo corta: lo corta el `send` que la sigue.
+
 Tras `interrupted`:
 - Limpia la UI de la respuesta en curso
 - Descarta audio con `turn_seq` del turno cancelado (ya no llegará más)
@@ -494,6 +496,8 @@ OpenClaw puede iniciar turnos proactivamente sin que el usuario haya enviado nad
 
 Un push que llega mientras suena una respuesta tuya se entrega después del `turn_end` de esa respuesta, nunca encima (los pushes siguientes esperan en orden).
 
+Al revés, hablar corta el push: si el usuario hace barge-in, envía un `send` o un `cancel` mientras un push está abierto, el gateway para su audio, te envía su `turn_end` y, si el push es de tu misma sesión de agente, lo aborta en OpenClaw. Solo después arranca el turno del usuario, así que nunca hay dos turnos abiertos a la vez (#202). Lo que quedara de ese push no llega.
+
 El cliente no necesita distinguirlos de los turnos normales — el `turn_id` y `turn_seq` siguen la misma secuencia. Si `tool_calls_enabled` está activo, también pueden llegar mensajes `tool_call` (§5) intercalados.
 
 > **`push_enabled` (por defecto `True`, configurable por admin):** si tu `client_key` tiene este flag desactivado, no recibirás **ningún** mensaje de un turno iniciado por el agente — ni `turn_start`, ni `token`, ni audio, ni `tool_call` — para esa sesión. No hay ninguna señal explícita de que se haya suprimido un push; es indistinguible de que OpenClaw simplemente no haya iniciado ninguno. Si tu integración depende de notificaciones proactivas, confirma con el admin que `push_enabled=True` para tu cliente.
@@ -504,8 +508,8 @@ El cliente no necesita distinguirlos de los turnos normales — el `turn_id` y `
 > tú mismo iniciaste con `send`), ningún evento `agent` interno de OpenClaw para esa misma sesión
 > abrirá un `turn_start` de push superpuesto al tuyo — el contenido de ese turno (tokens,
 > `tool_call`) te sigue llegando con normalidad dentro del turno que ya tenías abierto. Si un
-> turno de push ya estaba en curso *antes* de que empezaras el tuyo, su propio `turn_end` sigue
-> llegando con normalidad para cerrarlo correctamente.
+> turno de push ya estaba en curso *antes* de que empezaras el tuyo, tu `send` lo corta: su
+> `turn_end` llega antes del `turn_start` de tu turno.
 
 ---
 

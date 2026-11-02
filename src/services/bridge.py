@@ -126,6 +126,7 @@ class JotaBridge:
         self._last_client_activity: float = 0.0
         self._turn_seq: int = 0
         self._push_turn_id: str | None = None
+        self._push_session_key: str | None = None  # 7e: chat.abort only on our own session_key
         # Issue #84: OpenClaw emits multiple agent start/end pairs during a single
         # LLM response (tool use, multi-step reasoning). Track whether a push turn
         # is already open so we emit exactly one turn_start/turn_end to the client
@@ -339,19 +340,10 @@ class JotaBridge:
                 if self._push_tts:
                     await td.step(self._push_tts.close(), "cierre del TTS del push", limit)
                     self._push_tts = None
-                if self._push_turn_open:
-                    # A push turn left open (agent start without its end) still gets
-                    # its turn_end, after its last audio frame: never a lone turn_start.
-                    try:
-                        await self._sender.send_json(
-                            {"type": "turn_end", "turn_id": self._push_turn_id}
-                        )
-                    except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-                        logger.debug(
-                            f"[{self.client_id}] turn_end del push al cerrar: {type(e).__name__}"
-                        )
-                self._push_turn_open = False
-                self._push_turn_opened_at = None
+                # A push turn left open (agent start without its end) still gets
+                # its turn_end, after its last audio frame: never a lone turn_start.
+                if self._push_turn_id is not None:
+                    await self._close_push_turn(self._push_turn_id)
 
                 # Never the calling task: the watchdogs call close_all() on themselves.
                 # Cancel them all first, then wait them under one shared limit.
@@ -463,6 +455,8 @@ class JotaBridge:
             current = self._active_turn
             if current is not None and not current.done():
                 await self._cancel_and_wait(current)
+            # Inside the lock: the abort ends before the user's chat.send goes out.
+            await self._cut_push()
             if self._closing:  # close_all() may have started during the cancel wait
                 return
             task = asyncio.create_task(self._call_orchestrator(text), name="turn")
@@ -826,8 +820,10 @@ class JotaBridge:
                             await self.transcriber.send_end()
 
                     elif json_msg.get("type") == "cancel":
-                        # Cliente cancela el turn activo sin lanzar uno nuevo
+                        # Cliente cancela el turn activo (o el push que suena) sin lanzar uno nuevo
                         await self._cancel_active_turn()
+                        async with self._turn_lock:
+                            await self._cut_push()
 
                     elif json_msg.get("type") == "send":
                         # Cliente confirma/edita la transcripción y la envía al orquestador
@@ -948,6 +944,10 @@ class JotaBridge:
             # Barge-in: interrupt active turn if enabled and partial is substantial enough
             if self.config.barge_in_enabled and len(text) >= self.config.barge_in_min_chars:
                 cancelled, cancelled_turn_id = await self._cancel_turn()
+                async with self._turn_lock:
+                    cut_push_id = await self._cut_push()
+                if cut_push_id:
+                    cancelled, cancelled_turn_id = True, cut_push_id
                 if cancelled:
                     logger.info(
                         f"[{self.client_id}] Barge-in: turno cancelado por parcial len={len(text)}"
@@ -1253,6 +1253,7 @@ class JotaBridge:
         self._turn_seq += 1
         turn_seq = self._turn_seq & 0xFFFF  # uint16 on the wire (G-11)
         self._push_turn_id = f"t-{self._turn_seq}"
+        self._push_session_key = session_key
         self._push_turn_open = True
         self._push_text.reset()
         self._push_turn_opened_at = time.monotonic()
@@ -1344,7 +1345,7 @@ class JotaBridge:
         if self._push_tts_stats is not None:
             self._push_tts_stats[key] += (time.monotonic() - t0) * 1000
 
-    async def _drop_push_tts(self, reason: str) -> None:
+    async def _drop_push_tts(self, reason: str, level: int = logging.WARNING) -> None:
         """Abandon this turn's push TTS (issue #199). Every wait is bounded by
         PUSH_TTS_DRAIN_TIMEOUT_S; logs once per turn (a later call is a no-op)."""
         tts = self._push_tts
@@ -1353,10 +1354,8 @@ class JotaBridge:
         self._push_tts = None
         if self._push_tts_stats is not None:
             self._push_tts_stats["dropped"] = True
-        logger.warning(
-            f"[{self.client_id}] TTS de push abandonado ({reason}); "
-            f"el turno sigue solo con texto."
-        )
+        rest = "; el turno sigue solo con texto." if level >= logging.WARNING else "."
+        logger.log(level, f"[{self.client_id}] TTS de push abandonado ({reason}){rest}")
         audio_task, self._push_audio_task = self._push_audio_task, None
         if audio_task is not None and not audio_task.done():
             audio_task.cancel()
@@ -1385,6 +1384,7 @@ class JotaBridge:
         if not self._push_turn_open:
             logger.debug(f"[{self.client_id}] push_turn_end ignored: no push turn open")
             return
+        turn_id = self._push_turn_id  # a cut (_cut_push) may close it while we wait
 
         tts = self._push_tts
         if tts:
@@ -1442,12 +1442,33 @@ class JotaBridge:
                 "push_tts",
                 **{k: round(v, 1) if isinstance(v, float) else v for k, v in stats.items()},
             )
-        try:
-            await self._sender.send_json({"type": "turn_end", "turn_id": self._push_turn_id})
-        except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-            self._log_send_failed("turn_end del push", e)
+        if turn_id is not None:
+            await self._close_push_turn(turn_id)
+
+    async def _close_push_turn(self, turn_id: str) -> bool:
+        """The only sender of a push's turn_end: exactly one, whoever gets here first
+        (its own end, a cut by the user or close_all). Flags drop before any await."""
+        if not (self._push_turn_open and self._push_turn_id == turn_id):
+            return False
         self._push_turn_open = False
         self._push_turn_opened_at = None
+        try:
+            await self._sender.send_json({"type": "turn_end", "turn_id": turn_id})
+        except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+            self._log_send_failed("turn_end del push", e)
+        return True
+
+    async def _cut_push(self) -> str | None:
+        """The user speaks over a push (7e): stop its audio and TTS, chat.abort it if it
+        runs on our session_key, close it. Returns its turn_id, or None if none was open."""
+        if not self._push_turn_open or self._push_turn_id is None:
+            return None
+        turn_id = self._push_turn_id
+        await self._drop_push_tts("cortado por el usuario", logging.INFO)
+        if self._push_session_key == self._session_key():
+            await self.orchestrator.abort(self._push_session_key)
+        await self._close_push_turn(turn_id)
+        return turn_id
 
     def enqueue_push(self, kind: str, arg: Any) -> None:
         """Queue a push event for this bridge's worker (issue #130 S3a).

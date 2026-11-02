@@ -415,3 +415,34 @@ async def test_diverging_final_emits_full_final_and_warns_without_content(script
     assert any("diverges" in r.getMessage() for r in caplog.records)
     assert TEXT not in caplog.text
     assert "Voy a buscar" not in caplog.text
+
+
+# ── 7e: chat.abort se queda con su propio `aborted` (G-14, sin filtro por runId) ──
+
+
+async def test_abort_absorbs_its_aborted_frame(server):
+    class FakeBridge:
+        def __init__(self):
+            self.calls = []
+
+        def enqueue_push(self, kind, payload):
+            self.calls.append((kind, payload))
+
+    client, turns = make_client(server.port)
+    bridge = FakeBridge()
+    client._dispatcher._clients.register("client-a", bridge)
+    await client.connect()
+    try:
+        await server.push(SK_A, "aviso", end=False)
+        for _ in range(100):
+            if len(bridge.calls) >= 2:
+                break
+            await asyncio.sleep(0.02)
+        await asyncio.wait_for(client.abort(SK_A), 2)
+
+        assert turns.get_queue_by_session(SK_A) is None
+        assert not [p for k, p in bridge.calls if k == "chat" and p.get("state") == "aborted"]
+        events = await asyncio.wait_for(run_turn(client, SK_A, "hola"), 5)
+        assert tokens(events) == "reply-hola" and not errors(events)
+    finally:
+        await client.close()
