@@ -50,5 +50,10 @@ def cli(ctx: click.Context, url: str, token: str | None, as_json: bool, yes: boo
     """Administra el gateway de Jota."""
     ctx.obj = {"url": url, "token": token, "json": as_json, "yes": yes}
     if ctx.invoked_subcommand is None:
-        # shortcut: sin argumentos, la ayuda; el menú interactivo llega en 14b.
-        click.echo(ctx.get_help())
+        from src.cli import menu
+
+        # Menú solo en una terminal interactiva y sin --json; si no (scripts, tuberías), ayuda.
+        if not as_json and menu.interactive():
+            menu.run_menu(ctx)
+        else:
+            click.echo(ctx.get_help())

@@ -46,14 +46,14 @@ def _show_key(out: Out, data: dict[str, Any]) -> None:
 
 
 # Campos que devuelve el gateway pero no se editan.
-_READ_ONLY = {"id", "key_fp", "created_at"}
+READ_ONLY = {"id", "key_fp", "created_at"}
 
 
 def _set_values(pairs: tuple[str, ...], client: dict[str, Any]) -> dict[str, Any]:
     """`campo=texto` o `campo:=json`, como httpie. El nombre se comprueba contra los campos del
     propio cliente: la API ignora los desconocidos a propósito (#100), así que un error de
     tecleo no cambiaría nada sin avisar (#306)."""
-    editable = sorted(set(client) - _READ_ONLY)
+    editable = sorted(set(client) - READ_ONLY)
     values: dict[str, Any] = {}
     for item in pairs:
         field, sep, raw = item.partition("=")
