@@ -56,7 +56,10 @@ def test_state_shape_with_active_session(client, admin_headers):
     assert r.status_code == 200
     body = r.json()
     assert set(body) == {"gateway", "services", "totals", "sessions"}
-    assert set(body["gateway"]) == {"started_at", "uptime_s"}
+    assert set(body["gateway"]) == {"started_at", "uptime_s", "version"}
+    from src._version import __version__
+
+    assert body["gateway"]["version"] == __version__
     assert body["services"]["orchestrator"]["state"] == "CONNECTED"
     assert {"provider", "state", "last_error"} <= set(body["services"]["stt"])
     assert {"provider", "state", "last_error"} <= set(body["services"]["tts"])

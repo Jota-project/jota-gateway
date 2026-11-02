@@ -37,6 +37,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from src._version import __version__
 from src.api.deps import get_admin_auth
 from src.db.database import get_db_session
 from src.db.models import ClientRecord
@@ -401,6 +402,7 @@ def _build_state(app: FastAPI) -> dict[str, Any]:
         "gateway": {
             "started_at": gateway_stats.started_at.isoformat(),
             "uptime_s": round(time.monotonic() - gateway_stats.started_monotonic, 3),
+            "version": __version__,
         },
         "services": {
             "orchestrator": _service_state(app.state.openclaw.status()),
