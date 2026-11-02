@@ -12,7 +12,7 @@ import uvicorn
 import websockets
 from sqlmodel import Session
 
-from src.cli import cmd_deactivate
+from src.cli.legacy import cmd_deactivate
 from src.core.config import settings
 from src.db.models import ClientRecord
 from src.main import app
