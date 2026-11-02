@@ -64,3 +64,11 @@ def test_error_goes_to_stderr(monkeypatch, capsys):
     output.Out(as_json=False).error("mal")
     captured = capsys.readouterr()
     assert "mal" in captured.err and captured.out == ""
+
+
+@pytest.mark.parametrize("name", ["Sala [cocina]", "raro [/]", "[bold]x"])
+def test_styled_values_are_not_markup(tty, capsys, name):
+    out = output.Out(as_json=False)
+    out.pairs([("nombre", name)])
+    out.table([("NOMBRE", "name")], [{"name": name}])
+    assert capsys.readouterr().out.count(name) == 2

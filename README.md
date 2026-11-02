@@ -281,7 +281,7 @@ src/
 ├── db/
 │   ├── models.py            ClientRecord (SQLModel) — identidad y config por cliente
 │   └── database.py          get_engine() / run_migrations() / get_db_session()
-├── cli.py                   CLI — add-client / list-clients / (de)activate-client / delete-client
+├── cli/                     jota-gw — status, version y clients por la API /admin
 └── services/
     ├── bridge.py            JotaBridge — coordinador de sesión WS
     ├── db_client.py         DbClient — lee ClientRecord de SQLite local (singleton, sin caché)

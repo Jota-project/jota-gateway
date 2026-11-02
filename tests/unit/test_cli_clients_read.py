@@ -114,3 +114,16 @@ def test_show_json(use_api):
 def test_show_ambiguous_exits_2(use_api):
     use_api(FakeApi({("GET", "/admin/clients"): CLIENTS}))
     assert run("clients", "show", "ha").exit_code == 2
+
+
+def test_ref_prefix_and_name_pointing_to_different_clients_is_ambiguous():
+    cafe = {**C, "id": "cafe9999-0000", "name": "otro"}
+    named_cafe = {**A, "name": "cafe"}
+    with pytest.raises(ApiError) as e:
+        refs.resolve([cafe, named_cafe], "cafe")
+    assert e.value.exit_code == 2
+
+
+def test_ref_is_stripped_and_prefix_ignores_case():
+    assert refs.resolve(CLIENTS, " Jota-Screen ") is A
+    assert refs.resolve(CLIENTS, "BBBB") is C

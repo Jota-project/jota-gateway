@@ -135,3 +135,36 @@ def test_remove_without_tty_needs_yes(use_api):
     fake = use_api(FakeApi(LIST))
     assert run("clients", "remove", "Jota-Screen").exit_code == 2
     assert len(fake.calls) == 1
+
+
+def test_add_on_tty_with_bracket_name_still_shows_key(use_api, monkeypatch):
+    from src.cli import output
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(output, "_isatty", lambda: True)
+    use_api(FakeApi({("POST", "/admin/clients"): {**A, "name": "x [/]", "client_key": KEY}}))
+    r = run("clients", "add", "--name", "x [/]")
+    assert r.exit_code == 0, r.output
+    assert KEY in r.output
+
+
+def test_confirm_prompt_goes_to_stderr(use_api, tty, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(clients.click, "confirm",
+                        lambda *a, **k: seen.update(k) or True)
+    use_api(FakeApi({**LIST, ("DELETE", PATH): None}))
+    assert run("clients", "remove", "Jota-Screen").exit_code == 0
+    assert seen.get("err") is True
+
+
+@pytest.mark.parametrize("args", [("clients", "show", "Jota-Screen"), ("clients", "list"),
+                                  ("clients", "edit", "Jota-Screen", "--name", "B"),
+                                  ("clients", "disable", "Jota-Screen")])
+def test_reads_drop_a_key_from_an_older_gateway(use_api, args):
+    leaky = {**A, "client_key": KEY}
+    use_api(FakeApi({("GET", "/admin/clients"): [leaky], ("GET", PATH): leaky,
+                     ("PATCH", PATH): leaky}))
+    for flags in ((), ("--json",)):
+        r = run(*flags, *args)
+        assert r.exit_code == 0, r.output
+        assert KEY not in r.output

@@ -57,13 +57,14 @@ class Out:
             for line in [headers, *cells]:
                 click.echo("  ".join(c.ljust(w) for c, w in zip(line, widths)).rstrip())
             return
+        from rich.markup import escape
         from rich.table import Table
 
         table = Table(box=None, header_style=f"bold {MUTED}", style=TEXT, pad_edge=False)
         for i, (header, _) in enumerate(columns):
             table.add_column(header, style=ACCENT if i == 0 else TEXT)
         for line in cells:
-            table.add_row(*line)
+            table.add_row(*(escape(c) for c in line))  # un nombre con [ ] no es markup
         self._console().print(table)
 
     def pairs(self, items: list[tuple[str, Any]]) -> None:
@@ -72,9 +73,11 @@ class Out:
             for key, value in items:
                 click.echo(f"{key.ljust(width)}  {fmt(value)}")
             return
+        from rich.markup import escape
+
         console = self._console()
         for key, value in items:
-            console.print(f"[{MUTED}]{key.ljust(width)}[/]  [{TEXT}]{fmt(value)}[/]")
+            console.print(f"[{MUTED}]{escape(key.ljust(width))}[/]  [{TEXT}]{escape(fmt(value))}[/]")
 
     def message(self, text: str, color: str = TEXT) -> None:
         if self.styled:

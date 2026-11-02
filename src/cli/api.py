@@ -71,6 +71,15 @@ def _validation_message(detail: Any) -> str:
     return "Datos no válidos: " + "; ".join(parts)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    # Una redirección (p. ej. el login de Cloudflare Access) no debe llevarse el token.
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 class Api:
     def __init__(self, url: str, token: str, timeout: float = TIMEOUT_S) -> None:
         self.url = url.rstrip("/")
@@ -80,11 +89,11 @@ class Api:
     def request(self, method: str, path: str, body: Any = None) -> Any:
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request(self.url + path, data=data, method=method)
-        req.add_header("X-Admin-Token", self.token)
+        req.add_unredirected_header("X-Admin-Token", self.token)
         if data is not None:
             req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with _OPENER.open(req, timeout=self.timeout) as resp:
                 raw = resp.read()
         except urllib.error.HTTPError as e:
             raise self._http_error(e) from None
@@ -94,10 +103,17 @@ class Api:
                 f"El gateway no responde en {host}. ¿Está arrancado? Prueba `jota-gw doctor`.",
                 3,
             ) from None
-        return json.loads(raw) if raw else None
+        try:
+            return json.loads(raw) if raw else None
+        except ValueError:
+            raise ApiError(
+                f"La respuesta de {self.url} no es del gateway (no es JSON); revisa --url."
+            ) from None
 
     @staticmethod
     def _http_error(e: urllib.error.HTTPError) -> ApiError:
+        if 300 <= e.code < 400:
+            return ApiError("El gateway ha redirigido la petición; revisa --url.")
         if e.code == 401:
             return ApiError("El token de administración no es válido.")
         detail = _detail(e)

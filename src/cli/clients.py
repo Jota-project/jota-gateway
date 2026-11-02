@@ -32,15 +32,16 @@ def _confirm(ctx: click.Context, question: str) -> None:
         return
     if not _stdin_isatty():
         raise api.ApiError(f"{question} Sin terminal para preguntar: repite con --yes.", 2)
-    click.confirm(question, abort=True)
+    click.confirm(question, abort=True, err=True)
 
 
 def _show_key(out: Out, data: dict[str, Any]) -> None:
     if out.as_json:
         out.json(data)
         return
-    out.pairs([("nombre", data["name"]), ("id", data["id"]), ("fp", data["key_fp"])])
+    # La clave primero: el servidor ya la ha creado o rotado y no se puede volver a pedir.
     out.message(f"client_key: {data['client_key']}", ACCENT)
+    out.pairs([("nombre", data["name"]), ("id", data["id"]), ("fp", data["key_fp"])])
     out.message("Guárdala ahora: no se volverá a mostrar.", MUTED)
 
 
@@ -57,6 +58,11 @@ def _set_values(pairs: tuple[str, ...]) -> dict[str, Any]:
     return values
 
 
+def _no_key(data: dict[str, Any]) -> dict[str, Any]:
+    # Un gateway anterior a #293 aún manda client_key en lecturas: nunca se enseña.
+    return {k: v for k, v in data.items() if k != "client_key"}
+
+
 def _find(client: api.Api, ref: str) -> dict[str, Any]:
     return refs.resolve(client.request("GET", "/admin/clients"), ref)
 
@@ -71,7 +77,7 @@ def clients() -> None:
 def list_(ctx: click.Context) -> None:
     """Lista los clientes."""
     out = _out(ctx)
-    rows = api.from_context(ctx).request("GET", "/admin/clients")
+    rows = [_no_key(r) for r in api.from_context(ctx).request("GET", "/admin/clients")]
     if out.as_json:
         out.json(rows)
     elif not rows:
@@ -87,7 +93,7 @@ def show(ctx: click.Context, ref: str) -> None:
     """Enseña todos los datos de un cliente, salvo su clave."""
     out = _out(ctx)
     client = api.from_context(ctx)
-    data = client.request("GET", f"/admin/clients/{_find(client, ref)['id']}")
+    data = _no_key(client.request("GET", f"/admin/clients/{_find(client, ref)['id']}"))
     if out.as_json:
         out.json(data)
     else:
@@ -120,7 +126,7 @@ def add(
     if import_key:
         # Por stdin, nunca por argumento: así no acaba en el historial de la shell.
         key = (
-            click.prompt("Clave a importar", hide_input=True)
+            click.prompt("Clave a importar", hide_input=True, err=True)
             if _stdin_isatty()
             else sys.stdin.readline()
         ).strip()
@@ -162,7 +168,7 @@ def edit(
     if not body:
         raise api.ApiError("Nada que cambiar: indica al menos una opción.", 2)
     client = api.from_context(ctx)
-    data = client.request("PATCH", f"/admin/clients/{_find(client, ref)['id']}", body)
+    data = _no_key(client.request("PATCH", f"/admin/clients/{_find(client, ref)['id']}", body))
     out = _out(ctx)
     if out.as_json:
         out.json(data)
@@ -172,8 +178,8 @@ def edit(
 
 def _set_active(ctx: click.Context, ref: str, active: bool) -> None:
     client = api.from_context(ctx)
-    data = client.request(
-        "PATCH", f"/admin/clients/{_find(client, ref)['id']}", {"is_active": active}
+    data = _no_key(
+        client.request("PATCH", f"/admin/clients/{_find(client, ref)['id']}", {"is_active": active})
     )
     out = _out(ctx)
     if out.as_json:

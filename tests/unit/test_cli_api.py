@@ -142,3 +142,38 @@ def test_token_never_read_from_cwd_dotenv(monkeypatch, tmp_path):
     with pytest.raises(api.ApiError) as e:
         api.resolve_token(None)
     assert e.value.exit_code == 2
+
+
+class _Redirect(BaseHTTPRequestHandler):
+    target = ""
+
+    def do_GET(self):
+        self.send_response(302)
+        self.send_header("Location", _Redirect.target)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+def test_redirect_is_an_error_and_never_forwards_the_token(server):
+    _Redirect.target = server + "/admin/state"
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Redirect)
+    threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True).start()
+    try:
+        with pytest.raises(api.ApiError) as e:
+            api.Api(f"http://127.0.0.1:{srv.server_address[1]}", "tok").request("GET", "/x")
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert e.value.exit_code == 1
+    assert "redirig" in e.value.message
+    assert _Fake.last == {}  # el destino de la redirección no recibió nada
+
+
+def test_non_json_2xx_is_an_error(server, monkeypatch):
+    monkeypatch.setattr(json, "dumps", lambda *_a, **_k: "<html>login</html>")
+    with pytest.raises(api.ApiError) as e:
+        api.Api(server, "tok").request("GET", "/admin/state")
+    assert e.value.exit_code == 1
