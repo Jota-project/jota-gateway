@@ -1252,7 +1252,7 @@ class JotaBridge:
 
         self._turn_seq += 1
         turn_seq = self._turn_seq & 0xFFFF  # uint16 on the wire (G-11)
-        self._push_turn_id = f"t-{self._turn_seq}"
+        turn_id = self._push_turn_id = f"t-{self._turn_seq}"
         self._push_session_key = session_key
         self._push_turn_open = True
         self._push_text.reset()
@@ -1279,6 +1279,13 @@ class JotaBridge:
             client_id=self.client_id,
         )
         if tts is None:
+            return
+        if not (self._push_turn_open and self._push_turn_id == turn_id):
+            # Cut (_cut_push) while connecting: this TTS belongs to a closed push.
+            try:
+                await asyncio.wait_for(tts.close(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
+            except Exception as e:  # noqa: BLE001 — limpieza: el fallo se registra
+                logger.debug(f"[{self.client_id}] cierre del TTS de push cortado: {describe_error(e)}")
             return
         self._push_tts = tts
         self._push_tts_stats = {

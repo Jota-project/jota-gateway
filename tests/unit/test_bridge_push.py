@@ -409,3 +409,27 @@ async def test_cut_during_push_turn_end_sends_one_turn_end(make_push_bridge):
     ]
     bridge.orchestrator.abort.assert_awaited_once_with(sk)
     assert bridge._push_turn_open is False
+
+
+async def test_cut_while_push_tts_connects_closes_that_tts(make_push_bridge):
+    """Un corte durante el connect del TTS del push: ese TTS se cierra, sin audio huérfano."""
+    push_tts = AsyncMock()
+    push_tts.get_audio_stream = _hang
+    go = asyncio.Event()
+
+    async def _connect(**_):
+        await go.wait()
+        return push_tts
+
+    tts_wrapper = AsyncMock()
+    tts_wrapper.connect = AsyncMock(side_effect=_connect)
+    bridge, _ = make_push_bridge(output_mode=("audio", "text"), tts=tts_wrapper)
+    opening = asyncio.create_task(bridge.on_push_turn_start(bridge._session_key()))
+    await wait_until(lambda: tts_wrapper.connect.await_count == 1)
+    assert await bridge._cut_push() == "t-1"
+    go.set()
+    await asyncio.wait_for(opening, 2)
+
+    push_tts.close.assert_awaited_once()
+    assert bridge._push_tts is None and bridge._push_audio_task is None
+    assert [m["type"] for m in await sent(bridge)] == ["turn_start", "turn_end"]
