@@ -15,6 +15,7 @@ DEFAULT_URL = "http://127.0.0.1:8004"
 COMMANDS: dict[str, tuple[str, str]] = {
     "clients": ("src.cli.clients:clients", "Gestiona los clientes."),
     "config": ("src.cli.config:config", "Configuración efectiva (solo lectura)."),
+    "doctor": ("src.cli.doctor:doctor", "Diagnostica la instalación."),
     "status": ("src.cli.status:status", "Estado del gateway y sus servicios."),
     "version": ("src.cli.version:version", "Versión de la CLI y del gateway."),
 }

@@ -98,7 +98,10 @@ class Api:
         self.token = token
         self.timeout = timeout
 
-    def request(self, method: str, path: str, body: Any = None) -> Any:
+    def request(
+        self, method: str, path: str, body: Any = None, accept: tuple[int, ...] = ()
+    ) -> Any:
+        """`accept`: códigos de error cuyo cuerpo JSON se devuelve (p. ej. el 503 de /ready)."""
         data = None if body is None else json.dumps(body).encode()
         try:
             req = urllib.request.Request(self.url + path, data=data, method=method)
@@ -123,6 +126,11 @@ class Api:
                         raise unreachable
                 raw = b"".join(chunks)
         except urllib.error.HTTPError as e:
+            if e.code in accept:
+                try:
+                    return json.loads(e.read())
+                except ValueError:
+                    raise ApiError(f"Respuesta {e.code} sin JSON de {host}.") from None
             raise self._http_error(e) from None
         except urllib.error.URLError as e:
             if isinstance(e.reason, ssl.SSLError):

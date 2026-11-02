@@ -25,6 +25,9 @@ RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin app 
 USER app
 
 ENV LOG_FORMAT=json
+# Directorio base de la CLI (jota-gw): la BD relativa de DATABASE_URL queda en /app/data,
+# la del volumen. El gateway aún no lo lee (llega con M14c).
+ENV JOTA_GATEWAY_HOME=/app
 
 EXPOSE 8004
 
