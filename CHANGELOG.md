@@ -1,3 +1,10 @@
+# [1.23.0](https://github.com/Jota-project/jota-gateway/compare/v1.22.0...v1.23.0) (2026-11-02)
+
+
+### Features
+
+* **cli:** jota-gw y /admin/clients sin claves en lectura (M14a) ([#307](https://github.com/Jota-project/jota-gateway/issues/307)) ([1627366](https://github.com/Jota-project/jota-gateway/commit/1627366ad4c122c8dc411c1c597ff5c8cfe67692)), closes [#293](https://github.com/Jota-project/jota-gateway/issues/293) [#306](https://github.com/Jota-project/jota-gateway/issues/306)
+
 # [1.22.0](https://github.com/Jota-project/jota-gateway/compare/v1.21.8...v1.22.0) (2026-11-02)
 
 
