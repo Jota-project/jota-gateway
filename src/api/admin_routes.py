@@ -6,7 +6,7 @@ admin_routes.py
 Auth: X-Admin-Token header validado contra ADMIN_TOKEN env var (via get_admin_auth).
 
 Clientes:
-  GET    /admin/clients              — lista clientes
+  GET    /admin/clients              — lista clientes (sin client_key; huella key_fp)
   POST   /admin/clients              — crear cliente (devuelve client_key generada)
   GET    /admin/clients/{id}         — detalle de un cliente
   PATCH  /admin/clients/{id}         — actualizar campos (nombre, config, etc.)
@@ -40,7 +40,7 @@ from sqlmodel import Session, select
 from src.api.deps import get_admin_auth
 from src.db.database import get_db_session
 from src.db.models import ClientRecord
-from src.models.admin_schemas import ClientCreate, ClientResponse, ClientUpdate
+from src.models.admin_schemas import ClientCreate, ClientResponse, ClientUpdate, ClientWithKey
 from src.services.reconnection import ServiceStatus
 from src.services.stats import gateway_stats
 
@@ -101,11 +101,11 @@ def list_clients(session: Session = Depends(get_db_session)) -> list[ClientRespo
     return [ClientResponse.from_record(r) for r in records]
 
 
-@router.post("/clients", response_model=ClientResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/clients", response_model=ClientWithKey, status_code=status.HTTP_201_CREATED)
 def create_client(
     body: ClientCreate,
     session: Session = Depends(get_db_session),
-) -> ClientResponse:
+) -> ClientWithKey:
     _check_agent_consistency(body.default_agent, body.allowed_agents)
     data = _lists_to_json(body.model_dump())
     data["client_key"] = data["client_key"] or secrets.token_urlsafe(32)
@@ -122,7 +122,7 @@ def create_client(
             status_code=status.HTTP_409_CONFLICT, detail="client_key already exists"
         ) from None
     session.refresh(record)
-    return ClientResponse.from_record(record)
+    return ClientWithKey.from_record(record)
 
 
 @router.get("/clients/{client_id}", response_model=ClientResponse)
@@ -167,11 +167,11 @@ def delete_client(
     session.commit()
 
 
-@router.post("/clients/{client_id}/rotate-key", response_model=ClientResponse)
+@router.post("/clients/{client_id}/rotate-key", response_model=ClientWithKey)
 def rotate_client_key(
     client_id: str,
     session: Session = Depends(get_db_session),
-) -> ClientResponse:
+) -> ClientWithKey:
     rec = _get_or_404(session, client_id)
     for _ in range(_ROTATE_KEY_ATTEMPTS):
         rec.client_key = secrets.token_urlsafe(32)
@@ -188,7 +188,7 @@ def rotate_client_key(
             status_code=status.HTTP_409_CONFLICT, detail="could not generate a unique client_key"
         ) from None
     session.refresh(rec)
-    return ClientResponse.from_record(rec)
+    return ClientWithKey.from_record(rec)
 
 
 # ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+from src.core.logging import fingerprint_key
 from src.db.models import ClientRecord
 from src.models.schemas import OutputMode
 
@@ -25,6 +26,8 @@ ClientType = Literal["ha", "esp32", "web", "app"]
 # desbordes de entero en SQLite (OverflowError -> 500) y valores absurdos.
 _Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 _Text = Annotated[str, StringConstraints(min_length=1, max_length=200)]
+# Solo para importar una clave existente (#293): "" no equivale a omitirla.
+_ImportedKey = Annotated[str, StringConstraints(min_length=32)]
 AgentName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 _VadThold = Annotated[float, Field(ge=0.0, le=1.0)]
 _Speed = Annotated[float, Field(gt=0.0, le=10.0)]
@@ -53,7 +56,7 @@ class ClientCreate(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False)
 
     name: _Name
-    client_key: str | None = None  # si se omite (o es ""), se genera uno aleatorio
+    client_key: _ImportedKey | None = None  # si se omite, se genera una aleatoria
     client_type: ClientType | None = None
     default_agent: AgentName | None = None
     allowed_agents: list[AgentName] | None = None
@@ -106,9 +109,11 @@ class ClientUpdate(BaseModel):
 
 
 class ClientResponse(BaseModel):
+    """Lectura de un cliente: nunca lleva la clave, solo su huella `key_fp` (#293)."""
+
     id: str
     name: str
-    client_key: str
+    key_fp: str
     is_active: bool
     client_type: str | None
     default_agent: str | None
@@ -132,7 +137,7 @@ class ClientResponse(BaseModel):
         return cls(
             id=r.id,
             name=r.name,
-            client_key=r.client_key,
+            key_fp=fingerprint_key(r.client_key),
             is_active=r.is_active,
             client_type=r.client_type,
             default_agent=r.default_agent,
@@ -150,3 +155,13 @@ class ClientResponse(BaseModel):
             push_enabled=r.push_enabled,
             tool_calls_enabled=r.tool_calls_enabled,
         )
+
+
+class ClientWithKey(ClientResponse):
+    """Respuesta de crear y rotar: la única vez que se ve la clave."""
+
+    client_key: str
+
+    @classmethod
+    def from_record(cls, r: ClientRecord) -> "ClientWithKey":
+        return cls(**ClientResponse.from_record(r).model_dump(), client_key=r.client_key)

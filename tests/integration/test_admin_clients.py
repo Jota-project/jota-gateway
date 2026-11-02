@@ -4,6 +4,8 @@ import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
+from src.core.logging import fingerprint_key
+
 ADMIN_TOKEN = "test-admin-token"
 HEADERS = {"x-admin-token": ADMIN_TOKEN}
 
@@ -114,6 +116,33 @@ def test_get_client(http):
 def test_get_client_not_found(http):
     r = http.get("/admin/clients/nonexistent", headers=HEADERS)
     assert r.status_code == 404
+
+
+# --- SIN CLAVES EN LECTURA (#293) ---
+
+
+def test_read_endpoints_never_return_client_key(http):
+    created = http.post("/admin/clients", json={"name": "K"}, headers=HEADERS).json()
+    key, cid = created["client_key"], created["id"]
+    responses = [
+        http.get("/admin/clients", headers=HEADERS),
+        http.get(f"/admin/clients/{cid}", headers=HEADERS),
+        http.patch(f"/admin/clients/{cid}", json={"name": "K2"}, headers=HEADERS),
+    ]
+    for r in responses:
+        assert r.status_code == 200
+        assert key not in r.text
+        assert "client_key" not in r.text
+    fp = fingerprint_key(key)
+    assert responses[0].json()[0]["key_fp"] == fp
+    assert responses[1].json()["key_fp"] == fp
+    assert responses[2].json()["key_fp"] == fp
+
+
+def test_rotate_key_returns_new_key_and_fp(http):
+    cid = http.post("/admin/clients", json={"name": "R"}, headers=HEADERS).json()["id"]
+    data = http.post(f"/admin/clients/{cid}/rotate-key", headers=HEADERS).json()
+    assert data["key_fp"] == fingerprint_key(data["client_key"])
 
 
 # --- PATCH ---

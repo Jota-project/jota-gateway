@@ -7,6 +7,8 @@ import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
+from src.core.logging import fingerprint_key
+
 ADMIN_TOKEN = "test-admin-token"
 HEADERS = {"x-admin-token": ADMIN_TOKEN}
 TAKEN_KEY = "taken-secret-key-0123456789abcdef"
@@ -185,4 +187,4 @@ def test_rotate_key_persistent_collision_is_409_without_leaking_key(http, monkey
     assert TAKEN_KEY not in caplog.text
     # La fila conserva su clave anterior
     again = http.get(f"/admin/clients/{created['id']}", headers=HEADERS).json()
-    assert again["client_key"] == created["client_key"]
+    assert again["key_fp"] == fingerprint_key(created["client_key"])
