@@ -77,20 +77,29 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la guía completa 
 
 Los tres endpoints `*/status` comparten la forma `{"name", "state", "connected_at", "reconnect_attempts", "last_error"}`; los de transcriber y TTS añaden `provider` y, con ElevenLabs, `counters`.
 
-Los campos de un cliente (`POST`/`PATCH /admin/clients`) están en `src/models/admin_schemas.py` y sus defaults en `src/db/models.py`. Desde la terminal, con el gateway en marcha, `jota-gw` (todo pasa por esta API; la CLI no abre la BD):
+Los campos de un cliente (`POST`/`PATCH /admin/clients`) están en `src/models/admin_schemas.py` y sus defaults en `src/db/models.py`. Desde la terminal, `jota-gw`. Los comandos de clientes y de estado necesitan el gateway en marcha y pasan por esta API (la CLI nunca escribe en la BD); `doctor` y `config` funcionan también con el gateway parado:
 
 ```bash
+jota-gw                        # en una terminal: menú interactivo; en un script: la ayuda
+jota-gw doctor                 # diagnóstico: configuración, BD, permisos, candado, gateway y servicios
+jota-gw config show            # ajustes efectivos y su origen (entorno, config.env o por defecto)
+jota-gw config get <AJUSTE> | validate
 jota-gw status                 # gateway, versión, orquestador, STT, TTS y sesiones
 jota-gw version
 jota-gw clients list           # nombre, id corto, tipo, activo, agente y huella fp
 jota-gw clients show <ref>     # <ref>: id, prefijo de id (≥ 4) o nombre
 jota-gw clients add --name … [--type ha|esp32|web|app] [--agent …] [--allowed-agent …] [--import-key]
-jota-gw clients edit <ref> [--name …] [--set tts_speed=1.2 …]
+jota-gw clients edit <ref> [--name …] [--set tts_speed=1.2 …] [--set output_mode:='["text"]']
 jota-gw clients enable|disable <ref>
 jota-gw clients rotate-key|remove <ref>    # preguntan; --yes para scripts
 ```
 
-Opciones globales: `--url` (`JOTA_GW_URL`, por defecto `http://127.0.0.1:8004`), `--token` (`JOTA_GW_TOKEN`; si no, `ADMIN_TOKEN` o `~/.jota-gateway/config.env`), `--json` y `--yes`. `--import-key` lee la clave de stdin, nunca de un argumento. Códigos de salida: 0 bien, 1 error, 2 uso incorrecto, 3 gateway inalcanzable. En Docker, hasta que la imagen traiga el ejecutable: `docker exec jota_gateway python -m src.cli …`.
+Opciones globales: `--url` (`JOTA_GW_URL`, por defecto `http://127.0.0.1:8004`), `--token` (`JOTA_GW_TOKEN`; si no, `ADMIN_TOKEN` o `config.env`), `--json` y `--yes`. Códigos de salida: 0 bien, 1 error, 2 uso incorrecto, 3 gateway inalcanzable.
+
+- **Configuración que lee la CLI:** variables del proceso → `<base>/config.env` → valores por defecto, con `<base>` = `JOTA_GATEWAY_HOME` o `~/.jota-gateway`. Nunca el `.env` del directorio actual. Una `DATABASE_URL` relativa se resuelve contra `<base>`. Los secretos (`*_TOKEN`, `*_KEY`) salen siempre enmascarados, también en `--json`.
+- **`--set`:** `campo=valor` manda texto (el servidor convierte números y booleanos); `campo:=json` manda JSON (listas, `null`). Un campo desconocido sale con 2 y lista los editables.
+- **`--import-key`** lee la clave de stdin, nunca de un argumento.
+- **En Docker**, hasta que la imagen traiga el ejecutable (M14c): `docker exec jota_gateway python -m src.cli …`. La imagen fija `JOTA_GATEWAY_HOME=/app`, así que `doctor` encuentra la BD del volumen. Sin `-t` no hay terminal: no se abre el menú y `rotate-key`/`remove` necesitan `--yes` (o usa `docker exec -it`). Con `GATEWAY_HOST` en una IP de la LAN, pasa `--url http://<esa IP>:8004`.
 
 Auth: header `X-Admin-Token`. Sin header → 422. Token incorrecto → 401. `ADMIN_TOKEN` vacío → 503.
 
@@ -281,7 +290,7 @@ src/
 ├── db/
 │   ├── models.py            ClientRecord (SQLModel) — identidad y config por cliente
 │   └── database.py          get_engine() / run_migrations() / get_db_session()
-├── cli/                     jota-gw — status, version y clients por la API /admin
+├── cli/                     jota-gw — menú, doctor, config, status, version y clients
 └── services/
     ├── bridge.py            JotaBridge — coordinador de sesión WS
     ├── db_client.py         DbClient — lee ClientRecord de SQLite local (singleton, sin caché)
