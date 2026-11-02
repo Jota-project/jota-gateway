@@ -67,15 +67,34 @@ def test_add_import_key_empty_stdin_is_usage_error(use_api):
 # --- edit ---
 
 
-def test_edit_sends_patch_with_set_values_parsed_as_json(use_api):
-    fake = use_api(FakeApi({**LIST, ("PATCH", PATH): A}))
+FULL = {**A, "created_at": "2026-11-02T10:00:00", "tts_speed": 1.0, "tts_voice": "af_heart",
+        "push_enabled": True, "output_mode": None, "default_agent": None}
+FULL_LIST = {("GET", "/admin/clients"): [FULL]}
+
+
+def test_edit_set_is_text_and_colon_equals_is_json(use_api):
+    fake = use_api(FakeApi({**FULL_LIST, ("PATCH", PATH): FULL}))
     r = run("clients", "edit", "Jota-Screen", "--name", "Tele", "--set", "tts_speed=1.2",
-            "--set", "push_enabled=false", "--set", "output_mode=[\"text\"]",
-            "--set", "tts_voice=af_heart", "--set", "default_agent=null")
+            "--set", "push_enabled=false", "--set", 'output_mode:=["text"]',
+            "--set", "tts_voice=1234", "--set", "default_agent:=null")
     assert r.exit_code == 0, r.output
     assert fake.calls[-1] == ("PATCH", PATH, {
-        "name": "Tele", "tts_speed": 1.2, "push_enabled": False, "output_mode": ["text"],
-        "tts_voice": "af_heart", "default_agent": None})
+        "name": "Tele", "tts_speed": "1.2", "push_enabled": "false", "output_mode": ["text"],
+        "tts_voice": "1234", "default_agent": None})
+
+
+@pytest.mark.parametrize("item", ["tts_sped=1.2", "id=otro", "key_fp=x", "client_key=x"])
+def test_edit_set_unknown_or_read_only_field_is_usage_error(use_api, item):
+    fake = use_api(FakeApi(FULL_LIST))
+    r = run("clients", "edit", "Jota-Screen", "--set", item)
+    assert r.exit_code == 2
+    assert "tts_speed" in r.output  # lista los campos válidos
+    assert len(fake.calls) == 1
+
+
+def test_edit_set_bad_json_is_usage_error(use_api):
+    use_api(FakeApi(FULL_LIST))
+    assert run("clients", "edit", "Jota-Screen", "--set", "output_mode:=[text").exit_code == 2
 
 
 def test_edit_without_changes_is_usage_error(use_api):
