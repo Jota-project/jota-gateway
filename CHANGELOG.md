@@ -1,3 +1,10 @@
+# [1.24.0](https://github.com/Jota-project/jota-gateway/compare/v1.23.0...v1.24.0) (2026-11-02)
+
+
+### Features
+
+* **cli:** jota-gw doctor, config y menú interactivo (M14b) ([#308](https://github.com/Jota-project/jota-gateway/issues/308)) ([103afc2](https://github.com/Jota-project/jota-gateway/commit/103afc2ee324c857f7028c33f47d8a4937c498eb)), closes [#294](https://github.com/Jota-project/jota-gateway/issues/294) [#306](https://github.com/Jota-project/jota-gateway/issues/306) [#307](https://github.com/Jota-project/jota-gateway/issues/307) [#100](https://github.com/Jota-project/jota-gateway/issues/100) [#294](https://github.com/Jota-project/jota-gateway/issues/294)
+
 # [1.23.0](https://github.com/Jota-project/jota-gateway/compare/v1.22.0...v1.23.0) (2026-11-02)
 
 

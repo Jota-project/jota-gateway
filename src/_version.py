@@ -1,2 +1,2 @@
 # Lo reescribe semantic-release en cada release (.releaserc, @semantic-release/exec).
-__version__ = "1.23.0"
+__version__ = "1.24.0"
