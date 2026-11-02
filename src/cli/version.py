@@ -12,11 +12,14 @@ from src.cli.output import Out
 def version(ctx: click.Context) -> None:
     """Versión de la CLI y del gateway."""
     out = Out(ctx.find_root().obj["json"])
+    answered = True
     try:
-        gateway = api.from_context(ctx).request("GET", "/admin/state")["gateway"].get("version")
+        state = api.from_context(ctx).request("GET", "/admin/state")
+        gateway = (state.get("gateway") or {}).get("version")
     except api.ApiError:
-        gateway = None  # sin gateway o sin token: basta con la versión de la CLI
+        answered, gateway = False, None  # sin gateway o sin token: basta con la de la CLI
     if out.as_json:
         out.json({"cli": __version__, "gateway": gateway})
         return
-    out.pairs([("cli", __version__), ("gateway", gateway or "no responde")])
+    shown = gateway or ("sin versión (anterior a 1.23)" if answered else "no responde")
+    out.pairs([("cli", __version__), ("gateway", shown)])

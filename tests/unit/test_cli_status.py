@@ -69,3 +69,20 @@ def test_version_without_token_still_exits_0(monkeypatch, tmp_path):
     r = run("version")
     assert r.exit_code == 0
     assert __version__ in r.output
+
+
+# --- robustez (#306) ---
+
+
+def test_status_tolerates_a_partial_state(use_api):
+    use_api(FakeApi({("GET", "/admin/state"): {"gateway": {}, "services": {"stt": {}}}}))
+    r = run("status")
+    assert r.exit_code == 0, r.output
+    assert "?" in r.output
+
+
+def test_version_distinguishes_no_version_from_no_answer(use_api):
+    use_api(FakeApi({("GET", "/admin/state"): {"gateway": {"uptime_s": 1}}}))
+    r = run("version")
+    assert r.exit_code == 0
+    assert "sin versión" in r.output and "no responde" not in r.output

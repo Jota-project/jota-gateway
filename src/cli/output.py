@@ -37,7 +37,7 @@ def fmt(value: Any) -> str:
 class Out:
     def __init__(self, as_json: bool) -> None:
         self.as_json = as_json
-        self.styled = not as_json and "NO_COLOR" not in os.environ and _isatty()
+        self.styled = not as_json and not os.environ.get("NO_COLOR") and _isatty()
 
     def _console(self, stderr: bool = False) -> Any:
         from rich.console import Console
