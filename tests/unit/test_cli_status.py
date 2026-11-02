@@ -2,12 +2,12 @@
 
 import json
 
-import pytest
 from click.testing import CliRunner
 
 from src._version import __version__
 from src.cli import api
 from src.cli.app import cli
+from tests.fakes.cli_api import FakeApi
 
 STATE = {
     "gateway": {"started_at": "2026-11-02T10:00:00", "uptime_s": 3725.4, "version": "1.23.0"},
@@ -19,26 +19,6 @@ STATE = {
     "totals": {"sessions_active": 2, "sessions_opened": 9},
     "sessions": [],
 }
-
-
-class FakeApi:
-    def __init__(self, responses=None, error=None):
-        self.responses, self.error, self.calls = responses or {}, error, []
-
-    def request(self, method, path, body=None):
-        self.calls.append((method, path, body))
-        if self.error:
-            raise self.error
-        return self.responses[(method, path)]
-
-
-@pytest.fixture()
-def use_api(monkeypatch):
-    def _use(fake):
-        monkeypatch.setattr(api, "from_context", lambda ctx: fake)
-        return fake
-
-    return _use
 
 
 def run(*args):
