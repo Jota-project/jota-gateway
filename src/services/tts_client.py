@@ -168,6 +168,10 @@ class TTSClient:
                 logger.debug("[%s] TTS control frame: %s", self.client_id, msg_type)
         except ConnectionClosed:
             logger.info("[%s] TTS audio stream ended (ConnectionClosed)", self.client_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 — frontera del lector: cierra el stream y registra el tipo, nunca el frame
+            logger.warning("[%s] TTS lectura abortada (%s)", self.client_id, describe_error(e))
         finally:
             self._out.put_nowait(None)
 
