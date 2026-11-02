@@ -125,6 +125,7 @@ def test_token_falls_back_to_admin_token_env(monkeypatch, tmp_path):
 
 
 def test_token_from_home_config_env(monkeypatch, tmp_path):
+    monkeypatch.delenv("JOTA_GATEWAY_HOME", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("ADMIN_TOKEN", raising=False)
     (tmp_path / ".jota-gateway").mkdir()
@@ -177,3 +178,107 @@ def test_non_json_2xx_is_an_error(server, monkeypatch):
     with pytest.raises(api.ApiError) as e:
         api.Api(server, "tok").request("GET", "/admin/state")
     assert e.value.exit_code == 1
+
+
+# --- robustez (#306) ---
+
+
+@pytest.mark.parametrize("url", ["no-es-una-url", "http://[::1"])
+def test_malformed_url_is_usage_error(url):
+    with pytest.raises(api.ApiError) as e:
+        api.Api(url, "tok").request("GET", "/admin/state")
+    assert e.value.exit_code == 2
+    assert "--url" in e.value.message
+
+
+class _Truncated(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Length", "100")
+        self.end_headers()
+        self.wfile.write(b'{"a"')
+        self.wfile.flush()
+        self.close_connection = True
+
+    def log_message(self, *args):
+        pass
+
+
+class _Drip(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Length", "40")
+        self.end_headers()
+        for _ in range(40):
+            self.wfile.write(b" ")
+            self.wfile.flush()
+            time.sleep(0.03)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture()
+def serve():
+    servers = []
+
+    def _serve(handler):
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True).start()
+        servers.append(srv)
+        return f"http://127.0.0.1:{srv.server_address[1]}"
+
+    yield _serve
+    for srv in servers:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_truncated_response_is_an_error(serve):
+    with pytest.raises(api.ApiError) as e:
+        api.Api(serve(_Truncated), "tok").request("GET", "/admin/state")
+    assert e.value.exit_code == 1
+
+
+def test_total_deadline_even_if_each_read_is_fast(serve):
+    started = time.monotonic()
+    with pytest.raises(api.ApiError) as e:
+        api.Api(serve(_Drip), "tok", timeout=0.3).request("GET", "/admin/state")
+    assert e.value.exit_code == 3
+    assert time.monotonic() - started < 1.0
+
+
+def test_422_with_odd_detail_items_does_not_crash(server):
+    _Fake.status, _Fake.body = 422, {"detail": ["raro", 3]}
+    with pytest.raises(api.ApiError) as e:
+        api.Api(server, "tok").request("POST", "/admin/clients", {})
+    assert e.value.exit_code == 2
+
+
+def test_tls_error_is_not_unreachable(server):
+    with pytest.raises(api.ApiError) as e:
+        api.Api(server.replace("http://", "https://"), "tok").request("GET", "/admin/state")
+    assert e.value.exit_code == 1
+    assert "TLS" in e.value.message
+
+
+def test_unreadable_config_env_is_an_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("JOTA_GATEWAY_HOME", str(tmp_path))
+    monkeypatch.delenv("ADMIN_TOKEN", raising=False)
+    config = tmp_path / "config.env"
+    config.write_text("ADMIN_TOKEN=x\n")
+    config.chmod(0)
+    try:
+        with pytest.raises(api.ApiError) as e:
+            api.resolve_token(None)
+    finally:
+        config.chmod(0o600)
+    assert e.value.exit_code == 1
+    assert str(config) in e.value.message
+
+
+def test_token_from_jota_gateway_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("JOTA_GATEWAY_HOME", str(tmp_path))
+    monkeypatch.delenv("ADMIN_TOKEN", raising=False)
+    (tmp_path / "config.env").write_text("ADMIN_TOKEN=de-la-base\n")
+    assert api.resolve_token(None) == "de-la-base"

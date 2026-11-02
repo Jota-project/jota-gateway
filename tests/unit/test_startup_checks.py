@@ -12,6 +12,8 @@ from src.core.startup_checks import (
     LOCK_FILENAME,
     SingleProcessLockError,
     acquire_single_process_lock,
+    deprecated_settings,
+    insecure_tokens,
     release_single_process_lock,
     warn_deprecated_settings,
     warn_insecure_tokens,
@@ -161,3 +163,20 @@ def test_flock_busy_errnos_still_mean_another_process(tmp_path, monkeypatch):
         monkeypatch.setattr(startup_checks.fcntl, "flock", _busy)
         with pytest.raises(SingleProcessLockError, match="Otro proceso"):
             acquire_single_process_lock(f"sqlite:///{tmp_path}/gateway.db")
+
+
+# --- comprobaciones puras, para `jota-gw doctor` (M14b, #294) ---
+
+
+def test_insecure_tokens_lists_names_without_logging(caplog):
+    caplog.set_level(logging.DEBUG)
+    s = Settings(_env_file=None, ADMIN_TOKEN="", OPENCLAW_TOKEN="changeme", TTS_TOKEN="gateway")
+    assert insecure_tokens(s) == ["ADMIN_TOKEN", "OPENCLAW_TOKEN", "TTS_TOKEN"]
+    assert caplog.records == []
+
+
+def test_deprecated_settings_lists_names_without_logging(caplog):
+    caplog.set_level(logging.DEBUG)
+    s = Settings(_env_file=None, SHUTDOWN_DRAIN_S=3.0)
+    assert deprecated_settings(s) == ["SHUTDOWN_DRAIN_S"]
+    assert caplog.records == []

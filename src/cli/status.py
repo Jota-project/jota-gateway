@@ -20,7 +20,7 @@ def _uptime(seconds: float) -> str:
 
 
 def _service(svc: dict[str, Any]) -> str:
-    text = " · ".join(str(v) for v in (svc.get("provider"), svc["state"]) if v)
+    text = " · ".join(str(v) for v in (svc.get("provider"), svc.get("state", "?")) if v)
     return f"{text} ({svc['last_error']})" if svc.get("last_error") else text
 
 
@@ -33,14 +33,16 @@ def status(ctx: click.Context) -> None:
     if out.as_json:
         out.json(state)
         return
-    gw, services = state["gateway"], state["services"]
+    # .get con valores por defecto: un gateway de otra versión puede traer otra forma.
+    gw, services = state.get("gateway", {}), state.get("services", {})
+    uptime = gw.get("uptime_s")
     out.pairs(
         [
             ("gateway", f"en marcha · v{gw.get('version', '?')}"),
-            ("encendido", _uptime(gw["uptime_s"])),
-            ("orquestador", _service(services["orchestrator"])),
-            ("STT", _service(services["stt"])),
-            ("TTS", _service(services["tts"])),
-            ("sesiones", state["totals"]["sessions_active"]),
+            ("encendido", "?" if uptime is None else _uptime(uptime)),
+            ("orquestador", _service(services.get("orchestrator", {}))),
+            ("STT", _service(services.get("stt", {}))),
+            ("TTS", _service(services.get("tts", {}))),
+            ("sesiones", state.get("totals", {}).get("sessions_active", "?")),
         ]
     )

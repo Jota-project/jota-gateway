@@ -45,16 +45,33 @@ def _show_key(out: Out, data: dict[str, Any]) -> None:
     out.message("Guárdala ahora: no se volverá a mostrar.", MUTED)
 
 
-def _set_values(pairs: tuple[str, ...]) -> dict[str, Any]:
+# Campos que devuelve el gateway pero no se editan.
+READ_ONLY = {"id", "key_fp", "created_at", "client_key"}
+
+
+def _set_values(pairs: tuple[str, ...], client: dict[str, Any]) -> dict[str, Any]:
+    """`campo=texto` o `campo:=json`, como httpie. El nombre se comprueba contra los campos del
+    propio cliente: la API ignora los desconocidos a propósito (#100), así que un error de
+    tecleo no cambiaría nada sin avisar (#306)."""
+    editable = sorted(set(client) - READ_ONLY)
     values: dict[str, Any] = {}
     for item in pairs:
         field, sep, raw = item.partition("=")
+        as_json = field.endswith(":")
+        field = field.removesuffix(":")
         if not sep or not field:
-            raise api.ApiError(f"--set espera campo=valor, no «{item}».", 2)
+            raise api.ApiError(f"--set espera campo=valor o campo:=json, no «{item}».", 2)
+        if field not in editable:
+            raise api.ApiError(
+                f"«{field}» no es un campo editable. Campos: {', '.join(editable)}.", 2
+            )
+        if not as_json:
+            values[field] = raw  # el servidor convierte números y booleanos
+            continue
         try:
-            values[field] = json.loads(raw)  # números, booleanos, null y listas
+            values[field] = json.loads(raw)
         except ValueError:
-            values[field] = raw
+            raise api.ApiError(f"--set {field}:= espera JSON válido.", 2) from None
     return values
 
 
@@ -142,8 +159,8 @@ def add(
 @click.option("--type", "client_type", help="Tipo: ha, esp32, web o app.")
 @click.option("--agent", help="Agente por defecto.")
 @click.option("--allowed-agent", "allowed", multiple=True, help="Agente permitido (repetible).")
-@click.option("--set", "sets", multiple=True, metavar="CAMPO=VALOR",
-              help="Cualquier otro campo (voz, turno…); el valor se lee como JSON si se puede.")
+@click.option("--set", "sets", multiple=True, metavar="CAMPO=TEXTO|CAMPO:=JSON",
+              help="Cualquier otro campo (voz, turno…). Con := el valor va como JSON (listas, null).")
 @click.pass_context
 def edit(
     ctx: click.Context,
@@ -164,11 +181,12 @@ def edit(
         body["default_agent"] = agent
     if allowed:
         body["allowed_agents"] = list(allowed)
-    body.update(_set_values(sets))
+    client = api.from_context(ctx)
+    target = _find(client, ref)
+    body.update(_set_values(sets, target))
     if not body:
         raise api.ApiError("Nada que cambiar: indica al menos una opción.", 2)
-    client = api.from_context(ctx)
-    data = _no_key(client.request("PATCH", f"/admin/clients/{_find(client, ref)['id']}", body))
+    data = _no_key(client.request("PATCH", f"/admin/clients/{target['id']}", body))
     out = _out(ctx)
     if out.as_json:
         out.json(data)

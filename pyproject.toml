@@ -16,6 +16,7 @@ dependencies = [
     "alembic>=1.18.5",
     "click>=8.5.0",
     "rich>=15.0.0",
+    "questionary>=2.1.1",
 ]
 
 [project.scripts]

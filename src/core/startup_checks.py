@@ -72,35 +72,45 @@ def _is_placeholder(value: str) -> bool:
     return value.strip().lower() in _PLACEHOLDER_TOKENS
 
 
-def warn_insecure_tokens(settings) -> list[str]:
-    """WARNING por cada token vacío o por defecto. Devuelve los nombres avisados."""
+def insecure_tokens(settings) -> list[str]:
+    """Nombres de los tokens vacíos o por defecto, sin escribir en el log (`jota-gw doctor`)."""
     flagged: list[str] = []
     if not settings.ADMIN_TOKEN or _is_placeholder(settings.ADMIN_TOKEN):
         flagged.append("ADMIN_TOKEN")
-        logger.warning(
-            "ADMIN_TOKEN está vacío o es un valor de ejemplo: /admin/* queda inutilizable "
-            "(vacío) o protegido por un secreto adivinable. Define uno propio."
-        )
     if not settings.OPENCLAW_TOKEN or _is_placeholder(settings.OPENCLAW_TOKEN):
         flagged.append("OPENCLAW_TOKEN")
-        logger.warning(
-            "OPENCLAW_TOKEN está vacío o es un valor de ejemplo: la conexión con OpenClaw "
-            "probablemente fallará o usa un secreto adivinable."
-        )
     if type(settings).model_fields["TTS_TOKEN"].default == settings.TTS_TOKEN:
         flagged.append("TTS_TOKEN")
-        logger.warning(
-            "TTS_TOKEN tiene el valor por defecto del repositorio: cámbialo y configura "
-            "el mismo token en el servicio TTS."
-        )
     return flagged
+
+
+_INSECURE_TOKEN_WARNINGS = {
+    "ADMIN_TOKEN": "ADMIN_TOKEN está vacío o es un valor de ejemplo: /admin/* queda inutilizable "
+    "(vacío) o protegido por un secreto adivinable. Define uno propio.",
+    "OPENCLAW_TOKEN": "OPENCLAW_TOKEN está vacío o es un valor de ejemplo: la conexión con "
+    "OpenClaw probablemente fallará o usa un secreto adivinable.",
+    "TTS_TOKEN": "TTS_TOKEN tiene el valor por defecto del repositorio: cámbialo y configura "
+    "el mismo token en el servicio TTS.",
+}
+
+
+def warn_insecure_tokens(settings) -> list[str]:
+    """WARNING por cada token vacío o por defecto. Devuelve los nombres avisados."""
+    flagged = insecure_tokens(settings)
+    for name in flagged:
+        logger.warning(_INSECURE_TOKEN_WARNINGS[name])
+    return flagged
+
+
+def deprecated_settings(settings) -> list[str]:
+    """Ajustes obsoletos que aún vienen definidos, sin escribir en el log."""
+    return ["SHUTDOWN_DRAIN_S"] if settings.SHUTDOWN_DRAIN_S is not None else []
 
 
 def warn_deprecated_settings(settings) -> list[str]:
     """WARNING por cada ajuste obsoleto que aún venga definido. Devuelve sus nombres."""
-    flagged: list[str] = []
-    if settings.SHUTDOWN_DRAIN_S is not None:
-        flagged.append("SHUTDOWN_DRAIN_S")
+    flagged = deprecated_settings(settings)
+    if flagged:
         logger.warning(
             "SHUTDOWN_DRAIN_S está obsoleto y se ignora: el cierre de una sesión cancela el "
             "turno en curso y cada paso lo acota SESSION_TEARDOWN_S. Bórralo del .env."

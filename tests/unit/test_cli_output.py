@@ -72,3 +72,8 @@ def test_styled_values_are_not_markup(tty, capsys, name):
     out.pairs([("nombre", name)])
     out.table([("NOMBRE", "name")], [{"name": name}])
     assert capsys.readouterr().out.count(name) == 2
+
+
+def test_empty_no_color_does_not_disable_color(tty, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "")
+    assert output.Out(as_json=False).styled is True

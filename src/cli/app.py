@@ -14,6 +14,8 @@ DEFAULT_URL = "http://127.0.0.1:8004"
 # nombre -> ("módulo:atributo", ayuda corta). La ayuda va aquí para no importar el módulo.
 COMMANDS: dict[str, tuple[str, str]] = {
     "clients": ("src.cli.clients:clients", "Gestiona los clientes."),
+    "config": ("src.cli.config:config", "Configuración efectiva (solo lectura)."),
+    "doctor": ("src.cli.doctor:doctor", "Diagnostica la instalación."),
     "status": ("src.cli.status:status", "Estado del gateway y sus servicios."),
     "version": ("src.cli.version:version", "Versión de la CLI y del gateway."),
 }
@@ -48,5 +50,10 @@ def cli(ctx: click.Context, url: str, token: str | None, as_json: bool, yes: boo
     """Administra el gateway de Jota."""
     ctx.obj = {"url": url, "token": token, "json": as_json, "yes": yes}
     if ctx.invoked_subcommand is None:
-        # shortcut: sin argumentos, la ayuda; el menú interactivo llega en 14b.
-        click.echo(ctx.get_help())
+        from src.cli import menu
+
+        # Menú solo en una terminal interactiva y sin --json; si no (scripts, tuberías), ayuda.
+        if not as_json and menu.interactive():
+            menu.run_menu(ctx)
+        else:
+            click.echo(ctx.get_help())
