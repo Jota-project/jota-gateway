@@ -489,5 +489,7 @@ async def test_close_all_during_paced_audio_ends_promptly(make_bridge, monkeypat
     await asyncio.wait_for(b.close_all(), timeout=settings.SESSION_TEARDOWN_S)
     await sent(b)
 
-    assert time.monotonic() - t0 < settings.SESSION_TEARDOWN_S
+    assert time.monotonic() - t0 < 1.0
     assert len(ws.of("turn_end")) == 1
+    end = next(i for i, m in enumerate(ws.sent) if isinstance(m, dict) and m["type"] == "turn_end")
+    assert not any(isinstance(m, bytes) for m in ws.sent[end:])

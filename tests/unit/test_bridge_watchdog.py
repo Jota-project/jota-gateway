@@ -651,7 +651,11 @@ async def test_push_with_audio_playing_counts_as_in_flight(make_wd_bridge, monke
 
     bridge._push_audio_task = asyncio.create_task(asyncio.sleep(3600))
     try:
+        bridge._push_audio_progress_at = time.monotonic()
         assert bridge._turn_in_flight() is True
+        # orphaned push: a live audio task with no recent progress no longer counts
+        bridge._push_audio_progress_at = time.monotonic() - settings.PUSH_TTS_DRAIN_TIMEOUT_S - 1
+        assert bridge._turn_in_flight() is False
     finally:
         bridge._push_audio_task.cancel()
         await asyncio.wait({bridge._push_audio_task})

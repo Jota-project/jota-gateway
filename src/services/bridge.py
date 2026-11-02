@@ -477,7 +477,12 @@ class JotaBridge:
         so a live push audio task also counts."""
         if self._active_turn is not None and not self._active_turn.done():
             return True
-        if self._push_audio_task is not None and not self._push_audio_task.done():
+        if (
+            self._push_audio_task is not None
+            and not self._push_audio_task.done()
+            and time.monotonic() - (self._push_audio_progress_at or 0)
+            < settings.PUSH_TTS_DRAIN_TIMEOUT_S
+        ):
             return True
         return self._push_turn_open and (
             self._push_turn_opened_at is None
@@ -1165,11 +1170,11 @@ class JotaBridge:
             pacer = AudioPacer(settings.AUDIO_LEAD_S, settings.AUDIO_PACING_ENABLED)
             async for chunk in tts.get_audio_stream():
                 audio_progress_at = time.monotonic()
+                if not chunk:
+                    continue
                 if _first_chunk:
                     await self.tracker.record("tts_first_chunk")
                     _first_chunk = False
-                if not chunk:
-                    continue
                 async for frame in pacer.frames(chunk):
                     if self._turn_end_sent_at_close == turn_id:
                         return  # close_all() already ended this turn: nothing after its turn_end
@@ -1284,6 +1289,8 @@ class JotaBridge:
             header = bytes([0xA1]) + turn_seq.to_bytes(2, "big")
             pacer = AudioPacer(settings.AUDIO_LEAD_S, settings.AUDIO_PACING_ENABLED)
             async for chunk in tts.get_audio_stream():
+                # Progress is stamped when a chunk is pulled: a single TTS chunk longer than
+                # PUSH_TTS_DRAIN_TIMEOUT_S would trip the idle cut (theoretical; chunks are small).
                 self._push_audio_progress_at = time.monotonic()
                 if not chunk:
                     continue
@@ -1397,7 +1404,9 @@ class JotaBridge:
                 # task's own outcome, so an *external* cancellation of this
                 # coroutine (close_all() cancelling the push worker, #130 S3a)
                 # propagates instead of being mistaken for the audio task's.
-                # Bounded by INACTIVITY (paced audio of a long push outlasts any absolute cap).
+                # Bounded by INACTIVITY (paced audio of a long push outlasts any absolute cap);
+                # the window restarts at drain start, like _run_turn does.
+                self._push_audio_progress_at = time.monotonic()
                 while not audio_task.done():
                     idle_left = settings.PUSH_TTS_DRAIN_TIMEOUT_S - (
                         time.monotonic() - (self._push_audio_progress_at or t0)
