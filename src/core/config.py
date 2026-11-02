@@ -89,6 +89,11 @@ class Settings(BaseSettings):
     # Drenado del audio TTS de un push al cerrar su turno (issue #130 S3a)
     PUSH_TTS_DRAIN_TIMEOUT_S: float = 30.0
 
+    # Pacing del audio TTS (7e): el gateway envía a ritmo de reproducción, como mucho
+    # AUDIO_LEAD_S por delante
+    AUDIO_PACING_ENABLED: bool = True
+    AUDIO_LEAD_S: float = Field(default=2.0, gt=0)
+
     # Un envío al cliente bloqueado más de esto lo marca como lento y cierra la
     # conexión (issue #130 S2). Es por envío, no acumulado.
     CLIENT_SEND_TIMEOUT_S: float = Field(default=10.0, gt=0)
