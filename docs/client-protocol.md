@@ -183,6 +183,8 @@ Si el usuario cancela la respuesta en curso sin lanzar una nueva:
 { "type": "cancel" }
 ```
 
+También corta un push que esté sonando (§10): recibes su `turn_end`.
+
 ---
 
 ## 5. Recibir tokens de texto
@@ -218,7 +220,7 @@ Los tokens llegan en orden; concaténalos para reconstruir la respuesta completa
 { "type": "turn_end", "turn_id": "t-1" }
 ```
 
-Señala que el turno terminó. **Todo turno con `turn_start` recibe exactamente un `turn_end`** — también si falla (tras un `error`), si se cancela (`cancel`, barge-in, transcripción final, un `send` que lo sustituye) o si el cierre de sesión lo corta. El audio TTS puede seguir llegando brevemente después (ya está en tránsito).
+Señala que el turno terminó. **Todo turno con `turn_start` recibe exactamente un `turn_end`** — también si falla (tras un `error`), si se cancela (`cancel`, barge-in, transcripción final, un `send` que lo sustituye) o si el cierre de sesión lo corta. Después del `turn_end` no se envía más audio de ese turno; lo que sigue es la reproducción del audio que ya recibiste (como mucho `AUDIO_LEAD_S`, unos 2 s, por delante del tiempo real).
 
 ### `tool_call` — uso de herramientas del agente (opt-in)
 
@@ -569,7 +571,7 @@ El cliente escribe; el gateway sintetiza audio con el texto de la respuesta.
 | Handshake | `{"client_key":"...","input_mode":"...","output_mode":[...],"agent":"..."}` | Primer mensaje, obligatorio |
 | Fin de audio | `{"type":"end"}` | `input_mode="audio"` — usuario termina de hablar |
 | Enviar texto | `{"type":"send","text":"..."}` | Envía texto al orquestador |
-| Cancelar turno | `{"type":"cancel"}` | Cancela turno activo sin iniciar uno nuevo |
+| Cancelar turno | `{"type":"cancel"}` | Cancela turno activo (o el push que suena, §10) sin iniciar uno nuevo |
 | Frame de audio | bytes PCM Float32 16 kHz sin header | `input_mode="audio"` |
 | Otro `type` (p. ej. `{"type":"keepalive"}`) | `{"type":"..."}` | Se ignora, pero cuenta como actividad para `IDLE_TIMEOUT_S` (§13) |
 

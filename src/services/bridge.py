@@ -609,10 +609,6 @@ class JotaBridge:
                 time.monotonic() - self._last_client_activity
             )
             if remaining <= 0:
-                push_in_flight = self._push_turn_open and (
-                    self._push_turn_opened_at is None
-                    or time.monotonic() - self._push_turn_opened_at < settings.TURN_TIMEOUT_S
-                )
                 # Issue #130 S3a: queued-but-unprocessed push events are in flight too,
                 # bounded the same way as an open push turn so a wedged worker can't
                 # gate this watchdog forever.
@@ -620,11 +616,8 @@ class JotaBridge:
                     self._push_pending_since is None
                     or time.monotonic() - self._push_pending_since < settings.TURN_TIMEOUT_S
                 )
-                if (
-                    (self._active_turn and not self._active_turn.done())
-                    or push_in_flight
-                    or push_backlog_in_flight
-                ):
+                # A turn, an open push (bounded) or push audio still progressing (7e).
+                if self._turn_in_flight() or push_backlog_in_flight:
                     # Not idle — a turn/push is actively in flight. Re-check
                     # shortly rather than closing or resetting the full window.
                     await _sleep(2)
@@ -821,9 +814,11 @@ class JotaBridge:
 
                     elif json_msg.get("type") == "cancel":
                         # Cliente cancela el turn activo (o el push que suena) sin lanzar uno nuevo
+                        push_id = self._push_turn_id if self._push_turn_open else None
                         await self._cancel_active_turn()
-                        async with self._turn_lock:
-                            await self._cut_push()
+                        if push_id:
+                            async with self._turn_lock:
+                                await self._cut_push(push_id)
 
                     elif json_msg.get("type") == "send":
                         # Cliente confirma/edita la transcripción y la envía al orquestador
@@ -943,11 +938,13 @@ class JotaBridge:
 
             # Barge-in: interrupt active turn if enabled and partial is substantial enough
             if self.config.barge_in_enabled and len(text) >= self.config.barge_in_min_chars:
+                # Only the push open now: one the worker opens after the cancel stays.
+                push_id = self._push_turn_id if self._push_turn_open else None
                 cancelled, cancelled_turn_id = await self._cancel_turn()
-                async with self._turn_lock:
-                    cut_push_id = await self._cut_push()
-                if cut_push_id:
-                    cancelled, cancelled_turn_id = True, cut_push_id
+                if push_id and not cancelled:
+                    async with self._turn_lock:
+                        if await self._cut_push(push_id):
+                            cancelled, cancelled_turn_id = True, push_id
                 if cancelled:
                     logger.info(
                         f"[{self.client_id}] Barge-in: turno cancelado por parcial len={len(text)}"
@@ -1185,6 +1182,7 @@ class JotaBridge:
                             self._client_gone = True
                         self._log_send_failed("audio", e)
                         return
+                    audio_progress_at = time.monotonic()  # each paced frame is progress
             await self.tracker.record("tts_done")
 
         if tts:
@@ -1308,6 +1306,7 @@ class JotaBridge:
                     except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
                         self._log_send_failed("audio del push", e)
                         return
+                    self._push_audio_progress_at = time.monotonic()  # each paced frame is progress
 
         # Supervisada: _drop_push_tts puede abandonarla sin recoger su resultado (#221).
         self._push_audio_progress_at = time.monotonic()
@@ -1465,12 +1464,15 @@ class JotaBridge:
             self._log_send_failed("turn_end del push", e)
         return True
 
-    async def _cut_push(self) -> str | None:
+    async def _cut_push(self, expected: str | None = None) -> str | None:
         """The user speaks over a push (7e): stop its audio and TTS, chat.abort it if it
-        runs on our session_key, close it. Returns its turn_id, or None if none was open."""
+        runs on our session_key, close it. Returns its turn_id, or None if none was open.
+        With `expected`, only that push: one opened meanwhile is left alone."""
         if not self._push_turn_open or self._push_turn_id is None:
             return None
         turn_id = self._push_turn_id
+        if expected is not None and expected != turn_id:
+            return None
         await self._drop_push_tts("cortado por el usuario", logging.INFO)
         if self._push_session_key == self._session_key():
             await self.orchestrator.abort(self._push_session_key)
@@ -1506,8 +1508,15 @@ class JotaBridge:
                 if kind == "turn_start":
                     # A normal turn lives until its audio is sent: don't open a push over it.
                     # asyncio.wait (not await): our own cancellation propagates, the turn's is not ours.
-                    while self._active_turn is not None and not self._active_turn.done():
-                        await asyncio.wait({self._active_turn})
+                    # Then through _turn_lock: a turn being replaced (_start_turn) is seen as
+                    # the new one, so the user wins and the push waits again.
+                    while True:
+                        while self._active_turn is not None and not self._active_turn.done():
+                            await asyncio.wait({self._active_turn})
+                        async with self._turn_lock:
+                            pass
+                        if self._active_turn is None or self._active_turn.done():
+                            break
                     await self.on_push_turn_start(arg)
                 elif kind == "chat":
                     await self.deliver_push(arg)

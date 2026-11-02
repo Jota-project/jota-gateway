@@ -76,10 +76,11 @@ class Harness:
         self.thread: threading.Thread | None = None
 
     async def connect(
-        self, input_mode: str = "text", output_mode: tuple[str, ...] = ("text",)
+        self, input_mode: str = "text", output_mode: tuple[str, ...] = ("text",), **ws_kwargs
     ) -> HarnessClient:
-        """Abre `/ws/stream`, hace el handshake y espera `ready` (admite `status` antes)."""
-        ws = await websockets.connect(f"ws://127.0.0.1:{self.port}/ws/stream")
+        """Abre `/ws/stream`, hace el handshake y espera `ready` (admite `status` antes).
+        `ws_kwargs` va tal cual a `websockets.connect` (p. ej. `ping_interval`)."""
+        ws = await websockets.connect(f"ws://127.0.0.1:{self.port}/ws/stream", **ws_kwargs)
         client = HarnessClient(ws)
         self.clients.append(client)
         await client.send(

@@ -433,3 +433,22 @@ async def test_cut_while_push_tts_connects_closes_that_tts(make_push_bridge):
     push_tts.close.assert_awaited_once()
     assert bridge._push_tts is None and bridge._push_audio_task is None
     assert [m["type"] for m in await sent(bridge)] == ["turn_start", "turn_end"]
+
+
+async def test_cut_push_with_another_expected_id_is_a_noop(make_push_bridge):
+    """Barge-in/cancel only cut the push that was open when they arrived (I-1)."""
+    bridge, _ = make_push_bridge(output_mode=("text",))
+    await bridge.on_push_turn_start(bridge._session_key())
+    assert await bridge._cut_push("t-9") is None
+    assert bridge._push_turn_open is True
+    bridge.orchestrator.abort.assert_not_awaited()
+
+
+async def test_close_all_while_push_worker_waits_on_turn_lock_ends_promptly(make_push_bridge):
+    bridge, _ = make_push_bridge(output_mode=("text",))
+    await bridge._turn_lock.acquire()  # a turn being replaced holds the lock
+    bridge.enqueue_push("turn_start", bridge._session_key())
+    await asyncio.sleep(0.02)
+    await asyncio.wait_for(bridge.close_all(), 2)
+    assert bridge._push_worker.done()
+    assert [m for m in await sent(bridge) if m.get("type") == "turn_start"] == []
