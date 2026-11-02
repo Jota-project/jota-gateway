@@ -273,3 +273,70 @@ def test_missing_config_env_is_said_plainly(base):
 
 def test_unreachable_gateway_message_does_not_recommend_doctor(base):
     assert "jota-gw doctor" not in checks(run("--json", "doctor"))["gateway"]["detail"]
+
+
+# --- revisión de 14b ---
+
+
+@pytest.mark.parametrize("where", ["file", "env"])
+def test_malformed_json_setting_is_a_clean_failure(base, monkeypatch, where):
+    if where == "env":
+        monkeypatch.setenv("TTS_VOICE_MAP", "notjson")
+    else:
+        with open(base / "config.env", "a") as f:
+            f.write("TTS_VOICE_MAP=notjson\n")
+    r = run("--json", "doctor")
+    found = checks(r)  # JSON válido: sin traceback
+    assert found["configuración"]["level"] == "fail"
+    assert "TTS_VOICE_MAP" in found["configuración"]["detail"]
+    assert "notjson" not in r.output
+
+
+def test_unreadable_config_env_is_a_check_and_doctor_goes_on(base):
+    (base / "config.env").chmod(0)
+    try:
+        found = checks(run("--json", "doctor"))
+    finally:
+        (base / "config.env").chmod(0o600)
+    assert found["configuración"]["level"] == "fail"
+    assert "gateway" in found
+
+
+def test_relative_db_found_only_in_cwd_is_explained(base, monkeypatch, tmp_path):
+    (base / "data" / "gateway.db").unlink()
+    cwd = tmp_path / "repo"
+    _make_db(cwd / "data" / "gateway.db", _head())
+    monkeypatch.chdir(cwd)
+    found = checks(run("--json", "doctor"))
+    assert found["base de datos"]["level"] == "warn"
+    assert str(cwd / "data" / "gateway.db") in found["base de datos"]["detail"]
+
+
+def test_paths_not_owned_by_the_user_are_not_flagged(base, monkeypatch):
+    base.chmod(0o755)
+    real = doctor.os.getuid()
+    monkeypatch.setattr(doctor.os, "getuid", lambda: real + 1)
+    assert checks(run("--json", "doctor"))["permisos"]["level"] != "warn"
+
+
+def test_nothing_to_check_is_not_ok(base):
+    import shutil
+
+    shutil.rmtree(base)
+    assert checks(run("--json", "doctor"))["permisos"]["level"] == "info"
+
+
+def test_missing_migrations_dir_is_not_checked(base, monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor, "MIGRATIONS", tmp_path / "no-existe")
+    found = checks(run("--json", "doctor"))
+    assert found["base de datos"]["level"] == "info"
+    assert "no comprobado" in found["base de datos"]["detail"]
+
+
+def test_db_path_with_uri_characters(monkeypatch, tmp_path):
+    home = tmp_path / "a#b?c%d"
+    home.mkdir()
+    monkeypatch.setenv("JOTA_GATEWAY_HOME", str(home))
+    _make_db(home / "data" / "gateway.db", _head())
+    check = doctor._check_db(home / "data" / "gateway.db", "sqlite:///data/gateway.db")
+    assert check["level"] == "ok", check

@@ -7,6 +7,7 @@ Cada comprobación sale como ok, warn, fail o info, con qué hacer. Nunca crea n
 base de datos (se abre en solo lectura) ni toma el candado (se lee en /proc/locks).
 """
 
+import os
 import re
 import socket
 import sqlite3
@@ -45,7 +46,10 @@ def db_path(database_url: str) -> Path | None:
 
 def _revisions() -> tuple[set[str], str | None]:
     # shortcut: lee revision/down_revision de los ficheros; alembic.script cuesta ~360 ms.
-    revs, downs = set(), set()
+    revs: set[str] = set()
+    downs: set[str] = set()
+    if not MIGRATIONS.is_dir():
+        return revs, None
     for f in MIGRATIONS.glob("*.py"):
         text = f.read_text()
         rev = re.search(r'^revision[^=]*=\s*["\']([^"\']+)', text, re.M)
@@ -61,6 +65,15 @@ def _revisions() -> tuple[set[str], str | None]:
 def _check_db(path: Path | None, url: str) -> Check:
     if path is None:
         return _c("info", "base de datos", f"{url.split(':', 1)[0]}: no es un fichero SQLite.")
+    raw = url.removeprefix("sqlite:///").split("?", 1)[0]
+    in_cwd = Path.cwd() / raw
+    if not path.is_file() and not Path(raw).is_absolute() and in_cwd.is_file():
+        # shortcut: hasta M14c el gateway resuelve una ruta relativa contra su directorio.
+        return _c(
+            "warn", "base de datos",
+            f"No existe {path}, pero hay una en {in_cwd}: hasta M14c, el gateway arrancado "
+            f"desde {Path.cwd()} usa esa. Con M14c pasará a {path}.",
+        )
     if not path.is_file():
         return _c(
             "fail", "base de datos",
@@ -68,7 +81,7 @@ def _check_db(path: Path | None, url: str) -> Check:
             "Si ya tenías una instalación, copia aquí su gateway.db.",
         )
     try:
-        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        con = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
         try:
             row = con.execute("SELECT version_num FROM alembic_version").fetchone()
         finally:
@@ -78,6 +91,11 @@ def _check_db(path: Path | None, url: str) -> Check:
                   f"{path} no es una BD del gateway o está dañada ({type(e).__name__}).")
     current = row[0] if row else None
     known, head = _revisions()
+    if head is None:
+        return _c("info", "base de datos", f"{path} · migración {current}; la última, no "
+                  f"comprobado (no se encuentran las migraciones en {MIGRATIONS} o hay varias).")
+    if current is None:
+        return _c("fail", "base de datos", f"{path}: alembic_version está vacía.")
     if current == head:
         return _c("ok", "base de datos", f"{path} · migración {current} (la última)")
     if current in known:
@@ -90,10 +108,16 @@ def _check_db(path: Path | None, url: str) -> Check:
 
 
 def _check_permissions(items: list[tuple[Path, int]]) -> Check:
-    fixes = []
+    fixes, checked = [], 0
     for path, wanted in items:
-        if path.exists() and stat.S_IMODE(path.stat().st_mode) & 0o077:
+        # Solo lo que es del usuario: en Docker /app es de root y no se puede cambiar.
+        if not path.exists() or path.stat().st_uid != os.getuid():
+            continue
+        checked += 1
+        if stat.S_IMODE(path.stat().st_mode) & 0o077:
             fixes.append(f"chmod {wanted:o} {path}")
+    if not checked:
+        return _c("info", "permisos", "Nada que comprobar (no existe o no es de este usuario).")
     if not fixes:
         return _c("ok", "permisos", "Solo los puede leer su dueño (600/700).")
     return _c("warn", "permisos", "Los pueden leer otros usuarios. Arréglalo con: "

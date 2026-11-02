@@ -11,6 +11,7 @@ secretos salen siempre enmascarados, también en --json.
 import difflib
 import json
 import os
+import re
 import sys
 import tempfile
 from typing import Any
@@ -51,21 +52,33 @@ def _errors(exc: Any) -> list[str]:
     return [f"{'.'.join(str(p) for p in e['loc'])}: {e['type']}" for e in exc.errors()]
 
 
+def _settings_error(exc: Exception) -> list[str]:
+    # pydantic-settings no da tipo de error al fallar el JSON de un campo (p. ej. un dict).
+    match = re.search(r'field "([^"]+)"', str(exc))
+    return [f"{match.group(1) if match else 'configuración'}: formato no válido"]
+
+
 def load() -> tuple[Any, list[str], dict[str, str]]:
     """(settings o None, errores de validación, origen de cada ajuste)."""
     from dotenv import dotenv_values
     from pydantic import ValidationError
+    from pydantic_settings import SettingsError
 
     path = paths.config_file()
     from_file: dict[str, Any] = {}
     if path.is_file():
-        api.read_env_file(path)  # ApiError legible si no hay permiso
+        try:
+            api.read_env_file(path)  # mensaje legible si no hay permiso
+        except api.ApiError as e:
+            return None, [e.message], {}
         from_file = {k.upper(): v for k, v in dotenv_values(path).items()}
     try:
         settings_cls = _settings_class()
         settings = settings_cls(_env_file=path if path.is_file() else None)
     except ValidationError as e:
         return None, _errors(e), {}
+    except SettingsError as e:
+        return None, _settings_error(e), {}
     environ = {k.upper() for k in os.environ}
     origins = {
         name: ENVIRON if name in environ else str(path) if name in from_file else DEFAULT
@@ -86,7 +99,20 @@ def shown(name: str, value: Any) -> Any:
         return MASK_SET if raw else MASK_EMPTY
     if isinstance(value, dict | list):
         return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, str) and "://" in value and "@" in value:
+        return _mask_url_password(value)
     return value
+
+
+def _mask_url_password(url: str) -> str:
+    """`postgresql://u:pw@h/db` → `postgresql://u:••••@h/db` (p. ej. DATABASE_URL)."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    if not parts.password:
+        return url
+    netloc = parts.netloc.replace(f":{parts.password}@", ":••••@", 1)
+    return parts._replace(netloc=netloc).geturl()
 
 
 def validation_checks(settings: Any) -> list[dict[str, str]]:

@@ -187,3 +187,10 @@ def test_reads_drop_a_key_from_an_older_gateway(use_api, args):
         r = run(*flags, *args)
         assert r.exit_code == 0, r.output
         assert KEY not in r.output
+
+
+def test_client_key_from_an_older_gateway_is_not_editable(use_api):
+    use_api(FakeApi({("GET", "/admin/clients"): [{**FULL, "client_key": KEY}]}))
+    r = run("clients", "edit", "Jota-Screen", "--set", "client_key=x")
+    assert r.exit_code == 2
+    assert KEY not in r.output

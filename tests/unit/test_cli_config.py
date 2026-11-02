@@ -117,3 +117,11 @@ def test_get_secret_plain_is_masked(home):
     r = run("config", "get", "ADMIN_TOKEN")
     assert r.exit_code == 0
     assert SECRET not in r.output and "definido" in r.output
+
+
+def test_database_url_password_is_masked(home, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pw-secreta-123@db.local/gw")
+    for args in (("config", "show"), ("--json", "config", "get", "DATABASE_URL")):
+        r = run(*args)
+        assert "pw-secreta-123" not in r.output
+        assert "user:" in r.output and "db.local" in r.output
