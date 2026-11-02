@@ -12,7 +12,6 @@ import uvicorn
 import websockets
 from sqlmodel import Session
 
-from src.cli.legacy import cmd_deactivate
 from src.core.config import settings
 from src.db.models import ClientRecord
 from src.main import app
@@ -103,11 +102,15 @@ async def test_revoking_a_client_closes_its_live_session(server, revocation):
     assert app.state.client_registry.get(CLIENT_ID) is None
 
 
-async def test_cli_deactivation_revokes_within_one_interval(server, db_engine, capsys):
-    """#265: sin caché, desactivar desde la CLI (otro proceso, solo toca la BD) corta la
-    sesión en la siguiente revalidación, ≤ SESSION_REVALIDATE_INTERVAL_S (+ margen)."""
+async def test_out_of_band_db_deactivation_revokes_within_one_interval(server, db_engine):
+    """#265: sin caché, desactivar escribiendo en la BD desde fuera del proceso del gateway
+    corta la sesión en la siguiente revalidación, ≤ SESSION_REVALIDATE_INTERVAL_S (+ margen)."""
     ws = await _open(server)
-    cmd_deactivate(VALID_KEY, db_engine)
+    with Session(db_engine) as s:
+        rec = s.get(ClientRecord, CLIENT_ID)
+        rec.is_active = False
+        s.add(rec)
+        s.commit()
     elapsed = await _expect_revoked(ws)
     assert elapsed < INTERVAL_S + 0.5
 
