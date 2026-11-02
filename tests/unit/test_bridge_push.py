@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.models.schemas import ClientConfig
-from src.services.openclaw.registry import ClientRegistry
+from jota_gateway.models.schemas import ClientConfig
+from jota_gateway.services.openclaw.registry import ClientRegistry
 from tests.fakes.bridge import sent, wait_until
 
 
@@ -322,7 +322,7 @@ async def test_on_push_turn_end_bounds_audio_drain(make_push_bridge, monkeypatch
     """#130 S3a: la espera de la síntesis TTS está acotada por
     PUSH_TTS_DRAIN_TIMEOUT_S. Al vencer se cancela el audio, se cierra el TTS y
     el turn_end se envía igualmente."""
-    from src.core.config import settings
+    from jota_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 0.05)
     bridge, ws = make_push_bridge(output_mode=("audio", "text"))

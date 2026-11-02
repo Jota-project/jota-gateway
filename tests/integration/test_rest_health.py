@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 
-from src.core.config import settings
+from jota_gateway.core.config import settings
 
 
 def test_healthz_always_200(client):

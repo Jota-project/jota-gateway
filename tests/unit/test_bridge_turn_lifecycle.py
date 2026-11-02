@@ -11,9 +11,9 @@ import json
 import time
 from unittest.mock import AsyncMock
 
-from src.core.config import settings
-from src.services.outbound import QueuedSender
-from src.services.protocol import OrchestratorEvent
+from jota_gateway.core.config import settings
+from jota_gateway.services.outbound import QueuedSender
+from jota_gateway.services.protocol import OrchestratorEvent
 from tests.fakes.bridge import blocking, sent, tokens, wait_until
 
 # ── G-08 (#201) ──────────────────────────────────────────────────────────────

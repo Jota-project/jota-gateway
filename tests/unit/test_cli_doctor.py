@@ -12,8 +12,8 @@ from typing import ClassVar
 import pytest
 from click.testing import CliRunner
 
-from src.cli import doctor
-from src.cli.app import cli
+from jota_gateway.cli import doctor
+from jota_gateway.cli.app import cli
 
 SECRET = "s3cr3t-admin-token-0123456789"
 ROOT = Path(__file__).resolve().parents[2]
@@ -252,7 +252,7 @@ def test_plain_output_marks_each_level(base):
 def test_doctor_module_import_is_light():
     import subprocess
 
-    code = ("import sys, src.cli.doctor; "
+    code = ("import sys, jota_gateway.cli.doctor; "
             "print('HEAVY=' + ','.join(m for m in ('pydantic','sqlmodel','alembic','rich') "
             "if m in sys.modules))")
     r = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True,

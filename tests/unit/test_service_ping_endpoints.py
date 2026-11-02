@@ -8,8 +8,8 @@ jota-transcriber and jota-speaker. /ready reflects real capacity/readiness
 import httpx
 import respx
 
-from src.services.transcriber_client import TranscriberClient
-from src.services.tts_client import TTSClient
+from jota_gateway.services.transcriber_client import TranscriberClient
+from jota_gateway.services.tts_client import TTSClient
 
 
 async def test_transcriber_ping_hits_ready_endpoint():

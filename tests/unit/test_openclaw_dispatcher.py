@@ -3,11 +3,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.core.config import settings
-from src.models.schemas import ClientConfig
-from src.services.openclaw.dispatcher import FrameDispatcher
-from src.services.openclaw.registry import ClientRegistry, TurnRegistry
-from src.services.reconnection import ConnectionState, ServiceStatus
+from jota_gateway.core.config import settings
+from jota_gateway.models.schemas import ClientConfig
+from jota_gateway.services.openclaw.dispatcher import FrameDispatcher
+from jota_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
+from jota_gateway.services.reconnection import ConnectionState, ServiceStatus
 from tests.fakes.bridge import sent
 
 
@@ -568,7 +568,7 @@ async def test_unknown_event_type_is_logged_once_at_info(caplog):
     dispatcher, _, _ = make_dispatcher()
     frame = {"type": "event", "event": "brand.new.event", "payload": {"secret": "x"}}
 
-    with caplog.at_level(logging.DEBUG, logger="src.services.openclaw.dispatcher"):
+    with caplog.at_level(logging.DEBUG, logger="jota_gateway.services.openclaw.dispatcher"):
         await dispatcher.dispatch(frame)
         await dispatcher.dispatch(frame)
 
@@ -584,7 +584,7 @@ async def test_unknown_frame_type_is_logged_once_at_info(caplog):
 
     dispatcher, _, _ = make_dispatcher()
 
-    with caplog.at_level(logging.DEBUG, logger="src.services.openclaw.dispatcher"):
+    with caplog.at_level(logging.DEBUG, logger="jota_gateway.services.openclaw.dispatcher"):
         await dispatcher.dispatch({"type": "weird"})
         await dispatcher.dispatch({"type": "weird"})
 
@@ -598,7 +598,7 @@ async def test_known_events_are_not_reported_as_unknown(caplog):
 
     dispatcher, _, _ = make_dispatcher()
 
-    with caplog.at_level(logging.DEBUG, logger="src.services.openclaw.dispatcher"):
+    with caplog.at_level(logging.DEBUG, logger="jota_gateway.services.openclaw.dispatcher"):
         await dispatcher.dispatch({"type": "event", "event": "chat", "payload": {}})
         await dispatcher.dispatch({"type": "event", "event": "agent", "payload": {}})
         await dispatcher.dispatch({"type": "event", "event": "session.tool", "payload": {}})

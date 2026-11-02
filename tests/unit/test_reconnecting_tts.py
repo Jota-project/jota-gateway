@@ -3,14 +3,14 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.services.reconnection import ConnectionState
-from src.services.tts_reconnecting import ReconnectingTTSClient
+from jota_gateway.services.reconnection import ConnectionState
+from jota_gateway.services.tts_reconnecting import ReconnectingTTSClient
 
 
 @pytest.mark.asyncio
 async def test_successful_connect_returns_client_and_stays_connected():
     w = ReconnectingTTSClient(url="test:1", token="t")
-    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
+    with patch("jota_gateway.services.tts_reconnecting.TTSClient") as MockTTS:
         mock_client = AsyncMock()
         MockTTS.return_value = mock_client
         result = await w.connect(voice="v", speed=1.0, client_id="c1")
@@ -22,7 +22,7 @@ async def test_successful_connect_returns_client_and_stays_connected():
 @pytest.mark.asyncio
 async def test_failed_connect_returns_none_and_records_failure():
     w = ReconnectingTTSClient(url="test:1", token="t", initial_backoff=10.0)
-    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
+    with patch("jota_gateway.services.tts_reconnecting.TTSClient") as MockTTS:
         mock_client = AsyncMock()
         mock_client.connect.side_effect = OSError("refused")
         MockTTS.return_value = mock_client
@@ -41,7 +41,7 @@ async def test_record_success_clears_last_error_after_prior_failure():
     (no production change needed here), this locks that behavior in with an
     explicit test rather than leaving it implicitly covered."""
     w = ReconnectingTTSClient(url="test:1", token="t", initial_backoff=0.05)
-    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
+    with patch("jota_gateway.services.tts_reconnecting.TTSClient") as MockTTS:
         failing_client = AsyncMock()
         failing_client.connect.side_effect = OSError("refused")
         MockTTS.return_value = failing_client
@@ -71,7 +71,7 @@ async def test_on_state_change_fires_on_transition_to_reconnecting():
     w = ReconnectingTTSClient(url="test:1", token="t", initial_backoff=10.0)
     seen = []
     w.on_state_change = seen.append
-    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
+    with patch("jota_gateway.services.tts_reconnecting.TTSClient") as MockTTS:
         mock_client = AsyncMock()
         mock_client.connect.side_effect = OSError("refused")
         MockTTS.return_value = mock_client
@@ -83,7 +83,7 @@ async def test_on_state_change_fires_on_transition_to_reconnecting():
 async def test_on_state_change_fires_on_recovery_to_connected():
     w = ReconnectingTTSClient(url="test:1", token="t", initial_backoff=0.05)
     seen = []
-    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
+    with patch("jota_gateway.services.tts_reconnecting.TTSClient") as MockTTS:
         failing_client = AsyncMock()
         failing_client.connect.side_effect = OSError("refused")
         MockTTS.return_value = failing_client
@@ -109,7 +109,7 @@ async def test_on_state_change_does_not_refire_for_repeated_same_state():
     w = ReconnectingTTSClient(url="test:1", token="t", initial_backoff=0.05)
     seen = []
     w.on_state_change = seen.append
-    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
+    with patch("jota_gateway.services.tts_reconnecting.TTSClient") as MockTTS:
         failing_client = AsyncMock()
         failing_client.connect.side_effect = OSError("refused")
         MockTTS.return_value = failing_client
@@ -124,7 +124,7 @@ async def test_on_state_change_does_not_refire_for_repeated_same_state():
 @pytest.mark.asyncio
 async def test_on_state_change_not_called_when_unset():
     w = ReconnectingTTSClient(url="test:1", token="t", initial_backoff=10.0)
-    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
+    with patch("jota_gateway.services.tts_reconnecting.TTSClient") as MockTTS:
         mock_client = AsyncMock()
         mock_client.connect.side_effect = OSError("refused")
         MockTTS.return_value = mock_client
@@ -147,7 +147,7 @@ async def test_concurrent_failures_of_one_outage_double_backoff_once():
         await gate.wait()  # all attempts are in flight before any of them fails
         raise OSError("refused")
 
-    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
+    with patch("jota_gateway.services.tts_reconnecting.TTSClient") as MockTTS:
         MockTTS.return_value.connect = failing_connect
         tasks = [
             asyncio.create_task(w.connect(voice=None, speed=None, client_id=f"c{i}"))
@@ -178,7 +178,7 @@ async def test_failure_finishing_after_a_newer_success_does_not_clobber_it():
             await release_slow.wait()
             raise OSError("late failure")
 
-    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
+    with patch("jota_gateway.services.tts_reconnecting.TTSClient") as MockTTS:
         MockTTS.return_value.connect = connect
         slow = asyncio.create_task(w.connect(voice=None, speed=None, client_id="a"))
         await asyncio.sleep(0)

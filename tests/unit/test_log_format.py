@@ -5,7 +5,7 @@ from datetime import datetime
 
 import pytest
 
-from src.core.logging import HealthzAccessFilter, JsonFormatter, configure_logging
+from jota_gateway.core.logging import HealthzAccessFilter, JsonFormatter, configure_logging
 
 _NAMES = ("", "uvicorn", "uvicorn.error", "uvicorn.access")
 

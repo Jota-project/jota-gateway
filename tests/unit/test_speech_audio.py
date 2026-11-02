@@ -1,7 +1,7 @@
 import math
 import struct
 
-from src.services.speech.audio import EnergyGate, f32le_to_s16le
+from jota_gateway.services.speech.audio import EnergyGate, f32le_to_s16le
 
 RATE = 16000
 FRAME = RATE // 50  # 20 ms

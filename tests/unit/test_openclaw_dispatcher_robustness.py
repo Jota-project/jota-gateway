@@ -2,8 +2,8 @@
 
 import pytest
 
-from src.services.openclaw.dispatcher import FrameDispatcher
-from src.services.openclaw.registry import ClientRegistry, TurnRegistry
+from jota_gateway.services.openclaw.dispatcher import FrameDispatcher
+from jota_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
 
 SK = "agent:main:client-a"
 

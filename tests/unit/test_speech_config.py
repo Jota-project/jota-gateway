@@ -3,10 +3,10 @@ import logging
 import pytest
 from pydantic import SecretStr
 
-from src.core.config import Settings
-from src.core.startup_checks import SpeechConfigError, check_speech_settings
-from src.services.speech import voices
-from src.services.speech.voices import resolve_voice
+from jota_gateway.core.config import Settings
+from jota_gateway.core.startup_checks import SpeechConfigError, check_speech_settings
+from jota_gateway.services.speech import voices
+from jota_gateway.services.speech.voices import resolve_voice
 
 
 @pytest.fixture(autouse=True)

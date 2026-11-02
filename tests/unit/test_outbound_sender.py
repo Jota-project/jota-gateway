@@ -5,8 +5,8 @@ import asyncio
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
-from src.core.config import settings
-from src.services.outbound import ClientGone, ClientSlow, QueuedSender
+from jota_gateway.core.config import settings
+from jota_gateway.services.outbound import ClientGone, ClientSlow, QueuedSender
 
 
 class FakeWS:
@@ -117,7 +117,7 @@ async def test_queued_flush_on_already_broken_sender_raises():
 
 async def test_queued_failure_logs_single_warning_without_payload(caplog):
     s = QueuedSender(FakeWS(fail_on=1))
-    with caplog.at_level("WARNING", logger="src.services.outbound"):
+    with caplog.at_level("WARNING", logger="jota_gateway.services.outbound"):
         await s.send_json({"type": "transcription", "text": "SECRETO"})
         await s.send_json({"n": 2})
         await s._writer
@@ -190,10 +190,10 @@ class RaisingWS:
 
 async def _fail_once(exc, caplog):
     s = QueuedSender(RaisingWS(exc))
-    with caplog.at_level("INFO", logger="src.services.outbound"):
+    with caplog.at_level("INFO", logger="jota_gateway.services.outbound"):
         await s.send_json({"type": "transcription", "text": "SECRETO"})
         await s._writer
-    return [r for r in caplog.records if r.name == "src.services.outbound"]
+    return [r for r in caplog.records if r.name == "jota_gateway.services.outbound"]
 
 
 @pytest.mark.parametrize(
@@ -340,7 +340,7 @@ async def test_queued_on_slow_raising_does_not_break_teardown(monkeypatch, caplo
         raise RuntimeError("callback roto")
 
     s = QueuedSender(FakeWS(hang=True), on_slow=on_slow)
-    with caplog.at_level("WARNING", logger="src.services.outbound"):
+    with caplog.at_level("WARNING", logger="jota_gateway.services.outbound"):
         await s.send_json({"a": 1})
         await asyncio.wait_for(s._writer, timeout=1.0)  # writer ends, no exception escapes
 
@@ -369,10 +369,10 @@ async def test_queued_on_slow_hanging_does_not_wedge_aclose(monkeypatch):
 async def test_queued_slow_client_logs_one_warning_without_payload(monkeypatch, caplog):
     monkeypatch.setattr(settings, "CLIENT_SEND_TIMEOUT_S", 0.05)
     s = QueuedSender(FakeWS(hang=True))
-    with caplog.at_level("INFO", logger="src.services.outbound"):
+    with caplog.at_level("INFO", logger="jota_gateway.services.outbound"):
         await s.send_json({"type": "transcription", "text": "SECRETO"})
         await asyncio.wait_for(s._writer, timeout=1.0)
-    records = [r for r in caplog.records if r.name == "src.services.outbound"]
+    records = [r for r in caplog.records if r.name == "jota_gateway.services.outbound"]
     assert len(records) == 1
     assert records[0].levelname == "WARNING"
     assert "SECRETO" not in records[0].getMessage()

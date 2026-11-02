@@ -15,10 +15,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.api import routes
-from src.models.schemas import Client, ClientConfig
-from src.services.openclaw.registry import ClientRegistry
-from src.services.session_registry import SessionRegistry
+from jota_gateway.api import routes
+from jota_gateway.models.schemas import Client, ClientConfig
+from jota_gateway.services.openclaw.registry import ClientRegistry
+from jota_gateway.services.session_registry import SessionRegistry
 
 CLIENT_KEY = "test-key"
 CLIENT_ID = "hab_sito"
@@ -105,7 +105,7 @@ async def test_connect_internal_services_failure_leaves_no_zombie_session(monkey
     """connect_internal_services() raising is near-unreachable in practice
     (ReconnectingTranscriberClient.connect() never raises — see CLAUDE.md),
     but the try/finally must still cover it defensively per the AC."""
-    from src.services.bridge import JotaBridge
+    from jota_gateway.services.bridge import JotaBridge
 
     monkeypatch.setattr(
         JotaBridge,

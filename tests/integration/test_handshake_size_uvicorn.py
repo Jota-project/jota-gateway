@@ -16,9 +16,9 @@ import uvicorn
 import websockets
 from fastapi import FastAPI
 
-from src.api.routes import router as stream_router
-from src.core.config import Settings, settings
-from src.core.request_id import RequestIdMiddleware
+from jota_gateway.api.routes import router as stream_router
+from jota_gateway.core.config import Settings, settings
+from jota_gateway.core.request_id import RequestIdMiddleware
 
 
 def _start(**uvicorn_kwargs):

@@ -5,9 +5,9 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from src.cli import refs
-from src.cli.api import ApiError
-from src.cli.app import cli
+from jota_gateway.cli import refs
+from jota_gateway.cli.api import ApiError
+from jota_gateway.cli.app import cli
 from tests.fakes.cli_api import FakeApi
 
 A = {"id": "aaaa1111-0000", "name": "Jota-Screen", "client_type": "web", "is_active": True,

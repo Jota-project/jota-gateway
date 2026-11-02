@@ -5,13 +5,13 @@ import pytest
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 from websockets.frames import Close
 
-from src.services.speech.elevenlabs.common import (
+from jota_gateway.services.speech.elevenlabs.common import (
     classify_close,
     classify_exception,
     pin_websockets_logging,
     ws_url,
 )
-from src.services.speech.factory import build_tts_provider
+from jota_gateway.services.speech.factory import build_tts_provider
 
 
 def test_ws_url():
@@ -76,11 +76,11 @@ def test_pin_websockets_logging_idempotent_and_never_lowers():
 def test_factory_builds_elevenlabs_tts_and_stt():
     from pydantic import SecretStr
 
-    from src.core.config import settings
+    from jota_gateway.core.config import settings
 
     s = settings.model_copy(update={"ELEVENLABS_API_KEY": SecretStr("k")})
     assert build_tts_provider(s, "elevenlabs").name == "elevenlabs"
-    from src.services.speech.factory import build_stt_provider
+    from jota_gateway.services.speech.factory import build_stt_provider
 
     assert build_stt_provider(s, "elevenlabs").name == "elevenlabs"
     with pytest.raises(ValueError, match="no soportado"):

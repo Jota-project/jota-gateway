@@ -4,10 +4,10 @@ import logging
 
 from sqlmodel import Session
 
-from src.core.config import settings
-from src.db.models import ClientRecord
-from src.main import app
-from src.services.protocol import OrchestratorEvent
+from jota_gateway.core.config import settings
+from jota_gateway.db.models import ClientRecord
+from jota_gateway.main import app
+from jota_gateway.services.protocol import OrchestratorEvent
 from tests.integration.conftest import CLIENT_ID
 
 
@@ -38,7 +38,7 @@ def test_chat_completions_non_streaming_uses_orchestrator(client, mock_orchestra
 
 def test_chat_completions_uses_correct_session_key(client, mock_registry, mock_orchestrator):
     """session_key passed to stream_response matches agent:{default_agent}:ha."""
-    from src.core.session_key import make_session_key
+    from jota_gateway.core.session_key import make_session_key
 
     captured = {}
 
@@ -374,7 +374,7 @@ def test_streaming_turn_timeout_is_terminal_error(client, mock_orchestrator):
 def test_non_streaming_turn_conflict_returns_409(client, mock_orchestrator):
     """Issue #99: a rejected duplicate-session_key turn must map to HTTP 409,
     distinguishable from a generic orchestrator failure (502)."""
-    from src.services.openclaw.registry import TURN_IN_PROGRESS_ERROR
+    from jota_gateway.services.openclaw.registry import TURN_IN_PROGRESS_ERROR
 
     async def _conflict_stream(*args, **kwargs):
         yield OrchestratorEvent(type="error", content=TURN_IN_PROGRESS_ERROR)
@@ -399,7 +399,7 @@ def test_streaming_done_delivered_when_tracker_close_raises(client, mock_orchest
     Sin el fix (sentinel después de close), si close() lanza, el generador
     se queda bloqueado en queue.get() y [DONE] nunca llega — test colgaría.
     """
-    import src.services.pipeline_tracker as pt_module
+    import jota_gateway.services.pipeline_tracker as pt_module
 
     async def _raising_close(self, status="completed"):
         raise RuntimeError("tracker close failed intentionally")
@@ -510,7 +510,7 @@ def test_chat_completions_from_untrusted_origin_with_valid_key_passes(
 def test_chat_completions_with_valid_key_uses_real_client_session_key(
     client_untrusted, ha_bearer_headers, mock_registry
 ):
-    from src.core.session_key import make_session_key
+    from jota_gateway.core.session_key import make_session_key
 
     captured = {}
 
@@ -551,7 +551,7 @@ def test_chat_completions_with_invalid_key_returns_401_even_from_loopback(client
 def test_chat_completions_with_inactive_client_key_returns_401(client, db_engine):
     from sqlmodel import Session
 
-    from src.db.models import ClientRecord
+    from jota_gateway.db.models import ClientRecord
 
     with Session(db_engine) as s:
         s.add(
@@ -662,7 +662,7 @@ def _capture_session_key(mock_orchestrator):
 def test_model_alias_jota_gateway_with_bearer_returns_200(
     client_untrusted, ha_bearer_headers, mock_orchestrator
 ):
-    from src.core.session_key import make_session_key
+    from jota_gateway.core.session_key import make_session_key
 
     captured = _capture_session_key(mock_orchestrator)
     r = client_untrusted.post(
@@ -678,7 +678,7 @@ def test_model_alias_jota_gateway_with_bearer_returns_200(
 def test_model_alias_uses_client_default_agent_in_cascade(
     client_untrusted, ha_bearer_headers, mock_orchestrator, db_engine
 ):
-    from src.core.session_key import make_session_key
+    from jota_gateway.core.session_key import make_session_key
 
     with Session(db_engine) as s:
         rec = s.get(ClientRecord, CLIENT_ID)
@@ -716,7 +716,7 @@ def test_model_alias_respects_allowed_agents_of_cascade_default(
 def test_real_agent_as_model_still_works_and_unknown_still_403(
     client_untrusted, ha_bearer_headers, mock_orchestrator
 ):
-    from src.core.session_key import make_session_key
+    from jota_gateway.core.session_key import make_session_key
 
     captured = _capture_session_key(mock_orchestrator)
     r = client_untrusted.post(
@@ -915,7 +915,7 @@ def test_orchestrator_error_event_code_reaches_v1_caller(client, mock_orchestrat
 def test_foreign_runtimeerror_text_never_reaches_v1_caller_nor_logs(
     client, mock_orchestrator, caplog
 ):
-    caplog.set_level(logging.DEBUG, logger="src")
+    caplog.set_level(logging.DEBUG, logger="jota_gateway")
 
     async def _stream(*a, **k):
         raise RuntimeError(MARK)
@@ -927,12 +927,12 @@ def test_foreign_runtimeerror_text_never_reaches_v1_caller_nor_logs(
     assert MARK not in r.text
     assert r.json() == {"error": "internal_error"}
     assert MARK not in "\n".join(
-        x.getMessage() for x in caplog.records if x.name.startswith("src")
+        x.getMessage() for x in caplog.records if x.name.startswith("jota_gateway")
     )
 
 
 def test_foreign_runtimeerror_text_never_reaches_v1_stream(client, mock_orchestrator, caplog):
-    caplog.set_level(logging.DEBUG, logger="src")
+    caplog.set_level(logging.DEBUG, logger="jota_gateway")
 
     async def _stream(*a, **k):
         raise RuntimeError(MARK)
@@ -947,5 +947,5 @@ def test_foreign_runtimeerror_text_never_reaches_v1_stream(client, mock_orchestr
         for p in payloads
     ), json.dumps(payloads)
     assert MARK not in "\n".join(
-        x.getMessage() for x in caplog.records if x.name.startswith("src")
+        x.getMessage() for x in caplog.records if x.name.startswith("jota_gateway")
     )

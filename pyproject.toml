@@ -1,7 +1,6 @@
 [project]
 name = "jota-gateway"
-# Fijo a propósito: la versión real es el tag de semantic-release, que la escribe en src/_version.py.
-version = "0.0.0"
+dynamic = ["version"]
 description = "BFF gateway for jota voice/text clients"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -20,7 +19,7 @@ dependencies = [
 ]
 
 [project.scripts]
-jota-gw = "src.cli.__main__:main"
+jota-gw = "jota_gateway.cli.__main__:main"
 
 [project.optional-dependencies]
 dev = [
@@ -39,8 +38,11 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["src*"]
+where = ["src"]
+
+# La versión real es el tag de semantic-release, que la escribe en _version.py (.releaserc.json).
+[tool.setuptools.dynamic]
+version = {attr = "jota_gateway._version.__version__"}
 
 
 

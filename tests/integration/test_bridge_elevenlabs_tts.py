@@ -2,9 +2,9 @@
 
 from pydantic import SecretStr
 
-from src.core.config import settings
-from src.models.schemas import ClientConfig
-from src.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
+from jota_gateway.core.config import settings
+from jota_gateway.models.schemas import ClientConfig
+from jota_gateway.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
 from tests.fakes.bridge import make_bridge, sent, tokens
 from tests.fakes.elevenlabs_tts import FakeElevenLabsTts
 

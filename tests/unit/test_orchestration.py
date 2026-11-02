@@ -2,9 +2,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.services.openclaw.models import ToolCallEvent
-from src.services.orchestration import call_orchestrator
-from src.services.protocol import OrchestratorEvent
+from jota_gateway.services.openclaw.models import ToolCallEvent
+from jota_gateway.services.orchestration import call_orchestrator
+from jota_gateway.services.protocol import OrchestratorEvent
 
 
 def _make_orchestrator(events):
@@ -35,7 +35,7 @@ async def test_tokens_reach_callback():
 
 
 async def test_tracker_receives_llm_events():
-    from src.services.pipeline_tracker import PipelineTracker
+    from jota_gateway.services.pipeline_tracker import PipelineTracker
 
     registry = MagicMock()
     tracker = PipelineTracker(
@@ -144,7 +144,7 @@ async def test_no_on_tool_call_does_not_raise():
 
 
 async def test_llm_done_meta_has_token_count():
-    from src.services.pipeline_tracker import PipelineTracker
+    from jota_gateway.services.pipeline_tracker import PipelineTracker
 
     registry = MagicMock()
     tracker = PipelineTracker(

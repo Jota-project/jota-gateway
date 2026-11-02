@@ -5,8 +5,8 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from src.cli import clients
-from src.cli.app import cli
+from jota_gateway.cli import clients
+from jota_gateway.cli.app import cli
 from tests.fakes.cli_api import FakeApi
 
 KEY = "k" * 43
@@ -157,7 +157,7 @@ def test_remove_without_tty_needs_yes(use_api):
 
 
 def test_add_on_tty_with_bracket_name_still_shows_key(use_api, monkeypatch):
-    from src.cli import output
+    from jota_gateway.cli import output
 
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setattr(output, "_isatty", lambda: True)

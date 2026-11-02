@@ -2,7 +2,7 @@ from uuid import UUID
 
 import pytest
 
-from src.core.request_id import RequestIdMiddleware
+from jota_gateway.core.request_id import RequestIdMiddleware
 
 
 @pytest.mark.parametrize("scope_type", ["http", "websocket"])
@@ -34,6 +34,6 @@ async def test_request_id_middleware_assigns_internal_uuid(scope_type):
 
 
 def test_request_id_middleware_is_registered_on_app():
-    from src.main import app
+    from jota_gateway.main import app
 
     assert any(item.cls is RequestIdMiddleware for item in app.user_middleware)

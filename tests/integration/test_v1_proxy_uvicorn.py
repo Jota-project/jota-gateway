@@ -15,9 +15,9 @@ import pytest
 import uvicorn
 from fastapi import FastAPI
 
-from src.api.openai_routes import router as openai_router
-from src.core.config import settings
-from src.core.request_id import RequestIdMiddleware
+from jota_gateway.api.openai_routes import router as openai_router
+from jota_gateway.core.config import settings
+from jota_gateway.core.request_id import RequestIdMiddleware
 
 ROOT = Path(__file__).resolve().parents[2]
 

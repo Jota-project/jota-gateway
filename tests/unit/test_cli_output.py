@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from src.cli import output
+from jota_gateway.cli import output
 
 
 @pytest.fixture()

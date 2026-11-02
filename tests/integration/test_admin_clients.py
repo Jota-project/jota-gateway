@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from src.core.logging import fingerprint_key
+from jota_gateway.core.logging import fingerprint_key
 
 ADMIN_TOKEN = "test-admin-token"
 HEADERS = {"x-admin-token": ADMIN_TOKEN}
@@ -12,14 +12,14 @@ HEADERS = {"x-admin-token": ADMIN_TOKEN}
 
 @pytest.fixture(autouse=True)
 def override_admin_token(monkeypatch):
-    from src.core import config
+    from jota_gateway.core import config
 
     monkeypatch.setattr(config.settings, "ADMIN_TOKEN", ADMIN_TOKEN)
 
 
 @pytest.fixture(autouse=True)
 def db_engine(monkeypatch):
-    from src import db
+    from jota_gateway import db
 
     engine = create_engine(
         "sqlite:///:memory:",
@@ -35,7 +35,7 @@ def db_engine(monkeypatch):
 def http(db_engine):
     from starlette.testclient import TestClient
 
-    from src.main import app
+    from jota_gateway.main import app
 
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
@@ -304,7 +304,7 @@ def test_patch_client_rejects_unknown_client_type_and_output_mode(http):
 
 def test_legacy_row_with_unknown_client_type_is_still_readable(http, db_engine):
     """Filas antiguas con una etiqueta libre no deben romper GET (solo se valida la entrada)."""
-    from src.db.models import ClientRecord
+    from jota_gateway.db.models import ClientRecord
 
     with Session(db_engine) as s:
         rec = ClientRecord(name="Old", client_key="legacy-key", client_type="e2e-test")

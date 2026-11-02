@@ -1,4 +1,4 @@
-from src.services.openclaw import frames
+from jota_gateway.services.openclaw import frames
 
 # ── Shape ─────────────────────────────────────────────────────────
 

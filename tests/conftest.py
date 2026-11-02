@@ -3,7 +3,7 @@
 import pytest
 from starlette.testclient import TestClient
 
-from src.main import app
+from jota_gateway.main import app
 
 
 @pytest.fixture(autouse=True)
@@ -11,7 +11,7 @@ def _disable_single_process_lock(monkeypatch):
     """Los tests crean varias apps en un mismo proceso y flock entra en conflicto con otro
     open() del mismo fichero aunque sea del mismo proceso (M6f, #218). Además evita crear
     data/gateway.lock en el checkout. Los tests del guard lo reactivan explícitamente."""
-    from src.core.config import settings
+    from jota_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "SINGLE_PROCESS_LOCK", False)
     # Hermético: una clave real en el entorno del desarrollador no debe filtrarse a los tests.
@@ -21,7 +21,7 @@ def _disable_single_process_lock(monkeypatch):
 @pytest.fixture(autouse=True)
 def _reset_gateway_stats():
     """Los contadores globales (#219) no deben filtrarse entre tests."""
-    from src.services.stats import gateway_stats
+    from jota_gateway.services.stats import gateway_stats
 
     gateway_stats.reset()
     yield

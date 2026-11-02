@@ -12,10 +12,10 @@ import websockets
 from sqlmodel import Session
 from starlette.testclient import TestClient
 
-from src.core.config import settings
-from src.db.models import ClientRecord
-from src.main import app
-from src.services.protocol import OrchestratorEvent
+from jota_gateway.core.config import settings
+from jota_gateway.db.models import ClientRecord
+from jota_gateway.main import app
+from jota_gateway.services.protocol import OrchestratorEvent
 from tests.integration.conftest import (
     CLIENT_ID,
     CLIENT_NAME,
@@ -150,9 +150,9 @@ def test_disabled_barge_in_does_not_interrupt_in_flight_response(
     from unittest.mock import AsyncMock as _AM
     from unittest.mock import MagicMock
 
-    monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_reg)
-    monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: MagicMock())
-    monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("jota_gateway.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_reg)
+    monkeypatch.setattr("jota_gateway.main.OpenClawClient", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("jota_gateway.main.FrameDispatcher", lambda *a, **kw: MagicMock())
     mock_reg.connect = _AM()
     mock_reg.close = _AM()
 

@@ -6,14 +6,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.core.config import settings
-from src.core.exceptions import ClientInactive
-from src.core.session_key import make_session_key
-from src.models.schemas import ClientConfig
-from src.services.openclaw.registry import TurnRegistry
-from src.services.pipeline_tracker import PipelineTracker
-from src.services.reconnection import ConnectionState
-from src.services.stats import gateway_stats
+from jota_gateway.core.config import settings
+from jota_gateway.core.exceptions import ClientInactive
+from jota_gateway.core.session_key import make_session_key
+from jota_gateway.models.schemas import ClientConfig
+from jota_gateway.services.openclaw.registry import TurnRegistry
+from jota_gateway.services.pipeline_tracker import PipelineTracker
+from jota_gateway.services.reconnection import ConnectionState
+from jota_gateway.services.stats import gateway_stats
 from tests.fakes.bridge import DirectSender
 
 
@@ -76,7 +76,7 @@ async def test_silence_timeout_reason(make_reason_bridge, monkeypatch):
     async def _fast_sleep(_):
         bridge._last_audio_at = time.monotonic()  # cliente enviando audio sin transcripción
 
-    monkeypatch.setattr("src.services.bridge._sleep", _fast_sleep)
+    monkeypatch.setattr("jota_gateway.services.bridge._sleep", _fast_sleep)
     await asyncio.wait_for(bridge._transcription_watchdog(), timeout=2.0)
     assert _end_meta(bridge)["reason"] == "silence_timeout"
     assert _closed() == {"silence_timeout": 1}
@@ -85,7 +85,7 @@ async def test_silence_timeout_reason(make_reason_bridge, monkeypatch):
 async def test_revoked_reason(make_reason_bridge, monkeypatch):
     monkeypatch.setattr(settings, "SESSION_REVALIDATE_INTERVAL_S", 0.0)
     monkeypatch.setattr(
-        "src.services.bridge.db_client.get_session", AsyncMock(side_effect=ClientInactive())
+        "jota_gateway.services.bridge.db_client.get_session", AsyncMock(side_effect=ClientInactive())
     )
     bridge = make_reason_bridge()
     await asyncio.wait_for(bridge._session_revalidation_loop(), timeout=1.0)

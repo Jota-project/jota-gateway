@@ -5,7 +5,7 @@ import logging
 import struct
 import time
 
-from src.services.speech.ports import SttCallbacks, SttParams
+from jota_gateway.services.speech.ports import SttCallbacks, SttParams
 
 FRAME = struct.pack("<160f", *([0.1] * 160))
 

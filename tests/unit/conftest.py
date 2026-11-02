@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.services.pipeline_tracker import PipelineTracker
+from jota_gateway.services.pipeline_tracker import PipelineTracker
 from tests.fakes import bridge as fake_bridge
 from tests.fakes.bridge import DirectSender
 
@@ -42,7 +42,7 @@ async def make_bridge():
 @pytest.fixture()
 def use_api(monkeypatch):
     """Sustituye el cliente HTTP de la CLI por un FakeApi (tests/fakes/cli_api.py)."""
-    from src.cli import api
+    from jota_gateway.cli import api
 
     def _use(fake):
         monkeypatch.setattr(api, "from_context", lambda ctx: fake)

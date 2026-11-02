@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import src.services.bridge as bridge_module
-from src.services.pipeline_tracker import PipelineTracker
-from src.services.reconnection import ConnectionState
+import jota_gateway.services.bridge as bridge_module
+from jota_gateway.services.pipeline_tracker import PipelineTracker
+from jota_gateway.services.reconnection import ConnectionState
 from tests.fakes.bridge import sent
 
 

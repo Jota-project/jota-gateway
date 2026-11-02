@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from starlette.testclient import TestClient
 
-from src.main import app
+from jota_gateway.main import app
 from tests.integration.conftest import _configure_app_mocks
 
 
@@ -22,7 +22,7 @@ def test_lifespan_shutdown_unhooks_broadcasts_closes_openclaw_and_disposes_engin
     them (1012) before the lifespan shutdown runs."""
     _configure_app_mocks(mock_registry, monkeypatch)
     dispose_mock = MagicMock()
-    monkeypatch.setattr("src.main.dispose_engine", dispose_mock)
+    monkeypatch.setattr("jota_gateway.main.dispose_engine", dispose_mock)
     hooks_at_close = {}
 
     async def _record_hooks(*args, **kwargs):
@@ -47,7 +47,7 @@ def test_lifespan_shutdown_disposes_engine_even_if_openclaw_close_raises(
     _configure_app_mocks(mock_registry, monkeypatch)
     mock_registry.close = AsyncMock(side_effect=RuntimeError("openclaw close boom"))
     dispose_mock = MagicMock()
-    monkeypatch.setattr("src.main.dispose_engine", dispose_mock)
+    monkeypatch.setattr("jota_gateway.main.dispose_engine", dispose_mock)
 
     with TestClient(app, client=("127.0.0.1", 50000)):
         pass  # no active bridges — exercises the openclaw.close()-raises path directly

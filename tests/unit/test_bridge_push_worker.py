@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.core.config import settings
+from jota_gateway.core.config import settings
 
 
 @pytest.fixture

@@ -13,6 +13,8 @@ RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml
 
 # Copiamos el código, la config y las migraciones de Alembic (run_migrations() las necesita en runtime)
 COPY src/ /app/src/
+# Paquete en src/jota_gateway (src layout). Lo instala como paquete el PR 2 de M14c.
+ENV PYTHONPATH=/app/src
 COPY alembic.ini .
 COPY migrations/ /app/migrations/
 
@@ -39,8 +41,8 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 # proxy en el mismo host conviene GATEWAY_HOST=127.0.0.1 (el HEALTHCHECK de arriba usa
 # 127.0.0.1, así que no sirve con una IP de LAN concreta).
 # --no-proxy-headers: la única señal de "IP real detrás de un proxy" es X-Real-IP (ver
-# src/core/network.py); sin él uvicorn dejaría que un X-Forwarded-For reenviado por el
+# src/jota_gateway/core/network.py); sin él uvicorn dejaría que un X-Forwarded-For reenviado por el
 # proxy reescribiera el peer TCP.
 # --ws-max-size: tope de cualquier mensaje WebSocket entrante (default de uvicorn: 16 MiB);
 # 1 MiB sobra para audio PCM en chunks y para los mensajes de control.
-CMD ["sh", "-c", "exec uvicorn src.main:app --host \"${GATEWAY_HOST:-0.0.0.0}\" --port 8004 --no-proxy-headers --ws-max-size 1048576 --timeout-graceful-shutdown 35"]
+CMD ["sh", "-c", "exec uvicorn jota_gateway.main:app --host \"${GATEWAY_HOST:-0.0.0.0}\" --port 8004 --no-proxy-headers --ws-max-size 1048576 --timeout-graceful-shutdown 35"]

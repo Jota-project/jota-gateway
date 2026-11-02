@@ -12,8 +12,8 @@ from typing import Any
 
 import pytest
 
-from src.core.config import settings
-from src.models.schemas import Client
+from jota_gateway.core.config import settings
+from jota_gateway.models.schemas import Client
 from tests.fakes.jota_upstreams import FakeTranscriber, FakeTts
 
 ADAPTERS = ["jota", "elevenlabs"]
@@ -53,7 +53,7 @@ async def stt_harness(request, monkeypatch):
         async for h in _elevenlabs_stt_harness(monkeypatch):
             yield h
         return
-    from src.services.speech.jota import JotaSttProvider
+    from jota_gateway.services.speech.jota import JotaSttProvider
 
     up = FakeTranscriber()
     await up.start()
@@ -72,8 +72,8 @@ async def stt_harness(request, monkeypatch):
 async def _elevenlabs_stt_harness(monkeypatch):
     from pydantic import SecretStr
 
-    from src.services.speech.elevenlabs import stt as stt_mod
-    from src.services.speech.elevenlabs.stt import ElevenLabsSttProvider
+    from jota_gateway.services.speech.elevenlabs import stt as stt_mod
+    from jota_gateway.services.speech.elevenlabs.stt import ElevenLabsSttProvider
     from tests.fakes.elevenlabs_stt import FakeElevenLabsStt
 
     monkeypatch.setattr(stt_mod, "DRAIN_S", 0.3)
@@ -105,7 +105,7 @@ async def tts_harness(request):
         async for h in _elevenlabs_tts_harness():
             yield h
         return
-    from src.services.speech.jota import JotaTtsProvider
+    from jota_gateway.services.speech.jota import JotaTtsProvider
 
     up = FakeTts()
     await up.start()
@@ -130,7 +130,7 @@ async def tts_harness(request):
 async def _elevenlabs_tts_harness():
     from pydantic import SecretStr
 
-    from src.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
+    from jota_gateway.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
     from tests.fakes.elevenlabs_tts import FakeElevenLabsTts
 
     key = "el-key-SECRET-0123456789"

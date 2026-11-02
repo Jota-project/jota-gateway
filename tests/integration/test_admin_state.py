@@ -32,7 +32,7 @@ SNAPSHOT_KEYS = {
 
 @pytest.mark.parametrize("path", ROUTES)
 def test_state_requires_admin_token(client, monkeypatch, path):
-    from src.core.config import settings
+    from jota_gateway.core.config import settings
 
     assert client.get(path).status_code == 422
     assert client.get(path, headers={"x-admin-token": "wrong"}).status_code == 401
@@ -57,7 +57,7 @@ def test_state_shape_with_active_session(client, admin_headers):
     body = r.json()
     assert set(body) == {"gateway", "services", "totals", "sessions"}
     assert set(body["gateway"]) == {"started_at", "uptime_s", "version"}
-    from src._version import __version__
+    from jota_gateway._version import __version__
 
     assert body["gateway"]["version"] == __version__
     assert body["services"]["orchestrator"]["state"] == "CONNECTED"
@@ -83,8 +83,8 @@ def test_state_shape_with_active_session(client, admin_headers):
 
 
 async def test_state_stream_emits_and_stops_when_request_reports_disconnect(client, monkeypatch):
-    import src.api.admin_routes as admin_routes
-    from src.main import app
+    import jota_gateway.api.admin_routes as admin_routes
+    from jota_gateway.main import app
 
     monkeypatch.setattr(admin_routes, "STATE_STREAM_INTERVAL_S", 0.01)
     request = SimpleNamespace(app=app, is_disconnected=AsyncMock(side_effect=[False, False, True]))
@@ -112,8 +112,8 @@ async def test_state_stream_emits_and_stops_when_request_reports_disconnect(clie
 
 async def test_state_stream_ends_by_itself_after_max_lifetime(client, monkeypatch):
     """Sin desconexión: el stream termina solo tras STATE_STREAM_MAX_S (no bloquea el apagado)."""
-    import src.api.admin_routes as admin_routes
-    from src.main import app
+    import jota_gateway.api.admin_routes as admin_routes
+    from jota_gateway.main import app
 
     monkeypatch.setattr(admin_routes, "STATE_STREAM_INTERVAL_S", 0.01)
     monkeypatch.setattr(admin_routes, "STATE_STREAM_MAX_S", 0.05)
@@ -129,7 +129,7 @@ async def test_state_stream_ends_by_itself_after_max_lifetime(client, monkeypatc
 
 
 def test_state_skips_bridge_whose_snapshot_fails(client, admin_headers):
-    from src.main import app
+    from jota_gateway.main import app
 
     class _Bad:
         def snapshot(self):

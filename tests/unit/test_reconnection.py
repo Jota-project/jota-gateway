@@ -1,4 +1,4 @@
-from src.services.reconnection import ConnectionState, ServiceStatus, to_wire_state
+from jota_gateway.services.reconnection import ConnectionState, ServiceStatus, to_wire_state
 
 
 def test_to_wire_state_mapping():
@@ -25,7 +25,7 @@ import asyncio  # noqa: E402
 
 import pytest  # noqa: E402
 
-from src.services.reconnection import (  # noqa: E402
+from jota_gateway.services.reconnection import (  # noqa: E402
     LazyBackoffGate,
     ServiceHealth,
     reconnect_with_backoff,
@@ -124,7 +124,7 @@ async def test_backoff_loop_doubles_sleep_up_to_cap(monkeypatch):
     async def fake_sleep(d):
         sleeps.append(d)
 
-    monkeypatch.setattr("src.services.reconnection._sleep", fake_sleep)
+    monkeypatch.setattr("jota_gateway.services.reconnection._sleep", fake_sleep)
     calls = 0
 
     async def attempt():

@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.models.schemas import ClientConfig
-from src.services.reconnection import ConnectionState
-from src.services.speech.ports import SttCapabilities
+from jota_gateway.models.schemas import ClientConfig
+from jota_gateway.services.reconnection import ConnectionState
+from jota_gateway.services.speech.ports import SttCapabilities
 from tests.fakes.bridge import sent
 
 

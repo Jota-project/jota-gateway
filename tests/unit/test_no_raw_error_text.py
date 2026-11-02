@@ -13,17 +13,17 @@ import pytest
 from websockets.exceptions import ConnectionClosed
 from websockets.frames import Close
 
-from src.services import transcriber_client as tc_mod
-from src.services import tts_client as tts_mod
-from src.services.openclaw.client import OpenClawClient
-from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
-from src.services.openclaw.registry import ClientRegistry, TurnRegistry
-from src.services.protocol import OrchestratorEvent
-from src.services.reconnection import ConnectionState, describe_error
-from src.services.speech.ports import SttCallbacks, SttParams
-from src.services.transcriber_client import TranscriberClient
-from src.services.transcriber_reconnecting import ReconnectingTranscriberClient
-from src.services.tts_client import TTSClient
+from jota_gateway.services import transcriber_client as tc_mod
+from jota_gateway.services import tts_client as tts_mod
+from jota_gateway.services.openclaw.client import OpenClawClient
+from jota_gateway.services.openclaw.reconnecting import ReconnectingOpenClawClient
+from jota_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
+from jota_gateway.services.protocol import OrchestratorEvent
+from jota_gateway.services.reconnection import ConnectionState, describe_error
+from jota_gateway.services.speech.ports import SttCallbacks, SttParams
+from jota_gateway.services.transcriber_client import TranscriberClient
+from jota_gateway.services.transcriber_reconnecting import ReconnectingTranscriberClient
+from jota_gateway.services.tts_client import TTSClient
 from tests.fakes.bridge import sent
 
 SECRET = "SECRET-INTERNAL"
@@ -331,7 +331,7 @@ async def test_openclaw_reconnect_task_failure_logs_type_only(monkeypatch, caplo
     async def _boom_async(*a, **k):
         raise RuntimeError(SECRET)
 
-    monkeypatch.setattr("src.services.openclaw.reconnecting.reconnect_with_backoff", _boom_async)
+    monkeypatch.setattr("jota_gateway.services.openclaw.reconnecting.reconnect_with_backoff", _boom_async)
     roc = ReconnectingOpenClawClient(AsyncMock(spec=OpenClawClient), "oc")
     roc._ensure_reconnecting()
     for _ in range(3):
@@ -349,7 +349,7 @@ async def test_ready_ping_failure_logs_type_only(caplog):
 
     from fastapi import Response
 
-    from src.api.health_routes import ready
+    from jota_gateway.api.health_routes import ready
 
     caplog.set_level(logging.DEBUG)
     failing = AsyncMock(side_effect=RuntimeError(SECRET))

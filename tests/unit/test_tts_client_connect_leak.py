@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from websockets.exceptions import ConnectionClosed
 
-from src.core.config import settings
-from src.services.tts_client import TTSClient
+from jota_gateway.core.config import settings
+from jota_gateway.services.tts_client import TTSClient
 
 
 class FakeTTSSocket:
@@ -97,7 +97,7 @@ async def test_connect_uses_configured_auth_timeout_and_closes_socket(monkeypatc
     with (
         patch("websockets.connect", side_effect=fake_connect),
         patch(
-            "src.services.tts_client.asyncio.wait_for",
+            "jota_gateway.services.tts_client.asyncio.wait_for",
             wraps=asyncio.wait_for,
         ) as wait_for,
         pytest.raises(asyncio.TimeoutError),

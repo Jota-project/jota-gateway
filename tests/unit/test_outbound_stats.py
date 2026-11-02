@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from src.services.outbound import QueuedSender
+from jota_gateway.services.outbound import QueuedSender
 
 
 class BlockingWS:

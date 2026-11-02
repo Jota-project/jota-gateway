@@ -1,4 +1,4 @@
-from src.services.stats import GatewayStats, gateway_stats
+from jota_gateway.services.stats import GatewayStats, gateway_stats
 
 
 def test_stats_counts_and_snapshot():

@@ -3,10 +3,10 @@ used to make the keepalive loop spin with asyncio.sleep(0) — a ping flood."""
 
 import pytest
 
-from src.services.openclaw.client import OpenClawClient
-from src.services.openclaw.dispatcher import FrameDispatcher
-from src.services.openclaw.models import GatewayInfo
-from src.services.openclaw.registry import ClientRegistry, TurnRegistry
+from jota_gateway.services.openclaw.client import OpenClawClient
+from jota_gateway.services.openclaw.dispatcher import FrameDispatcher
+from jota_gateway.services.openclaw.models import GatewayInfo
+from jota_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
 
 
 def _client(tick_ms=None):

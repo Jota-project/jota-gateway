@@ -6,9 +6,9 @@ Se llama al handler directamente para controlar el cierre del stream SSE.
 import asyncio
 from types import SimpleNamespace
 
-from src.api.openai_routes import HACaller, _ChatCompletionRequest, chat_completions
-from src.services.protocol import OrchestratorEvent
-from src.services.session_registry import SessionRegistry
+from jota_gateway.api.openai_routes import HACaller, _ChatCompletionRequest, chat_completions
+from jota_gateway.services.protocol import OrchestratorEvent
+from jota_gateway.services.session_registry import SessionRegistry
 
 
 class _Orchestrator:
