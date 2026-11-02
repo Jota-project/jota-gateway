@@ -6,8 +6,11 @@ Los errores salen como ApiError con el código de salida de la spec: 1 error,
 2 uso incorrecto (422), 3 gateway inalcanzable.
 """
 
+import http.client
 import json
 import os
+import ssl
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -15,6 +18,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import click
+
+from src.cli import paths
 
 TIMEOUT_S = 5.0
 
@@ -25,10 +30,14 @@ class ApiError(click.ClickException):
         self.exit_code = exit_code  # type: ignore[misc]  # click lo lee de la instancia
 
 
-def _read_env_file(path: Path) -> dict[str, str]:
+def read_env_file(path: Path) -> dict[str, str]:
     # shortcut: KEY=VALUE con comillas opcionales; sin export, escapes ni multilínea.
+    try:
+        text = path.read_text()
+    except OSError as e:
+        raise ApiError(f"No se puede leer {path} ({type(e).__name__}); revisa sus permisos.") from None
     values: dict[str, str] = {}
-    for line in path.read_text().splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -38,14 +47,14 @@ def _read_env_file(path: Path) -> dict[str, str]:
 
 
 def resolve_token(explicit: str | None) -> str:
-    """--token / JOTA_GW_TOKEN (ya en `explicit`), ADMIN_TOKEN y ~/.jota-gateway/config.env."""
+    """--token / JOTA_GW_TOKEN (ya en `explicit`), ADMIN_TOKEN y <base>/config.env."""
     if explicit:
         return explicit
     if os.environ.get("ADMIN_TOKEN"):
         return os.environ["ADMIN_TOKEN"]
-    config = Path.home() / ".jota-gateway" / "config.env"
+    config = paths.config_file()
     if config.is_file():
-        token = _read_env_file(config).get("ADMIN_TOKEN")
+        token = read_env_file(config).get("ADMIN_TOKEN")
         if token:
             return token
     raise ApiError(
@@ -66,6 +75,9 @@ def _validation_message(detail: Any) -> str:
         return str(detail or "Datos no válidos.")
     parts = []
     for item in detail:
+        if not isinstance(item, dict):
+            parts.append("petición: no válida")
+            continue
         loc = [str(p) for p in item.get("loc", []) if p != "body"]
         parts.append(f"{'.'.join(loc) or 'petición'}: {item.get('msg', 'no válido')}")
     return "Datos no válidos: " + "; ".join(parts)
@@ -88,21 +100,38 @@ class Api:
 
     def request(self, method: str, path: str, body: Any = None) -> Any:
         data = None if body is None else json.dumps(body).encode()
-        req = urllib.request.Request(self.url + path, data=data, method=method)
+        try:
+            req = urllib.request.Request(self.url + path, data=data, method=method)
+        except ValueError:
+            raise ApiError(f"«{self.url}» no es una dirección válida; revisa --url.", 2) from None
         req.add_unredirected_header("X-Admin-Token", self.token)
         if data is not None:
             req.add_header("Content-Type", "application/json")
+        host = urlsplit(self.url).netloc
+        unreachable = ApiError(
+            f"El gateway no responde en {host}. ¿Está arrancado? Prueba `jota-gw doctor`.", 3
+        )
+        # shortcut: el plazo total cubre la lectura del cuerpo; conectar y las cabeceras van
+        # con el tiempo por operación de urllib. Basta para un gateway local.
+        deadline = time.monotonic() + self.timeout
         try:
             with _OPENER.open(req, timeout=self.timeout) as resp:
-                raw = resp.read()
+                chunks = []
+                while chunk := resp.read1(65536):
+                    chunks.append(chunk)
+                    if time.monotonic() > deadline:
+                        raise unreachable
+                raw = b"".join(chunks)
         except urllib.error.HTTPError as e:
             raise self._http_error(e) from None
-        except (urllib.error.URLError, OSError):
-            host = urlsplit(self.url).netloc
-            raise ApiError(
-                f"El gateway no responde en {host}. ¿Está arrancado? Prueba `jota-gw doctor`.",
-                3,
-            ) from None
+        except urllib.error.URLError as e:
+            if isinstance(e.reason, ssl.SSLError):
+                raise ApiError(f"Error TLS al hablar con {host}; ¿es http y no https?") from None
+            raise unreachable from None
+        except http.client.HTTPException:
+            raise ApiError(f"Respuesta incompleta de {host}.") from None
+        except (TimeoutError, OSError):
+            raise unreachable from None
         try:
             return json.loads(raw) if raw else None
         except ValueError:
