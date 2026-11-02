@@ -55,6 +55,7 @@ A BFF: the single entry point for Jota-Screen, jota-voice (Mac and Android/Termu
 | `models/` | Handshake/`ClientConfig` (`schemas.py`), admin input validation (`admin_schemas.py`) |
 | `services/bridge.py` | `JotaBridge`: input loop, turns, barge-in, push turns, silence/idle watchdogs, session revalidation, `close_all()` |
 | `services/outbound.py` | `QueuedSender`: one ordered outbound queue per session; slow-client cut-off (`CLIENT_SEND_TIMEOUT_S`) |
+| `services/pacing.py` | `AudioPacer`: envía el audio TTS a 1× con `AUDIO_LEAD_S` de adelanto |
 | `services/db_client.py` | `get_session(client_key)` → `(Client, ClientConfig)` straight from the DB (no cache) |
 | `services/openclaw/` | `OpenClawClient` (one multiplexed WS v4 connection), `ReconnectingOpenClawClient`, `FrameDispatcher`, `TurnRegistry`/`ClientRegistry`, `ChatTextTracker` |
 | `services/speech/` | STT/TTS ports (`ports.py`), `factory.py`, `jota.py` (jota-transcriber/jota-speaker), `elevenlabs/`; `SpeechProviders` holder in `app.state.speech` |

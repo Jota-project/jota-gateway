@@ -106,6 +106,10 @@ class ReconnectingOpenClawClient:
             return False
         return await self._client.ping()
 
+    async def abort(self, session_key: str) -> None:
+        if self.state == ConnectionState.CONNECTED:
+            await self._client.abort(session_key)
+
     async def stream_response(
         self,
         text: str,

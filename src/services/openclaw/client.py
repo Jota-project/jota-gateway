@@ -40,6 +40,8 @@ ORCHESTRATOR_UNAVAILABLE_ERROR = "orchestrator_unavailable"  # not connected / r
 ORCHESTRATOR_ERROR = "orchestrator_error"  # OpenClaw rejected the turn, or an internal failure
 ORCHESTRATOR_HANDSHAKE_FAILED_ERROR = "orchestrator_handshake_failed"  # connect() handshake
 
+_TERMINAL = ("aborted", "final", "error")  # terminal `chat` states
+
 
 class OrchestratorHandshakeError(RuntimeError):
     """The OpenClaw v4 handshake failed or got an unexpected/malformed frame. The message
@@ -286,6 +288,42 @@ class OpenClawClient:
             return False
         finally:
             self._health_futures.pop(req_id, None)  # también si cancelan el ping
+
+    async def abort(self, session_key: str, timeout: float = 1.0) -> None:
+        """Abort the run in flight on `session_key` and swallow its own `aborted`.
+
+        Frames are routed by session_key, not runId (G-14): holding the key until the
+        terminal `chat` arrives keeps it from closing the next turn empty. No-op if a
+        normal turn owns the key. Never raises an Exception.
+        """
+        if not self._ws:
+            return
+        req_id = str(uuid.uuid4())
+        try:
+            queue = self._turn_registry.register(req_id, session_key)
+        except TurnInProgress:
+            return
+        # The ok:true `res` never reaches the turn queue (the dispatcher only routes
+        # ok:false): catch it by id, as ping() does.
+        res: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._health_futures[req_id] = res
+        try:
+            await self._ws.send(json.dumps(frames.chat_abort(req_id, session_key)))
+            async with asyncio.timeout(timeout):
+                payload = (await res).get("payload")
+                if not (isinstance(payload, dict) and payload.get("aborted")):
+                    return  # nothing was running: no `aborted` will follow
+                # The `aborted` usually comes before the `res`: it is already queued.
+                while True:
+                    kind, data = await queue.get()
+                    if kind == "tool" or (kind == "chat" and data.get("state") not in _TERMINAL):
+                        continue
+                    return
+        except Exception as e:  # noqa: BLE001 — frontera: el abort es best-effort, el turno siguiente sigue
+            logger.debug("chat.abort failed (%s)", describe_error(e))
+        finally:
+            self._health_futures.pop(req_id, None)
+            self._turn_registry.unregister(session_key, req_id)
 
     async def stream_response(
         self,

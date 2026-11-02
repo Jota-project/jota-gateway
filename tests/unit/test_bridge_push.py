@@ -378,3 +378,77 @@ async def test_push_final_retracted_to_prefix_emits_nothing(make_push_bridge, ca
     assert [m["text"] for m in await sent(bridge)] == ["SECRETO, mundo. Adios"]
     assert "diverges" not in caplog.text
     assert "SECRETO" not in caplog.text
+
+
+# ── 7e: hablar a Jota corta un push que está sonando ──
+
+
+async def _hang():
+    await asyncio.sleep(3600)
+    yield b""
+
+
+async def test_cut_during_push_turn_end_sends_one_turn_end(make_push_bridge):
+    """Foco 1: un corte mientras on_push_turn_end espera un audio que no acaba."""
+    push_tts = AsyncMock()
+    push_tts.get_audio_stream = _hang
+    tts_wrapper = AsyncMock()
+    tts_wrapper.connect = AsyncMock(return_value=push_tts)
+    bridge, _ = make_push_bridge(output_mode=("audio", "text"), tts=tts_wrapper)
+    sk = bridge._session_key()
+    await bridge.on_push_turn_start(sk)
+
+    ending = asyncio.create_task(bridge.on_push_turn_end(sk))
+    await wait_until(lambda: push_tts.end.await_count == 1)
+    await asyncio.sleep(0.02)  # ya espera al audio
+    assert await bridge._cut_push() == "t-1"
+    await asyncio.wait_for(ending, 2)
+
+    assert [m for m in await sent(bridge) if m.get("type") == "turn_end"] == [
+        {"type": "turn_end", "turn_id": "t-1"}
+    ]
+    bridge.orchestrator.abort.assert_awaited_once_with(sk)
+    assert bridge._push_turn_open is False
+
+
+async def test_cut_while_push_tts_connects_closes_that_tts(make_push_bridge):
+    """Un corte durante el connect del TTS del push: ese TTS se cierra, sin audio huérfano."""
+    push_tts = AsyncMock()
+    push_tts.get_audio_stream = _hang
+    go = asyncio.Event()
+
+    async def _connect(**_):
+        await go.wait()
+        return push_tts
+
+    tts_wrapper = AsyncMock()
+    tts_wrapper.connect = AsyncMock(side_effect=_connect)
+    bridge, _ = make_push_bridge(output_mode=("audio", "text"), tts=tts_wrapper)
+    opening = asyncio.create_task(bridge.on_push_turn_start(bridge._session_key()))
+    await wait_until(lambda: tts_wrapper.connect.await_count == 1)
+    assert await bridge._cut_push() == "t-1"
+    go.set()
+    await asyncio.wait_for(opening, 2)
+
+    push_tts.close.assert_awaited_once()
+    assert bridge._push_tts is None and bridge._push_audio_task is None
+    assert [m["type"] for m in await sent(bridge)] == ["turn_start", "turn_end"]
+
+
+async def test_cut_push_with_another_expected_id_is_a_noop(make_push_bridge):
+    """Barge-in/cancel only cut the push that was open when they arrived (I-1)."""
+    bridge, _ = make_push_bridge(output_mode=("text",))
+    await bridge.on_push_turn_start(bridge._session_key())
+    assert await bridge._cut_push("t-9") is None
+    assert bridge._push_turn_open is True
+    bridge.orchestrator.abort.assert_not_awaited()
+
+
+async def test_close_all_while_push_worker_waits_on_turn_lock_ends_promptly(make_push_bridge):
+    bridge, _ = make_push_bridge(output_mode=("text",))
+    await bridge._turn_lock.acquire()  # a turn being replaced holds the lock
+    bridge.enqueue_push("turn_start", bridge._session_key())
+    await asyncio.sleep(0.02)
+    await asyncio.wait_for(bridge.close_all(), 2)
+    assert bridge._push_worker.done()
+    assert [m for m in await sent(bridge) if m.get("type") == "turn_start"] == []

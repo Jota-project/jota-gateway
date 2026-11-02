@@ -1,7 +1,8 @@
 """Turnos que se pisan, vistos desde el cliente (arnés e2e, M7a).
 
-Bugs conocidos de la auditoría, todos para M10 (TurnController): el gateway enruta los frames
-de OpenClaw por `sessionKey` y no por `runId`, y no garantiza un solo turno abierto por sesión.
+Bugs conocidos de la auditoría, para M10 (TurnController) salvo #202, que arregló 7e: el
+gateway enruta los frames de OpenClaw por `sessionKey` y no por `runId`, y no garantiza un solo
+turno abierto por sesión.
 Cada test asierta el comportamiento correcto según docs/client-protocol.md (xfail estricto:
 empezará a pasar cuando se arregle).
 
@@ -117,22 +118,17 @@ async def test_a_silent_push_is_closed_like_any_other_turn(harness, monkeypatch)
     assert_turns_paired(await client.collect(turn_ended))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="#202: un push abierto y un turno normal se solapan en el mismo socket; "
-    f"{M10} — https://github.com/Jota-project/jota-gateway/issues/202",
-)
 async def test_a_push_and_a_normal_turn_never_overlap(harness):
+    """#202, arreglado en 7e: el `send` corta el push abierto (turn_end y chat.abort)."""
     client = await harness.connect()
     await harness.push("tienes una reunión", end=False)
     await client.collect(lambda m: bool(of_type(m, "token")))
     await client.send({"type": "send", "text": "hola"})
-    try:  # barrera: hoy el turno normal arranca; si M10 lo difiere, no llega nada y se sigue
+    try:  # barrera: el turno normal arranca; si M10 lo difiere, no llega nada y se sigue
         await client.collect(lambda m: len(of_type(m, "turn_start")) == 2, timeout=5.0)
     except AssertionError:
         pass
-    await harness.push_end()
+    await harness.push_end()  # ya abortado: el falso, como el real, no emite nada
     msgs = await client.collect(lambda m: len(of_type(m, "turn_end")) == 2)
 
     assert_one_turn_at_a_time(msgs)

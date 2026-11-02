@@ -28,8 +28,11 @@ class FakeOpenClawServer:
                  `reply-<texto>`, final, agent end. Ignora `chat.abort`, como un run cuya
                  respuesta ya iba en camino cuando llegó el abort.
     push(sk, text, end=True) -> agent start, chat delta, chat final y agent end, sin
-                 `chat.send`; con `end=False` el push queda abierto hasta `push_end(sk)`
-                 o `push_fail(sk)`.
+                 `chat.send`; con `end=False` el push queda abierto hasta `push_end(sk)`,
+                 `push_fail(sk)` o un `chat.abort`.
+    chat.abort -> si hay un push abierto en esa `sessionKey`: chat `aborted`, agent end y
+                 `res {ok, aborted: true, runIds}`, en el orden del real (6g); si no, solo
+                 `res {aborted: false}`. Tras el abort, `push_end`/`push_fail` no emiten nada.
 
     Cada `chat.send` y cada push tienen su `runId` (en el ack y en sus eventos), como el real.
     """
@@ -101,14 +104,18 @@ class FakeOpenClawServer:
 
     async def push_end(self, sk):
         """Cierra el push abierto de `sk` (chat final y agent end)."""
-        run_id = self._open_pushes.pop(sk)
+        run_id = self._open_pushes.pop(sk, None)
+        if run_id is None:  # ya abortado: el real no emite nada más
+            return
         for ws in list(self._conns):
             await ws.send(self._chat(sk, "final", run_id=run_id))
             await ws.send(self._agent(sk, "end", run_id))
 
     async def push_fail(self, sk):
         """El push abierto de `sk` falla: agent error y chat error, sin final ni end."""
-        run_id = self._open_pushes.pop(sk)
+        run_id = self._open_pushes.pop(sk, None)
+        if run_id is None:
+            return
         for ws in list(self._conns):
             await ws.send(self._agent(sk, "error", run_id))
             await ws.send(self._chat_error(sk, run_id))
@@ -147,6 +154,8 @@ class FakeOpenClawServer:
                     await ws.send(self._res(rid, {"subscribed": True}))
                 elif method == "health":
                     await ws.send(self._res(rid, {"ok": True}))
+                elif method == "chat.abort":
+                    await self._chat_abort(ws, rid, params["sessionKey"])
                 elif method == "chat.send":
                     task = asyncio.create_task(self._chat_send(ws, rid, params))
                     self._tasks.add(task)
@@ -155,6 +164,15 @@ class FakeOpenClawServer:
             pass
         finally:
             self._conns.discard(ws)
+
+    async def _chat_abort(self, ws, rid, sk):
+        run_id = self._open_pushes.pop(sk, None)
+        if run_id is None:
+            await ws.send(self._res(rid, {"ok": True, "aborted": False, "runIds": []}))
+            return
+        await ws.send(self._chat(sk, "aborted", run_id=run_id))
+        await ws.send(self._agent(sk, "end", run_id))
+        await ws.send(self._res(rid, {"ok": True, "aborted": True, "runIds": [run_id]}))
 
     async def _chat_send(self, ws, rid, params):
         sk, text = params["sessionKey"], params["message"]

@@ -183,6 +183,8 @@ Si el usuario cancela la respuesta en curso sin lanzar una nueva:
 { "type": "cancel" }
 ```
 
+También corta un push que esté sonando (§10): recibes su `turn_end`.
+
 ---
 
 ## 5. Recibir tokens de texto
@@ -218,7 +220,7 @@ Los tokens llegan en orden; concaténalos para reconstruir la respuesta completa
 { "type": "turn_end", "turn_id": "t-1" }
 ```
 
-Señala que el turno terminó. **Todo turno con `turn_start` recibe exactamente un `turn_end`** — también si falla (tras un `error`), si se cancela (`cancel`, barge-in, transcripción final, un `send` que lo sustituye) o si el cierre de sesión lo corta. El audio TTS puede seguir llegando brevemente después (ya está en tránsito).
+Señala que el turno terminó. **Todo turno con `turn_start` recibe exactamente un `turn_end`** — también si falla (tras un `error`), si se cancela (`cancel`, barge-in, transcripción final, un `send` que lo sustituye) o si el cierre de sesión lo corta. Después del `turn_end` no se envía más audio de ese turno; lo que sigue es la reproducción del audio que ya recibiste (como mucho `AUDIO_LEAD_S`, unos 2 s, por delante del tiempo real).
 
 ### `tool_call` — uso de herramientas del agente (opt-in)
 
@@ -321,6 +323,10 @@ Los frames de audio llegan como **mensajes binarios** intercalados con los JSON 
 
 El `turn_seq` permite descartar audio de turnos anteriores: un frame cuyo `turn_seq` **no coincide** con el del último `turn_start` recibido no es del turno actual. Es módulo 65 536 y no es monótono tras el desbordamiento, así que **no compares "mayor/menor"**: compara por igualdad (o usa `turn_id` en los mensajes JSON).
 
+### Ritmo y tamaño de los frames
+
+El gateway envía el audio a ritmo de reproducción, con ~`AUDIO_LEAD_S` (2 s por defecto) de adelanto, en frames de ≤200 ms (9 600 bytes de PCM). No dependas del tamaño de los frames. `turn_end` llega ~2 s antes de que termine de sonar el audio: es el fin de la respuesta, no del sonido.
+
 ### Cómo parsear un frame
 
 ```python
@@ -372,6 +378,8 @@ El gateway detecta la parcial de transcripción y cancela el turno activo si el 
 ```
 
 `turn_id` es el turno cancelado (puede faltar si el turno aún no había enviado su `turn_start`). El gateway cierra todo turno cancelado con su propio `turn_end` **antes** de `interrupted`: el orden es `turn_end` (t-1) → `interrupted` (t-1) → `turn_start` (t-2).
+
+**Un push que está sonando también se corta** (§10): el barge-in, un `send` y un `cancel` lo cierran igual que a un turno normal. Recibes su `turn_end` (exactamente uno) antes de cualquier otra cosa del turno nuevo; en el barge-in, `interrupted` lleva el `turn_id` del push. Su audio deja de llegar. La transcripción final por sí sola no lo corta: lo corta el `send` que la sigue.
 
 Tras `interrupted`:
 - Limpia la UI de la respuesta en curso
@@ -488,6 +496,10 @@ OpenClaw puede iniciar turnos proactivamente sin que el usuario haya enviado nad
 { "type": "turn_end", "turn_id": "t-3" }
 ```
 
+Un push que llega mientras suena una respuesta tuya se entrega después del `turn_end` de esa respuesta, nunca encima (los pushes siguientes esperan en orden).
+
+Al revés, hablar corta el push: si el usuario hace barge-in, envía un `send` o un `cancel` mientras un push está abierto, el gateway para su audio, te envía su `turn_end` y, si el push es de tu misma sesión de agente, lo aborta en OpenClaw. Solo después arranca el turno del usuario, así que nunca hay dos turnos abiertos a la vez (#202). Lo que quedara de ese push no llega.
+
 El cliente no necesita distinguirlos de los turnos normales — el `turn_id` y `turn_seq` siguen la misma secuencia. Si `tool_calls_enabled` está activo, también pueden llegar mensajes `tool_call` (§5) intercalados.
 
 > **`push_enabled` (por defecto `True`, configurable por admin):** si tu `client_key` tiene este flag desactivado, no recibirás **ningún** mensaje de un turno iniciado por el agente — ni `turn_start`, ni `token`, ni audio, ni `tool_call` — para esa sesión. No hay ninguna señal explícita de que se haya suprimido un push; es indistinguible de que OpenClaw simplemente no haya iniciado ninguno. Si tu integración depende de notificaciones proactivas, confirma con el admin que `push_enabled=True` para tu cliente.
@@ -498,8 +510,8 @@ El cliente no necesita distinguirlos de los turnos normales — el `turn_id` y `
 > tú mismo iniciaste con `send`), ningún evento `agent` interno de OpenClaw para esa misma sesión
 > abrirá un `turn_start` de push superpuesto al tuyo — el contenido de ese turno (tokens,
 > `tool_call`) te sigue llegando con normalidad dentro del turno que ya tenías abierto. Si un
-> turno de push ya estaba en curso *antes* de que empezaras el tuyo, su propio `turn_end` sigue
-> llegando con normalidad para cerrarlo correctamente.
+> turno de push ya estaba en curso *antes* de que empezaras el tuyo, tu `send` lo corta: su
+> `turn_end` llega antes del `turn_start` de tu turno.
 
 ---
 
@@ -559,7 +571,7 @@ El cliente escribe; el gateway sintetiza audio con el texto de la respuesta.
 | Handshake | `{"client_key":"...","input_mode":"...","output_mode":[...],"agent":"..."}` | Primer mensaje, obligatorio |
 | Fin de audio | `{"type":"end"}` | `input_mode="audio"` — usuario termina de hablar |
 | Enviar texto | `{"type":"send","text":"..."}` | Envía texto al orquestador |
-| Cancelar turno | `{"type":"cancel"}` | Cancela turno activo sin iniciar uno nuevo |
+| Cancelar turno | `{"type":"cancel"}` | Cancela turno activo (o el push que suena, §10) sin iniciar uno nuevo |
 | Frame de audio | bytes PCM Float32 16 kHz sin header | `input_mode="audio"` |
 | Otro `type` (p. ej. `{"type":"keepalive"}`) | `{"type":"..."}` | Se ignora, pero cuenta como actividad para `IDLE_TIMEOUT_S` (§13) |
 
@@ -604,12 +616,12 @@ Llegan entrelazados con los mensajes JSON. Identifica audio por el magic byte `0
 | `silence_timeout_s` / `max_silence_turns` (por cliente, defaults 2 s y 3) | ~6 s con los defaults | Mientras envías audio, el transcriptor no devuelve nada: cada sondeo de 2 s pasado `silence_timeout_s` cuenta un aviso (`status` `transcriber` `degraded`); con `max_silence_turns` avisos seguidos se cierra la sesión. No cuenta con un turno en curso ni sin audio entrante | Avisos `degraded` y después cierre WS con código 1000 |
 | `SESSION_REVALIDATE_INTERVAL_S` | 10s | Tu cliente se borra, se desactiva o se le rota la `client_key` con la sesión abierta | Cierre WS 1008 `"revoked"` en la siguiente revalidación; el turno en curso se cancela |
 | `SESSION_TEARDOWN_S` | 5s | Interno — tope de cada paso cuando el gateway cierra una sesión (cancelar el turno en curso, cerrar servicios, mandarte los últimos mensajes). Sustituye a `SHUTDOWN_DRAIN_S`, que ya no se usa | Ninguno directo. Un turno en curso **no se espera**: se cancela, y recibes su `turn_end` si el socket sigue abierto (ver «Cierre de la sesión por el gateway» abajo) |
-| `PUSH_TTS_DRAIN_TIMEOUT_S` | 30s | El audio TTS de un turno de push (iniciado por el agente) sigue sintetizándose 30s después del `end` del agente | El audio restante de ese push se corta, el TTS se cierra y el `turn_end` se envía igualmente — la sesión sigue viva. Con el mismo tope se acotan las escrituras de texto al TTS de push y su `end()`: si vencen, el resto de ese push llega solo como `token` de texto, sin más audio, y el `turn_end` se envía igualmente. En los turnos normales el mismo tope acota cada operación con el TTS, y la espera del audio cuenta como tiempo **sin progreso** (se reinicia con cada chunk): si vence, el turno sigue solo con texto y también recibe su `turn_end` |
+| `PUSH_TTS_DRAIN_TIMEOUT_S` | 30s, **sin progreso** | El TTS de un turno de push (iniciado por el agente) lleva 30s sin producir audio tras el `end` del agente (se reinicia con cada trozo, así que un push largo sonando a ritmo no se corta) | El audio restante de ese push se corta, el TTS se cierra y el `turn_end` se envía igualmente — la sesión sigue viva. Con el mismo tope se acotan las escrituras de texto al TTS de push y su `end()`: si vencen, el resto de ese push llega solo como `token` de texto, sin más audio, y el `turn_end` se envía igualmente. En los turnos normales el mismo tope acota cada operación con el TTS, y la espera del audio cuenta como tiempo **sin progreso** (se reinicia con cada chunk): si vence, el turno sigue solo con texto y también recibe su `turn_end` |
 | `CLIENT_SEND_TIMEOUT_S` | 10s, **por envío** | El gateway no consigue escribirte un mensaje durante ese tiempo porque tu socket **drena por debajo del ritmo al que el gateway escribe**: o has dejado de leer, o lees muy por debajo del caudal de salida (el audio TTS PCM16 a 24 kHz son 48 KB/s). Es un umbral de caudal de drenado, del orden de unos pocos KB/s (teoría) a unas pocas decenas de KB/s (medidas de laboratorio en macOS), según kernel y tasa de producción, y **solo cuando hay más datos en vuelo que los buffers del sistema** (varios MB); con respuestas de tamaño normal y un cliente que lee, no se activa; un cliente que lee a un ritmo razonable no se corta | Cierre WS con código **1013** (`client too slow`) (mejor esfuerzo) si reanudas la lectura en los 2 s siguientes; si no, o si el close frame se pierde, la conexión se corta sin close frame (1006). Los mensajes pendientes se descartan; reconecta y abre una sesión nueva |
 
 ### Cuidado con el ping de la librería WebSocket de tu cliente
 
-Muchas librerías WebSocket (p. ej. `websockets` de Python: `ping_interval=20 s` y `ping_timeout=20 s` por defecto) cierran la conexión si no reciben el `pong` a tiempo. El `pong` del gateway viaja **detrás de todo el audio que el gateway ya había enviado**. Si el gateway genera audio más deprisa que tiempo real y tu cliente lo lee al ritmo en que lo reproduce, el audio en vuelo puede superar el tiempo de espera del ping (en nuestras pruebas, a los ~40 s de una respuesta larga) y **tu propia librería cierra la conexión** (1011/1006) sin que el gateway haga nada.
+Muchas librerías WebSocket (p. ej. `websockets` de Python: `ping_interval=20 s` y `ping_timeout=20 s` por defecto) cierran la conexión si no reciben el `pong` a tiempo. Con el pacing del audio (§6) el gateway solo tiene ~2 s de audio por delante, así que el `pong` ya no queda detrás de minutos de audio. Aun así, si tu cliente deja de leer el socket mientras reproduce, la librería puede quedarse sin `pong` y **cerrar ella misma la conexión** (1011/1006) sin que el gateway haga nada.
 
 Qué hacer en el cliente: desactivar o ampliar el ping de la librería (`ping_interval=None` o un `ping_timeout` mayor), o leer del socket en una tarea aparte de la reproducción y poner el audio en una cola propia. Y, en cualquier caso, **reconectar ante cualquier cierre inesperado** (1006, 1011, 1012, 1013, EOF) abriendo una sesión nueva con handshake completo.
 

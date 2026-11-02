@@ -637,3 +637,65 @@ async def test_watchdog_does_not_close_during_a_20s_turn_with_2s_timeout_3_strik
 async def _until(pred):
     while not pred():
         await asyncio.sleep(0)
+
+
+async def test_push_with_audio_playing_counts_as_in_flight(make_wd_bridge, monkeypatch):
+    """Con pacing el audio de un push suena más allá de TURN_TIMEOUT_S: mientras su
+    tarea de audio viva, el push cuenta como turno en curso."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.1)
+    bridge, _, _ = make_wd_bridge()
+    bridge._push_turn_open = True
+    bridge._push_turn_opened_at = time.monotonic() - 1  # abierto hace más de TURN_TIMEOUT_S
+
+    bridge._push_audio_task = asyncio.create_task(asyncio.sleep(3600))
+    try:
+        bridge._push_audio_progress_at = time.monotonic()
+        assert bridge._turn_in_flight() is True
+        # orphaned push: a live audio task with no recent progress no longer counts
+        bridge._push_audio_progress_at = time.monotonic() - settings.PUSH_TTS_DRAIN_TIMEOUT_S - 1
+        assert bridge._turn_in_flight() is False
+    finally:
+        bridge._push_audio_task.cancel()
+        await asyncio.wait({bridge._push_audio_task})
+
+    assert bridge._turn_in_flight() is False
+
+
+@pytest.mark.asyncio
+async def test_idle_watchdog_does_not_close_while_push_audio_progresses(make_wd_bridge, monkeypatch):
+    """7e: a paced push sounds past TURN_TIMEOUT_S; while its audio progresses it is in flight."""
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.05)
+    bridge, ws, _ = make_wd_bridge()
+    bridge._last_client_activity = time.monotonic() - 10
+    bridge._push_turn_open = True
+    bridge._push_turn_opened_at = time.monotonic() - 5  # past TURN_TIMEOUT_S
+    audio = asyncio.create_task(asyncio.sleep(3600))
+    bridge._push_audio_task = audio
+    bridge._push_audio_progress_at = time.monotonic()
+
+    close_called = []
+
+    async def _fake_close():
+        close_called.append(True)
+
+    bridge.close_all = _fake_close
+    ticks = {"n": 0}
+
+    async def _controlled_sleep(n):
+        ticks["n"] += 1
+        bridge._push_audio_progress_at = time.monotonic()  # audio keeps flowing
+        if ticks["n"] >= 3:
+            raise RuntimeError("stop-test")
+
+    try:
+        with patch("src.services.bridge._sleep", new=_controlled_sleep):
+            with pytest.raises(RuntimeError, match="stop-test"):
+                await asyncio.wait_for(bridge._idle_watchdog(), timeout=2.0)
+    finally:
+        audio.cancel()
+    assert not close_called

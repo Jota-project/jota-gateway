@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -274,3 +275,25 @@ async def test_unexpected_exception_counts_as_internal_error(make_push_bridge, m
     )
     await bridge._call_orchestrator("hola")
     assert gateway_stats.snapshot()["turn_errors"] == {"internal_error": 1}
+
+
+async def test_push_drain_window_restarts_at_drain_start(make_push_bridge, monkeypatch):
+    """7e: tras una pausa larga del agente, el sello de progreso es viejo; el audio que
+    llega poco después del `end` no se corta."""
+    monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 0.3)
+    bridge = make_push_bridge()
+    _open_turn(bridge, AsyncMock())
+
+    async def late_audio():
+        for _ in range(3):
+            await asyncio.sleep(0.05)
+            bridge._push_audio_progress_at = time.monotonic()
+            await bridge._sender.send_bytes(b"\xa1\x00\x01" + b"\x00" * 10)
+
+    bridge._push_audio_progress_at = time.monotonic() - 10
+    bridge._push_audio_task = asyncio.create_task(late_audio())
+    await asyncio.wait_for(bridge.on_push_turn_end("sk"), timeout=2.0)
+
+    msgs = await sent(bridge)
+    assert len([m for m in msgs if isinstance(m, bytes)]) == 3
+    assert {"type": "turn_end", "turn_id": "t-1"} in msgs
