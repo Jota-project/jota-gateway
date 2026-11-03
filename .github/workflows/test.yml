@@ -99,7 +99,7 @@ jobs:
           rc=0; JOTA_GATEWAY_HOME=$empty timeout 60 jota-gw serve || rc=$?
           echo "serve sin BD: rc=$rc"
           [ "$rc" = 3 ]
-          [ ! -e "$empty/data/gateway.db" ]
+          [ ! -e "$empty/data" ]  # ni BD, ni data/, ni candado
           base=$(mktemp -d)/gw
           JOTA_GATEWAY_HOME=$base jota-gw init
           JOTA_GATEWAY_HOME=$base jota-gw serve & pid=$!

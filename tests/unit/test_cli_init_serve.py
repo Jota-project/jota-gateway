@@ -85,11 +85,22 @@ def test_same_paths_from_any_working_directory(tmp_path):
 
 
 def test_serve_without_db_stops_and_creates_nothing(tmp_path):
-    base = tmp_path / "vacia"
-    base.mkdir()
+    base = tmp_path / "errata"  # p. ej. un --home mal escrito
     r = _cli("--home", str(base), "serve", cwd=tmp_path)
-    assert r.returncode != 0
+    assert r.returncode == 3  # uvicorn: fallo de arranque
     assert "jota-gw init" in r.stderr
+    assert not base.exists()  # ni la BD, ni data/, ni el candado
+
+
+def test_alembic_cli_does_not_create_a_db_either(tmp_path):
+    base = tmp_path / "vacia"
+    env = {**os.environ, "JOTA_GATEWAY_HOME": str(base)}
+    env.pop("DATABASE_URL", None)
+    ini = Path(database.__file__).resolve().parents[1] / "alembic.ini"
+    r = subprocess.run([sys.executable, "-m", "alembic", "-c", str(ini), "current"], cwd=tmp_path,
+                       env=env, capture_output=True, text=True, timeout=60)
+    assert r.returncode != 0
+    assert "DatabaseMissing" in r.stderr
     assert not (base / "data" / "gateway.db").exists()
 
 

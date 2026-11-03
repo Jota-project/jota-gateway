@@ -26,7 +26,7 @@ from jota_gateway.core.startup_checks import (
     warn_insecure_tokens,
 )
 from jota_gateway.core.transport import TransportCaptureMiddleware
-from jota_gateway.db.database import dispose_engine, run_migrations
+from jota_gateway.db.database import dispose_engine, require_database, run_migrations
 from jota_gateway.services.openclaw.client import OpenClawClient
 from jota_gateway.services.openclaw.dispatcher import FrameDispatcher
 from jota_gateway.services.openclaw.reconnecting import ReconnectingOpenClawClient
@@ -60,6 +60,8 @@ async def lifespan(app: FastAPI):
         "" if config.is_file() else " (no existe)",
         paths.sqlite_file(settings.DATABASE_URL) or settings.DATABASE_URL.split(":", 1)[0],
     )
+    # Decisión 5 de M14c: sin BD se para aquí, antes de que el candado cree data/ y gateway.lock.
+    require_database()
     lock_handle = None
     if settings.SINGLE_PROCESS_LOCK:
         lock_handle = acquire_single_process_lock(settings.DATABASE_URL)
