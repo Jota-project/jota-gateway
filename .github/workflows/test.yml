@@ -222,7 +222,7 @@ jobs:
           }
           wait_health() {  # hasta $1 s (60 por defecto)
             for i in $(seq 1 "${1:-60}"); do
-              curl -fs http://127.0.0.1:8004/healthz >/dev/null && return 0
+              curl -fs --max-time 2 http://127.0.0.1:8004/healthz >/dev/null && return 0
               sleep 1
             done
             echo "/healthz no responde"; return 1
@@ -242,17 +242,27 @@ jobs:
         run: |
           . "$RUNNER_TEMP/h.sh"
           jota-gw --yes install
-          curl -fs http://127.0.0.1:8004/healthz; echo
+          curl -fs --max-time 2 http://127.0.0.1:8004/healthz; echo
           [ "$(systemctl --user is-enabled jota-gateway.service)" = enabled ]
 
       # Reinicia la sesión de usuario: para el servicio y lo vuelve a arrancar por default.target + linger.
+      # Límite: no es un reboot real del kernel; lo más cercano posible en un runner.
       - name: Reboot simulado (user@UID.service)
         run: |
           . "$RUNNER_TEMP/h.sh"
+          [ "$(loginctl show-user "$USER" -p Linger --value)" = yes ]
+          old_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
+          old_pid=$(systemctl --user show -p MainPID --value jota-gateway.service)
+          echo "antes: InvocationID=$old_inv MainPID=$old_pid"
+          [ -n "$old_inv" ] && [ "$old_pid" -gt 0 ]
           sudo systemctl restart "user@$(id -u).service"
           wait_bus
           wait_health 60
-          curl -fs http://127.0.0.1:8004/healthz; echo
+          new_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
+          echo "después: InvocationID=$new_inv"
+          [ -n "$new_inv" ] && [ "$new_inv" != "$old_inv" ]
+          ! kill -0 "$old_pid" 2>/dev/null
+          [ "$(systemctl --user is-active jota-gateway.service)" = active ]
 
       - name: jota-gw logs
         run: |
@@ -264,8 +274,11 @@ jobs:
       - name: config set LOG_FORMAT json (reinicia el servicio)
         run: |
           . "$RUNNER_TEMP/h.sh"
+          old_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
           jota-gw --yes config set LOG_FORMAT json
           wait_health 60
+          new_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
+          [ -n "$new_inv" ] && [ "$new_inv" != "$old_inv" ]  # hubo restart
           jota-gw logs -n 20 > "$RUNNER_TEMP/logs.txt"
           cat "$RUNNER_TEMP/logs.txt"
           python3 -c "
@@ -292,3 +305,5 @@ jobs:
         run: |
           journalctl --user -u jota-gateway.service -n 200 --no-pager || true
           systemctl --user status jota-gateway.service --no-pager || true
+          loginctl show-user "$USER" || true
+          systemctl --user show -p InvocationID,MainPID,ActiveEnterTimestamp jota-gateway.service || true
