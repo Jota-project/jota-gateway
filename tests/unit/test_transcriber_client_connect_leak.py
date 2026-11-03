@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from websockets.exceptions import ConnectionClosed
 
-from src.services.transcriber_client import TranscriberClient
+from jota_gateway.services.transcriber_client import TranscriberClient
 
 
 class FakeSocket:
@@ -61,7 +61,7 @@ async def test_connect_closes_socket_when_handshake_fails():
 async def test_connect_times_out_and_closes_socket_when_ready_never_arrives(monkeypatch):
     """#134: a transcriber that accepts the upgrade but never sends `ready` must not
     wedge connect() forever (it would block _reconnect_loop past its max_duration)."""
-    from src.core.config import settings
+    from jota_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "TRANSCRIBER_READY_TIMEOUT_S", 0.05)
     fake_ws = FakeSocket()  # recv() blocks forever
@@ -77,7 +77,7 @@ async def test_connect_times_out_and_closes_socket_when_ready_never_arrives(monk
 
 @pytest.mark.asyncio
 async def test_connect_succeeds_when_ready_arrives_in_time(monkeypatch):
-    from src.core.config import settings
+    from jota_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "TRANSCRIBER_READY_TIMEOUT_S", 1.0)
     fake_ws = FakeSocket(recv_payloads=[json.dumps({"type": "ready", "session_id": "s1"})])

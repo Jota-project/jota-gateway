@@ -1,7 +1,7 @@
 """Hallazgo 6 de la auditoría: la session key usa el agente ya resuelto y normalizado."""
 
-from src.models.schemas import Handshake
-from src.services.protocol import OrchestratorEvent
+from jota_gateway.models.schemas import Handshake
+from jota_gateway.services.protocol import OrchestratorEvent
 
 
 async def test_session_key_uses_stripped_resolved_agent(make_bridge):

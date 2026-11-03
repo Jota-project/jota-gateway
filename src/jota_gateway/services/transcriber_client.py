@@ -1,0 +1,198 @@
+import asyncio
+import json
+import logging
+import time
+from collections.abc import Awaitable, Callable
+
+import websockets
+from pydantic import ValidationError
+from websockets.asyncio.client import ClientConnection
+from websockets.exceptions import ConnectionClosed
+
+from jota_gateway.core.config import settings
+from jota_gateway.models.schemas import TranscriberConfig, TranscriberMessage
+from jota_gateway.services.reconnection import describe_error, ping_ready, safe_code
+
+logger = logging.getLogger(__name__)
+
+
+class TranscriberHandshakeError(RuntimeError):
+    """El handshake con el transcriber falló. `stable_code` lleva solo el código del
+    frame (saneado), nunca su `message` (#238); describe_error lo usa en logs y last_error."""
+
+    def __init__(self, code: object) -> None:
+        self.stable_code = f"transcriber_handshake_failed[{safe_code(code)}]"
+        super().__init__(self.stable_code)
+
+
+class TranscriberClient:
+    """
+    Maneja la conexión asíncrona hacia el servicio JotaTranscriber (C++).
+    Realiza el Handshake (config) y manda/recibe audio bidireccionalmente.
+    """
+
+    def __init__(self, url: str, client_id: str):
+        self.url = url
+        self.client_id = client_id
+        self.ws: ClientConnection | None = None
+        self._is_ready = False
+        self._session_id: str | None = None  # recibido en el mensaje "ready"
+        self._dropped_unexpectedly: bool = False
+        self._last_transcription_at: float | None = None
+
+    async def connect(self, language: str = "es", token: str = "", vad_thold: float = 0.0):
+        """Abre el socket y manda el Handshake inicial de config."""
+        ok = False
+        try:
+            self.ws = await websockets.connect(f"ws://{self.url}/api/stt")
+
+            config = TranscriberConfig(language=language, token=token, vad_thold=vad_thold)
+            logger.info(
+                f"[{self.client_id}] Conectando a Transcriber (ws://{self.url}/api/stt) lang={language!r} vad={vad_thold}"
+            )
+            await self.ws.send(config.model_dump_json())
+
+            # Bounded (#134): a transcriber that accepts the upgrade but never sends
+            # `ready` would otherwise wedge connect() — and _reconnect_loop with it.
+            response = await asyncio.wait_for(
+                self.ws.recv(), timeout=settings.TRANSCRIBER_READY_TIMEOUT_S
+            )
+            data = json.loads(response)
+            msg = TranscriberMessage(**data)
+
+            if msg.type == "ready":
+                self._is_ready = True
+                self._session_id = msg.session_id
+                logger.info(
+                    f"[{self.client_id}] Transcriber listo. session_id={self._session_id!r}"
+                )
+                ok = True
+            elif msg.type == "error":
+                # Solo el código: el `message` del transcriber no sale a logs ni a last_error (#238).
+                raise TranscriberHandshakeError(msg.code)
+            else:
+                raise TranscriberHandshakeError("unexpected_frame")
+
+        except Exception as e:
+            logger.error(f"[{self.client_id}] Error conectando a Transcriber: {describe_error(e)}")
+            raise
+        finally:
+            # También si cancelan connect() (#221): el socket abierto no se queda sin dueño.
+            if not ok and self.ws is not None:
+                try:
+                    await self.ws.close()
+                except Exception as e:  # noqa: BLE001 — limpieza tras un connect fallido
+                    logger.debug(
+                        f"[{self.client_id}] Cierre del socket tras connect fallido: {describe_error(e)}"
+                    )
+                self.ws = None
+
+    async def send_audio(self, audio_bytes: bytes):
+        """Envía ráfagas PCM crudas al transcriptor si está habilitado."""
+        if not self._is_ready or not self.ws:
+            return
+
+        try:
+            await self.ws.send(audio_bytes)
+        except ConnectionClosed:
+            self._is_ready = False
+            logger.warning(f"[{self.client_id}] Intento de enviar audio a Transcriber cerrado.")
+
+    async def listen_loop(
+        self,
+        on_transcription_callback: Callable[[str, bool], Awaitable[None]],
+        on_warning_callback: Callable[[str, str | None], Awaitable[None]] | None = None,
+        on_status_callback: Callable[[str, str | None], Awaitable[None]] | None = None,
+        on_incomplete_callback: Callable[[str | None], Awaitable[None]] | None = None,
+    ):
+        """
+        Bucle que escucha mensajes del transcriber.
+
+        Args:
+            on_transcription_callback: llamado con (text, is_final) en cada transcripción.
+            on_warning_callback: llamado con (code, message) cuando llega un warning.
+                                 Si es None, los warnings solo se loguean.
+            on_status_callback: llamado con (state, reason) en cada frame type="status"
+                                (capacidad del transcriber: busy/ok, #143).
+            on_incomplete_callback: llamado con (reason) antes de entregar un final con
+                                    complete=false (truncado por saturación, #143).
+        """
+        if not self.ws:
+            return
+
+        try:
+            async for message in self.ws:
+                try:
+                    data = json.loads(message)
+                    t_msg = TranscriberMessage(**data)
+                except json.JSONDecodeError:
+                    # G-40 (#216): never the frame content (may carry transcript text).
+                    logger.warning(f"[{self.client_id}] Transcriber mandó un frame non-JSON")
+                    continue
+                except (ValidationError, TypeError) as e:
+                    # Valid JSON with an unexpected shape (#131): skip the frame, keep
+                    # listening. Never log the payload (may carry transcript text).
+                    logger.warning(
+                        f"[{self.client_id}] Transcriber frame con esquema inválido descartado "
+                        f"({type(e).__name__})"
+                    )
+                    continue
+
+                if t_msg.type == "transcription" and t_msg.text:
+                    self._last_transcription_at = time.monotonic()
+                    logger.debug(
+                        f"[{self.client_id}] Transcripción: is_final={t_msg.is_final!r} text='{t_msg.text[:40]}'"
+                    )
+                    if t_msg.is_final and t_msg.complete is False:
+                        reason = safe_code(t_msg.reason) if t_msg.reason is not None else None
+                        logger.warning(
+                            f"[{self.client_id}] Transcripción final incompleta (reason={reason!r})"
+                        )
+                        if on_incomplete_callback:
+                            await on_incomplete_callback(reason)
+                    await on_transcription_callback(t_msg.text, bool(t_msg.is_final))
+
+                elif t_msg.type == "status":
+                    if on_status_callback and t_msg.state:
+                        reason = safe_code(t_msg.reason) if t_msg.reason is not None else None
+                        await on_status_callback(safe_code(t_msg.state), reason)
+
+                elif t_msg.type == "warning":
+                    code = safe_code(t_msg.code)
+                    logger.warning(f"[{self.client_id}] Transcriber warning [{code}]")
+                    if on_warning_callback:
+                        await on_warning_callback(code, t_msg.message)
+
+                elif t_msg.type == "error":
+                    logger.error(f"[{self.client_id}] Transcriber error [{safe_code(t_msg.code)}]")
+        except ConnectionClosed as e:
+            clean_close = e.rcvd is not None and e.rcvd.code == 1000
+            if self._is_ready and not clean_close:
+                self._dropped_unexpectedly = True
+            self._is_ready = False
+            logger.info(
+                f"[{self.client_id}] Loop de escucha del Transcriber finalizado (code={e.rcvd.code if e.rcvd else 'none'})."
+            )
+
+    async def send_end(self):
+        """Señaliza al transcriber que el audio terminó, disparando la transcripción final."""
+        if not self._is_ready or not self.ws:
+            return
+        try:
+            await self.ws.send(json.dumps({"type": "end"}))
+        except ConnectionClosed:
+            self._is_ready = False
+
+    ping = staticmethod(ping_ready)  # GET /ready (503 "busy" con la GPU saturada)
+
+    async def close(self):
+        self._is_ready = False
+        if self.ws:
+            # `websockets.asyncio` has no `.closed` (G-01, #214): close() is idempotent,
+            # so no state check is needed. A failure is logged (type only), never swallowed.
+            try:
+                await self.ws.close()
+            except Exception as e:  # noqa: BLE001 — limpieza: el fallo se registra
+                logger.warning(
+                    f"[{self.client_id}] Transcriber close falló ({type(e).__name__})"
+                )

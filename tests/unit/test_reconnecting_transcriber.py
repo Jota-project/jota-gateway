@@ -3,9 +3,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.services.reconnection import ConnectionState
-from src.services.speech.ports import SttCallbacks, SttParams
-from src.services.transcriber_reconnecting import ReconnectingTranscriberClient
+from jota_gateway.services.reconnection import ConnectionState
+from jota_gateway.services.speech.ports import SttCallbacks, SttParams
+from jota_gateway.services.transcriber_reconnecting import ReconnectingTranscriberClient
 
 
 def _cbs(**kw) -> SttCallbacks:

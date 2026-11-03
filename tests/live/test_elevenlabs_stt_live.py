@@ -12,11 +12,11 @@ from array import array
 import pytest
 from pydantic import SecretStr
 
-from src.core.config import settings
-from src.models.schemas import Client
-from src.services.speech.elevenlabs.stt import ElevenLabsSttProvider
-from src.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
-from src.services.speech.ports import SttCallbacks, SttParams
+from jota_gateway.core.config import settings
+from jota_gateway.models.schemas import Client
+from jota_gateway.services.speech.elevenlabs.stt import ElevenLabsSttProvider
+from jota_gateway.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
+from jota_gateway.services.speech.ports import SttCallbacks, SttParams
 
 pytestmark = pytest.mark.live
 

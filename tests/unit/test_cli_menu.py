@@ -4,8 +4,8 @@ import pytest
 import questionary
 from click.testing import CliRunner
 
-from src.cli import app, menu
-from src.cli.api import ApiError
+from jota_gateway.cli import app, menu
+from jota_gateway.cli.api import ApiError
 from tests.fakes.cli_api import FakeApi
 
 A = {"id": "aaaa1111-0000", "name": "Jota-Screen", "is_active": True, "key_fp": "1a2b3c4d",
@@ -103,7 +103,7 @@ def test_menu_module_import_is_light():
     import sys
     from pathlib import Path
 
-    code = ("import sys, src.cli.menu, src.cli.app; "
+    code = ("import sys, jota_gateway.cli.menu, jota_gateway.cli.app; "
             "print('HEAVY=' + ','.join(m for m in ('questionary','prompt_toolkit','rich') "
             "if m in sys.modules))")
     r = subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).resolve().parents[2],

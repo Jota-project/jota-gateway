@@ -5,9 +5,9 @@ import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from src.core.exceptions import ClientInactive, ClientNotFound
-from src.db.models import ClientRecord
-from src.services.db_client import DbClient
+from jota_gateway.core.exceptions import ClientInactive, ClientNotFound
+from jota_gateway.db.models import ClientRecord
+from jota_gateway.services.db_client import DbClient
 
 
 def _engine_with(*records):

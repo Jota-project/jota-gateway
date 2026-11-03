@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from src.core.config import settings
+from jota_gateway.core.config import settings
 from tests.integration.harness.conftest import (
     assert_turns_paired,
     audio,

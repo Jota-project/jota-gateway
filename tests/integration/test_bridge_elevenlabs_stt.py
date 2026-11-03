@@ -7,8 +7,8 @@ import struct
 import pytest
 from pydantic import SecretStr
 
-from src.core.config import settings
-from src.services.speech.elevenlabs.stt import ElevenLabsSttProvider
+from jota_gateway.core.config import settings
+from jota_gateway.services.speech.elevenlabs.stt import ElevenLabsSttProvider
 from tests.fakes.bridge import blocking, make_bridge, wait_until
 from tests.fakes.elevenlabs_stt import FakeElevenLabsStt
 
@@ -23,7 +23,7 @@ def _quiet(samples=1600):
 
 @pytest.fixture(autouse=True)
 def _short_drain(monkeypatch):
-    from src.services.speech.elevenlabs import stt as stt_mod
+    from jota_gateway.services.speech.elevenlabs import stt as stt_mod
 
     monkeypatch.setattr(stt_mod, "DRAIN_S", 0.3)
 

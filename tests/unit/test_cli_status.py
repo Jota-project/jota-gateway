@@ -4,9 +4,9 @@ import json
 
 from click.testing import CliRunner
 
-from src._version import __version__
-from src.cli import api
-from src.cli.app import cli
+from jota_gateway._version import __version__
+from jota_gateway.cli import api
+from jota_gateway.cli.app import cli
 from tests.fakes.cli_api import FakeApi
 
 STATE = {

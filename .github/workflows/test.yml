@@ -30,7 +30,8 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        run: pip install .[dev]
+        # shortcut: editable porque alembic.ini y migrations/ siguen fuera del paquete; sin -e en el PR 2 de M14c, cuando entren.
+        run: pip install -e .[dev]
 
       - name: Lint (ruff)
         run: ruff check src/ tests/
@@ -41,17 +42,17 @@ jobs:
         run: mypy
 
       - name: Unit tests
-        run: pytest tests/unit/ -v --cov=src --cov-report=
+        run: pytest tests/unit/ -v --cov=jota_gateway --cov-report=
         env:
           PYTHONPATH: .
 
       - name: Contract tests (proveedores de voz)
-        run: pytest tests/contract/ -v --cov=src --cov-append --cov-report=
+        run: pytest tests/contract/ -v --cov=jota_gateway --cov-append --cov-report=
         env:
           PYTHONPATH: .
 
       - name: Integration tests
-        run: pytest tests/integration/ -v --cov=src --cov-append --cov-report=term-missing
+        run: pytest tests/integration/ -v --cov=jota_gateway --cov-append --cov-report=term-missing
         env:
           PYTHONPATH: .
 

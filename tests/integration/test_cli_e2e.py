@@ -14,8 +14,8 @@ import pytest
 import uvicorn
 import websockets
 
-from src.core.config import settings
-from src.main import app
+from jota_gateway.core.config import settings
+from jota_gateway.main import app
 from tests.integration.conftest import ADMIN_TOKEN, _configure_app_mocks
 from tests.integration.test_session_revocation import _expect_revoked
 
@@ -43,7 +43,7 @@ def server(mock_registry, monkeypatch):
 
 
 def _cli(port, *args, json_out=False):
-    base = [sys.executable, "-m", "src.cli", "--url", f"http://127.0.0.1:{port}",
+    base = [sys.executable, "-m", "jota_gateway.cli", "--url", f"http://127.0.0.1:{port}",
             "--token", ADMIN_TOKEN]
     r = subprocess.run(
         [*base, *(["--json"] if json_out else []), *args],

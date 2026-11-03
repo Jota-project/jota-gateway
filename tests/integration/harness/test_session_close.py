@@ -9,7 +9,7 @@ import time
 
 import websockets
 
-from src.core.config import settings
+from jota_gateway.core.config import settings
 from tests.integration.harness.conftest import assert_turns_paired, of_type, turn_ended
 
 

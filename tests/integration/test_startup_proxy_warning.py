@@ -8,8 +8,8 @@ import logging
 
 import pytest
 
-from src.core.config import settings
-from src.core.network import warn_if_open_proxy_config
+from jota_gateway.core.config import settings
+from jota_gateway.core.network import warn_if_open_proxy_config
 
 
 @pytest.fixture
@@ -53,7 +53,7 @@ def startup_records(empty_proxies):
             records.append(record)
 
     handler = _H(level=logging.WARNING)
-    log = logging.getLogger("src.core.network")
+    log = logging.getLogger("jota_gateway.core.network")
     log.addHandler(handler)
     yield records
     log.removeHandler(handler)

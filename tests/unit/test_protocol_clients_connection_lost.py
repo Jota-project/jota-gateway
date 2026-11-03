@@ -11,8 +11,8 @@ import json
 import pytest
 import websockets
 
-from src.services.transcriber_client import TranscriberClient
-from src.services.tts_client import TTSClient
+from jota_gateway.services.transcriber_client import TranscriberClient
+from jota_gateway.services.tts_client import TTSClient
 
 
 def _port(server) -> int:

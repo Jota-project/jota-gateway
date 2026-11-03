@@ -4,7 +4,7 @@ input_mode=text: sin transcriber. El cliente manda texto plano,
 recibe tokens del orchestrator.
 """
 
-from src.services.protocol import OrchestratorEvent
+from jota_gateway.services.protocol import OrchestratorEvent
 from tests.integration.conftest import CLIENT_ID, VALID_KEY
 
 HANDSHAKE_TEXT = {

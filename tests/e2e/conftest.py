@@ -11,7 +11,7 @@ import secrets
 import httpx
 import pytest
 
-from src.core.config import settings
+from jota_gateway.core.config import settings
 
 GATEWAY_HTTP_URL = os.environ.get("E2E_GATEWAY_HTTP_URL", "http://127.0.0.1:8004")
 GATEWAY_WS_URL = os.environ.get("E2E_GATEWAY_WS_URL", "ws://127.0.0.1:8004/ws/stream")

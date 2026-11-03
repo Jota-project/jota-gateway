@@ -8,7 +8,7 @@ from typing import ClassVar
 
 import pytest
 
-from src.cli import api
+from jota_gateway.cli import api
 
 
 class _Fake:

@@ -5,7 +5,7 @@ import json
 import pytest
 from sqlmodel import Session
 
-from src.db.models import ClientRecord
+from jota_gateway.db.models import ClientRecord
 from tests.integration.conftest import CLIENT_ID, VALID_KEY
 
 

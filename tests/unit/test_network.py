@@ -1,8 +1,8 @@
 import pytest
 from starlette.websockets import WebSocket
 
-from src.core.config import settings
-from src.core.network import is_trusted_origin, is_trusted_proxy, resolve_client_ip
+from jota_gateway.core.config import settings
+from jota_gateway.core.network import is_trusted_origin, is_trusted_proxy, resolve_client_ip
 
 
 class _FakeClient:

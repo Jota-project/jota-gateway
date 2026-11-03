@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.models.schemas import ClientConfig
+from jota_gateway.models.schemas import ClientConfig
 from tests.fakes.bridge import GoneSender, sent
 
 _AUDIO = dict(input_mode="audio", output_mode=("audio", "text", "status"))
@@ -85,7 +85,7 @@ async def test_cancel_turn_logs_the_turn_failure_by_type(bridge, caplog):
 
     bridge._active_turn = asyncio.create_task(fails_on_cancel())
     await asyncio.sleep(0)
-    with caplog.at_level(logging.DEBUG, logger="src.services.teardown"):
+    with caplog.at_level(logging.DEBUG, logger="jota_gateway.services.teardown"):
         assert await bridge._cancel_active_turn() is True
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert "RuntimeError" in logged
@@ -179,18 +179,18 @@ async def test_final_sends_transcription_to_client(bridge):
 async def test_final_transcription_is_not_logged_at_info(bridge, caplog):
     """#106: the bridge's own final-transcription log moved from INFO to DEBUG.
 
-    Scope is the `src.services.bridge` logger only; the `pipeline_tracker` side
+    Scope is the `jota_gateway.services.bridge` logger only; the `pipeline_tracker` side
     (#133) is covered in `test_transcript_privacy.py`.
     """
     text = "0123456789" * 4 + "TOP-SECRET-SUFFIX"
 
-    with caplog.at_level(logging.INFO, logger="src.services.bridge"):
+    with caplog.at_level(logging.INFO, logger="jota_gateway.services.bridge"):
         await bridge._on_transcription(text, True)
 
     bridge_info_logs = [
         r.getMessage()
         for r in caplog.records
-        if r.name == "src.services.bridge" and r.levelno >= logging.INFO
+        if r.name == "jota_gateway.services.bridge" and r.levelno >= logging.INFO
     ]
     assert not any("Transcripción final" in m for m in bridge_info_logs)
     assert not any("TOP-SECRET-SUFFIX" in m for m in bridge_info_logs)
@@ -199,7 +199,7 @@ async def test_final_transcription_is_not_logged_at_info(bridge, caplog):
 async def test_final_transcription_is_debug_only_and_truncated(bridge, caplog):
     text = "0123456789" * 4 + "TOP-SECRET-SUFFIX"
 
-    with caplog.at_level(logging.DEBUG, logger="src.services.bridge"):
+    with caplog.at_level(logging.DEBUG, logger="jota_gateway.services.bridge"):
         await bridge._on_transcription(text, True)
 
     records = [record for record in caplog.records if "Transcripción final:" in record.getMessage()]

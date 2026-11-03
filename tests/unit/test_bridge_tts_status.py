@@ -14,9 +14,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.services.openclaw.registry import ClientRegistry
-from src.services.reconnection import ConnectionState, to_wire_state
-from src.services.tts_reconnecting import ReconnectingTTSClient
+from jota_gateway.services.openclaw.registry import ClientRegistry
+from jota_gateway.services.reconnection import ConnectionState, to_wire_state
+from jota_gateway.services.tts_reconnecting import ReconnectingTTSClient
 from tests.fakes.bridge import sent
 
 
@@ -40,7 +40,7 @@ async def test_tts_outage_and_recovery_broadcasts_to_all_registered_bridges(make
     idle_bridge, ws = make_bridge(output_mode=("audio", "text"), tts=AsyncMock())
     registry.register("idle-client", idle_bridge)
 
-    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
+    with patch("jota_gateway.services.tts_reconnecting.TTSClient") as MockTTS:
         failing_client = AsyncMock()
         failing_client.connect.side_effect = OSError("refused")
         MockTTS.return_value = failing_client

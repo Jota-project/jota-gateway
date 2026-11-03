@@ -12,9 +12,9 @@ HEAVY = ("pydantic", "httpx", "sqlmodel", "fastapi", "rich", "questionary", "pro
 # En un proceso nuevo: dentro de pytest el conftest ya ha cargado fastapi y pydantic.
 _PROBE = f"""
 import sys
-from src.cli.app import cli
-import src.cli.clients, src.cli.status, src.cli.version
-import src.cli.config, src.cli.doctor, src.cli.menu
+from jota_gateway.cli.app import cli
+import jota_gateway.cli.clients, jota_gateway.cli.status, jota_gateway.cli.version
+import jota_gateway.cli.config, jota_gateway.cli.doctor, jota_gateway.cli.menu
 try:
     cli(["--help"], standalone_mode=False)
 except SystemExit:
@@ -34,7 +34,7 @@ def test_help_starts_under_150_ms():
     def once() -> float:
         start = time.perf_counter()
         subprocess.run(
-            [sys.executable, "-m", "src.cli", "--help"], cwd=ROOT, capture_output=True, check=True
+            [sys.executable, "-m", "jota_gateway.cli", "--help"], cwd=ROOT, capture_output=True, check=True
         )
         return time.perf_counter() - start
 

@@ -5,15 +5,15 @@ from unittest.mock import patch
 
 import pytest
 
-from src.services.openclaw.client import OpenClawClient
-from src.services.openclaw.dispatcher import FrameDispatcher
-from src.services.openclaw.reconnecting import ReconnectingOpenClawClient
-from src.services.openclaw.registry import (
+from jota_gateway.services.openclaw.client import OpenClawClient
+from jota_gateway.services.openclaw.dispatcher import FrameDispatcher
+from jota_gateway.services.openclaw.reconnecting import ReconnectingOpenClawClient
+from jota_gateway.services.openclaw.registry import (
     TURN_IN_PROGRESS_ERROR,
     ClientRegistry,
     TurnRegistry,
 )
-from src.services.reconnection import ConnectionState
+from jota_gateway.services.reconnection import ConnectionState
 
 HELLO_OK_PAYLOAD = {
     "type": "hello-ok",
@@ -477,7 +477,7 @@ async def test_stream_response_times_out_when_no_events_arrive(monkeypatch):
     """#115: if OpenClaw acks chat.send but never sends another frame for this
     turn, queue.get() must not hang forever — TURN_TIMEOUT_S bounds it, and
     the existing chat.abort-on-anomalous-exit `finally` fires."""
-    from src.core.config import settings
+    from jota_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.05)
 
@@ -507,7 +507,7 @@ async def test_stream_response_overflow_errors_and_sends_chat_abort(monkeypatch)
     """#130 S3b: a consumer that falls behind the bounded turn queue gets a
     `turn_overflow` error and chat.abort is still sent (the error must not mark
     the turn as finished)."""
-    from src.core.config import settings
+    from jota_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "TURN_QUEUE_MAX", 2)
     fake_ws = SmartFakeWS({"agent:main:client-a": []})
@@ -551,7 +551,7 @@ async def test_stream_response_idle_reset_survives_slow_but_active_turn(monkeypa
     """A turn with gaps below TURN_TIMEOUT_S between events must complete
     normally even if its total duration exceeds TURN_TIMEOUT_S — the timeout
     resets on every event, it is not a hard ceiling from turn start."""
-    from src.core.config import settings
+    from jota_gateway.core.config import settings
 
     # #206: 0.05 s / 0.03 s left 20 ms of headroom per gap and failed under load. Each gap
     # is now 0.1 s against a 0.3 s timeout; 4 gaps (0.4 s) still exceed the timeout.

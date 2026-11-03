@@ -2,8 +2,8 @@
 
 import logging
 
-from src.core.config import settings
-from src.db import database
+from jota_gateway.core.config import settings
+from jota_gateway.db import database
 
 
 def test_run_migrations_does_not_alter_root_logging(tmp_path, monkeypatch):
@@ -18,4 +18,4 @@ def test_run_migrations_does_not_alter_root_logging(tmp_path, monkeypatch):
 
     assert root.level == level_before == logging.INFO
     assert root.handlers == handlers_before
-    assert logging.getLogger("src.services.bridge").isEnabledFor(logging.INFO)
+    assert logging.getLogger("jota_gateway.services.bridge").isEnabledFor(logging.INFO)

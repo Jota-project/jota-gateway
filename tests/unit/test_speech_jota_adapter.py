@@ -7,13 +7,13 @@ import pytest
 import respx
 from httpx import Response
 
-from src.core.config import settings
-from src.models.schemas import Client
-from src.services.reconnection import ConnectionState
-from src.services.speech.factory import build_stt_provider, build_tts_provider
-from src.services.speech.jota import JotaSttProvider
-from src.services.speech.ports import SttCallbacks, SttParams
-from src.services.tts_reconnecting import ReconnectingTTSClient
+from jota_gateway.core.config import settings
+from jota_gateway.models.schemas import Client
+from jota_gateway.services.reconnection import ConnectionState
+from jota_gateway.services.speech.factory import build_stt_provider, build_tts_provider
+from jota_gateway.services.speech.jota import JotaSttProvider
+from jota_gateway.services.speech.ports import SttCallbacks, SttParams
+from jota_gateway.services.tts_reconnecting import ReconnectingTTSClient
 
 CLIENT = Client(id="c1", client_key="the-key", is_active=True)
 
@@ -105,7 +105,7 @@ async def test_wrapper_last_error_has_no_exception_text():
     assert "secret-xyz" not in tw.status().last_error
 
     tts = ReconnectingTTSClient(url="x:1", token="t")
-    with patch("src.services.tts_reconnecting.TTSClient") as MockTTS:
+    with patch("jota_gateway.services.tts_reconnecting.TTSClient") as MockTTS:
         MockTTS.return_value.connect = AsyncMock(side_effect=OSError("secret-xyz"))
         assert await tts.connect(None, None, "c1") is None
     assert "secret-xyz" not in tts.status().last_error
@@ -129,7 +129,7 @@ async def test_stt_provider_probe_and_status():
     p = JotaSttProvider(settings)
     assert p.status().state == ConnectionState.CONNECTED  # nunca sondeado
     with patch(
-        "src.services.speech.jota.TranscriberClient.ping", new=AsyncMock(return_value=False)
+        "jota_gateway.services.speech.jota.TranscriberClient.ping", new=AsyncMock(return_value=False)
     ):
         assert await p.probe() is False
     s = p.status()

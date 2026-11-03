@@ -3,11 +3,11 @@
 import httpx
 import pytest
 
-from src.core.config import settings
-from src.services.reconnection import ConnectionState
-from src.services.speech.elevenlabs.stt import ElevenLabsSttProvider
-from src.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
-from src.services.speech.registry import SpeechProviders
+from jota_gateway.core.config import settings
+from jota_gateway.services.reconnection import ConnectionState
+from jota_gateway.services.speech.elevenlabs.stt import ElevenLabsSttProvider
+from jota_gateway.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
+from jota_gateway.services.speech.registry import SpeechProviders
 
 
 def test_app_state_has_stt_and_tts_providers(client):
@@ -51,7 +51,7 @@ def test_provider_state_change_broadcasts_status(client, kind, service):
 
 @pytest.fixture
 def failing_stt_start(monkeypatch):
-    from src.services.speech.jota import JotaSttProvider
+    from jota_gateway.services.speech.jota import JotaSttProvider
 
     async def boom(self):
         raise RuntimeError("secret-provider-detail")

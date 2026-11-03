@@ -6,7 +6,7 @@ import logging
 
 import pytest
 
-from src.services.teardown import Teardown, cancel_requested
+from jota_gateway.services.teardown import Teardown, cancel_requested
 
 SECRET = "texto-que-no-debe-salir"
 
@@ -168,7 +168,7 @@ async def test_step_failure_is_logged_by_type_without_message(caplog):
     async def boom() -> None:
         raise RuntimeError(SECRET)
 
-    caplog.set_level(logging.DEBUG, logger="src.services.teardown")
+    caplog.set_level(logging.DEBUG, logger="jota_gateway.services.teardown")
     async with Teardown("t") as td:
         await td.step(boom(), "paso")
     assert "RuntimeError" in caplog.text
@@ -182,7 +182,7 @@ async def test_child_failure_is_logged_by_type_without_message(caplog):
 
     child = asyncio.create_task(boom())
     await asyncio.sleep(0)
-    caplog.set_level(logging.DEBUG, logger="src.services.teardown")
+    caplog.set_level(logging.DEBUG, logger="jota_gateway.services.teardown")
     async with Teardown("t") as td:
         await td.wait(child, "hija")
     assert "ValueError" in caplog.text
@@ -195,7 +195,7 @@ async def test_step_timeout_warns_and_continues(caplog):
     async def after() -> None:
         ran.append("after")
 
-    caplog.set_level(logging.WARNING, logger="src.services.teardown")
+    caplog.set_level(logging.WARNING, logger="jota_gateway.services.teardown")
     async with Teardown("t") as td:
         await td.step(_sleep_forever(), "colgado", timeout=0.01)
         await td.step(after(), "después")

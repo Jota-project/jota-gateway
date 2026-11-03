@@ -15,9 +15,9 @@ import pytest
 import uvicorn
 import websockets
 
-from src.core.config import settings
-from src.core.session_key import make_session_key
-from src.main import app
+from jota_gateway.core.config import settings
+from jota_gateway.core.session_key import make_session_key
+from jota_gateway.main import app
 from tests.fakes.jota_upstreams import FakeTranscriber, FakeTts
 from tests.fakes.openclaw import FakeOpenClawServer
 from tests.integration.conftest import CLIENT_ID, VALID_KEY

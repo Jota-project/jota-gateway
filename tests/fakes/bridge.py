@@ -10,11 +10,11 @@ import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock
 
-from src.models.schemas import Client, ClientConfig, Handshake
-from src.services.bridge import JotaBridge
-from src.services.openclaw.registry import ClientRegistry
-from src.services.outbound import ClientGone, QueuedSender
-from src.services.protocol import OrchestratorEvent
+from jota_gateway.models.schemas import Client, ClientConfig, Handshake
+from jota_gateway.services.bridge import JotaBridge
+from jota_gateway.services.openclaw.registry import ClientRegistry
+from jota_gateway.services.outbound import ClientGone, QueuedSender
+from jota_gateway.services.protocol import OrchestratorEvent
 from tests.fakes.speech import speech_providers
 
 

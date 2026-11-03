@@ -77,7 +77,7 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la guía completa 
 
 Los tres endpoints `*/status` comparten la forma `{"name", "state", "connected_at", "reconnect_attempts", "last_error"}`; los de transcriber y TTS añaden `provider` y, con ElevenLabs, `counters`.
 
-Los campos de un cliente (`POST`/`PATCH /admin/clients`) están en `src/models/admin_schemas.py` y sus defaults en `src/db/models.py`. Desde la terminal, `jota-gw`. Los comandos de clientes y de estado necesitan el gateway en marcha y pasan por esta API (la CLI nunca escribe en la BD); `doctor` y `config` funcionan también con el gateway parado:
+Los campos de un cliente (`POST`/`PATCH /admin/clients`) están en `src/jota_gateway/models/admin_schemas.py` y sus defaults en `src/jota_gateway/db/models.py`. Desde la terminal, `jota-gw`. Los comandos de clientes y de estado necesitan el gateway en marcha y pasan por esta API (la CLI nunca escribe en la BD); `doctor` y `config` funcionan también con el gateway parado:
 
 ```bash
 jota-gw                        # en una terminal: menú interactivo; en un script: la ayuda
@@ -99,13 +99,13 @@ Opciones globales: `--url` (`JOTA_GW_URL`, por defecto `http://127.0.0.1:8004`),
 - **Configuración que lee la CLI:** variables del proceso → `<base>/config.env` → valores por defecto, con `<base>` = `JOTA_GATEWAY_HOME` o `~/.jota-gateway`. Nunca el `.env` del directorio actual. Una `DATABASE_URL` relativa se resuelve contra `<base>`. Los secretos (`*_TOKEN`, `*_KEY`) salen siempre enmascarados, también en `--json`.
 - **`--set`:** `campo=valor` manda texto (el servidor convierte números y booleanos); `campo:=json` manda JSON (listas, `null`). Un campo desconocido sale con 2 y lista los editables.
 - **`--import-key`** lee la clave de stdin, nunca de un argumento.
-- **En Docker**, hasta que la imagen traiga el ejecutable (M14c): `docker exec jota_gateway python -m src.cli …`. La imagen fija `JOTA_GATEWAY_HOME=/app`, así que `doctor` encuentra la BD del volumen. Sin `-t` no hay terminal: no se abre el menú y `rotate-key`/`remove` necesitan `--yes` (o usa `docker exec -it`). Con `GATEWAY_HOST` en una IP de la LAN, pasa `--url http://<esa IP>:8004`.
+- **En Docker**, hasta que la imagen traiga el ejecutable (M14c): `docker exec jota_gateway python -m jota_gateway.cli …`. La imagen fija `JOTA_GATEWAY_HOME=/app`, así que `doctor` encuentra la BD del volumen. Sin `-t` no hay terminal: no se abre el menú y `rotate-key`/`remove` necesitan `--yes` (o usa `docker exec -it`). Con `GATEWAY_HOST` en una IP de la LAN, pasa `--url http://<esa IP>:8004`.
 
 Auth: header `X-Admin-Token`. Sin header → 422. Token incorrecto → 401. `ADMIN_TOKEN` vacío → 503.
 
 ### OpenAI-compatible (`/v1/*`, para Home Assistant)
 
-**Autenticación** (`src/core/network.py`, `resolve_ha_caller` en `src/api/openai_routes.py`):
+**Autenticación** (`src/jota_gateway/core/network.py`, `resolve_ha_caller` en `src/jota_gateway/api/openai_routes.py`):
 
 - Origen **de confianza** (peer directo en las CIDR de `TRUSTED_NETWORKS`, peer loopback si `TRUST_LOOPBACK=true`, o un cliente avalado por un proxy de `TRUSTED_PROXIES` con `X-Real-IP` válido): no necesita credenciales. **Matiz (#216):** con `TRUSTED_PROXIES` por defecto (`127.0.0.1,::1`) un cliente directo en loopback *sin* `X-Real-IP` ya NO queda exento y debe enviar `Authorization: Bearer <client_key>`; sin proxy, vacía `TRUSTED_PROXIES=` para recuperar el comportamiento anterior (y con proxy, este debe sobrescribir `X-Real-IP`).
 
@@ -151,7 +151,7 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la referencia comp
 
 ```bash
 pip install .[dev]
-uvicorn src.main:app --host 0.0.0.0 --port 8004 --reload
+uvicorn jota_gateway.main:app --host 0.0.0.0 --port 8004 --reload
 # o con Docker:
 docker compose up
 ```
@@ -191,7 +191,7 @@ Variables en `.env` (formato `host:port` sin protocolo para todos los URLs). Est
 
 ### Proveedores de voz (STT/TTS)
 
-El STT y el TTS pasan por una capa de proveedores (`src/services/speech/`). Los clientes no notan la diferencia: mismos formatos de audio y mismos mensajes.
+El STT y el TTS pasan por una capa de proveedores (`src/jota_gateway/services/speech/`). Los clientes no notan la diferencia: mismos formatos de audio y mismos mensajes.
 
 | Variable | Default | Descripción |
 |----------|---------|-------------|
@@ -202,9 +202,9 @@ El STT y el TTS pasan por una capa de proveedores (`src/services/speech/`). Los 
 | `STT_AUDIO_GATE` | `energy` | Puerta de energía del STT de ElevenLabs (solo se envía audio mientras se habla); `off` la quita. jota no la usa |
 | `STT_GATE_RMS_DBFS` | `-45` | Umbral de la puerta de energía |
 
-`ELEVENLABS_BASE_URL` y `ELEVENLABS_TTS_MODEL` están en `.env.sample`; el resto de ajustes de ElevenLabs son constantes del adaptador (`src/services/speech/elevenlabs/`). El proveedor se elige con `STT_PROVIDER`/`TTS_PROVIDER` al arrancar; cambiarlo exige reiniciar. Con el plan Creator, ElevenLabs conserva el audio y las transcripciones (la retención cero es solo enterprise).
+`ELEVENLABS_BASE_URL` y `ELEVENLABS_TTS_MODEL` están en `.env.sample`; el resto de ajustes de ElevenLabs son constantes del adaptador (`src/jota_gateway/services/speech/elevenlabs/`). El proveedor se elige con `STT_PROVIDER`/`TTS_PROVIDER` al arrancar; cambiarlo exige reiniciar. Con el plan Creator, ElevenLabs conserva el audio y las transcripciones (la retención cero es solo enterprise).
 
-`silence_timeout_s` y `max_silence_turns` (umbral del watchdog de silencio) son campos de configuración **por cliente** en la base de datos, no variables de entorno globales — ver `ClientRecord` en `src/db/models.py`.
+`silence_timeout_s` y `max_silence_turns` (umbral del watchdog de silencio) son campos de configuración **por cliente** en la base de datos, no variables de entorno globales — ver `ClientRecord` en `src/jota_gateway/db/models.py`.
 
 ---
 
@@ -274,7 +274,7 @@ real.
 El gateway instancia un `JotaBridge` por cada sesión WebSocket. Los tres servicios downstream (OpenClaw, Transcriber, TTS) tienen reconexión automática con backoff exponencial, unificada en `services/reconnection.py` (estados compartidos CONNECTED / RECONNECTING / DEGRADED). OpenClaw y los proveedores de voz son singletons de proceso; con el proveedor `jota`, cada sesión de audio abre su propio `ReconnectingTranscriberClient` y cada turno su propio `TTSClient`.
 
 ```
-src/
+src/jota_gateway/
 ├── api/
 │   ├── routes.py            WebSocket /ws/stream — handshake, ready, bridge lifecycle
 │   ├── admin_routes.py      /admin/* — CRUD de clientes + observabilidad (sesiones, orquestador, transcriptor, TTS)

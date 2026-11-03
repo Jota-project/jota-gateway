@@ -3,10 +3,10 @@
 import pytest
 from starlette.testclient import TestClient
 
-import src.main as main_module
-from src.core.config import settings
-from src.core.startup_checks import LOCK_FILENAME, SingleProcessLockError
-from src.main import app
+import jota_gateway.main as main_module
+from jota_gateway.core.config import settings
+from jota_gateway.core.startup_checks import LOCK_FILENAME, SingleProcessLockError
+from jota_gateway.main import app
 from tests.integration.conftest import _configure_app_mocks
 
 

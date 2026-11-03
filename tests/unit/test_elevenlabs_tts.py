@@ -8,11 +8,11 @@ import time
 import pytest
 from pydantic import SecretStr
 
-from src.core.config import settings
-from src.services.reconnection import ConnectionState
-from src.services.speech.elevenlabs import common as common_mod
-from src.services.speech.elevenlabs import tts as tts_mod
-from src.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
+from jota_gateway.core.config import settings
+from jota_gateway.services.reconnection import ConnectionState
+from jota_gateway.services.speech.elevenlabs import common as common_mod
+from jota_gateway.services.speech.elevenlabs import tts as tts_mod
+from jota_gateway.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
 from tests.fakes.bridge import wait_until
 from tests.fakes.elevenlabs_tts import FakeElevenLabsTts
 

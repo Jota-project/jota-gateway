@@ -5,7 +5,7 @@ Guidance for Claude Code in this repository. Reference docs live elsewhere; link
 - [`README.md`](README.md) — endpoints (`/ws/stream`, `/admin/*`, `/v1/*`, `/healthz`, `/ready`), `/v1` auth, configuration summary.
 - [`docs/client-protocol.md`](docs/client-protocol.md) — the WebSocket protocol clients implement (handshake, `ready`, messages, close codes, error codes, timeouts).
 - [`docs/openclaw-protocol.md`](docs/openclaw-protocol.md) — OpenClaw wire protocol as observed (minimum server 2026.6.11).
-- [`.env.sample`](.env.sample) — every `Settings` field with its default (`tests/unit/test_env_sample.py` keeps them in sync with `src/core/config.py`).
+- [`.env.sample`](.env.sample) — every `Settings` field with its default (`tests/unit/test_env_sample.py` keeps them in sync with `src/jota_gateway/core/config.py`).
 
 Roadmap, specs, plans, decisions and audits live **only in Obsidian** (`Producto Jota/jota-gateway/`, note `JGW Roadmap`); issues, milestones and releases live in GitHub.
 
@@ -13,7 +13,7 @@ Roadmap, specs, plans, decisions and audits live **only in Obsidian** (`Producto
 
 ```bash
 # Dev server
-uvicorn src.main:app --host 0.0.0.0 --port 8004 --reload
+uvicorn jota_gateway.main:app --host 0.0.0.0 --port 8004 --reload
 
 # Use the repo venv (.venv, `pip install -e .[dev]`), never the system python
 PYTHONPATH=. pytest                                   # pytest.ini adds -m "not e2e_real and not live"
@@ -28,7 +28,7 @@ docker compose up
 jota-gw                                               # interactive menu on a TTY, help otherwise
 jota-gw doctor | config show|get|validate | status | version
 jota-gw clients list | show <ref> | add --name … | edit <ref> | enable|disable|rotate-key|remove <ref>
-docker exec jota_gateway python -m src.cli …         # inside the container, until 14c ships the binary
+docker exec jota_gateway python -m jota_gateway.cli …  # inside the container, until 14c ships the binary
 ```
 
 CI (`.github/workflows/test.yml`) runs ruff, mypy and pytest over `tests/unit`, `tests/contract` and `tests/integration`: run all three locally before opening a PR. `tests/e2e` (marker `e2e_real`, real OpenClaw) and `tests/live` (marker `live`, real ElevenLabs, `JGW_LIVE=1`) only run on demand; see the README.
@@ -37,7 +37,7 @@ CI (`.github/workflows/test.yml`) runs ruff, mypy and pytest over `tests/unit`, 
 
 A BFF: the single entry point for Jota-Screen, jota-voice (Mac and Android/Termux), the iPhone app and Home Assistant (an ESP32 client is planned, not built). Client identity and per-client config live in a local SQLite DB (`data/gateway.db`, Alembic migrations applied at startup). One `JotaBridge` per WebSocket session talks to OpenClaw (orchestrator, the only fatal dependency), an STT provider and a TTS provider. One process per DB: `SINGLE_PROCESS_LOCK` takes a `flock` on `gateway.lock` next to the DB; multi-worker is not supported.
 
-## Module map (`src/`)
+## Module map (`src/jota_gateway/`)
 
 | Path | Role |
 |---|---|
@@ -84,7 +84,7 @@ Breaking any of these is a bug, whatever the change is for.
 ## Testing notes
 
 - `tests/unit` (bridge and services with light fakes), `tests/contract` (the same battery against every speech adapter, fakes in `tests/fakes/`), `tests/integration` (`TestClient`, fake upstreams; a few use real uvicorn).
-- `tests/integration/conftest.py`: `db_engine` (autouse) puts a file-backed SQLite in `tmp_path` into `src.db.database._engine`; `_skip_lifespan_migrations` and `_noop_dispose_engine` (autouse) keep the lifespan off that DB; `seed_client` (not autouse — admin tests need an empty DB) inserts `VALID_KEY`/`CLIENT_ID`; `client` is a full `TestClient` with a mock orchestrator.
+- `tests/integration/conftest.py`: `db_engine` (autouse) puts a file-backed SQLite in `tmp_path` into `jota_gateway.db.database._engine`; `_skip_lifespan_migrations` and `_noop_dispose_engine` (autouse) keep the lifespan off that DB; `seed_client` (not autouse — admin tests need an empty DB) inserts `VALID_KEY`/`CLIENT_ID`; `client` is a full `TestClient` with a mock orchestrator.
 - `tests/conftest.py` disables the single-process lock, resets `gateway_stats` and forces `ELEVENLABS_API_KEY=None` for every test.
 - If imports of `src`/`tests` fail oddly, check the Python environment for stray `.pth` files or a foreign `tests` package before assuming the code is broken.
 

@@ -1,7 +1,7 @@
 import pytest
 
-from src.core.config import settings
-from src.db import database
+from jota_gateway.core.config import settings
+from jota_gateway.db import database
 
 
 @pytest.fixture

@@ -1,4 +1,4 @@
-from src.services.openclaw.models import GatewayInfo, ToolCallEvent
+from jota_gateway.services.openclaw.models import GatewayInfo, ToolCallEvent
 
 # Real shape since server 2026.6.11: the roster is NOT in hello-ok, only the default agent.
 HELLO_OK_PAYLOAD = {

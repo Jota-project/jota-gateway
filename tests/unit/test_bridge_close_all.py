@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.services.openclaw.registry import ClientRegistry
-from src.services.protocol import OrchestratorEvent
+from jota_gateway.services.openclaw.registry import ClientRegistry
+from jota_gateway.services.protocol import OrchestratorEvent
 from tests.fakes.bridge import sent
 
 
@@ -116,7 +116,7 @@ async def test_late_close_of_old_bridge_keeps_reconnected_session(make_bridge, m
 async def test_close_all_bounds_wait_on_a_turn_that_ignores_cancellation(bridge, monkeypatch):
     """#115/#221: close_all() cancels the turn in flight; a turn that does not honour
     the cancellation is abandoned after SESSION_TEARDOWN_S, never awaited forever."""
-    from src.core.config import settings
+    from jota_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "SESSION_TEARDOWN_S", 0.05)
     release = asyncio.Event()
@@ -143,7 +143,7 @@ async def test_close_all_bounds_wait_on_a_turn_that_ignores_cancellation(bridge,
 async def test_close_all_cancels_the_turn_in_flight_instead_of_waiting(bridge, monkeypatch):
     """7d / G-23 (#223): close_all() no longer drains a live turn for up to 30 s; it
     cancels it right away."""
-    from src.core.config import settings
+    from jota_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "SESSION_TEARDOWN_S", 30.0)
     turn = asyncio.create_task(asyncio.sleep(3600))
@@ -312,7 +312,7 @@ async def test_cancelling_run_closes_the_session_as_error_and_propagates(make_br
 async def test_idle_close_ends_run_normally_as_completed(make_bridge, monkeypatch):
     """The idle watchdog cancels the input loop from close_all(): that is our own
     cancellation, so run() returns normally and the session stays `completed`."""
-    from src.core.config import settings
+    from jota_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
     b, _ = make_bridge()
@@ -364,7 +364,7 @@ async def test_turn_abandoned_by_close_all_keeps_one_turn_end_before_session_end
     """#221 4/6: when the cancelled turn's TTS cleanup outlasts SESSION_TEARDOWN_S,
     close_all() abandons it but still sends its turn_end before session_end; when
     the cleanup is fast, there is no duplicate."""
-    from src.core.config import settings
+    from jota_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "SESSION_TEARDOWN_S", 0.3)
     b, ws = make_bridge(output_mode=("text", "audio"), tts=_TtsProvider(_SlowCloseTts(close_s)))
@@ -424,7 +424,7 @@ async def test_abandoned_turn_sends_no_audio_after_its_turn_end(make_bridge, mon
     """#221 4/6: once close_all() has sent the abandoned turn's turn_end, that turn's
     still-running TTS audio must not reach the client (nothing of a turn after its
     turn_end)."""
-    from src.core.config import settings
+    from jota_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "SESSION_TEARDOWN_S", 0.3)
     b, ws = make_bridge(
@@ -466,7 +466,7 @@ async def test_close_all_during_paced_audio_ends_promptly(make_bridge, monkeypat
     """Foco 3 de 7e: con audio a ritmo en vuelo, close_all no espera al reloj del pacer."""
     from unittest.mock import AsyncMock
 
-    from src.core.config import settings
+    from jota_gateway.core.config import settings
     from tests.fakes.bridge import tokens
 
     monkeypatch.setattr(settings, "AUDIO_LEAD_S", 0.1)

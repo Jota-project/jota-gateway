@@ -2,9 +2,9 @@
 
 import pytest
 
-from src.core.config import Settings
-from src.services.speech import ports  # noqa: F401  (el módulo de puertos importa)
-from src.services.speech.factory import build_stt_provider, build_tts_provider
+from jota_gateway.core.config import Settings
+from jota_gateway.services.speech import ports  # noqa: F401  (el módulo de puertos importa)
+from jota_gateway.services.speech.factory import build_stt_provider, build_tts_provider
 
 
 def test_factory_unknown_provider_does_not_echo_value():

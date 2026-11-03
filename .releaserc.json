@@ -9,7 +9,7 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "printf '# Lo reescribe semantic-release en cada release (.releaserc, @semantic-release/exec).\\n__version__ = \"${nextRelease.version}\"\\n' > src/_version.py"
+        "prepareCmd": "printf '# Lo reescribe semantic-release en cada release (.releaserc, @semantic-release/exec).\\n__version__ = \"${nextRelease.version}\"\\n' > src/jota_gateway/_version.py"
       }
     ],
     [
@@ -17,7 +17,7 @@
       {
         "assets": [
           "CHANGELOG.md",
-          "src/_version.py"
+          "src/jota_gateway/_version.py"
         ],
         "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
       }

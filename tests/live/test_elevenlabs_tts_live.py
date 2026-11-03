@@ -10,8 +10,8 @@ import time
 import pytest
 from pydantic import SecretStr
 
-from src.core.config import settings
-from src.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
+from jota_gateway.core.config import settings
+from jota_gateway.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
 
 pytestmark = pytest.mark.live
 

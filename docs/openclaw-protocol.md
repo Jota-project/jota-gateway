@@ -10,7 +10,7 @@ event shape while working on jota-gateway** — dated, with the server version i
 separate from the general-purpose `openclaw` skill (`~/.claude/skills/openclaw/`), which
 explains what OpenClaw is and how to use it across any project; this file tracks *our specific,
 current, hyper-detailed understanding* of its API as it affects this codebase. The code that
-responds to what's documented here lives in `src/services/openclaw/`.
+responds to what's documented here lives in `src/jota_gateway/services/openclaw/`.
 
 **Minimum supported OpenClaw server: 2026.6.11** (since 2026-10-28, issue #262). The gateway no
 longer understands the older protocol shapes described below as "gone".
@@ -26,11 +26,11 @@ working:
 1. **`hello-ok`'s `snapshot` no longer embeds the agent roster.** A captured real `hello-ok`
    payload's `snapshot` only contains `presence`, `health`, `stateVersion`, `uptimeMs`,
    `sessionDefaults` — no `agents` key at all. See "Discovering Available Agents" below.
-   `GatewayInfo.has_agent()` (`src/services/openclaw/models.py`) silently rejected every
+   `GatewayInfo.has_agent()` (`src/jota_gateway/services/openclaw/models.py`) silently rejected every
    agent name until fixed.
 2. **`chat.send` never gets a second `res`.** The completion signal is a `chat` event with
    `payload.state == "final"` — not a matching `res` frame. `stream_response()`
-   (`src/services/openclaw/client.py`) hung indefinitely after the first token until fixed.
+   (`src/jota_gateway/services/openclaw/client.py`) hung indefinitely after the first token until fixed.
 
 **If turns silently hang after the first token, or agent-name validation always rejects
 everything that used to work** — check `hello-ok.server.version` against what's assumed here
@@ -105,7 +105,7 @@ Call `agents.list` right after `hello-ok` (`OpenClawClient.connect()` does this)
 Note the field is `id`, not `agentId` (the older `hello-ok.snapshot.agents[]` shape — now gone
 — used `agentId` + per-item `isDefault`; `agents.list`'s shape uses `id` + a top-level
 `defaultId` to compare against instead). `GatewayInfo.update_agents_from_list()`
-(`src/services/openclaw/models.py`) parses this.
+(`src/jota_gateway/services/openclaw/models.py`) parses this.
 
 **No per-agent `tools` field is included.** There is currently no known API method that
 returns an agent's *resolved* tool list. `config.get` with no params returns the entire raw
@@ -208,7 +208,7 @@ package (read on the server by the maintainer; summarized here):
   2_000`, `src/gateway/server-broadcast-narration.ts`) applies **only** to `session.narration`
   snapshots for subscriptions declared with `mode:"narration"`, not to `chat` deltas. The
   gateway does not use narration mode: it only sends `sessions.subscribe`
-  (`src/services/openclaw/frames.py:28-29`).
+  (`src/jota_gateway/services/openclaw/frames.py:28-29`).
 - `final`, `aborted` and `error` keep full-message semantics.
 
 **Deliberate gateway decision:** the gateway emits a text tail only for `final`. On
@@ -216,7 +216,7 @@ package (read on the server by the maintainer; summarized here):
 client has already cut the reply (barge-in or cancel), and speaking more text after the user
 interrupted would be wrong; an `error` may omit `message` on purpose. Pinned by a test.
 
-How the gateway responds (`src/services/openclaw/chat_text.py`, used by
+How the gateway responds (`src/jota_gateway/services/openclaw/chat_text.py`, used by
 `OpenClawClient.stream_response()` and `JotaBridge.deliver_push()`): `ChatTextTracker` keeps
 `current` (the message text per OpenClaw) and `emitted` (already delivered). `replace:true` →
 `current = deltaText`; `message` present → `current` = its text (no re-adding `deltaText`);
@@ -281,7 +281,7 @@ documented anywhere upstream as of 2026-07-03.
 | `name` | both | Tool name (e.g. `read`, `exec`) |
 | `toolCallId` | both | Correlates a `"start"` with its `"result"` — format `call_function_<random>_<n>`, treat as opaque |
 | `args` | `"start"` | Arguments passed to the tool |
-| `result` | `"result"` | `{"content": [{"type": "text", "text": "..."}, ...]}` — a list of typed content blocks, not a bare string. `ToolCallEvent.from_session_tool_payload()` (`src/services/openclaw/models.py`) flattens the `text`-type blocks and joins with `\n` |
+| `result` | `"result"` | `{"content": [{"type": "text", "text": "..."}, ...]}` — a list of typed content blocks, not a bare string. `ToolCallEvent.from_session_tool_payload()` (`src/jota_gateway/services/openclaw/models.py`) flattens the `text`-type blocks and joins with `\n` |
 | `isError` | `"result"` | Whether the tool call failed |
 
 Routed by `FrameDispatcher._handle_session_tool()` to the active turn's queue, or to
@@ -415,7 +415,7 @@ Consequences observable on the wire:
   `sk.rsplit(":", 1)[-1]` (safe for agent names or keys containing extra colons).
 - The REST trusted-origin legacy path (no Bearer) has no client row, so it uses the fixed id `ha`.
 
-How the `agent` segment is resolved and validated lives in `src/core/agent_policy.py`
+How the `agent` segment is resolved and validated lives in `src/jota_gateway/core/agent_policy.py`
 (summarised for clients in `docs/client-protocol.md` §1, "Selección de agente").
 
 ---

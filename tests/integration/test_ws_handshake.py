@@ -14,12 +14,12 @@ import uvicorn
 import websockets
 from fastapi import FastAPI
 
-from src.api.routes import router as stream_router
-from src.core.config import settings
-from src.core.logging import fingerprint_key
-from src.core.request_id import RequestIdMiddleware
-from src.main import app
-from src.services.outbound import ClientGone, QueuedSender
+from jota_gateway.api.routes import router as stream_router
+from jota_gateway.core.config import settings
+from jota_gateway.core.logging import fingerprint_key
+from jota_gateway.core.request_id import RequestIdMiddleware
+from jota_gateway.main import app
+from jota_gateway.services.outbound import ClientGone, QueuedSender
 from tests.integration.conftest import CLIENT_ID, VALID_KEY
 
 
@@ -92,7 +92,7 @@ def test_invalid_client_key_log_is_safe_and_correlatable(client, caplog, monkeyp
     def mock_warning(msg, *args, **kwargs):
         warning_calls.append(msg if isinstance(msg, str) else msg % args)
 
-    with mock.patch.object(logging.getLogger("src.api.routes"), "warning", mock_warning):
+    with mock.patch.object(logging.getLogger("jota_gateway.api.routes"), "warning", mock_warning):
         ws = client.websocket_connect(
             "/ws/stream",
             headers={"x-real-ip": source_ip},
@@ -140,7 +140,7 @@ def test_valid_text_mode_handshake_connection_stays_open(client, caplog):
     def mock_info(msg, *args, **kwargs):
         info_calls.append(msg if isinstance(msg, str) else msg % args)
 
-    with mock.patch.object(logging.getLogger("src.api.routes"), "info", mock_info):
+    with mock.patch.object(logging.getLogger("jota_gateway.api.routes"), "info", mock_info):
         with client.websocket_connect("/ws/stream") as ws:
             ws.send_json(
                 {
@@ -174,11 +174,11 @@ def test_ready_carries_requested_and_live_capabilities_when_audio(client, monkey
     """#114 — `ready` divide capabilities en requested/live."""
     from unittest.mock import AsyncMock
 
-    from src.services.reconnection import ConnectionState
+    from jota_gateway.services.reconnection import ConnectionState
 
     # TTS ping returns False (degraded), transcriber state is CONNECTED
     monkeypatch.setattr(
-        "src.services.tts_client.TTSClient.ping",
+        "jota_gateway.services.tts_client.TTSClient.ping",
         AsyncMock(return_value=False),
     )
 
@@ -202,7 +202,7 @@ def test_ready_carries_requested_and_live_capabilities_when_audio(client, monkey
         return FakeTranscriber()
 
     monkeypatch.setattr(
-        "src.services.speech.jota.ReconnectingTranscriberClient",
+        "jota_gateway.services.speech.jota.ReconnectingTranscriberClient",
         fake_transcriber_factory,
     )
 

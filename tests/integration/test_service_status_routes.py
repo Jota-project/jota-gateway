@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 
 def test_get_transcriber_status_reachable(client, admin_headers):
-    with patch("src.services.transcriber_client.TranscriberClient.ping", return_value=True):
+    with patch("jota_gateway.services.transcriber_client.TranscriberClient.ping", return_value=True):
         response = client.get("/admin/transcriber/status", headers=admin_headers)
     assert response.status_code == 200
     data = response.json()
@@ -13,7 +13,7 @@ def test_get_transcriber_status_reachable(client, admin_headers):
 
 
 def test_get_transcriber_status_unreachable(client, admin_headers):
-    with patch("src.services.transcriber_client.TranscriberClient.ping", return_value=False):
+    with patch("jota_gateway.services.transcriber_client.TranscriberClient.ping", return_value=False):
         response = client.get("/admin/transcriber/status", headers=admin_headers)
     assert response.status_code == 200
     assert response.json()["state"] == "DEGRADED"

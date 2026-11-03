@@ -15,9 +15,9 @@ import websockets
 from sqlmodel import Session
 from starlette.testclient import TestClient
 
-from src.core.config import settings
-from src.db.models import ClientRecord
-from src.main import app
+from jota_gateway.core.config import settings
+from jota_gateway.db.models import ClientRecord
+from jota_gateway.main import app
 from tests.integration.conftest import (
     CLIENT_ID,
     CLIENT_NAME,
@@ -114,7 +114,7 @@ def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(
 ):
     """PCM → transcriber fake emite is_final → cliente recibe transcripción
     → cliente envía {"type":"send"} → orchestrator llamado con el texto."""
-    from src.services.protocol import OrchestratorEvent
+    from jota_gateway.services.protocol import OrchestratorEvent
 
     called_with_text = {}
     mock_orch = make_mock_orchestrator()
@@ -130,9 +130,9 @@ def test_audio_chunk_transcribed_and_forwarded_to_orchestrator(
     from unittest.mock import AsyncMock as _AM
     from unittest.mock import MagicMock
 
-    monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_reg)
-    monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: MagicMock())
-    monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("jota_gateway.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_reg)
+    monkeypatch.setattr("jota_gateway.main.OpenClawClient", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("jota_gateway.main.FrameDispatcher", lambda *a, **kw: MagicMock())
     mock_reg.connect = _AM()
     mock_reg.close = _AM()
 
@@ -176,22 +176,22 @@ def test_transcriber_connect_uses_stt_language_from_config(mock_services, db_eng
     from unittest.mock import AsyncMock as _AM
     from unittest.mock import MagicMock
 
-    monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_reg)
-    monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: MagicMock())
-    monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("jota_gateway.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_reg)
+    monkeypatch.setattr("jota_gateway.main.OpenClawClient", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("jota_gateway.main.FrameDispatcher", lambda *a, **kw: MagicMock())
     mock_reg.connect = _AM()
     mock_reg.close = _AM()
 
     connect_calls = []
     original_connect = __import__(
-        "src.services.transcriber_client", fromlist=["TranscriberClient"]
+        "jota_gateway.services.transcriber_client", fromlist=["TranscriberClient"]
     ).TranscriberClient.connect
 
     async def spy_connect(self, language="es", token="", vad_thold=0.0):
         connect_calls.append({"language": language, "token": token})
         await original_connect(self, language=language, token=token, vad_thold=vad_thold)
 
-    with patch("src.services.transcriber_client.TranscriberClient.connect", spy_connect):
+    with patch("jota_gateway.services.transcriber_client.TranscriberClient.connect", spy_connect):
         with TestClient(app) as client:
             with client.websocket_connect("/ws/stream") as ws:
                 ws.send_json(HANDSHAKE_AUDIO)
@@ -224,9 +224,9 @@ def test_tts_connect_uses_voice_and_speed_from_config(mock_services, db_engine, 
     from unittest.mock import AsyncMock as _AM
     from unittest.mock import MagicMock
 
-    monkeypatch.setattr("src.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_reg)
-    monkeypatch.setattr("src.main.OpenClawClient", lambda *a, **kw: MagicMock())
-    monkeypatch.setattr("src.main.FrameDispatcher", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("jota_gateway.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_reg)
+    monkeypatch.setattr("jota_gateway.main.OpenClawClient", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("jota_gateway.main.FrameDispatcher", lambda *a, **kw: MagicMock())
     mock_reg.connect = _AM()
     mock_reg.close = _AM()
 
@@ -239,7 +239,7 @@ def test_tts_connect_uses_voice_and_speed_from_config(mock_services, db_engine, 
         self.ws = AsyncMock()
         self.ws.recv = AsyncMock(return_value=json.dumps({"type": "auth_ok"}))
 
-    with patch("src.services.tts_client.TTSClient.connect", spy_tts_connect):
+    with patch("jota_gateway.services.tts_client.TTSClient.connect", spy_tts_connect):
         with TestClient(app) as client:
             with client.websocket_connect("/ws/stream") as ws:
                 # output_mode=["audio"] para que el bridge instancie TTSClient

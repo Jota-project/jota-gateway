@@ -1,7 +1,7 @@
 import hashlib
 import re
 
-from src.core.logging import fingerprint_key
+from jota_gateway.core.logging import fingerprint_key
 
 
 def test_fingerprint_key_is_sha256_prefix():

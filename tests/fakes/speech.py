@@ -3,8 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from src.core.config import settings
-from src.services.speech.factory import build_stt_provider
+from jota_gateway.core.config import settings
+from jota_gateway.services.speech.factory import build_stt_provider
 
 
 def speech_providers(tts=None, stt=None) -> SimpleNamespace:

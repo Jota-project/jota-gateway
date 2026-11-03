@@ -7,8 +7,8 @@ import textwrap
 
 import pytest
 
-from src.core.config import Settings
-from src.core.startup_checks import (
+from jota_gateway.core.config import Settings
+from jota_gateway.core.startup_checks import (
     LOCK_FILENAME,
     SingleProcessLockError,
     acquire_single_process_lock,
@@ -101,7 +101,7 @@ def test_lock_conflicts_with_another_real_process(tmp_path):
                 f"""
                 import sys, time
                 sys.path.insert(0, {str(__import__('os').getcwd())!r})
-                from src.core.startup_checks import acquire_single_process_lock
+                from jota_gateway.core.startup_checks import acquire_single_process_lock
                 h = acquire_single_process_lock({url!r})
                 print("held", flush=True)
                 time.sleep(30)
@@ -137,7 +137,7 @@ def test_flock_unsupported_filesystem_is_reported_honestly_not_as_another_proces
     """ENOLCK (NFS/FUSE sin flock) no es «otro proceso»: mensaje distinto, y aborta igual."""
     import errno
 
-    from src.core import startup_checks
+    from jota_gateway.core import startup_checks
 
     def _enolck(fd, op):
         raise OSError(errno.ENOLCK, "No locks available")
@@ -153,7 +153,7 @@ def test_flock_unsupported_filesystem_is_reported_honestly_not_as_another_proces
 def test_flock_busy_errnos_still_mean_another_process(tmp_path, monkeypatch):
     import errno
 
-    from src.core import startup_checks
+    from jota_gateway.core import startup_checks
 
     for code in (errno.EWOULDBLOCK, errno.EAGAIN):
 

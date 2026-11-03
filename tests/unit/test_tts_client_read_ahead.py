@@ -5,8 +5,8 @@ import logging
 
 import pytest
 
-from src.services import tts_client
-from src.services.tts_client import TTSClient
+from jota_gateway.services import tts_client
+from jota_gateway.services.tts_client import TTSClient
 from tests.fakes.jota_upstreams import FakeTts
 
 

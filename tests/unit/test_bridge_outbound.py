@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.services.outbound import ClientGone, QueuedSender
-from src.services.pipeline_tracker import PipelineTracker
+from jota_gateway.services.outbound import ClientGone, QueuedSender
+from jota_gateway.services.pipeline_tracker import PipelineTracker
 from tests.fakes.bridge import GoneSender, RecWS, tokens
 
 

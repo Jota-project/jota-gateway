@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from src.cli.app import cli
+from jota_gateway.cli.app import cli
 
 ROOT = Path(__file__).resolve().parents[2]
 SECRET = "s3cr3t-admin-token-0123456789"
@@ -98,7 +98,7 @@ def test_missing_config_env_still_works_with_defaults(home):
 
 
 def test_cwd_dotenv_is_never_read_even_if_broken(tmp_path):
-    # Importar src.core.config construye un Settings() global con el .env del directorio actual.
+    # Importar jota_gateway.core.config construye un Settings() global con el .env del directorio actual.
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     (cwd / ".env").write_text("ADMIN_TOKEN=del-cwd\nSTT_PROVIDER=roto\n")
@@ -106,7 +106,7 @@ def test_cwd_dotenv_is_never_read_even_if_broken(tmp_path):
     env.pop("ADMIN_TOKEN", None)
     env.pop("STT_PROVIDER", None)
     r = subprocess.run(
-        [sys.executable, "-m", "src.cli", "--json", "config", "get", "ADMIN_TOKEN"],
+        [sys.executable, "-m", "jota_gateway.cli", "--json", "config", "get", "ADMIN_TOKEN"],
         cwd=cwd, env=env, capture_output=True, text=True,
     )
     assert r.returncode == 0, r.stderr
