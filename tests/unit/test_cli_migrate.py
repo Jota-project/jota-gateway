@@ -171,18 +171,12 @@ class _FailingBackup:
         return getattr(self._con, name)
 
 
-def run_raw(docker):
-    r = CliRunner().invoke(cli, ["migrate", "--from-docker", str(docker)])
-    if r.exception and not isinstance(r.exception, SystemExit):
-        raise r.exception
-    return r
-
-
 def test_failure_leaves_no_partial_files(env, monkeypatch):
     docker, native = env
     monkeypatch.setattr(migrate, "_ro", lambda p: _FailingBackup(sqlite3.connect(p)))
-    with pytest.raises(sqlite3.OperationalError):
-        run_raw(docker)
+    r = run(docker)
+    assert r.exit_code == 1 and isinstance(r.exception, SystemExit)
+    assert "OperationalError" in r.output and "No se ha creado nada" in r.output
     assert not native.exists()
 
 
@@ -190,8 +184,7 @@ def test_failure_on_existing_base_keeps_it_clean(env, monkeypatch):
     docker, native = env
     native.mkdir()
     monkeypatch.setattr(migrate, "_ro", lambda p: _FailingBackup(sqlite3.connect(p)))
-    with pytest.raises(sqlite3.OperationalError):
-        run_raw(docker)
+    assert run(docker).exit_code == 1
     assert list(native.iterdir()) == []
 
 
@@ -205,8 +198,7 @@ def test_failure_after_db_copy_removes_the_db(env, monkeypatch):
         real(src, dst)
 
     monkeypatch.setattr(os, "replace", replace)
-    with pytest.raises(OSError):
-        run_raw(docker)
+    assert run(docker).exit_code == 1
     assert not native.exists()
 
 
@@ -240,3 +232,84 @@ def test_does_not_copy_bak_files(env):
     docker, native = env
     assert run(docker).exit_code == 0
     assert sorted(p.name for p in (native / "data").iterdir()) == ["gateway.db"]
+
+
+def _set_env(docker, text):
+    (docker / ".env").write_text(text)
+
+
+@pytest.mark.parametrize("url", ["sqlite:////app/data/gateway.db", "sqlite:///data/gateway.db",
+                                 "sqlite:///./data/gateway.db"])
+def test_accepts_database_url_pointing_to_the_copied_file(env, url):
+    docker, native = env
+    _set_env(docker, f"DATABASE_URL={url}\n")
+    assert run(docker).exit_code == 0, url
+
+
+@pytest.mark.parametrize("url", ["sqlite:////otra/ruta.db", "sqlite:///otra.db",
+                                 "postgresql://u:p@h/db"])
+def test_refuses_database_url_pointing_elsewhere(env, url):
+    docker, native = env
+    _set_env(docker, f"DATABASE_URL={url}\n")
+    r = run(docker)
+    assert r.exit_code == 1 and "DATABASE_URL" in r.output
+    assert not native.exists()
+
+
+def test_refuses_running_docker_gateway(env):
+    import fcntl
+
+    docker, native = env
+    lock = docker / "data" / "gateway.lock"
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        r = run(docker)
+    finally:
+        os.close(fd)
+    assert r.exit_code == 1 and "docker compose stop" in r.output
+    assert not native.exists()
+    assert run(docker).exit_code == 0  # libre: migra
+
+
+def test_does_not_create_lock_in_source(env):
+    docker, _ = env
+    assert not (docker / "data" / "gateway.lock").exists()
+    assert run(docker).exit_code == 0
+    assert not (docker / "data" / "gateway.lock").exists()
+
+
+@pytest.mark.parametrize("suffix", ["-journal", "-wal", "-shm"])
+def test_refuses_sqlite_leftovers_in_target(env, suffix):
+    docker, native = env
+    (native / "data").mkdir(parents=True)
+    (native / "data" / f"gateway.db{suffix}").write_text("resto")
+    r = run(docker)
+    assert r.exit_code == 1 and "no se sobrescribe" in r.output
+    assert not (native / "config.env").exists()
+
+
+def test_refuses_when_head_unknown(env, monkeypatch):
+    docker, native = env
+    monkeypatch.setattr(migrate.doctor, "revisions", lambda: (set(), None))
+    assert run(docker).exit_code == 1 and not native.exists()
+
+
+def test_refuses_alembic_version_with_two_rows(env):
+    docker, native = env
+    with sqlite3.connect(docker / "data" / "gateway.db") as con:
+        con.execute("DROP TABLE alembic_version")
+        con.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
+        con.execute("INSERT INTO alembic_version VALUES ('a'), ('b')")
+    r = run(docker)
+    assert r.exit_code == 1 and "exactamente una fila" in r.output and not native.exists()
+
+
+def test_umask_restored(env):
+    docker, _ = env
+    old = os.umask(0o022)
+    try:
+        assert run(docker).exit_code == 0
+        assert os.umask(old) == 0o022
+    finally:
+        os.umask(old)

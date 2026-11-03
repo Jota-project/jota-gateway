@@ -9,8 +9,10 @@ la BD nace como copia (API de backup de sqlite3), sin migraciones. El origen sol
 solo lectura y nunca se escribe. Si algo falla no queda nada a medias.
 """
 
+import fcntl
 import os
 import re
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,7 @@ from jota_gateway.cli.output import Out
 
 # Solo los usa compose, o los fija la base nativa.
 DROP = ("DATABASE_URL", "GATEWAY_UID", "GATEWAY_GID")
+DOCKER_BASE = "/app"  # JOTA_GATEWAY_HOME de la imagen
 ADD = ("LOG_FORMAT", "json")  # la imagen lo fijaba con ENV: los logs siguen igual
 
 _DROP_RE = re.compile(rf"\s*(?:export\s+)?({'|'.join(DROP)})\s*=", re.IGNORECASE)
@@ -41,12 +44,37 @@ def _source_revision(db: Path) -> str | None:
     try:
         con = _ro(db)
         try:
-            row = con.execute("SELECT version_num FROM alembic_version").fetchone()
+            rows = con.execute("SELECT version_num FROM alembic_version").fetchall()
         finally:
             con.close()
     except sqlite3.Error as e:
         raise api.ApiError(f"{db} no es una BD del gateway o está dañada ({type(e).__name__}).") from None
-    return row[0] if row else None
+    if len(rows) != 1:
+        raise api.ApiError(f"{db}: alembic_version debe tener exactamente una fila y tiene {len(rows)}.")
+    return str(rows[0][0])
+
+
+def _check_database_url(text: str) -> None:
+    """Un DATABASE_URL del .env solo vale si apunta al fichero que se copia (base /app)."""
+    from dotenv import dotenv_values
+
+    url = dotenv_values(stream=StringIO(text)).get("DATABASE_URL")
+    if not url:
+        return
+    saved = os.environ.get("JOTA_GATEWAY_HOME")
+    os.environ["JOTA_GATEWAY_HOME"] = DOCKER_BASE
+    try:
+        target = paths.sqlite_file(url)
+    finally:
+        if saved is None:
+            del os.environ["JOTA_GATEWAY_HOME"]
+        else:
+            os.environ["JOTA_GATEWAY_HOME"] = saved
+    if target != Path(DOCKER_BASE) / "data" / "gateway.db":
+        raise api.ApiError(
+            f"El DATABASE_URL del .env no apunta a {DOCKER_BASE}/data/gateway.db sino a "
+            f"{target or 'una BD que no es un fichero SQLite'}: migrate solo copia data/gateway.db. "
+            "Corrige el .env o copia esa BD a mano.")
 
 
 def _copy_db(src: Path, tmp: Path, dest: Path) -> int:
@@ -100,12 +128,35 @@ def _config_errors(path: Path) -> list[str]:
         os.environ.update(saved)
 
 
+def _read_env(path: Path) -> str:
+    try:
+        return path.read_text()
+    except OSError as e:
+        raise api.ApiError(f"No se puede leer {path} ({type(e).__name__}).") from None
+
+
+def _lock_source(lock: Path) -> int | None:
+    """Candado compartido sobre el gateway.lock de Docker: si falla, el gateway sigue en marcha."""
+    if not lock.exists():
+        return None
+    fd = os.open(lock, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        raise api.ApiError("El gateway de Docker sigue en marcha: para el contenedor "
+                           "(`docker compose stop`) antes de migrar.") from None
+    return fd
+
+
 @click.command()
 @click.option("--from-docker", "source", required=True, metavar="DIR",
               type=click.Path(path_type=Path), help="Directorio de la instalación Docker.")
 @click.pass_context
 def migrate(ctx: click.Context, source: Path) -> None:
     """Copia una instalación Docker a la nativa."""
+    import sqlite3
+
     out = Out(ctx.find_root().obj["json"])
     source = source.expanduser().absolute()
     env_src, db_src = source / ".env", source / "data" / "gateway.db"
@@ -115,24 +166,27 @@ def migrate(ctx: click.Context, source: Path) -> None:
     base = paths.home()
     config, data = paths.config_file(), base / "data"
     db = data / "gateway.db"
-    if config.exists() or db.exists():
-        raise api.ApiError(f"Ya hay una instalación en {base}; no se sobrescribe.")
-    revision = _source_revision(db_src)
-    _, head = doctor.revisions()
-    if revision != head:
-        raise api.ApiError(
-            f"La BD de Docker está en la migración {revision} y este jota-gw espera {head}. "
-            "Despliega la misma versión en Docker o instala la misma versión nativa.")
-    try:
-        text = env_src.read_text()
-    except OSError as e:
-        raise api.ApiError(f"No se puede leer {env_src} ({type(e).__name__}).") from None
-
-    os.umask(0o077)  # 700 y 600 desde el primer momento
+    leftovers = [f for f in (config, db, *(db.with_name(db.name + x) for x in ("-journal", "-wal", "-shm")))
+                 if f.exists()]
+    if leftovers:
+        raise api.ApiError(f"Ya hay una instalación en {base} ({leftovers[0].name}); no se sobrescribe.")
+    lock_fd = _lock_source(source / "data" / paths.LOCK_FILENAME)
+    old_umask = os.umask(0o077)  # 700 y 600 desde el primer momento
     made = [d for d in (base, data) if not d.exists()]
     tmp_db, tmp_cfg = db.with_name(db.name + ".tmp"), config.with_name(config.name + ".tmp")
     done = False
     try:
+        text = _read_env(env_src)
+        _check_database_url(text)
+        revision = _source_revision(db_src)
+        _, head = doctor.revisions()
+        if head is None:
+            raise api.ApiError("No se encuentran las migraciones del paquete (o hay varias cabezas): "
+                               "no se puede comprobar la versión de la BD.")
+        if revision != head:
+            raise api.ApiError(
+                f"La BD de Docker está en la migración {revision} y este jota-gw espera {head}. "
+                "Despliega la misma versión en Docker o instala la misma versión nativa.")
         data.mkdir(parents=True, exist_ok=True)
         clients = _copy_db(db_src, tmp_db, db)
         new, dropped, added = _convert_env(text)
@@ -143,7 +197,12 @@ def migrate(ctx: click.Context, source: Path) -> None:
             raise api.ApiError("La configuración migrada no es válida: " + "; ".join(errors)
                                + ". No se ha creado nada.")
         done = True
+    except (sqlite3.Error, OSError) as e:
+        raise api.ApiError(f"Ha fallado la migración ({type(e).__name__}). No se ha creado nada.") from None
     finally:
+        os.umask(old_umask)
+        if lock_fd is not None:
+            os.close(lock_fd)
         if not done:
             for f in (tmp_db, tmp_cfg, db, config):
                 f.unlink(missing_ok=True)
