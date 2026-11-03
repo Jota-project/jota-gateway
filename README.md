@@ -169,7 +169,7 @@ V=1.x.y
 uv tool install "jota-gateway @ git+https://github.com/Jota-project/jota-gateway@v$V" \
   -c https://github.com/Jota-project/jota-gateway/releases/download/v$V/constraints.txt
 jota-gw init               # <base>, config.env con ADMIN_TOKEN aleatorio y la BD
-jota-gw config set OPENCLAW_TOKEN   # obligatorio; se pide por prompt oculto (ver más abajo)
+jota-gw config set OPENCLAW_TOKEN   # obligatorio; se pide por prompt oculto, ver `config set` en [Admin](#admin-requiere-x-admin-token)
 jota-gw install            # crea el servicio de usuario y lo arranca
 jota-gw doctor             # configuración, BD, permisos, servicio y gateway
 jota-gw logs -n 20         # últimas líneas del journal (-f para seguir)
@@ -214,7 +214,7 @@ Los datos (`config.env`, `data/gateway.db`) quedan en `<base>`; bórralos a mano
 
 `jota-gw migrate --from-docker <carpeta de compose>` copia `.env` y `data/gateway.db` de una instalación Docker a `<base>`. Procedimiento, con la ventana de parada y la vuelta atrás:
 
-1. **Misma versión a los dos lados.** Despliega la versión vN en Docker e instala la vN nativa **sin arrancarla** (`uv tool install …`, sin `jota-gw install`); `jota-gw version` lo confirma.
+1. **Misma versión a los dos lados.** Despliega la versión vN en Docker e instala la vN nativa **sin arrancarla** (`uv tool install …`, sin `jota-gw install`); `jota-gw version` da la versión nativa y `docker exec jota_gateway jota-gw version` la de Docker.
 2. **Ventana sin sesiones.** `docker exec jota_gateway jota-gw status` debe mostrar 0 sesiones. Haz una copia de seguridad de `data/gateway.db`.
 3. **Parar y migrar.** `docker compose stop` (sin `down`), después:
    ```bash
@@ -222,7 +222,7 @@ Los datos (`config.env`, `data/gateway.db`) quedan en `<base>`; bórralos a mano
    jota-gw install          # comprueba que el 8004 está libre
    ```
 4. **Verificar.** `curl http://127.0.0.1:8004/ready`, una sesión de voz o texto, `/v1` con y sin clave, los mismos clientes (`jota-gw clients list`), `jota-gw doctor` y `jota-gw logs -n 20`.
-5. **Vuelta atrás.** `jota-gw stop` y `docker compose up -d`. Para volver a nativo: `docker compose stop` y `jota-gw start`. Los cambios de clientes hechos en un lado no están en la BD del otro.
+5. **Vuelta atrás.** `jota-gw stop` y `systemctl --user disable jota-gateway.service` (si no, tras un reinicio de la máquina arrancan los dos y se pelean por el 8004), y después `docker compose up -d`. Para volver a nativo: `docker compose stop` y `jota-gw install` (con la unidad igual no la toca: la habilita y la arranca). Los cambios de clientes hechos en un lado no están en la BD del otro.
 6. **Retirar el contenedor**, más tarde: `docker compose down`, sin borrar la imagen ni la carpeta.
 
 Qué hace `migrate` (`src/jota_gateway/cli/migrate.py`):
@@ -235,7 +235,7 @@ Qué hace `migrate` (`src/jota_gateway/cli/migrate.py`):
 
 ### Desarrollo en la misma máquina que producción
 
-Usa siempre `--home ./.dev` (o `JOTA_GATEWAY_HOME=./.dev`): sin él, la CLI y el gateway comparten `~/.jota-gateway`, o sea, la BD de producción.
+Usa siempre `--home ./.dev` (o `JOTA_GATEWAY_HOME=./.dev`): sin él, la CLI y el gateway comparten `~/.jota-gateway`, o sea, la BD de producción. Además, `serve` usa siempre el puerto 8004 y la CLI apunta por defecto a `http://127.0.0.1:8004`: en la misma máquina el gateway de desarrollo choca con el de producción, o `clients list` acaba hablando con producción. Alternativa con otro puerto: `JOTA_GATEWAY_HOME=./.dev uvicorn jota_gateway.main:app --port 8005` y `jota-gw --home ./.dev --url http://127.0.0.1:8005 …`.
 
 ```bash
 uv sync --extra dev   # crea .venv desde uv.lock (o `pip install -e .[dev]`, sin versiones fijadas)
