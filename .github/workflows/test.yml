@@ -254,14 +254,16 @@ jobs:
           old_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
           old_pid=$(systemctl --user show -p MainPID --value jota-gateway.service)
           echo "antes: InvocationID=$old_inv MainPID=$old_pid"
-          [ -n "$old_inv" ] && [ "$old_pid" -gt 0 ]
+          [ -n "$old_inv" ]
+          [ "$old_pid" -gt 0 ]
           sudo systemctl restart "user@$(id -u).service"
           wait_bus
           wait_health 60
           new_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
           echo "después: InvocationID=$new_inv"
-          [ -n "$new_inv" ] && [ "$new_inv" != "$old_inv" ]
-          ! kill -0 "$old_pid" 2>/dev/null
+          [ -n "$new_inv" ]
+          [ "$new_inv" != "$old_inv" ]
+          if kill -0 "$old_pid" 2>/dev/null; then echo "el PID viejo $old_pid sigue vivo"; exit 1; fi
           [ "$(systemctl --user is-active jota-gateway.service)" = active ]
 
       - name: jota-gw logs
@@ -278,7 +280,9 @@ jobs:
           jota-gw --yes config set LOG_FORMAT json
           wait_health 60
           new_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
-          [ -n "$new_inv" ] && [ "$new_inv" != "$old_inv" ]  # hubo restart
+          [ -n "$old_inv" ]
+          [ -n "$new_inv" ]
+          [ "$new_inv" != "$old_inv" ]  # hubo restart
           jota-gw logs -n 20 > "$RUNNER_TEMP/logs.txt"
           cat "$RUNNER_TEMP/logs.txt"
           python3 -c "
