@@ -16,7 +16,7 @@ DEFAULT_URL = "http://127.0.0.1:8004"
 # nombre -> ("módulo:atributo", ayuda corta). La ayuda va aquí para no importar el módulo.
 COMMANDS: dict[str, tuple[str, str]] = {
     "clients": ("jota_gateway.cli.clients:clients", "Gestiona los clientes."),
-    "config": ("jota_gateway.cli.config:config", "Configuración efectiva (solo lectura)."),
+    "config": ("jota_gateway.cli.config:config", "Configuración: ver, validar y cambiar."),
     "doctor": ("jota_gateway.cli.doctor:doctor", "Diagnostica la instalación."),
     "init": ("jota_gateway.cli.init:init", "Prepara una instalación nueva."),
     "install": ("jota_gateway.cli.service:install", "Instala y arranca el servicio."),

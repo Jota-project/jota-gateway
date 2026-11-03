@@ -28,8 +28,8 @@ def home(monkeypatch, tmp_path):
     return base
 
 
-def run(*args):
-    return CliRunner().invoke(cli, list(args))
+def run(*args, input=None):
+    return CliRunner().invoke(cli, list(args), input=input)
 
 
 def test_show_gives_origin_and_masks_secrets(home, monkeypatch):
@@ -125,3 +125,148 @@ def test_database_url_password_is_masked(home, monkeypatch):
         r = run(*args)
         assert "pw-secreta-123" not in r.output
         assert "user:" in r.output and "db.local" in r.output
+
+
+# --- config set / unset (M14d, #296) ---------------------------------------------------------
+
+SPECIAL = ["a b", "x#y", '"q"', "k=v", "$HOME", "it's \\ ok", ""]
+
+
+def _env(home):
+    return home / "config.env"
+
+
+@pytest.mark.parametrize("value", SPECIAL)
+def test_set_roundtrips_special_values(home, value):
+    from dotenv import dotenv_values
+
+    from jota_gateway.cli import config as cfg
+
+    r = run("config", "set", "TTS_WS_URL", value)
+    assert r.exit_code == 0, r.output
+    assert dotenv_values(_env(home))["TTS_WS_URL"] == value
+    settings, errors, _ = cfg.load()
+    assert errors == [] and value == settings.TTS_WS_URL
+
+
+def test_set_value_with_interpolation_is_refused(home):
+    before = _env(home).read_bytes()
+    r = run("config", "set", "TTS_WS_URL", "${HOME}x")
+    assert r.exit_code == 1
+    assert _env(home).read_bytes() == before
+
+
+def test_set_invalid_writes_nothing(home):
+    before = _env(home).read_bytes()
+    r = run("config", "set", "STT_PROVIDER", "nope")
+    assert r.exit_code == 1
+    assert _env(home).read_bytes() == before
+    assert [p.name for p in home.iterdir()] == ["config.env"]
+
+
+def test_set_new_failing_check_aborts(home):
+    # Vaciar ADMIN_TOKEN crea un check `fail` nuevo (el sin definir no lo era).
+    before = _env(home).read_bytes()
+    r = run("config", "set", "ADMIN_TOKEN", "-", input="\n")
+    assert r.exit_code == 1
+    assert _env(home).read_bytes() == before
+
+
+def test_set_keeps_comments_and_mode_600(home):
+    _env(home).write_text("# hola\nexport LOG_FORMAT=json\n\nADMIN_TOKEN=abc123\n# fin\n")
+    _env(home).chmod(0o644)
+    r = run("config", "set", "log_format", "text")
+    assert r.exit_code == 0, r.output
+    assert _env(home).read_text() == "# hola\nLOG_FORMAT=text\n\nADMIN_TOKEN=abc123\n# fin\n"
+    assert _env(home).stat().st_mode & 0o777 == 0o600
+    run("config", "set", "TURN_TIMEOUT_S", "30")
+    assert _env(home).read_text().endswith("# fin\nTURN_TIMEOUT_S=30\n")
+
+
+def test_set_secret_as_argument_is_usage_error(home):
+    before = _env(home).read_bytes()
+    r = run("config", "set", "ADMIN_TOKEN", "nuevo-secreto")
+    assert r.exit_code == 2
+    assert _env(home).read_bytes() == before
+
+
+def test_set_secret_from_stdin(home):
+    r = run("config", "set", "OPENCLAW_TOKEN", "-", input="nuevo-secreto-largo\n")
+    assert r.exit_code == 0, r.output
+    assert "OPENCLAW_TOKEN=nuevo-secreto-largo" in _env(home).read_text()
+    assert "nuevo-secreto-largo" not in r.output
+
+
+def test_set_secret_without_value_or_tty_is_usage_error(home):
+    assert run("config", "set", "OPENCLAW_TOKEN").exit_code == 2
+
+
+def test_unset_removes_line(home):
+    r = run("config", "unset", "log_format")
+    assert r.exit_code == 0, r.output
+    assert "LOG_FORMAT" not in _env(home).read_text()
+    assert run("config", "unset", "LOG_FORMAT").exit_code == 0  # ya no estaba
+
+
+def test_set_unknown_name_suggests(home):
+    r = run("config", "set", "LOG_FORMT", "json")
+    assert r.exit_code == 2
+    assert "¿Querías decir LOG_FORMAT?" in r.output
+    assert run("config", "unset", "LOG_FORMT").exit_code == 2
+
+
+def test_set_without_config_env_suggests_init(home):
+    _env(home).unlink()
+    r = run("config", "set", "LOG_FORMAT", "json")
+    assert r.exit_code == 1 and "jota-gw init" in r.output
+    assert not _env(home).exists()
+
+
+def test_set_warns_when_environment_wins(home, monkeypatch):
+    monkeypatch.setenv("TURN_TIMEOUT_S", "99")
+    r = run("config", "set", "TURN_TIMEOUT_S", "30")
+    assert r.exit_code == 0 and "entorno" in r.output
+
+
+@pytest.fixture()
+def systemd(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from jota_gateway.cli import output, service
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    unit = service.unit_path()
+    unit.parent.mkdir(parents=True)
+    unit.write_text("[Unit]\n")
+    st = SimpleNamespace(calls=[], active=True, tty=False)
+    monkeypatch.setattr(service, "require_systemd", lambda: None)
+    monkeypatch.setattr(output, "_stdin_isatty", lambda: st.tty)
+
+    def fake(*args, check=True):
+        st.calls.append(args)
+        rc = 0 if st.active or args[0] != "is-active" else 3
+        return subprocess.CompletedProcess(args, rc, "", "")
+
+    monkeypatch.setattr(service, "systemctl", fake)
+    return st
+
+
+def test_set_offers_restart_when_active(home, systemd):
+    r = run("config", "set", "LOG_FORMAT", "text")
+    assert r.exit_code == 0 and "jota-gw restart" in r.output
+    assert ("restart", "jota-gateway.service") not in systemd.calls
+    systemd.calls.clear()
+    r = run("--yes", "config", "set", "LOG_FORMAT", "json")
+    assert ("restart", "jota-gateway.service") in systemd.calls
+    systemd.calls.clear()
+    systemd.tty = True
+    r = run("config", "set", "LOG_FORMAT", "text", input="n\n")  # decir que no no aborta
+    assert r.exit_code == 0 and ("restart", "jota-gateway.service") not in systemd.calls
+    r = run("config", "set", "LOG_FORMAT", "json", input="y\n")
+    assert ("restart", "jota-gateway.service") in systemd.calls
+
+
+def test_set_no_restart_when_inactive_or_no_unit(home, systemd):
+    systemd.active = False
+    run("--yes", "config", "set", "LOG_FORMAT", "text")
+    assert ("restart", "jota-gateway.service") not in systemd.calls
