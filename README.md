@@ -173,7 +173,7 @@ V=<versión>   # la última de las releases, sin la v
 uv tool install "jota-gateway @ git+https://github.com/Jota-project/jota-gateway@v$V" \
   -c https://github.com/Jota-project/jota-gateway/releases/download/v$V/constraints.txt
 jota-gw init               # <base>, config.env con ADMIN_TOKEN aleatorio y la BD
-jota-gw config set OPENCLAW_TOKEN   # prompt oculto; ver más abajo
+jota-gw config set OPENCLAW_TOKEN   # prompt oculto; ver la nota de debajo
 jota-gw config set OPENCLAW_HOST    # solo si OpenClaw no está en esta máquina (y OPENCLAW_PORT, por defecto 18789)
 loginctl enable-linger $USER        # puede pedir sudo según la distro
 jota-gw install            # crea el servicio de usuario y lo arranca
@@ -285,7 +285,7 @@ Variables de entorno o, si no, de `<base>/config.env` (instalación nativa). En 
 | `TTS_TOKEN` | `gateway` | Token de auth para jota-speaker |
 | `OPENCLAW_HOST` | `127.0.0.1` | Host de OpenClaw |
 | `OPENCLAW_PORT` | `18789` | Puerto de OpenClaw |
-| `OPENCLAW_TOKEN` | — | Token de auth para OpenClaw (obligatorio) |
+| `OPENCLAW_TOKEN` | — | Token de OpenClaw. Sin él el gateway arranca con un aviso, pero OpenClaw rechaza la conexión (`/ready` 503) |
 | `ADMIN_TOKEN` | — | Token para endpoints `/admin/*`; vacío deshabilita el admin API |
 | `ORCHESTRATOR_RECONNECT_INITIAL_BACKOFF` | `1.0` | Backoff inicial en reconexión del orquestador (s) |
 | `ORCHESTRATOR_RECONNECT_MAX_BACKOFF` | `60.0` | Backoff máximo en reconexión del orquestador (s); también el periodo del reintento lento en DEGRADED |
