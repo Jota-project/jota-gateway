@@ -7,6 +7,7 @@ from jota_gateway.db import database
 @pytest.fixture
 def fresh_engine(monkeypatch):
     monkeypatch.setattr(database, "_engine", None)
+    monkeypatch.setattr(database, "CREATE_DB", True)  # crear la BD (y su directorio, #124) es explícito
     yield
     database.dispose_engine()
 

@@ -11,12 +11,11 @@ RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml
     && pip install --no-cache-dir -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 
-# Copiamos el código, la config y las migraciones de Alembic (run_migrations() las necesita en runtime)
-COPY src/ /app/src/
-# Paquete en src/jota_gateway (src layout). Lo instala como paquete el PR 2 de M14c.
-ENV PYTHONPATH=/app/src
-COPY alembic.ini .
-COPY migrations/ /app/migrations/
+# El paquete, igual que en la instalación nativa: trae Alembic y sus migraciones y el ejecutable
+# jota-gw. Se construye en /tmp para que /app solo tenga los datos. README.md lo pide pyproject.
+COPY pyproject.toml README.md /tmp/pkg/
+COPY src/ /tmp/pkg/src/
+RUN pip install --no-cache-dir --no-deps /tmp/pkg && rm -rf /tmp/pkg
 
 # Usuario no-root. /app/data queda en su propiedad para que la imagen funcione
 # también sin bind mount; con docker-compose el UID/GID real viene de
@@ -27,8 +26,8 @@ RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin app 
 USER app
 
 ENV LOG_FORMAT=json
-# Directorio base de la CLI (jota-gw): la BD relativa de DATABASE_URL queda en /app/data,
-# la del volumen. El gateway aún no lo lee (llega con M14c).
+# Directorio base del gateway y de jota-gw: la BD relativa de DATABASE_URL queda en /app/data,
+# la del volumen. Aquí no hay config.env: la configuración llega como variables (env_file).
 ENV JOTA_GATEWAY_HOME=/app
 
 EXPOSE 8004
@@ -37,12 +36,8 @@ EXPOSE 8004
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/healthz', timeout=3)"]
 
-# Host de escucha por GATEWAY_HOST (default 0.0.0.0, como antes). Detrás de un reverse
-# proxy en el mismo host conviene GATEWAY_HOST=127.0.0.1 (el HEALTHCHECK de arriba usa
-# 127.0.0.1, así que no sirve con una IP de LAN concreta).
-# --no-proxy-headers: la única señal de "IP real detrás de un proxy" es X-Real-IP (ver
-# src/jota_gateway/core/network.py); sin él uvicorn dejaría que un X-Forwarded-For reenviado por el
-# proxy reescribiera el peer TCP.
-# --ws-max-size: tope de cualquier mensaje WebSocket entrante (default de uvicorn: 16 MiB);
-# 1 MiB sobra para audio PCM en chunks y para los mensajes de control.
-CMD ["sh", "-c", "exec uvicorn jota_gateway.main:app --host \"${GATEWAY_HOST:-0.0.0.0}\" --port 8004 --no-proxy-headers --ws-max-size 1048576 --timeout-graceful-shutdown 35"]
+# Host por GATEWAY_HOST (default 0.0.0.0). Detrás de un reverse proxy en el mismo host conviene
+# GATEWAY_HOST=127.0.0.1 (el HEALTHCHECK de arriba usa 127.0.0.1, así que no sirve con una IP de
+# LAN concreta). Los demás ajustes de uvicorn están en src/jota_gateway/cli/serve.py.
+# --create-db: con un ./data vacío, `docker compose up` crea la BD como siempre (decisión 5 de M14c).
+CMD ["jota-gw", "serve", "--create-db"]

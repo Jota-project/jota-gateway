@@ -17,6 +17,7 @@ def test_head_migrations_match_current_model(tmp_path, monkeypatch):
     """
     db_path = tmp_path / "sync_check.db"
     monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setattr(database, "CREATE_DB", True)
     database._engine = None
 
     database.run_migrations()

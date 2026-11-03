@@ -6,10 +6,19 @@ from alembic.config import Config
 from sqlalchemy.engine import make_url
 from sqlmodel import Session, create_engine
 
+from jota_gateway import paths
 from jota_gateway.core.config import settings
 
 _engine = None
-_ALEMBIC_INI = Path(__file__).resolve().parents[3] / "alembic.ini"
+_ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
+
+# Decisión 5 de M14c: el gateway no crea nunca una BD en silencio. Lo activan `jota-gw init`
+# y `jota-gw serve --create-db` (la imagen Docker).
+CREATE_DB = False
+
+
+class DatabaseMissing(RuntimeError):
+    """No hay BD en la ruta configurada y no se ha pedido crearla."""
 
 
 def _ensure_sqlite_dir(database_url: str) -> None:
@@ -25,9 +34,31 @@ def _ensure_sqlite_dir(database_url: str) -> None:
     Path(url.database).parent.mkdir(parents=True, exist_ok=True)
 
 
+def _require_db() -> None:
+    db = paths.sqlite_file(settings.DATABASE_URL)
+    if db is not None and not db.exists() and not CREATE_DB:
+        raise DatabaseMissing(
+            f"No existe la base de datos {db}. Si es una instalación nueva, créala con "
+            "`jota-gw init`. Si ya tenías una, copia aquí su gateway.db (o usa "
+            "JOTA_GATEWAY_HOME/--home para apuntar a su directorio base)."
+        )
+
+
+def require_database() -> None:
+    """Para el arranque, antes del candado: sin BD, se para sin crear nada (ni data/).
+
+    Con un engine ya abierto (o inyectado en tests) la BD ya está elegida.
+    """
+    if _engine is None:
+        _require_db()
+
+
 def get_engine():
     global _engine
     if _engine is None:
+        # Aquí y no solo en run_migrations: conectar crearía el fichero vacío, también desde
+        # la CLI `alembic` (env.py usa este engine).
+        _require_db()
         _ensure_sqlite_dir(settings.DATABASE_URL)
         _engine = create_engine(
             settings.DATABASE_URL,
@@ -61,6 +92,7 @@ def run_migrations() -> None:
     aplica solo las pendientes en una ya versionada. Una BD con `clients` pero sin
     `alembic_version` (anterior a Alembic) ya no se sella: falla al crear la tabla (#265).
     """
+    _require_db()  # antes de Alembic: el error sale tal cual, sin envolver
     command.upgrade(_alembic_config(), "head")
 
 

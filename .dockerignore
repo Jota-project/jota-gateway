@@ -18,3 +18,4 @@ data
 .env.*
 !.env.sample
 *.md
+!README.md
