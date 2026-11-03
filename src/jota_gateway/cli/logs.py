@@ -69,7 +69,8 @@ def logs(follow: bool, lines: int, level: str | None, session: str | None) -> No
         return
     import subprocess
 
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, encoding="utf-8",
+                            errors="replace")  # un byte no UTF-8 no corta el stream
     try:
         assert proc.stdout is not None
         for line in proc.stdout:

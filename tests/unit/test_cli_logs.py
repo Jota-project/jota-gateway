@@ -110,3 +110,18 @@ def test_no_unit_or_no_journalctl_gives_no_service_msg(env, monkeypatch):
     env.unlink()
     r = CliRunner().invoke(cli, ["logs"])
     assert r.exit_code == 1 and "No hay servicio instalado" in r.output
+
+
+def test_invalid_utf8_line_passes_and_loop_continues(env, monkeypatch):
+    import subprocess
+    import sys
+
+    real = subprocess.Popen
+    script = ("import sys; sys.stdout.buffer.write("
+              "b'x | y | INFO | roto \\xff\\xfe\\n' b'x | y | ERROR | despues\\n')")
+    # Proceso real con los kwargs que pasa `logs`: así se prueba la decodificación de verdad.
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda args, **kw: real([sys.executable, "-c", script], **kw))
+    r = CliRunner().invoke(cli, ["logs", "--session", "|"])
+    assert r.exit_code == 0, r.output
+    assert "roto ��" in r.output and "despues" in r.output
