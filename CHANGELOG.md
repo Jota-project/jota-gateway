@@ -1,3 +1,10 @@
+# [1.25.0](https://github.com/Jota-project/jota-gateway/compare/v1.24.0...v1.25.0) (2026-11-03)
+
+
+### Features
+
+* **install:** rutas desde el directorio base, Alembic en el paquete, jota-gw init y serve (M14c, PR 2) ([#311](https://github.com/Jota-project/jota-gateway/issues/311)) ([a36abd1](https://github.com/Jota-project/jota-gateway/commit/a36abd13026d882a92aa9ee493f0337c3b079f79)), closes [#295](https://github.com/Jota-project/jota-gateway/issues/295) [#295](https://github.com/Jota-project/jota-gateway/issues/295)
+
 # [1.24.0](https://github.com/Jota-project/jota-gateway/compare/v1.23.0...v1.24.0) (2026-11-02)
 
 
