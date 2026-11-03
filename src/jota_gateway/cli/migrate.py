@@ -133,6 +133,8 @@ def _read_env(path: Path) -> str:
         return path.read_text()
     except OSError as e:
         raise api.ApiError(f"No se puede leer {path} ({type(e).__name__}).") from None
+    except ValueError:  # UnicodeDecodeError
+        raise api.ApiError(f"{path} no está en UTF-8: conviértelo (p. ej. con `iconv -f latin1 -t utf-8`) y repite.") from None
 
 
 def _lock_source(lock: Path) -> int | None:

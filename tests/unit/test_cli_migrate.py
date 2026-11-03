@@ -328,3 +328,12 @@ def test_unreadable_lock_is_a_clean_error(env):
     assert r.exit_code == 1 and isinstance(r.exception, SystemExit)
     assert "PermissionError" in r.output and "gateway.lock" in r.output
     assert not native.exists()
+
+
+def test_non_utf8_env_is_a_clean_error(env):
+    docker, native = env
+    (docker / ".env").write_bytes("OPENCLAW_TOKEN=caf\xe9\n".encode("latin-1"))
+    r = run(docker)
+    assert r.exit_code == 1 and isinstance(r.exception, SystemExit)
+    assert "UTF-8" in r.output
+    assert not native.exists()
