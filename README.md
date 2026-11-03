@@ -90,6 +90,7 @@ jota-gw config set <AJUSTE> [VALOR|-]   # escribe en config.env; unset <AJUSTE> 
 jota-gw install [--exe RUTA]   # servicio de usuario de systemd: lo instala y lo arranca
 jota-gw start|stop|restart     # restart pregunta; --yes para scripts
 jota-gw uninstall              # quita el servicio (pregunta); no toca los datos
+jota-gw migrate --from-docker DIR   # copia una instalación Docker (.env y BD) a la nativa
 jota-gw logs [-f] [-n N] [--level NIVEL] [--session ID]
 jota-gw status                 # gateway, versión, orquestador, STT, TTS y sesiones
 jota-gw version
@@ -155,16 +156,9 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la referencia comp
 
 ---
 
-## Quick start
+## Instalación
 
-```bash
-uv sync --extra dev   # crea .venv desde uv.lock (o `pip install -e .[dev]`, sin versiones fijadas)
-source .venv/bin/activate
-jota-gw init        # una vez: crea ~/.jota-gateway (o JOTA_GATEWAY_HOME), config.env y la BD
-jota-gw serve       # en desarrollo, con recarga: uvicorn jota_gateway.main:app --port 8004 --reload
-# o con Docker:
-docker compose up
-```
+La vía recomendada es la **instalación nativa** (servicio de usuario de systemd, solo Linux). Docker queda como [alternativa](#docker-alternativa). `<base>` es `~/.jota-gateway` (o `--home` / `JOTA_GATEWAY_HOME`).
 
 ### Instalación nativa
 
@@ -174,28 +168,93 @@ Con las mismas versiones que la imagen Docker: cada release publica `constraints
 V=1.x.y
 uv tool install "jota-gateway @ git+https://github.com/Jota-project/jota-gateway@v$V" \
   -c https://github.com/Jota-project/jota-gateway/releases/download/v$V/constraints.txt
+jota-gw init               # <base>, config.env con ADMIN_TOKEN aleatorio y la BD
+jota-gw config set OPENCLAW_TOKEN   # obligatorio; se pide por prompt oculto (ver más abajo)
+jota-gw install            # crea el servicio de usuario y lo arranca
+jota-gw doctor             # configuración, BD, permisos, servicio y gateway
+jota-gw logs -n 20         # últimas líneas del journal (-f para seguir)
 ```
 
 > **El gateway nunca crea una BD por su cuenta.** Si no la encuentra en `<base>/data/gateway.db`
 > (o en la `DATABASE_URL` configurada), se para y explica qué hacer: así no arranca vacío, sin
-> clientes, por haberse equivocado de directorio. La crea `jota-gw init`. La imagen Docker
-> arranca con `jota-gw serve --create-db`, así que `docker compose up` con un `./data` vacío
-> funciona como siempre.
+> clientes, por haberse equivocado de directorio. La crea `jota-gw init` (o `jota-gw migrate`,
+> que la copia de Docker). La imagen Docker arranca con `jota-gw serve --create-db`, así que
+> `docker compose up` con un `./data` vacío funciona como siempre.
 
 ### Servicio (systemd de usuario)
 
-Solo en Linux con systemd; en Docker usa `docker compose`. `jota-gw install` crea `~/.config/systemd/user/jota-gateway.service` y lo arranca. Exige una config válida, la BD ya creada (`jota-gw init`; `install` nunca la crea) y el puerto 8004 libre (para el contenedor antes). Si el servicio ya es el nuestro y está activo, reinstala, y si la unidad cambia, lo reinicia. `uninstall` y sobrescribir una unidad distinta con `install` piden confirmación (para scripts, `jota-gw --yes …`).
+Solo en Linux con systemd. `jota-gw install` crea `~/.config/systemd/user/jota-gateway.service` y lo arranca. Exige una config válida, la BD ya creada (`jota-gw init` o `jota-gw migrate`; `install` nunca la crea) y el puerto 8004 libre (para el contenedor antes). Si el servicio ya es el nuestro y está activo, reinstala, y si la unidad cambia, lo reinicia. `uninstall` y sobrescribir una unidad distinta con `install` piden confirmación (para scripts, `jota-gw --yes …`).
 
 - **Ejecutable:** usa el `jota-gw` del PATH. Rechaza uno dentro de un clon o de una instalación editable, porque la unidad se rompería al moverlo: instala con `uv tool install` o pasa `--exe RUTA`.
 - **Linger:** sin `loginctl enable-linger $USER` el servicio se para al cerrar tu sesión; `install` avisa si falta.
 - **Registros:** `jota-gw logs` lee el journal. `--level` y `--session` filtran por nivel mínimo y por sesión o cliente, tanto con `LOG_FORMAT=json` como con texto.
-- **Desinstalar:** `jota-gw uninstall` quita la unidad y deja `<base>` intacta.
 
-> **Docker:** el contenedor corre como no-root. Antes del primer `docker compose up`
+### Actualizar
+
+Instala la nueva versión sobre la anterior y reinicia (pregunta; `--yes` para scripts). Las migraciones de la BD se aplican solas al arrancar.
+
+```bash
+V=1.x.y   # la nueva
+uv tool install --reinstall "jota-gateway @ git+https://github.com/Jota-project/jota-gateway@v$V" \
+  -c https://github.com/Jota-project/jota-gateway/releases/download/v$V/constraints.txt
+jota-gw restart
+jota-gw version           # versión de la CLI y del gateway en marcha
+```
+
+### Desinstalar
+
+```bash
+jota-gw uninstall                # quita el servicio (pregunta); no toca los datos
+uv tool uninstall jota-gateway   # quita el programa
+```
+
+Los datos (`config.env`, `data/gateway.db`) quedan en `<base>`; bórralos a mano si ya no los quieres.
+
+### Pasar de Docker a nativo
+
+`jota-gw migrate --from-docker <carpeta de compose>` copia `.env` y `data/gateway.db` de una instalación Docker a `<base>`. Procedimiento, con la ventana de parada y la vuelta atrás:
+
+1. **Misma versión a los dos lados.** Despliega la versión vN en Docker e instala la vN nativa **sin arrancarla** (`uv tool install …`, sin `jota-gw install`); `jota-gw version` lo confirma.
+2. **Ventana sin sesiones.** `docker exec jota_gateway jota-gw status` debe mostrar 0 sesiones. Haz una copia de seguridad de `data/gateway.db`.
+3. **Parar y migrar.** `docker compose stop` (sin `down`), después:
+   ```bash
+   jota-gw migrate --from-docker <carpeta de compose>
+   jota-gw install          # comprueba que el 8004 está libre
+   ```
+4. **Verificar.** `curl http://127.0.0.1:8004/ready`, una sesión de voz o texto, `/v1` con y sin clave, los mismos clientes (`jota-gw clients list`), `jota-gw doctor` y `jota-gw logs -n 20`.
+5. **Vuelta atrás.** `jota-gw stop` y `docker compose up -d`. Para volver a nativo: `docker compose stop` y `jota-gw start`. Los cambios de clientes hechos en un lado no están en la BD del otro.
+6. **Retirar el contenedor**, más tarde: `docker compose down`, sin borrar la imagen ni la carpeta.
+
+Qué hace `migrate` (`src/jota_gateway/cli/migrate.py`):
+
+- Copia la BD con la API de backup de sqlite3, comprueba `integrity_check` y que los clientes coinciden; **nunca escribe el origen** (lo abre en solo lectura). Si algo falla, no queda nada a medias.
+- Exige la misma revisión de Alembic a los dos lados; si no, se niega y dice qué desplegar.
+- Se niega si el contenedor sigue en marcha (toma un candado sobre `data/gateway.lock`), si `<base>` ya tiene `config.env` o BD (o restos `-journal`/`-wal`/`-shm`), o si el `DATABASE_URL` del `.env` no apunta a `/app/data/gateway.db`.
+- Del `.env` quita `DATABASE_URL`, `GATEWAY_UID` y `GATEWAY_GID`, y añade `LOG_FORMAT=json` si falta (la imagen lo fijaba). Una clave del `.env` que no sea un ajuste del gateway hace que se niegue ("La configuración migrada no es válida"): quítala antes y repite.
+- Crea `<base>` y `data/` con permisos 700 y `config.env` y la BD con 600. No migra los datos más allá de `data/gateway.db`: si montabas más cosas en el volumen, cópialas a mano.
+
+### Desarrollo en la misma máquina que producción
+
+Usa siempre `--home ./.dev` (o `JOTA_GATEWAY_HOME=./.dev`): sin él, la CLI y el gateway comparten `~/.jota-gateway`, o sea, la BD de producción.
+
+```bash
+uv sync --extra dev   # crea .venv desde uv.lock (o `pip install -e .[dev]`, sin versiones fijadas)
+source .venv/bin/activate
+jota-gw --home ./.dev init    # una vez
+jota-gw --home ./.dev serve   # o, con recarga: JOTA_GATEWAY_HOME=./.dev uvicorn jota_gateway.main:app --port 8004 --reload
+```
+
+### Docker (alternativa)
+
+```bash
+docker compose up
+```
+
+> El contenedor corre como no-root. Antes del primer `docker compose up`
 > define `GATEWAY_UID`/`GATEWAY_GID` en `.env` con el dueño de `./data`
 > (`echo "GATEWAY_UID=$(id -u)" >> .env && echo "GATEWAY_GID=$(id -g)" >> .env`).
 > Si `./data` viene de un despliegue anterior como root: `sudo chown -R "$(id -u):$(id -g)" data`.
-> Detalles en `docker-compose.yml`.
+> Detalles en `docker-compose.yml`. Para pasar a nativo, ver [Pasar de Docker a nativo](#pasar-de-docker-a-nativo).
 
 ---
 
@@ -341,7 +400,7 @@ src/jota_gateway/
 ├── db/
 │   ├── models.py            ClientRecord (SQLModel) — identidad y config por cliente
 │   └── database.py          get_engine() / run_migrations() / get_db_session()
-├── cli/                     jota-gw — init, serve, menú, doctor, config, status, version, clients, service (servicio systemd) y logs
+├── cli/                     jota-gw — init, serve, menú, doctor, config, status, version, clients, service (servicio systemd), logs y migrate
 └── services/
     ├── bridge.py            JotaBridge — coordinador de sesión WS
     ├── db_client.py         DbClient — lee ClientRecord de SQLite local (singleton, sin caché)
