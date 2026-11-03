@@ -160,6 +160,16 @@ jota-gw serve       # en desarrollo, con recarga: uvicorn jota_gateway.main:app 
 docker compose up
 ```
 
+### Instalación nativa
+
+Con las mismas versiones que la imagen Docker: cada release publica `constraints.txt` (exportado de `uv.lock`, sin hashes porque uv no los admite en constraints) y `-c` acepta la URL directamente.
+
+```bash
+V=1.x.y
+uv tool install "jota-gateway @ git+https://github.com/Jota-project/jota-gateway@v$V" \
+  -c https://github.com/Jota-project/jota-gateway/releases/download/v$V/constraints.txt
+```
+
 > **El gateway nunca crea una BD por su cuenta.** Si no la encuentra en `<base>/data/gateway.db`
 > (o en la `DATABASE_URL` configurada), se para y explica qué hacer: así no arranca vacío, sin
 > clientes, por haberse equivocado de directorio. La crea `jota-gw init`. La imagen Docker

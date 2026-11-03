@@ -33,6 +33,12 @@ jobs:
         with:
           node-version: 'lts/*'
 
+      # constraints.txt (prepareCmd de .releaserc.json) se exporta de uv.lock.
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+
       - name: Install Semantic Release
         run: |
           npm install -g semantic-release \

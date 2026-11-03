@@ -16,3 +16,6 @@ docs/superpowers/specs/
 # salida de pip/setuptools y ajustes locales de Claude Code
 build/
 .claude/
+
+# asset de cada release: lo genera semantic-release (.releaserc.json), no se versiona
+constraints.txt
