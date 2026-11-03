@@ -311,3 +311,44 @@ def test_uninstall_needs_confirm_without_tty(svc):
     r = run("uninstall")
     assert r.exit_code == 2 and "--yes" in r.output
     assert svc.unit.exists() and svc.calls == []
+
+
+@pytest.fixture()
+def installed(svc):
+    svc.unit.parent.mkdir(parents=True)
+    svc.unit.write_text(_unit_text(svc))
+    return svc
+
+
+def test_start_stop_restart_call_systemctl(installed, monkeypatch):
+    waits = []
+    monkeypatch.setattr(service, "_probe", lambda url: waits.append(url) or True)
+    assert run("start").exit_code == 0
+    assert run("stop").exit_code == 0
+    assert run("--yes", "--json", "restart").exit_code == 0
+    assert installed.calls == [("start", "jota-gateway.service"), ("stop", "jota-gateway.service"),
+                               ("restart", "jota-gateway.service")]
+    assert waits == ["http://127.0.0.1:8004", "http://127.0.0.1:8004"]  # start y restart, no stop
+
+
+def test_restart_needs_confirm(installed):
+    r = run("restart")
+    assert r.exit_code == 2 and "--yes" in r.output
+    assert installed.calls == []
+
+
+@pytest.mark.parametrize("verb", ["start", "stop", "restart"])
+def test_without_unit_explains_docker(svc, verb):
+    r = run("--yes", verb)
+    assert r.exit_code == 1
+    assert service.NO_SERVICE_MSG in r.output and "docker compose restart" in r.output
+    assert svc.calls == []
+
+
+def test_inside_container_explains_docker(installed, monkeypatch):
+    dockerenv = installed.tmp / ".dockerenv"
+    dockerenv.write_text("")
+    monkeypatch.setattr(service, "DOCKERENV", dockerenv)
+    r = run("--yes", "restart")
+    assert r.exit_code == 1 and service.NO_SERVICE_MSG in r.output
+    assert installed.calls == []

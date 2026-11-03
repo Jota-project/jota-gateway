@@ -236,3 +236,44 @@ def uninstall(ctx: click.Context) -> None:
         out.json({"unit": str(unit), "exe": None, "home": str(home), "state": "desinstalado"})
         return
     out.message(f"Servicio quitado. No se toca el directorio base ({home}): tus datos siguen ahí.")
+
+
+def _require_unit() -> None:
+    if DOCKERENV.exists() or not unit_path().exists():
+        raise ApiError(NO_SERVICE_MSG, 1)
+    require_systemd()
+
+
+def _verb(ctx: click.Context, verb: str, state: str, wait: bool) -> None:
+    _require_unit()
+    systemctl_or_fail(verb, UNIT_NAME)
+    if wait:
+        wait_healthy(ctx.find_root().obj["url"])
+    out = _out(ctx)
+    if out.as_json:
+        out.json({"unit": str(unit_path()), "state": state})
+    else:
+        out.message(f"Servicio {state}.")
+
+
+@click.command()
+@click.pass_context
+def start(ctx: click.Context) -> None:
+    """Arranca el servicio."""
+    _verb(ctx, "start", "arrancado", wait=True)
+
+
+@click.command()
+@click.pass_context
+def stop(ctx: click.Context) -> None:
+    """Para el servicio."""
+    _verb(ctx, "stop", "parado", wait=False)
+
+
+@click.command()
+@click.pass_context
+def restart(ctx: click.Context) -> None:
+    """Reinicia el servicio."""
+    _require_unit()  # antes de preguntar: sin servicio no hay nada que reiniciar
+    confirm(ctx, f"¿Reiniciar {UNIT_NAME}? Se cortarán las sesiones abiertas.")
+    _verb(ctx, "restart", "reiniciado", wait=True)
