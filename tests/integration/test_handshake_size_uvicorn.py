@@ -2,8 +2,8 @@
 
 El handshake se parsea (json.loads + pydantic) ANTES de autenticar, así que cualquiera puede
 pedirnos ese trabajo; un mensaje enorme cuesta ~8x su tamaño en memoria. Dos topes:
-`HANDSHAKE_MAX_BYTES` (aquí, antes de parsear) y `--ws-max-size` de uvicorn (en el CMD de
-la imagen, antes de que el mensaje llegue a la app).
+`HANDSHAKE_MAX_BYTES` (aquí, antes de parsear) y `ws_max_size` de uvicorn (en `jota-gw serve`,
+antes de que el mensaje llegue a la app).
 """
 
 import asyncio

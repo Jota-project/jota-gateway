@@ -10,6 +10,8 @@ from typing import IO
 
 from sqlalchemy.engine import make_url
 
+from jota_gateway.paths import LOCK_FILENAME
+
 try:  # fcntl no existe en Windows; el guard se omite ahí (el despliegue de referencia es Linux).
     import fcntl
 except ImportError:  # pragma: no cover
@@ -38,7 +40,6 @@ _PLACEHOLDER_TOKENS = frozenset(
     }
 )
 
-LOCK_FILENAME = "gateway.lock"
 
 
 class SingleProcessLockError(RuntimeError):

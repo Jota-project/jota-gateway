@@ -10,6 +10,7 @@ from jota_gateway.db import database
 
 def _point_at(monkeypatch, db_path) -> None:
     monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setattr(database, "CREATE_DB", True)
     database._engine = None
 
 

@@ -1,5 +1,12 @@
 """Global test fixtures shared across unit and integration tests."""
 
+import os
+import tempfile
+
+# Antes del primer import de jota_gateway: Settings lee <base>/config.env al importarse, y la
+# suite no debe leer ni crear nada en el ~/.jota-gateway real (M14c). Los subprocesos lo heredan.
+os.environ["JOTA_GATEWAY_HOME"] = tempfile.mkdtemp(prefix="jgw-tests-")
+
 import pytest
 from starlette.testclient import TestClient
 

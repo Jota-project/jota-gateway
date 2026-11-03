@@ -8,6 +8,7 @@ from jota_gateway.db import database
 
 def test_run_migrations_does_not_alter_root_logging(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite:///{tmp_path / 'log.db'}")
+    monkeypatch.setattr(database, "CREATE_DB", True)
     database._engine = None
     root = logging.getLogger()
     monkeypatch.setattr(root, "level", logging.INFO)

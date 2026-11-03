@@ -3,12 +3,25 @@ from typing import Literal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from jota_gateway import paths
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env")
+    # Nunca el .env del directorio actual: <base>/config.env (o --home / JOTA_GATEWAY_HOME).
+    model_config = SettingsConfigDict(env_file=paths.config_file())
 
-    # Base de datos interna
-    DATABASE_URL: str = "sqlite:///data/gateway.db"
+    # Base de datos interna. Una ruta SQLite relativa cuelga del directorio base, también el
+    # default: el engine, Alembic, el candado y `jota-gw doctor` ven la misma ruta absoluta.
+    DATABASE_URL: str = Field(default="sqlite:///data/gateway.db", validate_default=True)
+
+    @field_validator("DATABASE_URL")
+    @classmethod
+    def _absolute_database_url(cls, v: str) -> str:
+        return paths.absolute_database_url(v)
+
+    # Host de escucha de `jota-gw serve` (puerto 8004). Detrás de un proxy en el mismo host,
+    # 127.0.0.1. Vacío = 0.0.0.0, como el `${GATEWAY_HOST:-0.0.0.0}` del CMD anterior.
+    GATEWAY_HOST: str = "0.0.0.0"
 
     # Un solo proceso por base de datos (M6f, #218): flock sobre <dir de la BD>/gateway.lock.
     # Estado en memoria (sesiones, cachés, registro de bridges) no se comparte entre workers.

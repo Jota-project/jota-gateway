@@ -9,6 +9,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from jota_gateway import paths
 from jota_gateway.api.admin_routes import router as admin_router
 from jota_gateway.api.health_routes import router as health_router
 from jota_gateway.api.openai_routes import router as openai_router
@@ -51,6 +52,14 @@ async def lifespan(app: FastAPI):
     # ClientRegistry) es por proceso, así que varios workers sobre la misma BD no están
     # soportados. El lock se toma antes que nada y se suelta al final del apagado; si el
     # arranque falla a medias, también (finally). El SO lo libera si el proceso muere.
+    # Regla 5 de las rutas (M14c): dónde está cada cosa, antes de tocar nada. De la URL de una BD
+    # que no es un fichero solo sale el esquema (podría llevar contraseña).
+    config = paths.config_file()
+    logger.info(
+        "Rutas: base %s · configuración %s%s · BD %s", paths.home(), config,
+        "" if config.is_file() else " (no existe)",
+        paths.sqlite_file(settings.DATABASE_URL) or settings.DATABASE_URL.split(":", 1)[0],
+    )
     lock_handle = None
     if settings.SINGLE_PROCESS_LOCK:
         lock_handle = acquire_single_process_lock(settings.DATABASE_URL)

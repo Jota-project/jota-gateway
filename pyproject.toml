@@ -40,6 +40,10 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Alembic va dentro del paquete: sin esto, el wheel no lleva su ini ni la plantilla.
+[tool.setuptools.package-data]
+jota_gateway = ["alembic.ini", "migrations/script.py.mako"]
+
 # La versión real es el tag de semantic-release, que la escribe en _version.py (.releaserc.json).
 [tool.setuptools.dynamic]
 version = {attr = "jota_gateway._version.__version__"}
@@ -49,6 +53,8 @@ version = {attr = "jota_gateway._version.__version__"}
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Migraciones generadas por Alembic: históricas, no se reescriben por estilo.
+extend-exclude = ["src/jota_gateway/migrations/versions"]
 
 [tool.ruff.lint]
 # BLE001/S110/S112/B904/RUF006/ASYNC/TID251: política de errores y cancelación (#221,
@@ -86,4 +92,5 @@ ignore = [
 [tool.mypy]
 python_version = "3.12"
 files = ["src"]
+exclude = ["src/jota_gateway/migrations/versions/"]  # generadas por Alembic, como en ruff
 ignore_missing_imports = true

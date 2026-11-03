@@ -15,8 +15,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install dependencies
-        # shortcut: editable porque alembic.ini y migrations/ siguen fuera del paquete; sin -e en el PR 2 de M14c, cuando entren.
-        run: pip install -e .[dev]
+        run: pip install .[dev]
 
       - name: Verify required tokens are present in runner environment
         run: |

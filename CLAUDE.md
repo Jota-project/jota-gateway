@@ -12,8 +12,13 @@ Roadmap, specs, plans, decisions and audits live **only in Obsidian** (`Producto
 ## Commands
 
 ```bash
-# Dev server
-uvicorn jota_gateway.main:app --host 0.0.0.0 --port 8004 --reload
+# Dev server. Config and DB live in <base> (JOTA_GATEWAY_HOME or ~/.jota-gateway), never the cwd;
+# the gateway refuses to start without a DB, so run `jota-gw init` once per base.
+jota-gw init
+uvicorn jota_gateway.main:app --port 8004 --reload    # or `jota-gw serve` (production settings)
+
+# New migration (Alembic lives inside the package)
+alembic -c src/jota_gateway/alembic.ini revision --autogenerate -m "…"
 
 # Use the repo venv (.venv, `pip install -e .[dev]`), never the system python
 PYTHONPATH=. pytest                                   # pytest.ini adds -m "not e2e_real and not live"
@@ -26,33 +31,35 @@ docker compose up
 
 # Admin CLI (talks to /admin, never writes the DB; doctor/config also work with the gateway stopped)
 jota-gw                                               # interactive menu on a TTY, help otherwise
+jota-gw [--home DIR] init | serve [--create-db]      # new install; start the gateway
 jota-gw doctor | config show|get|validate | status | version
 jota-gw clients list | show <ref> | add --name … | edit <ref> | enable|disable|rotate-key|remove <ref>
-docker exec jota_gateway python -m jota_gateway.cli …  # inside the container, until 14c ships the binary
+docker exec jota_gateway jota-gw …                    # inside the container
 ```
 
 CI (`.github/workflows/test.yml`) runs ruff, mypy and pytest over `tests/unit`, `tests/contract` and `tests/integration`: run all three locally before opening a PR. `tests/e2e` (marker `e2e_real`, real OpenClaw) and `tests/live` (marker `live`, real ElevenLabs, `JGW_LIVE=1`) only run on demand; see the README.
 
 ## What this is
 
-A BFF: the single entry point for Jota-Screen, jota-voice (Mac and Android/Termux), the iPhone app and Home Assistant (an ESP32 client is planned, not built). Client identity and per-client config live in a local SQLite DB (`data/gateway.db`, Alembic migrations applied at startup). One `JotaBridge` per WebSocket session talks to OpenClaw (orchestrator, the only fatal dependency), an STT provider and a TTS provider. One process per DB: `SINGLE_PROCESS_LOCK` takes a `flock` on `gateway.lock` next to the DB; multi-worker is not supported.
+A BFF: the single entry point for Jota-Screen, jota-voice (Mac and Android/Termux), the iPhone app and Home Assistant (an ESP32 client is planned, not built). Client identity and per-client config live in a local SQLite DB (`<base>/data/gateway.db`, Alembic migrations applied at startup). One `JotaBridge` per WebSocket session talks to OpenClaw (orchestrator, the only fatal dependency), an STT provider and a TTS provider. One process per DB: `SINGLE_PROCESS_LOCK` takes a `flock` on `gateway.lock` next to the DB; multi-worker is not supported.
 
 ## Module map (`src/jota_gateway/`)
 
 | Path | Role |
 |---|---|
-| `main.py` | App + lifespan: lock and startup checks, migrations, builds OpenClaw and speech providers into `app.state`, wires state-change broadcasts, ordered shutdown under `Teardown` (unhook broadcasts → close speech providers → OpenClaw → dispose DB engine; uvicorn has already closed every session with 1012) |
+| `paths.py` | Stdlib only, shared by gateway and CLI: `home()` (`JOTA_GATEWAY_HOME`/`--home` or `~/.jota-gateway`), `config_file()`, `absolute_database_url()`/`sqlite_file()` (a relative SQLite path hangs from the base, URL-encoded), `LOCK_FILENAME` |
+| `main.py` | App + lifespan: logs the resolved paths, lock and startup checks, migrations, builds OpenClaw and speech providers into `app.state`, wires state-change broadcasts, ordered shutdown under `Teardown` (unhook broadcasts → close speech providers → OpenClaw → dispose DB engine; uvicorn has already closed every session with 1012) |
 | `api/routes.py` | `/ws/stream`: handshake (size, timeout, auth, agent policy) → `QueuedSender` → `PipelineTracker` → `JotaBridge` → health check → `ready` → `bridge.run()` |
 | `api/admin_routes.py` | `/admin/*` (`X-Admin-Token` via `api/deps.py`): client CRUD, sessions, service status, `GET /admin/speech`, `/admin/state` (+ SSE stream) |
 | `api/openai_routes.py` | `/v1/models`, `/v1/chat/completions` (Home Assistant); auth in `resolve_ha_caller` + `core/network.py` |
 | `api/health_routes.py` | `/healthz` (liveness), `/ready` (503 only if OpenClaw is down) |
-| `core/config.py` | `Settings` (pydantic-settings, `.env`) |
+| `core/config.py` | `Settings` (pydantic-settings, env → `<base>/config.env`); `DATABASE_URL` made absolute against the base, default included |
 | `core/agent_policy.py` | `resolve_agent()`: handshake/`model` → client `default_agent` → OpenClaw default → `"main"`, then `allowed_agents` and roster checks |
 | `core/network.py` | `resolve_client_ip()`; `X-Real-IP` trusted only from `TRUSTED_PROXIES` |
 | `core/logging.py` | `fingerprint_key()`, text/JSON formatters |
 | `core/transport.py` | Captures the uvicorn transport so a slow client can be aborted (`drop_slow_client`) |
 | `core/startup_checks.py` | Single-process lock, token/speech settings checks |
-| `db/` | `ClientRecord` (`models.py`), engine and `run_migrations()` (`database.py`); Alembic scripts in the top-level `migrations/` |
+| `db/` | `ClientRecord` (`models.py`), engine and `run_migrations()` (`database.py`, raises `DatabaseMissing` unless the DB exists or `CREATE_DB` is set by `init`/`serve --create-db`); Alembic in `alembic.ini` + `migrations/` inside the package (`script_location = jota_gateway:migrations`) |
 | `models/` | Handshake/`ClientConfig` (`schemas.py`), admin input validation (`admin_schemas.py`) |
 | `services/bridge.py` | `JotaBridge`: input loop, turns, barge-in, push turns, silence/idle watchdogs, session revalidation, `close_all()` |
 | `services/outbound.py` | `QueuedSender`: one ordered outbound queue per session; slow-client cut-off (`CLIENT_SEND_TIMEOUT_S`) |
@@ -62,7 +69,7 @@ A BFF: the single entry point for Jota-Screen, jota-voice (Mac and Android/Termu
 | `services/speech/` | STT/TTS ports (`ports.py`), `factory.py`, `jota.py` (jota-transcriber/jota-speaker), `elevenlabs/`; `SpeechProviders` holder in `app.state.speech` |
 | `services/reconnection.py` | Shared `ConnectionState`, `ServiceHealth`, backoff loop, `describe_error()` |
 | `services/pipeline_tracker.py`, `session_registry.py`, `stats.py` | Per-session events/latencies, `/admin/sessions`, in-process counters |
-| `cli/` | `jota-gw` admin CLI over `/admin` (click; `rich`, `questionary`, `pydantic` and every command imported lazily, `--help` < 150 ms guarded by `tests/unit/test_cli_startup.py`). Reads config from env → `<JOTA_GATEWAY_HOME or ~/.jota-gateway>/config.env` → defaults, never the cwd `.env`; `doctor` opens the DB read-only and never takes the lock |
+| `cli/` | `jota-gw` admin CLI over `/admin` (click; `rich`, `questionary`, `pydantic` and every command imported lazily, `--help` < 150 ms guarded by `tests/unit/test_cli_startup.py`). Reads config from env → `<JOTA_GATEWAY_HOME or ~/.jota-gateway>/config.env` → defaults, never the cwd `.env`; `doctor` opens the DB read-only and never takes the lock. `serve` owns the uvicorn settings (port 8004, no proxy headers, 1 MiB WS cap, 35 s graceful shutdown) and passes the app as an import string so uvicorn configures its loggers first (`core/logging.py` relies on that order) |
 
 Speech providers are chosen at startup with `STT_PROVIDER`/`TTS_PROVIDER` (`jota` or `elevenlabs`); changing them needs a restart (`GET /admin/speech` only reads). Every remaining ElevenLabs tunable is a module constant in `services/speech/elevenlabs/`.
 
@@ -79,13 +86,14 @@ Breaking any of these is a bug, whatever the change is for.
 - **Only the orchestrator is fatal** (health check before `ready` → 1011). STT/TTS failures degrade the session and are reported with `status`; they never close it.
 - **No error is lost, no foreign cancellation is swallowed** (#221). Catch only at boundaries (service wrappers, session, lifespan); everything else propagates. A broad `except` logs the type (`describe_error`) and carries `# noqa: BLE001 — <why it is a boundary>`; `except: pass` and `contextlib.suppress` are lint errors. Teardown goes through `services/teardown.py` (`Teardown`): it finishes every step and re-raises a foreign `CancelledError` at the end.
 - **OpenClaw drift:** when you discover a protocol change, inconsistency or undocumented event shape, update `docs/openclaw-protocol.md` (dated, server version if known, "Breaking change — vX.Y.Z" style). That file is the source of truth for the protocol; this one only says how the code reacts.
+- **Nothing resolves against the working directory, and the gateway never creates a DB silently** (M14c). Paths come from `paths.py`; only `jota-gw init` and `jota-gw serve --create-db` (the Docker image) may create `gateway.db`.
 - `.env.sample` must list every `Settings` field with its default; `/admin/*` input is validated in `admin_schemas.py` (new client type → extend `ClientType`).
 
 ## Testing notes
 
 - `tests/unit` (bridge and services with light fakes), `tests/contract` (the same battery against every speech adapter, fakes in `tests/fakes/`), `tests/integration` (`TestClient`, fake upstreams; a few use real uvicorn).
 - `tests/integration/conftest.py`: `db_engine` (autouse) puts a file-backed SQLite in `tmp_path` into `jota_gateway.db.database._engine`; `_skip_lifespan_migrations` and `_noop_dispose_engine` (autouse) keep the lifespan off that DB; `seed_client` (not autouse — admin tests need an empty DB) inserts `VALID_KEY`/`CLIENT_ID`; `client` is a full `TestClient` with a mock orchestrator.
-- `tests/conftest.py` disables the single-process lock, resets `gateway_stats` and forces `ELEVENLABS_API_KEY=None` for every test.
+- `tests/conftest.py` points `JOTA_GATEWAY_HOME` at a temp dir **before** the first `jota_gateway` import (so the suite never reads or writes the real `~/.jota-gateway`; subprocesses inherit it), disables the single-process lock, resets `gateway_stats` and forces `ELEVENLABS_API_KEY=None` for every test.
 - If imports of `src`/`tests` fail oddly, check the Python environment for stray `.pth` files or a foreign `tests` package before assuming the code is broken.
 
 ## Sincronización obligatoria con Obsidian (ciclo de vida de issues y PRs)

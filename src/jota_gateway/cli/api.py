@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 
 import click
 
-from jota_gateway.cli import paths
+from jota_gateway import paths
 
 TIMEOUT_S = 5.0
 

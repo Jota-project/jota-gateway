@@ -5,7 +5,6 @@ defecto). Lo que cambia es qué cabeceras manda. Un proxy que NO fija `X-Real-IP
 convertir a todo Internet en "loopback confiable": sin `X-Real-IP` válido se exige Bearer.
 """
 
-import re
 import threading
 import time
 from pathlib import Path
@@ -86,7 +85,7 @@ def test_proxy_vouching_for_loopback_client_is_trusted(live_url):
 
 def test_x_forwarded_for_spoof_of_trusted_network_fails_closed(monkeypatch):
     """Con `--proxy-headers` (default de uvicorn) un proxy que reenvía el XFF del cliente
-    deja que el cliente elija el peer; el CMD de la imagen usa `--no-proxy-headers`."""
+    deja que el cliente elija el peer; `jota-gw serve` arranca con `proxy_headers=False`."""
     monkeypatch.setattr(settings, "TRUSTED_NETWORKS", "192.168.1.0/24")
     monkeypatch.setattr(settings, "TRUSTED_PROXIES", "127.0.0.1,::1")
     server, thread = _start(proxy_headers=False)
@@ -101,9 +100,3 @@ def test_x_forwarded_for_spoof_of_trusted_network_fails_closed(monkeypatch):
     finally:
         server.should_exit = True
         thread.join(timeout=10)
-
-
-def test_dockerfile_disables_proxy_headers_and_caps_ws_size():
-    cmd = (ROOT / "Dockerfile").read_text(encoding="utf-8").rsplit("CMD", 1)[1]
-    assert "--no-proxy-headers" in cmd
-    assert re.search(r"--ws-max-size\s+\d+", cmd)

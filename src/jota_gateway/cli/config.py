@@ -12,13 +12,12 @@ import difflib
 import json
 import os
 import re
-import sys
-import tempfile
 from typing import Any
 
 import click
 
-from jota_gateway.cli import api, paths
+from jota_gateway import paths
+from jota_gateway.cli import api
 from jota_gateway.cli.output import Out
 
 MASK_SET = "•••• (definido)"
@@ -28,22 +27,13 @@ ENVIRON = "entorno"
 
 
 def _settings_class() -> Any:
-    """`Settings`, sin que el import lea el `.env` del directorio actual.
+    """`Settings`, importado solo al usarse (`--help` no carga pydantic).
 
-    `jota_gateway.core.config` construye un `Settings()` global al importarse (env_file=".env"), así que
-    se importa desde una carpeta vacía. Una variable de entorno inválida rompe ese global: se
-    devuelve como error de validación, igual que lo vería el gateway al arrancar.
+    `jota_gateway.core.config` construye un `Settings()` global al importarse: una variable de
+    entorno inválida lo rompe y sale como error de validación, igual que al arrancar el gateway.
     """
-    if "jota_gateway.core.config" in sys.modules:
-        return sys.modules["jota_gateway.core.config"].Settings
-    # shortcut: se va con 14c, cuando Settings lea de <base>/config.env.
-    cwd = os.getcwd()
-    with tempfile.TemporaryDirectory() as empty:
-        os.chdir(empty)
-        try:
-            from jota_gateway.core.config import Settings
-        finally:
-            os.chdir(cwd)
+    from jota_gateway.core.config import Settings
+
     return Settings
 
 
