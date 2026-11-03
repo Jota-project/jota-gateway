@@ -89,7 +89,7 @@ jota-gw config get <AJUSTE> | validate
 jota-gw config set <AJUSTE> [VALOR|-]   # escribe en config.env; unset <AJUSTE> lo quita
 jota-gw install [--exe RUTA]   # servicio de usuario de systemd: lo instala y lo arranca
 jota-gw start|stop|restart     # restart pregunta; --yes para scripts
-jota-gw uninstall              # quita el servicio; no toca los datos
+jota-gw uninstall              # quita el servicio (pregunta); no toca los datos
 jota-gw logs [-f] [-n N] [--level NIVEL] [--session ID]
 jota-gw status                 # gateway, versión, orquestador, STT, TTS y sesiones
 jota-gw version
@@ -184,7 +184,7 @@ uv tool install "jota-gateway @ git+https://github.com/Jota-project/jota-gateway
 
 ### Servicio (systemd de usuario)
 
-Solo en Linux con systemd; en Docker usa `docker compose`. `jota-gw install` crea `~/.config/systemd/user/jota-gateway.service` y lo arranca. Exige una config válida, la BD ya creada (`jota-gw init` o `migrate`; `install` nunca la crea) y el puerto 8004 libre (para el contenedor antes). Si el servicio ya es el nuestro y está activo, reinstala, y si la unidad cambia, lo reinicia.
+Solo en Linux con systemd; en Docker usa `docker compose`. `jota-gw install` crea `~/.config/systemd/user/jota-gateway.service` y lo arranca. Exige una config válida, la BD ya creada (`jota-gw init`; `install` nunca la crea) y el puerto 8004 libre (para el contenedor antes). Si el servicio ya es el nuestro y está activo, reinstala, y si la unidad cambia, lo reinicia. `uninstall` y sobrescribir una unidad distinta con `install` piden confirmación (para scripts, `jota-gw --yes …`).
 
 - **Ejecutable:** usa el `jota-gw` del PATH. Rechaza uno dentro de un clon o de una instalación editable, porque la unidad se rompería al moverlo: instala con `uv tool install` o pasa `--exe RUTA`.
 - **Linger:** sin `loginctl enable-linger $USER` el servicio se para al cerrar tu sesión; `install` avisa si falta.
