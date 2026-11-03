@@ -20,7 +20,8 @@ uvicorn jota_gateway.main:app --port 8004 --reload    # or `jota-gw serve` (prod
 # New migration (Alembic lives inside the package)
 alembic -c src/jota_gateway/alembic.ini revision --autogenerate -m "…"
 
-# Use the repo venv (.venv, `pip install -e .[dev]`), never the system python
+# Use the repo venv (.venv, `uv sync --extra dev`: exact versions from uv.lock), never the system python
+# Changed a dependency in pyproject.toml? Run `uv lock` and commit uv.lock too (CI uses `uv sync --locked`)
 PYTHONPATH=. pytest                                   # pytest.ini adds -m "not e2e_real and not live"
 PYTHONPATH=. pytest tests/integration/test_admin_clients.py
 PYTHONPATH=. pytest -k "test_create_client_minimal"
@@ -37,7 +38,7 @@ jota-gw clients list | show <ref> | add --name … | edit <ref> | enable|disable
 docker exec jota_gateway jota-gw …                    # inside the container
 ```
 
-CI (`.github/workflows/test.yml`) runs ruff, mypy and pytest over `tests/unit`, `tests/contract` and `tests/integration`: run all three locally before opening a PR. `tests/e2e` (marker `e2e_real`, real OpenClaw) and `tests/live` (marker `live`, real ElevenLabs, `JGW_LIVE=1`) only run on demand; see the README.
+CI (`.github/workflows/test.yml`, installs from `uv.lock`) runs ruff, mypy and pytest over `tests/unit`, `tests/contract` and `tests/integration`: run all three locally before opening a PR. `tests/e2e` (marker `e2e_real`, real OpenClaw) and `tests/live` (marker `live`, real ElevenLabs, `JGW_LIVE=1`) only run on demand; see the README.
 
 ## What this is
 

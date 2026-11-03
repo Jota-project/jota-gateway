@@ -3,13 +3,15 @@ FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6
 
 WORKDIR /app
 
-# pyproject.toml es la única fuente de dependencias: extraemos solo
-# [project].dependencies (sin el extra "dev": nada de pytest/ruff/mypy en la imagen)
-# y las instalamos antes de copiar el código para aprovechar la caché de capas.
-COPY pyproject.toml .
-RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml','rb'))['project']['dependencies']))" > /tmp/requirements.txt \
-    && pip install --no-cache-dir -r /tmp/requirements.txt \
-    && rm /tmp/requirements.txt
+# uv.lock es la única fuente de versiones. uv solo exporta el lock a un requirements con hashes
+# (sin el proyecto ni el extra "dev": nada de pytest/ruff/mypy en la imagen) y pip lo instala
+# con --require-hashes. Se hace antes de copiar el código para aprovechar la caché de capas.
+# La versión y el digest de uv los mantiene Dependabot (ecosistema "docker").
+COPY --from=ghcr.io/astral-sh/uv:0.13.7@sha256:96f40d3904aad8d0bd010539001d36c8e2188b981e1334471a90c4a1d93bb490 /uv /usr/local/bin/uv
+COPY pyproject.toml uv.lock ./
+RUN uv export --frozen --no-dev --no-emit-project -o /tmp/req.txt \
+    && pip install --no-cache-dir --require-hashes -r /tmp/req.txt \
+    && rm /tmp/req.txt
 
 # El paquete, igual que en la instalación nativa: trae Alembic y sus migraciones y el ejecutable
 # jota-gw. Se construye en /tmp para que /app solo tenga los datos. README.md lo pide pyproject.

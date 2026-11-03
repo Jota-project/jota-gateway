@@ -152,7 +152,8 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la referencia comp
 ## Quick start
 
 ```bash
-pip install -e .[dev]
+uv sync --extra dev   # crea .venv desde uv.lock (o `pip install -e .[dev]`, sin versiones fijadas)
+source .venv/bin/activate
 jota-gw init        # una vez: crea ~/.jota-gateway (o JOTA_GATEWAY_HOME), config.env y la BD
 jota-gw serve       # en desarrollo, con recarga: uvicorn jota_gateway.main:app --port 8004 --reload
 # o con Docker:
@@ -219,6 +220,17 @@ El STT y el TTS pasan por una capa de proveedores (`src/jota_gateway/services/sp
 ---
 
 ## Desarrollo y tests
+
+### Dependencias
+
+`pyproject.toml` declara los rangos y **`uv.lock` fija las versiones exactas**, con hashes: el CI (`uv sync --locked`), la imagen Docker (`uv export` + `pip install --require-hashes`) y Dependabot (ecosistema `uv`) parten de él. Al cambiar una dependencia en `pyproject.toml`, ejecuta `uv lock` y commitea los dos ficheros; el CI falla si `uv.lock` no corresponde a `pyproject.toml`.
+
+```bash
+uv sync --extra dev    # entorno de desarrollo desde uv.lock
+uv lock --upgrade      # sube todo dentro de los rangos (Dependabot lo hace por paquete)
+```
+
+### Tests
 
 ```bash
 # Tests (pytest.ini excluye por defecto los marcadores e2e_real y live)
