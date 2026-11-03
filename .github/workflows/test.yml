@@ -178,10 +178,11 @@ jobs:
 
   # M14d: la instalación nativa como servicio de usuario de systemd, de punta a punta en el
   # runner de Ubuntu: init, install, healthz, reinicio de la sesión de usuario (el «reboot»),
-  # logs, config set y uninstall. Todas las esperas tienen tiempo límite.
+  # logs, config set y uninstall; después «Docker → nativo» (migrate) y «Actualizar» sobre una
+  # base aparte. Todas las esperas tienen tiempo límite.
   service-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       # journalctl sin TTY ya no pagina; esto lo garantiza para `jota-gw logs` (execvp).
       SYSTEMD_PAGER: ""
@@ -302,6 +303,120 @@ jobs:
           [ ! -e ~/.config/systemd/user/jota-gateway.service ]
           [ -f ~/.jota-gateway/config.env ]
           [ -f ~/.jota-gateway/data/gateway.db ]
+          if curl -fs --max-time 3 http://127.0.0.1:8004/healthz; then echo "el servicio sigue respondiendo"; exit 1; fi
+
+      # Docker falso: el directorio que dejaría compose (.env + data/gateway.db). La BD sale de
+      # `init` en otra base; el cliente se crea con un gateway real sobre esa base, antes de
+      # instalar nada nativo (serve usa el 8004 fijo y el servicio nativo ya está desinstalado).
+      - name: Docker falso con un cliente (BD en el head del paquete)
+        run: |
+          . "$RUNNER_TEMP/h.sh"
+          D="$RUNNER_TEMP/docker-fake"
+          echo "DOCKER_DIR=$D" >> "$GITHUB_ENV"
+          echo "NATIVE_HOME=$RUNNER_TEMP/native" >> "$GITHUB_ENV"
+          jota-gw --home "$D" init
+          jota-gw --home "$D" serve > "$RUNNER_TEMP/docker-serve.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          wait_health 60
+          jota-gw --home "$D" --json clients add --name smoke-docker > /dev/null  # sin mostrar la clave
+          jota-gw --home "$D" --json clients list > "$RUNNER_TEMP/src-clients.json"
+          grep -q smoke-docker "$RUNNER_TEMP/src-clients.json"
+          kill "$pid"
+          wait "$pid" || true  # SIGTERM: salida 0 o 143
+          if curl -fs --max-time 2 http://127.0.0.1:8004/healthz; then echo "el gateway de origen sigue vivo"; exit 1; fi
+          # .env a mano, como el de compose: comentario, export, DATABASE_URL relativa y UID/GID.
+          token=$(sed -n 's/^ADMIN_TOKEN=//p' "$D/config.env")
+          [ -n "$token" ]
+          {
+            echo "# .env de compose (falso)"
+            echo "ADMIN_TOKEN=$token"
+            echo "GATEWAY_UID=$(id -u)"
+            echo "GATEWAY_GID=$(id -g)"
+            echo "DATABASE_URL=sqlite:///data/gateway.db"
+            echo "export TRUST_LOOPBACK=true"
+          } > "$D/.env"
+          rm "$D/config.env"
+          ls -l "$D" "$D/data"
+          sha256sum "$D/.env" "$D/data/gateway.db" > "$RUNNER_TEMP/src.sha"
+
+      # El candado lo toma un `flock -x` (el contenedor en marcha): migrate debe negarse y no
+      # dejar nada en la base nativa.
+      - name: migrate se niega con el candado de Docker tomado
+        run: |
+          lock="$DOCKER_DIR/data/gateway.lock"
+          [ -e "$lock" ]
+          flock --no-fork -x "$lock" sleep 300 &
+          holder=$!
+          trap 'kill "$holder" 2>/dev/null || true' EXIT
+          for i in $(seq 1 50); do  # espera a que el candado esté tomado de verdad
+            if flock -n -s "$lock" true; then sleep 0.2; else break; fi
+          done
+          if flock -n -s "$lock" true; then echo "el candado no se ha tomado"; exit 1; fi
+          rc=0
+          jota-gw --home "$NATIVE_HOME" migrate --from-docker "$DOCKER_DIR" > "$RUNNER_TEMP/mig.txt" 2>&1 || rc=$?
+          cat "$RUNNER_TEMP/mig.txt"
+          [ "$rc" -ne 0 ]
+          grep -q "sigue en marcha" "$RUNNER_TEMP/mig.txt"  # falla por el candado y no por otra cosa
+          [ ! -e "$NATIVE_HOME/config.env" ]
+          [ ! -e "$NATIVE_HOME/data/gateway.db" ]
+          kill "$holder"
+          wait "$holder" || true
+
+      - name: jota-gw migrate --from-docker
+        run: |
+          jota-gw --home "$NATIVE_HOME" migrate --from-docker "$DOCKER_DIR"
+          ls -l "$NATIVE_HOME" "$NATIVE_HOME/data"
+          [ "$(stat -c %a "$NATIVE_HOME/config.env")" = 600 ]
+          [ "$(stat -c %a "$NATIVE_HOME/data/gateway.db")" = 600 ]
+          if grep -Eiq '^[[:space:]]*(export[[:space:]]+)?(DATABASE_URL|GATEWAY_UID|GATEWAY_GID)[[:space:]]*=' "$NATIVE_HOME/config.env"; then
+            echo "config.env conserva variables de compose"; exit 1
+          fi
+          grep -qx 'LOG_FORMAT=json' "$NATIVE_HOME/config.env"
+          grep -q '^ADMIN_TOKEN=' "$NATIVE_HOME/config.env"
+          grep -q '^# \.env de compose' "$NATIVE_HOME/config.env"  # el resto del fichero, tal cual
+          grep -q '^export TRUST_LOOPBACK=true' "$NATIVE_HOME/config.env"
+          sha256sum -c "$RUNNER_TEMP/src.sha"  # el origen, intacto
+
+      - name: install nativo tras migrate y el cliente sigue
+        run: |
+          . "$RUNNER_TEMP/h.sh"
+          jota-gw --home "$NATIVE_HOME" --yes install
+          wait_health 60
+          curl -fs --max-time 2 http://127.0.0.1:8004/healthz; echo
+          [ "$(systemctl --user is-active jota-gateway.service)" = active ]
+          # El token sale del config.env migrado: si no se hubiera copiado, /admin daría 401.
+          jota-gw --home "$NATIVE_HOME" --json clients list > "$RUNNER_TEMP/clients.json"
+          python3 -c "
+          import json, sys
+          rows = json.load(open(sys.argv[1]))
+          sys.exit(0 if any(r['name'] == 'smoke-docker' for r in rows) else 'el cliente migrado no está')
+          " "$RUNNER_TEMP/clients.json"
+
+      # README «Actualizar»: reinstalar el tool sobre el anterior (misma rama: se prueba el
+      # procedimiento) y reiniciar. Las migraciones se aplican solas al arrancar.
+      - name: Actualizar (uv tool install --reinstall y restart)
+        run: |
+          . "$RUNNER_TEMP/h.sh"
+          old_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
+          [ -n "$old_inv" ]
+          uv tool install --reinstall . -c /tmp/c.txt
+          [ "$(which jota-gw)" = "$HOME/.local/bin/jota-gw" ]
+          jota-gw --home "$NATIVE_HOME" --yes restart
+          wait_health 60
+          new_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
+          [ -n "$new_inv" ]
+          [ "$new_inv" != "$old_inv" ]  # hubo restart
+          [ "$(systemctl --user is-active jota-gateway.service)" = active ]
+          jota-gw --home "$NATIVE_HOME" --json clients list > "$RUNNER_TEMP/clients.json"
+          grep -q smoke-docker "$RUNNER_TEMP/clients.json"  # los datos sobreviven a la actualización
+
+      - name: uninstall final (los datos migrados se quedan)
+        run: |
+          jota-gw --home "$NATIVE_HOME" --yes uninstall
+          [ ! -e ~/.config/systemd/user/jota-gateway.service ]
+          [ -f "$NATIVE_HOME/config.env" ]
+          [ -f "$NATIVE_HOME/data/gateway.db" ]
           if curl -fs --max-time 3 http://127.0.0.1:8004/healthz; then echo "el servicio sigue respondiendo"; exit 1; fi
 
       - name: Diagnóstico del servicio
