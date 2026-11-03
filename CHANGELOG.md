@@ -1,3 +1,10 @@
+# [1.26.0](https://github.com/Jota-project/jota-gateway/compare/v1.25.0...v1.26.0) (2026-11-03)
+
+
+### Features
+
+* **cli:** servicio de usuario de systemd, logs y config set (M14d) ([#314](https://github.com/Jota-project/jota-gateway/issues/314)) ([e8d0474](https://github.com/Jota-project/jota-gateway/commit/e8d0474084a41331825860f86f5fc5261a6d0216)), closes [#296](https://github.com/Jota-project/jota-gateway/issues/296)
+
 # [1.25.0](https://github.com/Jota-project/jota-gateway/compare/v1.24.0...v1.25.0) (2026-11-03)
 
 
