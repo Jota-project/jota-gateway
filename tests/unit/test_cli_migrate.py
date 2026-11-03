@@ -313,3 +313,18 @@ def test_umask_restored(env):
         assert os.umask(old) == 0o022
     finally:
         os.umask(old)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root lee cualquier fichero")
+def test_unreadable_lock_is_a_clean_error(env):
+    docker, native = env
+    lock = docker / "data" / "gateway.lock"
+    lock.write_text("")
+    lock.chmod(0)
+    try:
+        r = run(docker)
+    finally:
+        lock.chmod(0o600)
+    assert r.exit_code == 1 and isinstance(r.exception, SystemExit)
+    assert "PermissionError" in r.output and "gateway.lock" in r.output
+    assert not native.exists()

@@ -139,7 +139,11 @@ def _lock_source(lock: Path) -> int | None:
     """Candado compartido sobre el gateway.lock de Docker: si falla, el gateway sigue en marcha."""
     if not lock.exists():
         return None
-    fd = os.open(lock, os.O_RDONLY)
+    try:
+        fd = os.open(lock, os.O_RDONLY)
+    except OSError as e:
+        raise api.ApiError(f"No se puede leer {lock} ({type(e).__name__}): comprueba su dueño y sus "
+                           "permisos, o para el contenedor (`docker compose stop`) y repite.") from None
     try:
         fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
     except OSError:
