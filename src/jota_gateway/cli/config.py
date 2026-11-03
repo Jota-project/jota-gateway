@@ -252,8 +252,15 @@ def _edit(text: str, key: str, value: str | None) -> str:
     return "".join(out)
 
 
-def _fails(path: Path) -> tuple[set[str], list[str]]:
-    settings, errors, _ = load(path)
+def _fails(path: Path, key: str) -> tuple[set[str], list[str]]:
+    # Sin la variable de NAME en el entorno: el servicio de systemd no hereda esta shell, así
+    # que lo que vale es lo que dice el fichero.
+    names = [n for n in os.environ if n.upper() == key]
+    saved = {n: os.environ.pop(n) for n in names}
+    try:
+        settings, errors, _ = load(path)
+    finally:
+        os.environ.update(saved)
     if errors:
         return set(), errors
     return {c["check"] for c in validation_checks(settings) if c["level"] == "fail"}, []
@@ -288,8 +295,8 @@ def _apply(out: Out, key: str, value: str | None) -> bool:
         if value is not None and dotenv_values(tmp).get(key) != value:
             raise api.ApiError(f"El valor de {key} no se puede guardar en config.env tal cual "
                                "(p. ej. contiene `${...}` o saltos de línea).", 1)
-        before, _ = _fails(path)
-        after, errors = _fails(tmp)
+        before, _ = _fails(path, key)
+        after, errors = _fails(tmp, key)
         if errors:
             raise api.ApiError("Con ese cambio la configuración no sería válida: "
                                + "; ".join(errors) + ". No se ha escrito nada.", 1)
@@ -303,7 +310,7 @@ def _apply(out: Out, key: str, value: str | None) -> bool:
 
 
 def _offer_restart(ctx: click.Context, out: Out) -> bool:
-    """Ofrece reiniciar si la unidad existe y está activa; nunca falla ni aborta."""
+    """Reinicia si la unidad existe y está activa y se acepta; True si reinició. Nunca aborta."""
     from jota_gateway.cli import output, service
 
     try:
@@ -314,33 +321,35 @@ def _offer_restart(ctx: click.Context, out: Out) -> bool:
             "is-active", "--quiet", service.UNIT_NAME, check=False).returncode != 0:
         return False
     # No `output.confirm`: sale con 2 al decir que no y aquí el cambio ya está hecho.
-    if ctx.find_root().obj["yes"] or (output._stdin_isatty() and click.confirm(
+    # --json no es interactivo: solo reinicia con --yes.
+    yes = bool(ctx.find_root().obj["yes"])
+    if yes or (not out.as_json and output._stdin_isatty() and click.confirm(
             "¿Reiniciar el servicio para aplicarlo?", err=True)):
         service.systemctl("restart", service.UNIT_NAME)
-        out.message("Servicio reiniciado.")
         return True
-    out.message("Para aplicarlo: jota-gw restart")
     return False
 
 
-def _report(ctx: click.Context, out: Out, key: str, value: Any, changed: bool) -> None:
-    settings, _, _ = load()
-    shown_value = shown(key, getattr(settings, key)) if settings else value
-    restarted = False
+def _report(ctx: click.Context, out: Out, key: str, value: str | None, changed: bool) -> None:
+    # Siempre el valor guardado (nunca el del entorno), enmascarado si es un secreto.
+    secret = is_secret(key, _settings_class().model_fields[key].default)
+    saved = None if value is None else (MASK_SET if value else MASK_EMPTY) if secret else value
+    restarted = changed and _offer_restart(ctx, out)
     if out.as_json:
-        restarted = changed and _offer_restart_quiet(ctx)
-        out.json({"name": key, "value": shown_value, "changed": changed, "restarted": restarted})
+        out.json({"name": key, "value": saved, "changed": changed, "restarted": restarted})
         return
-    out.message(f"{key}={shown_value}" if changed else f"{key}: sin cambios.")
+    if not changed:
+        out.message(f"{key}: sin cambios.")
+    elif saved is None:
+        out.message(f"{key} quitado de config.env (vuelve al valor por defecto).")
+    else:
+        out.message(f"{key}={saved}")
     if key in {k.upper() for k in os.environ}:
         out.message(f"Aviso: {key} está en el entorno y en esta shell manda sobre config.env.")
-    if changed:
-        _offer_restart(ctx, out)
-
-
-def _offer_restart_quiet(ctx: click.Context) -> bool:
-    # --json no es interactivo: solo reinicia con --yes.
-    return bool(ctx.find_root().obj["yes"]) and _offer_restart(ctx, Out(True))
+    if restarted:
+        out.message("Servicio reiniciado.")
+    elif changed:
+        out.message("Para aplicarlo: jota-gw restart")
 
 
 @config.command(name="set")
@@ -366,6 +375,8 @@ def set_(ctx: click.Context, name: str, value: str | None) -> None:
         value = click.prompt(key, hide_input=True, err=True)
     elif value == "-":
         value = sys.stdin.read().rstrip("\r\n")
+    if "\n" in value or "\r" in value:
+        raise api.ApiError(f"El valor de {key} no puede tener saltos de línea.", 2)
     changed = _apply(out, key, value)
     _report(ctx, out, key, value, changed)
 

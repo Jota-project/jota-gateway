@@ -270,3 +270,48 @@ def test_set_no_restart_when_inactive_or_no_unit(home, systemd):
     systemd.active = False
     run("--yes", "config", "set", "LOG_FORMAT", "text")
     assert ("restart", "jota-gateway.service") not in systemd.calls
+
+
+# --- ronda de arreglo 1 ----------------------------------------------------------------------
+
+
+def test_set_validates_without_environment_of_name(home, monkeypatch):
+    monkeypatch.setenv("STT_PROVIDER", "jota")
+    before = _env(home).read_bytes()
+    r = run("config", "set", "STT_PROVIDER", "nope")
+    assert r.exit_code == 1
+    assert _env(home).read_bytes() == before
+    assert os.environ["STT_PROVIDER"] == "jota"  # restaurada
+
+
+@pytest.mark.parametrize("value", ["a\nb", "a\rb"])
+def test_set_rejects_newlines(home, value):
+    before = _env(home).read_bytes()
+    assert run("config", "set", "TTS_WS_URL", value).exit_code == 2
+    assert _env(home).read_bytes() == before
+
+
+def test_set_rejects_newlines_from_stdin(home):
+    before = _env(home).read_bytes()
+    r = run("config", "set", "OPENCLAW_TOKEN", "-", input="uno\ndos\n")
+    assert r.exit_code == 2
+    assert _env(home).read_bytes() == before
+
+
+def test_set_json_yes_is_valid_json(home, systemd):
+    r = run("--json", "--yes", "config", "set", "LOG_FORMAT", "text")
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output) == {"name": "LOG_FORMAT", "value": "text", "changed": True,
+                                    "restarted": True}
+    assert ("restart", "jota-gateway.service") in systemd.calls
+
+
+def test_set_report_masks_secret_and_ignores_environment(home, monkeypatch):
+    monkeypatch.setenv("OPENCLAW_TOKEN", "del-entorno-xyz")
+    r = run("--json", "config", "set", "OPENCLAW_TOKEN", "-", input="guardado-abc\n")
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output)["value"] == "•••• (definido)"
+    assert "guardado-abc" not in r.output and "del-entorno-xyz" not in r.output
+    monkeypatch.setenv("TURN_TIMEOUT_S", "99")
+    r = run("--json", "config", "set", "TURN_TIMEOUT_S", "30")
+    assert json.loads(r.output)["value"] == "30"
