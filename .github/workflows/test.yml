@@ -40,6 +40,21 @@ jobs:
       - name: Typecheck (mypy)
         run: uv run --no-sync mypy
 
+      # La unidad de systemd que genera `jota-gw install`, verificada por systemd de verdad
+      # (comprueba la sintaxis y que ExecStart exista: se usa el jota-gw del .venv del runner).
+      - name: Unidad de systemd (systemd-analyze verify)
+        run: |
+          mkdir -p "$RUNNER_TEMP/unit"
+          uv run --no-sync python -c "
+          import sys
+          from pathlib import Path
+          from jota_gateway.cli.service import render_unit
+          exe = Path('.venv/bin/jota-gw').resolve()
+          Path(sys.argv[1], 'jota-gateway.service').write_text(render_unit(exe, Path.home() / '.jota-gateway'))
+          " "$RUNNER_TEMP/unit"
+          cat "$RUNNER_TEMP/unit/jota-gateway.service"
+          systemd-analyze --user verify "$RUNNER_TEMP/unit/jota-gateway.service"
+
       - name: Unit tests
         run: uv run --no-sync pytest tests/unit/ -v --cov=jota_gateway --cov-report=
         env:
