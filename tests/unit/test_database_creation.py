@@ -1,5 +1,7 @@
 """Decisión 5 de M14c: el gateway no crea nunca una BD en silencio (#295)."""
 
+from unittest.mock import MagicMock
+
 import pytest
 from sqlalchemy import create_engine, inspect
 
@@ -60,3 +62,15 @@ def test_memory_db_needs_no_permission(monkeypatch):
         database.run_migrations()
     finally:
         database.dispose_engine()
+
+
+def test_get_engine_refuses_too(home):
+    """`alembic` y cualquier otro uso pasan por get_engine(): conectar crearía el fichero."""
+    with pytest.raises(database.DatabaseMissing):
+        database.get_engine()
+    assert not (home / "data").exists()
+
+
+def test_require_database_skips_an_already_open_engine(home, monkeypatch):
+    monkeypatch.setattr(database, "_engine", MagicMock())  # p. ej. el inyectado en integración
+    database.require_database()
