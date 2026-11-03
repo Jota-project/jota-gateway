@@ -98,7 +98,7 @@ def test_missing_config_env_still_works_with_defaults(home):
 
 
 def test_cwd_dotenv_is_never_read_even_if_broken(tmp_path):
-    # Importar jota_gateway.core.config construye un Settings() global con el .env del directorio actual.
+    # Settings solo lee <base>/config.env: un .env roto en el directorio actual no cuenta (M14c).
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     (cwd / ".env").write_text("ADMIN_TOKEN=del-cwd\nSTT_PROVIDER=roto\n")

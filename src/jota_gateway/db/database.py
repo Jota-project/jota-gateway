@@ -6,10 +6,19 @@ from alembic.config import Config
 from sqlalchemy.engine import make_url
 from sqlmodel import Session, create_engine
 
+from jota_gateway import paths
 from jota_gateway.core.config import settings
 
 _engine = None
-_ALEMBIC_INI = Path(__file__).resolve().parents[3] / "alembic.ini"
+_ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
+
+# Decisión 5 de M14c: el gateway no crea nunca una BD en silencio. Lo activan `jota-gw init`
+# y `jota-gw serve --create-db` (la imagen Docker).
+CREATE_DB = False
+
+
+class DatabaseMissing(RuntimeError):
+    """No hay BD en la ruta configurada y no se ha pedido crearla."""
 
 
 def _ensure_sqlite_dir(database_url: str) -> None:
@@ -61,6 +70,14 @@ def run_migrations() -> None:
     aplica solo las pendientes en una ya versionada. Una BD con `clients` pero sin
     `alembic_version` (anterior a Alembic) ya no se sella: falla al crear la tabla (#265).
     """
+    db = paths.sqlite_file(settings.DATABASE_URL)
+    if db is not None and not db.exists() and not CREATE_DB:
+        # Antes de tocar el engine: conectar crearía el fichero vacío.
+        raise DatabaseMissing(
+            f"No existe la base de datos {db}. Si es una instalación nueva, créala con "
+            "`jota-gw init`. Si ya tenías una, copia aquí su gateway.db (o usa "
+            "JOTA_GATEWAY_HOME/--home para apuntar a su directorio base)."
+        )
     command.upgrade(_alembic_config(), "head")
 
 

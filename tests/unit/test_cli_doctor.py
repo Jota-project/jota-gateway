@@ -30,7 +30,7 @@ def _closed_port() -> int:
 def _head() -> str:
     from alembic.script import ScriptDirectory
 
-    head = ScriptDirectory(str(ROOT / "migrations")).get_current_head()
+    head = ScriptDirectory(str(doctor.MIGRATIONS.parent)).get_current_head()
     assert head
     return head
 
@@ -116,7 +116,7 @@ def test_missing_db_is_a_failure_and_doctor_never_creates_it(base):
     assert not (base / "data").exists()
 
 
-INITIAL = "21cb0cf4f6f9"  # migrations/versions/21cb0cf4f6f9_initial_schema.py
+INITIAL = "21cb0cf4f6f9"  # src/jota_gateway/migrations/versions/21cb0cf4f6f9_initial_schema.py
 
 
 def test_pending_migrations_is_a_warning(base):
@@ -302,14 +302,16 @@ def test_unreadable_config_env_is_a_check_and_doctor_goes_on(base):
     assert "gateway" in found
 
 
-def test_relative_db_found_only_in_cwd_is_explained(base, monkeypatch, tmp_path):
+def test_db_in_the_working_directory_is_ignored(base, monkeypatch, tmp_path):
+    """Como el gateway desde M14c: una ruta relativa cuelga de la base, nunca del cwd."""
     (base / "data" / "gateway.db").unlink()
     cwd = tmp_path / "repo"
     _make_db(cwd / "data" / "gateway.db", _head())
     monkeypatch.chdir(cwd)
     found = checks(run("--json", "doctor"))
-    assert found["base de datos"]["level"] == "warn"
-    assert str(cwd / "data" / "gateway.db") in found["base de datos"]["detail"]
+    assert found["base de datos"]["level"] == "fail"
+    assert str(base / "data" / "gateway.db") in found["base de datos"]["detail"]
+    assert "jota-gw init" in found["base de datos"]["detail"]
 
 
 def test_paths_not_owned_by_the_user_are_not_flagged(base, monkeypatch):

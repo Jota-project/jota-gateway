@@ -22,7 +22,7 @@ Jota-Screen / jota-voice / App iPhone / Home Assistant
   └──────────────────────────────────────────┘
 ```
 
-No hay dependencia de `jota-db` — la identidad y configuración de clientes viven en una base de datos SQLite local (`data/gateway.db`). Requiere OpenClaw **2026.6.11 o posterior** (detalles del protocolo en [`docs/openclaw-protocol.md`](docs/openclaw-protocol.md)).
+No hay dependencia de `jota-db` — la identidad y configuración de clientes viven en una base de datos SQLite local (`<base>/data/gateway.db`, con `<base>` = `~/.jota-gateway` por defecto). Requiere OpenClaw **2026.6.11 o posterior** (detalles del protocolo en [`docs/openclaw-protocol.md`](docs/openclaw-protocol.md)).
 
 ---
 
@@ -81,6 +81,8 @@ Los campos de un cliente (`POST`/`PATCH /admin/clients`) están en `src/jota_gat
 
 ```bash
 jota-gw                        # en una terminal: menú interactivo; en un script: la ayuda
+jota-gw init                   # instalación nueva: <base>, config.env con ADMIN_TOKEN aleatorio y la BD
+jota-gw serve [--create-db]    # arranca el gateway (puerto 8004, host GATEWAY_HOST)
 jota-gw doctor                 # diagnóstico: configuración, BD, permisos, candado, gateway y servicios
 jota-gw config show            # ajustes efectivos y su origen (entorno, config.env o por defecto)
 jota-gw config get <AJUSTE> | validate
@@ -94,12 +96,12 @@ jota-gw clients enable|disable <ref>
 jota-gw clients rotate-key|remove <ref>    # preguntan; --yes para scripts
 ```
 
-Opciones globales: `--url` (`JOTA_GW_URL`, por defecto `http://127.0.0.1:8004`), `--token` (`JOTA_GW_TOKEN`; si no, `ADMIN_TOKEN` o `config.env`), `--json` y `--yes`. Códigos de salida: 0 bien, 1 error, 2 uso incorrecto, 3 gateway inalcanzable.
+Opciones globales: `--home` (`JOTA_GATEWAY_HOME`, por defecto `~/.jota-gateway`), `--url` (`JOTA_GW_URL`, por defecto `http://127.0.0.1:8004`), `--token` (`JOTA_GW_TOKEN`; si no, `ADMIN_TOKEN` o `config.env`), `--json` y `--yes`. `JOTA_GATEWAY_HOME` la leen el gateway y la CLI; `JOTA_GW_URL` y `JOTA_GW_TOKEN`, solo la CLI. Códigos de salida: 0 bien, 1 error, 2 uso incorrecto, 3 gateway inalcanzable.
 
-- **Configuración que lee la CLI:** variables del proceso → `<base>/config.env` → valores por defecto, con `<base>` = `JOTA_GATEWAY_HOME` o `~/.jota-gateway`. Nunca el `.env` del directorio actual. Una `DATABASE_URL` relativa se resuelve contra `<base>`. Los secretos (`*_TOKEN`, `*_KEY`) salen siempre enmascarados, también en `--json`.
+- **Configuración que leen la CLI y el gateway:** variables del proceso → `<base>/config.env` → valores por defecto, con `<base>` = `--home`, `JOTA_GATEWAY_HOME` o `~/.jota-gateway`. Nunca el `.env` del directorio actual. Una `DATABASE_URL` relativa se resuelve contra `<base>`. Los secretos (`*_TOKEN`, `*_KEY`) salen siempre enmascarados, también en `--json`.
 - **`--set`:** `campo=valor` manda texto (el servidor convierte números y booleanos); `campo:=json` manda JSON (listas, `null`). Un campo desconocido sale con 2 y lista los editables.
 - **`--import-key`** lee la clave de stdin, nunca de un argumento.
-- **En Docker**, hasta que la imagen traiga el ejecutable (M14c): `docker exec jota_gateway python -m jota_gateway.cli …`. La imagen fija `JOTA_GATEWAY_HOME=/app`, así que `doctor` encuentra la BD del volumen. Sin `-t` no hay terminal: no se abre el menú y `rotate-key`/`remove` necesitan `--yes` (o usa `docker exec -it`). Con `GATEWAY_HOST` en una IP de la LAN, pasa `--url http://<esa IP>:8004`.
+- **En Docker:** `docker exec jota_gateway jota-gw …`. La imagen fija `JOTA_GATEWAY_HOME=/app`, así que `doctor` encuentra la BD del volumen. Sin `-t` no hay terminal: no se abre el menú y `rotate-key`/`remove` necesitan `--yes` (o usa `docker exec -it`). Con `GATEWAY_HOST` en una IP de la LAN, pasa `--url http://<esa IP>:8004`.
 
 Auth: header `X-Admin-Token`. Sin header → 422. Token incorrecto → 401. `ADMIN_TOKEN` vacío → 503.
 
@@ -118,10 +120,10 @@ Auth: header `X-Admin-Token`. Sin header → 422. Token incorrecto → 401. `ADM
   | `TRUSTED_PROXIES=` vacío, loopback directo | 200 | 200 |
 - Cualquier otro origen debe enviar `Authorization: Bearer <client_key>`, validado contra la tabla `clients` (la misma que usa el handshake WebSocket). Sin él, o con una key inválida/inactiva → `401`.
 - Si se envía un Bearer, siempre se valida, también desde un origen de confianza.
-- Detrás de un proxy (nginx), la IP real solo se toma de `X-Real-IP` si el peer está en `TRUSTED_PROXIES`. **Falla cerrado (#216):** un peer de `TRUSTED_PROXIES` sin `X-Real-IP` válido no es origen de confianza (se exige Bearer); el proxy debe *sobrescribir* `X-Real-IP` (`proxy_set_header X-Real-IP $remote_addr;`), nunca reenviar el del cliente. `X-Forwarded-For` nunca concede confianza (la imagen arranca uvicorn con `--no-proxy-headers`). Consecuencia: un cliente directo en loopback (p. ej. HA en el mismo host, sin proxy) ya no queda exento con la config por defecto; envía Bearer, o vacía `TRUSTED_PROXIES` si no hay proxy.
-- Host de escucha de la imagen Docker: `GATEWAY_HOST` (default `0.0.0.0`); detrás de un proxy en el mismo host usa `GATEWAY_HOST=127.0.0.1`.
+- Detrás de un proxy (nginx), la IP real solo se toma de `X-Real-IP` si el peer está en `TRUSTED_PROXIES`. **Falla cerrado (#216):** un peer de `TRUSTED_PROXIES` sin `X-Real-IP` válido no es origen de confianza (se exige Bearer); el proxy debe *sobrescribir* `X-Real-IP` (`proxy_set_header X-Real-IP $remote_addr;`), nunca reenviar el del cliente. `X-Forwarded-For` nunca concede confianza (`jota-gw serve` arranca uvicorn sin `proxy_headers`). Consecuencia: un cliente directo en loopback (p. ej. HA en el mismo host, sin proxy) ya no queda exento con la config por defecto; envía Bearer, o vacía `TRUSTED_PROXIES` si no hay proxy.
+- Host de escucha de `jota-gw serve` (también en Docker): `GATEWAY_HOST` (default `0.0.0.0`); detrás de un proxy en el mismo host usa `GATEWAY_HOST=127.0.0.1`.
 - `TRUSTED_NETWORKS` vacío = fail-closed: solo loopback puede quedar exento (sujeto al matiz de `TRUSTED_PROXIES` de arriba).
-- `HANDSHAKE_MAX_BYTES` mide **caracteres**, no bytes (con caracteres multibyte el tope real puede ser hasta 4x mayor). `--ws-max-size 1048576` solo está en el `CMD` de la imagen: con `uvicorn` a mano rige el tope por defecto de uvicorn (16 MiB).
+- `HANDSHAKE_MAX_BYTES` mide **caracteres**, no bytes (con caracteres multibyte el tope real puede ser hasta 4x mayor). El tope de 1 MiB por mensaje WebSocket lo pone `jota-gw serve`: con `uvicorn` a mano rige el de uvicorn (16 MiB).
 - Con Bearer válido, `model` selecciona el agente y se aplican `default_agent`/`allowed_agents` del cliente (violación → `403`).
 
 | Endpoint | Método | Descripción |
@@ -150,11 +152,18 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la referencia comp
 ## Quick start
 
 ```bash
-pip install .[dev]
-uvicorn jota_gateway.main:app --host 0.0.0.0 --port 8004 --reload
+pip install -e .[dev]
+jota-gw init        # una vez: crea ~/.jota-gateway (o JOTA_GATEWAY_HOME), config.env y la BD
+jota-gw serve       # en desarrollo, con recarga: uvicorn jota_gateway.main:app --port 8004 --reload
 # o con Docker:
 docker compose up
 ```
+
+> **El gateway nunca crea una BD por su cuenta.** Si no la encuentra en `<base>/data/gateway.db`
+> (o en la `DATABASE_URL` configurada), se para y explica qué hacer: así no arranca vacío, sin
+> clientes, por haberse equivocado de directorio. La crea `jota-gw init`. La imagen Docker
+> arranca con `jota-gw serve --create-db`, así que `docker compose up` con un `./data` vacío
+> funciona como siempre.
 
 > **Docker:** el contenedor corre como no-root. Antes del primer `docker compose up`
 > define `GATEWAY_UID`/`GATEWAY_GID` en `.env` con el dueño de `./data`
@@ -166,11 +175,12 @@ docker compose up
 
 ## Configuración
 
-Variables en `.env` (formato `host:port` sin protocolo para todos los URLs). Esta tabla es un resumen: la referencia completa, con todos los plazos y sus defaults, es [`.env.sample`](.env.sample).
+Variables de entorno o, si no, de `<base>/config.env` (instalación nativa). En Docker van en el `.env` junto a `docker-compose.yml`, que las pasa como variables. Formato `host:port` sin protocolo para todos los URLs. Esta tabla es un resumen: la referencia completa, con todos los plazos y sus defaults, es [`.env.sample`](.env.sample).
 
 | Variable | Default | Descripción |
 |----------|---------|-------------|
-| `DATABASE_URL` | `sqlite:///data/gateway.db` | Ruta a la base de datos SQLite local (identidad y configuración de clientes) |
+| `DATABASE_URL` | `sqlite:///data/gateway.db` | Base de datos SQLite local (identidad y configuración de clientes). Una ruta relativa cuelga de `<base>` |
+| `GATEWAY_HOST` | `0.0.0.0` | Host de escucha de `jota-gw serve` (`127.0.0.1` detrás de un proxy en el mismo host) |
 | `TRANSCRIBER_WS_URL` | `localhost:9000` | jota-transcriber |
 | `TTS_WS_URL` | `localhost:8005` | jota-speaker |
 | `TTS_TOKEN` | `gateway` | Token de auth para jota-speaker |
@@ -251,11 +261,13 @@ Ejecución manual local (sin pasar por GitHub Actions), útil para validar cambi
 en la suite antes de fiarse del workflow:
 
 ```bash
+set -a; . ./.env; set +a      # o el fichero donde tengas ADMIN_TOKEN y OPENCLAW_TOKEN
 PYTHONPATH=. E2E_TEST_AGENT=<agente-de-test> pytest tests/e2e -m e2e_real -v
 ```
 
-`OPENCLAW_TOKEN` y `ADMIN_TOKEN` nunca se guardan en GitHub — el proceso de test
-los lee del `.env` local del servidor, igual que la propia app.
+`OPENCLAW_TOKEN` y `ADMIN_TOKEN` nunca se guardan en GitHub: el proceso de test los
+lee de sus variables de entorno. La suite no lee ningún `.env` ni `config.env` por su
+cuenta (`tests/conftest.py` fija una base temporal), por eso hay que exportarlos.
 
 **Nota para el workflow de GitHub Actions:** el checkout que hace `actions/checkout`
 en el runner es limpio y **no incluye `.env`** (está en `.gitignore`). Por eso, para
@@ -275,6 +287,8 @@ El gateway instancia un `JotaBridge` por cada sesión WebSocket. Los tres servic
 
 ```
 src/jota_gateway/
+├── paths.py                 directorio base, config.env y ruta de la BD (compartido con la CLI)
+├── alembic.ini, migrations/ migraciones de Alembic, dentro del paquete instalado
 ├── api/
 │   ├── routes.py            WebSocket /ws/stream — handshake, ready, bridge lifecycle
 │   ├── admin_routes.py      /admin/* — CRUD de clientes + observabilidad (sesiones, orquestador, transcriptor, TTS)
@@ -282,7 +296,7 @@ src/jota_gateway/
 │   ├── health_routes.py     /healthz, /ready
 │   └── deps.py              get_admin_auth — dependencia de auth para admin
 ├── core/
-│   ├── config.py            Settings (pydantic-settings, .env)
+│   ├── config.py            Settings (pydantic-settings, <base>/config.env)
 │   ├── agent_policy.py      resolve_agent() — cascada y política de agentes
 │   ├── network.py           resolve_client_ip() / origen de confianza de /v1
 │   ├── startup_checks.py    lock de proceso único y comprobaciones de arranque
@@ -290,7 +304,7 @@ src/jota_gateway/
 ├── db/
 │   ├── models.py            ClientRecord (SQLModel) — identidad y config por cliente
 │   └── database.py          get_engine() / run_migrations() / get_db_session()
-├── cli/                     jota-gw — menú, doctor, config, status, version y clients
+├── cli/                     jota-gw — init, serve, menú, doctor, config, status, version y clients
 └── services/
     ├── bridge.py            JotaBridge — coordinador de sesión WS
     ├── db_client.py         DbClient — lee ClientRecord de SQLite local (singleton, sin caché)

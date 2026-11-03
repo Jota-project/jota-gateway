@@ -18,12 +18,12 @@ from urllib.parse import urlsplit
 
 import click
 
-from jota_gateway.cli import api, paths
+from jota_gateway import paths
+from jota_gateway.cli import api
 from jota_gateway.cli import config as cfg
 from jota_gateway.cli.output import ACCENT, ERROR, MUTED, TEXT, Out
 
-MIGRATIONS = Path(__file__).resolve().parents[3] / "migrations" / "versions"
-LOCK_FILENAME = "gateway.lock"  # el de src/jota_gateway/core/startup_checks.py, sin importar sqlalchemy
+MIGRATIONS = Path(__file__).resolve().parents[1] / "migrations" / "versions"
 TCP_TIMEOUT_S = 2.0
 
 Check = dict[str, str]
@@ -31,17 +31,6 @@ Check = dict[str, str]
 
 def _c(level: str, check: str, detail: str) -> Check:
     return {"level": level, "check": check, "detail": detail}
-
-
-def db_path(database_url: str) -> Path | None:
-    """Ruta del fichero SQLite; una ruta relativa sale del directorio base (regla 3)."""
-    if not database_url.startswith("sqlite:///"):
-        return None
-    raw = database_url.removeprefix("sqlite:///").split("?", 1)[0]
-    if not raw or raw == ":memory:":
-        return None
-    path = Path(raw)
-    return path if path.is_absolute() else paths.home() / path
 
 
 def _revisions() -> tuple[set[str], str | None]:
@@ -65,20 +54,11 @@ def _revisions() -> tuple[set[str], str | None]:
 def _check_db(path: Path | None, url: str) -> Check:
     if path is None:
         return _c("info", "base de datos", f"{url.split(':', 1)[0]}: no es un fichero SQLite.")
-    raw = url.removeprefix("sqlite:///").split("?", 1)[0]
-    in_cwd = Path.cwd() / raw
-    if not path.is_file() and not Path(raw).is_absolute() and in_cwd.is_file():
-        # shortcut: hasta M14c el gateway resuelve una ruta relativa contra su directorio.
-        return _c(
-            "warn", "base de datos",
-            f"No existe {path}, pero hay una en {in_cwd}: hasta M14c, el gateway arrancado "
-            f"desde {Path.cwd()} usa esa. Con M14c pasará a {path}.",
-        )
     if not path.is_file():
         return _c(
             "fail", "base de datos",
-            f"No existe {path}: el gateway arrancaría con una BD vacía, sin clientes. "
-            "Si ya tenías una instalación, copia aquí su gateway.db.",
+            f"No existe {path}: el gateway no arrancará. Si es una instalación nueva, créala "
+            "con `jota-gw init`; si ya tenías una, copia aquí su gateway.db.",
         )
     try:
         con = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
@@ -191,8 +171,8 @@ def run_checks(url: str, token: str | None) -> list[Check]:
         out.append(_c("ok", "configuración", f"Válida ({paths.config_file()})."))
         out.extend(cfg.validation_checks(settings))
 
-    db = db_path(settings.DATABASE_URL) if settings else None
-    lock = db.parent / LOCK_FILENAME if db else None
+    db = paths.sqlite_file(settings.DATABASE_URL) if settings else None
+    lock = db.parent / paths.LOCK_FILENAME if db else None
     out.append(_c("info", "rutas", " · ".join(f"{k}: {v}" for k, v in (
         ("base", paths.home()), ("configuración", paths.config_file()), ("BD", db),
         ("candado", lock), ("migraciones", MIGRATIONS)) if v)))

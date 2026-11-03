@@ -8,7 +8,8 @@ from jota_gateway.core.config import settings
 from jota_gateway.db.database import get_engine
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# `%` escapado: ConfigParser interpola, y la ruta va codificada (%23, %3F…; ver paths.py).
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
 
 # La app llama a run_migrations() con cfg.attributes["configure_logger"] = False:
 # el [logger_root] level = WARNING de alembic.ini dejaría el root de la app en
