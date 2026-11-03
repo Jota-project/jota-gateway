@@ -1,23 +1,34 @@
 """
 service.py
 ~~~~~~~~~~
-Servicio de usuario de systemd de `jota-gw`: la unidad y la elección del ejecutable. Funciones
-puras (los comandos `install`, `start`… las usan); `subprocess` se importa dentro de `systemctl`.
+Servicio de usuario de systemd de `jota-gw`: la unidad, la elección del ejecutable y los
+comandos `install`, `uninstall`, `start`, `stop` y `restart`. `subprocess` se importa dentro
+de las funciones que lo usan (`--help` < 150 ms).
 """
 
 import json
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import click
+
+from jota_gateway import paths
+from jota_gateway.cli import api
 from jota_gateway.cli.api import ApiError
+from jota_gateway.cli.output import Out, confirm
 
 if TYPE_CHECKING:
     from subprocess import CompletedProcess
 
 UNIT_NAME = "jota-gateway.service"
+HEALTH_TIMEOUT_S = 20.0
+DOCKERENV = Path("/.dockerenv")
+NO_SERVICE_MSG = ("No hay servicio instalado. En Docker: `docker compose restart` / "
+                  "`docker compose logs -f`. Para instalarlo: `jota-gw install`.")
 
 # TimeoutStopSec = stop_grace_period de docker-compose.yml; mayor que serve.GRACEFUL_SHUTDOWN_S.
 # Sin --create-db ni LOG_FORMAT: manda la configuración. Exit 3 = fallo de arranque que
@@ -90,3 +101,138 @@ def require_systemd() -> None:
     if sys.platform != "linux" or shutil.which("systemctl") is None:
         raise ApiError("Este comando necesita Linux con systemd; en Docker usa "
                        "`docker compose up -d`, `docker compose logs`, etc.", 1)
+
+
+def systemctl_or_fail(*args: str) -> None:
+    import subprocess
+
+    try:
+        systemctl(*args)
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or "").strip()
+        raise ApiError(f"`systemctl --user {' '.join(args)}` ha fallado"
+                       f"{f': {detail}' if detail else ''}.", 1) from None
+
+
+def port_free() -> bool:
+    """El puerto del gateway (127.0.0.1) no lo usa nadie: ni bind ni conexión."""
+    import socket
+
+    from jota_gateway.cli import serve
+
+    with socket.socket() as s:
+        try:
+            s.bind(("127.0.0.1", serve.PORT))
+        except OSError:
+            return False
+    with socket.socket() as s:
+        s.settimeout(1)
+        return s.connect_ex(("127.0.0.1", serve.PORT)) != 0
+
+
+def linger_enabled(user: str) -> bool:
+    import subprocess
+
+    try:
+        r = subprocess.run(["loginctl", "show-user", user, "-p", "Linger"], text=True,
+                           capture_output=True, check=False)
+    except OSError:
+        return False
+    return r.stdout.strip() == "Linger=yes"
+
+
+def _probe(url: str) -> bool:
+    try:
+        api.Api(url, "", timeout=2).request("GET", "/healthz")
+    except ApiError:
+        return False
+    return True
+
+
+def wait_healthy(url: str) -> None:
+    """Espera hasta HEALTH_TIMEOUT_S a que `/healthz` responda; la usan install, start y restart."""
+    deadline = time.monotonic() + HEALTH_TIMEOUT_S
+    while not _probe(url):
+        if time.monotonic() >= deadline:
+            raise ApiError(f"El servicio no responde en {HEALTH_TIMEOUT_S:.0f} s. "
+                           "Mira los registros con `jota-gw logs -n 50`.", 1)
+        time.sleep(0.5)
+
+
+def _out(ctx: click.Context) -> Out:
+    return Out(ctx.find_root().obj["json"])
+
+
+@click.command()
+@click.option("--exe", type=click.Path(path_type=Path), help="Ejecutable `jota-gw` de la unidad.")
+@click.pass_context
+def install(ctx: click.Context, exe: Path | None) -> None:
+    """Instala y arranca el servicio."""
+    from jota_gateway.cli import config as cfg
+
+    out = _out(ctx)
+    require_systemd()
+    settings, _ = cfg._load_or_fail(out)
+    db = paths.sqlite_file(settings.DATABASE_URL)
+    if db is not None and not db.exists():
+        raise ApiError(f"No hay BD en {db}. Ejecuta `jota-gw init` (instalación nueva) o "
+                       "`jota-gw migrate --from-docker <carpeta>`.", 1)
+    if not port_free():
+        raise ApiError(f"El puerto {_port()} está ocupado: ¿hay otro gateway (el contenedor)? "
+                       "Páralo antes de instalar el servicio.", 1)
+    exe = pick_exe(exe)
+    home = paths.home()
+    text = render_unit(exe, home)
+    unit = unit_path()
+    if unit.exists() and unit.read_text() == text:
+        state = "sin cambios"
+    else:
+        if unit.exists():
+            confirm(ctx, f"{unit} ya existe y es distinta. ¿Sobrescribirla?")
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        tmp = unit.with_name(f".{UNIT_NAME}.tmp")
+        tmp.write_text(text)
+        os.replace(tmp, unit)  # atómico: systemd nunca ve una unidad a medias
+        systemctl_or_fail("daemon-reload")
+        state = "instalado"
+    systemctl_or_fail("enable", "--now", UNIT_NAME)
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    if not linger_enabled(user):
+        out.error(f"Aviso: sin linger el servicio se para al cerrar tu sesión. "
+                  f"Ejecuta `loginctl enable-linger {user}`.")
+    wait_healthy(ctx.find_root().obj["url"])
+    if out.as_json:
+        out.json({"unit": str(unit), "exe": str(exe), "home": str(home), "state": state})
+        return
+    out.pairs([("unidad", unit), ("ejecutable", exe), ("base", home), ("estado", state)])
+    out.message("Servicio en marcha.")
+
+
+def _port() -> int:
+    from jota_gateway.cli import serve
+
+    return serve.PORT
+
+
+@click.command()
+@click.pass_context
+def uninstall(ctx: click.Context) -> None:
+    """Quita el servicio; no toca los datos."""
+    out = _out(ctx)
+    unit = unit_path()
+    home = paths.home()
+    if not unit.exists():
+        if out.as_json:
+            out.json({"unit": str(unit), "exe": None, "home": str(home), "state": "no instalado"})
+        else:
+            out.message(f"El servicio no está instalado ({unit}).")
+        return
+    require_systemd()
+    confirm(ctx, f"¿Quitar el servicio {UNIT_NAME}?")
+    systemctl_or_fail("disable", "--now", UNIT_NAME)
+    unit.unlink()
+    systemctl_or_fail("daemon-reload")
+    if out.as_json:
+        out.json({"unit": str(unit), "exe": None, "home": str(home), "state": "desinstalado"})
+        return
+    out.message(f"Servicio quitado. No se toca el directorio base ({home}): tus datos siguen ahí.")

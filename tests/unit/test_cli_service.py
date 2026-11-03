@@ -141,3 +141,173 @@ def test_importing_service_does_not_load_subprocess():
     code = "import sys; import jota_gateway.cli.service; print('subprocess' in sys.modules)"
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert r.stdout.strip() == "False"
+
+
+# --- install / uninstall / start / stop / restart (M14d, B2 y B3) ---
+
+import socket  # noqa: E402
+import subprocess  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from click.testing import CliRunner  # noqa: E402
+
+from jota_gateway.cli import config as cfg  # noqa: E402
+from jota_gateway.cli import output  # noqa: E402
+from jota_gateway.cli.app import cli  # noqa: E402
+
+EXE = "/home/u/.local/bin/jota-gw"
+REAL_PORT_FREE = getattr(service, "port_free", None)  # antes de que la fixture lo mockee
+
+
+@pytest.fixture()
+def svc(monkeypatch, tmp_path):
+    """Todo mockeado: sin systemd, sin red, sin loginctl. `calls` recoge los `systemctl`."""
+    home = tmp_path / "home"
+    (home / "data").mkdir(parents=True)
+    (home / "data" / "gateway.db").write_text("db")
+    (home / "config.env").write_text("ADMIN_TOKEN=x\n")
+    monkeypatch.setenv("JOTA_GATEWAY_HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(cfg, "load", lambda: (SimpleNamespace(
+        DATABASE_URL=f"sqlite:///{home / 'data' / 'gateway.db'}"), [], {}))
+    monkeypatch.setattr(service, "require_systemd", lambda: None)
+    monkeypatch.setattr(service, "port_free", lambda: True)
+    monkeypatch.setattr(service, "linger_enabled", lambda user: True)
+    monkeypatch.setattr(service, "_probe", lambda url: True)
+    monkeypatch.setattr(service, "DOCKERENV", tmp_path / "no-dockerenv")
+    monkeypatch.setattr(output, "_stdin_isatty", lambda: False)
+    calls: list[tuple[str, ...]] = []
+
+    def fake(*args, check=True):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(service, "systemctl", fake)
+    return SimpleNamespace(home=home, calls=calls, unit=service.unit_path(), tmp=tmp_path)
+
+
+def run(*args, **kw):
+    return CliRunner().invoke(cli, list(args), **kw)
+
+
+def _unit_text(svc):
+    return service.render_unit(Path(EXE), svc.home)
+
+
+def test_install_refuses_without_db(svc):
+    (svc.home / "data" / "gateway.db").unlink()
+    r = run("install", "--exe", EXE)
+    assert r.exit_code == 1
+    assert "No hay BD en" in r.output and "jota-gw init" in r.output
+    assert "migrate --from-docker" in r.output
+    assert not svc.unit.exists() and svc.calls == []
+
+
+def test_install_refuses_with_invalid_config(svc, monkeypatch):
+    monkeypatch.setattr(cfg, "load", lambda: (None, ["PORT: int_parsing"], {}))
+    r = run("install", "--exe", EXE)
+    assert r.exit_code == 1
+    assert "PORT: int_parsing" in r.output
+    assert not svc.unit.exists() and svc.calls == []
+
+
+def test_install_refuses_when_port_busy(monkeypatch):
+    with socket.socket() as srv:
+        srv.bind(("127.0.0.1", 0))
+        srv.listen()
+        monkeypatch.setattr(serve_mod, "PORT", srv.getsockname()[1])
+        assert REAL_PORT_FREE() is False
+    assert REAL_PORT_FREE() is True  # libre al cerrar el que escucha
+
+
+def test_install_stops_when_port_busy(svc, monkeypatch):
+    monkeypatch.setattr(service, "port_free", lambda: False)
+    r = run("install", "--exe", EXE)
+    assert r.exit_code == 1
+    assert "otro gateway" in r.output and "contenedor" in r.output
+    assert not svc.unit.exists() and svc.calls == []
+
+
+def test_install_writes_unit_and_enables(svc):
+    r = run("--json", "install", "--exe", EXE)
+    assert r.exit_code == 0, r.output
+    assert svc.unit.read_text() == _unit_text(svc)
+    assert svc.calls == [("daemon-reload",), ("enable", "--now", "jota-gateway.service")]
+    assert json.loads(r.stdout) == {"unit": str(svc.unit), "exe": EXE, "home": str(svc.home),
+                                    "state": "instalado"}
+    assert not list(svc.unit.parent.glob("*.tmp*"))  # escritura atómica sin restos
+
+
+def test_install_same_unit_is_noop(svc):
+    svc.unit.parent.mkdir(parents=True)
+    svc.unit.write_text(_unit_text(svc))
+    before = svc.unit.stat().st_mtime_ns
+    r = run("--json", "install", "--exe", EXE)
+    assert r.exit_code == 0, r.output
+    assert svc.unit.stat().st_mtime_ns == before
+    assert svc.calls == [("enable", "--now", "jota-gateway.service")]
+    assert json.loads(r.stdout)["state"] == "sin cambios"
+
+
+def test_install_overwrite_needs_confirm(svc):
+    svc.unit.parent.mkdir(parents=True)
+    svc.unit.write_text("viejo")
+    r = run("install", "--exe", EXE)
+    assert r.exit_code == 2 and "--yes" in r.output
+    assert svc.unit.read_text() == "viejo" and svc.calls == []
+    r = run("--yes", "install", "--exe", EXE)
+    assert r.exit_code == 0, r.output
+    assert svc.unit.read_text() == _unit_text(svc)
+
+
+def test_install_warns_without_linger(svc, monkeypatch):
+    monkeypatch.setenv("USER", "sito")
+    monkeypatch.setattr(service, "linger_enabled", lambda user: False)
+    r = run("install", "--exe", EXE)
+    assert r.exit_code == 0, r.output
+    assert "loginctl enable-linger sito" in r.output
+
+
+def test_install_fails_with_hint_when_not_healthy(svc, monkeypatch):
+    monkeypatch.setattr(service, "_probe", lambda url: False)
+    monkeypatch.setattr(service, "HEALTH_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(service.time, "sleep", lambda s: None)
+    r = run("install", "--exe", EXE)
+    assert r.exit_code == 1 and "jota-gw logs -n 50" in r.output
+
+
+def test_wait_healthy_retries_until_ok(svc, monkeypatch):
+    answers = iter([False, False, True])
+    monkeypatch.setattr(service, "_probe", lambda url: next(answers))
+    monkeypatch.setattr(service.time, "sleep", lambda s: None)
+    service.wait_healthy("http://127.0.0.1:8004")
+
+
+def test_uninstall_keeps_home(svc):
+    svc.unit.parent.mkdir(parents=True)
+    svc.unit.write_text(_unit_text(svc))
+    r = run("--yes", "--json", "uninstall")
+    assert r.exit_code == 0, r.output
+    assert not svc.unit.exists()
+    assert svc.calls == [("disable", "--now", "jota-gateway.service"), ("daemon-reload",)]
+    assert (svc.home / "data" / "gateway.db").read_text() == "db"
+    assert (svc.home / "config.env").read_text() == "ADMIN_TOKEN=x\n"
+    assert json.loads(r.stdout) == {"unit": str(svc.unit), "exe": None, "home": str(svc.home),
+                                    "state": "desinstalado"}
+    r = run("--yes", "uninstall")  # sin unidad: 0 y lo dice
+    assert r.exit_code == 0 and "no está instalado" in r.output
+
+
+def test_uninstall_says_where_data_stays(svc):
+    svc.unit.parent.mkdir(parents=True)
+    svc.unit.write_text(_unit_text(svc))
+    r = run("--yes", "uninstall")
+    assert str(svc.home) in r.output
+
+
+def test_uninstall_needs_confirm_without_tty(svc):
+    svc.unit.parent.mkdir(parents=True)
+    svc.unit.write_text(_unit_text(svc))
+    r = run("uninstall")
+    assert r.exit_code == 2 and "--yes" in r.output
+    assert svc.unit.exists() and svc.calls == []

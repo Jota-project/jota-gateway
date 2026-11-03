@@ -19,8 +19,10 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "config": ("jota_gateway.cli.config:config", "Configuración efectiva (solo lectura)."),
     "doctor": ("jota_gateway.cli.doctor:doctor", "Diagnostica la instalación."),
     "init": ("jota_gateway.cli.init:init", "Prepara una instalación nueva."),
+    "install": ("jota_gateway.cli.service:install", "Instala y arranca el servicio."),
     "serve": ("jota_gateway.cli.serve:serve", "Arranca el gateway."),
     "status": ("jota_gateway.cli.status:status", "Estado del gateway y sus servicios."),
+    "uninstall": ("jota_gateway.cli.service:uninstall", "Quita el servicio; no toca los datos."),
     "version": ("jota_gateway.cli.version:version", "Versión de la CLI y del gateway."),
 }
 

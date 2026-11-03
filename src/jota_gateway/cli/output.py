@@ -12,6 +12,8 @@ from typing import Any
 
 import click
 
+from jota_gateway.cli.api import ApiError
+
 # Tema Jota Dusk (spec 2026-11-01).
 TEXT = "#ddd6d0"
 MUTED = "#bab2c4"
@@ -90,3 +92,16 @@ class Out:
             self._console(stderr=True).print(text, style=ERROR, markup=False)
         else:
             click.echo(text, err=True)
+
+
+def _stdin_isatty() -> bool:
+    return sys.stdin.isatty()
+
+
+def confirm(ctx: click.Context, question: str) -> None:
+    """Pregunta antes de lo destructivo; `--yes` la salta y sin terminal sale con 2."""
+    if ctx.find_root().obj["yes"]:
+        return
+    if not _stdin_isatty():
+        raise ApiError(f"{question} Sin terminal para preguntar: repite con --yes.", 2)
+    click.confirm(question, abort=True, err=True)
