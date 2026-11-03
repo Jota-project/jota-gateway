@@ -33,7 +33,9 @@ docker compose up
 # Admin CLI (talks to /admin, never writes the DB; doctor/config also work with the gateway stopped)
 jota-gw                                               # interactive menu on a TTY, help otherwise
 jota-gw [--home DIR] init | serve [--create-db]      # new install; start the gateway
-jota-gw doctor | config show|get|validate | status | version
+jota-gw doctor | config show|get|validate|set|unset | status | version
+jota-gw install [--exe PATH] | uninstall | start | stop | restart   # systemd user service
+jota-gw logs [-f] [-n N] [--level L] [--session ID]
 jota-gw clients list | show <ref> | add --name … | edit <ref> | enable|disable|rotate-key|remove <ref>
 docker exec jota_gateway jota-gw …                    # inside the container
 ```
@@ -70,7 +72,7 @@ A BFF: the single entry point for Jota-Screen, jota-voice (Mac and Android/Termu
 | `services/speech/` | STT/TTS ports (`ports.py`), `factory.py`, `jota.py` (jota-transcriber/jota-speaker), `elevenlabs/`; `SpeechProviders` holder in `app.state.speech` |
 | `services/reconnection.py` | Shared `ConnectionState`, `ServiceHealth`, backoff loop, `describe_error()` |
 | `services/pipeline_tracker.py`, `session_registry.py`, `stats.py` | Per-session events/latencies, `/admin/sessions`, in-process counters |
-| `cli/` | `jota-gw` admin CLI over `/admin` (click; `rich`, `questionary`, `pydantic` and every command imported lazily, `--help` < 150 ms guarded by `tests/unit/test_cli_startup.py`). Reads config from env → `<JOTA_GATEWAY_HOME or ~/.jota-gateway>/config.env` → defaults, never the cwd `.env`; `doctor` opens the DB read-only and never takes the lock. `serve` owns the uvicorn settings (port 8004, no proxy headers, 1 MiB WS cap, 35 s graceful shutdown) and passes the app as an import string so uvicorn configures its loggers first (`core/logging.py` relies on that order) |
+| `cli/` | `jota-gw` admin CLI over `/admin` (click; `rich`, `questionary`, `pydantic` and every command imported lazily, `--help` < 150 ms guarded by `tests/unit/test_cli_startup.py`). Reads config from env → `<JOTA_GATEWAY_HOME or ~/.jota-gateway>/config.env` → defaults, never the cwd `.env`; `doctor` opens the DB read-only and never takes the lock. `serve` owns the uvicorn settings (port 8004, no proxy headers, 1 MiB WS cap, 35 s graceful shutdown) and passes the app as an import string so uvicorn configures its loggers first (`core/logging.py` relies on that order). `service.py` owns the systemd user unit (`install` needs the DB and a free 8004, never creates the DB; rejects a clone/editable exe without `--exe`; `uninstall` leaves data alone). `logs.py` reads the journal and filters `--level`/`--session` itself for both log formats. `config set` takes secrets only by prompt or stdin (`-`) |
 
 Speech providers are chosen at startup with `STT_PROVIDER`/`TTS_PROVIDER` (`jota` or `elevenlabs`); changing them needs a restart (`GET /admin/speech` only reads). Every remaining ElevenLabs tunable is a module constant in `services/speech/elevenlabs/`.
 
