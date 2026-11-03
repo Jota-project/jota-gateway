@@ -10,9 +10,12 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from subprocess import CompletedProcess
+from typing import TYPE_CHECKING
 
 from jota_gateway.cli.api import ApiError
+
+if TYPE_CHECKING:
+    from subprocess import CompletedProcess
 
 UNIT_NAME = "jota-gateway.service"
 
@@ -50,7 +53,8 @@ def render_unit(exe: Path, home: Path) -> str:
 
 def _in_checkout(exe: Path) -> bool:
     real = exe.resolve()
-    if any((p / "pyproject.toml").is_file() for p in real.parents):
+    # Solo <env> y <clon> (<clon>/.venv/bin/jota-gw): un pyproject.toml suelto en ~ o / no cuenta.
+    if any((p / "pyproject.toml").is_file() for p in real.parents[1:3]):
         return True
     # shortcut: solo mira el site-packages junto al ejecutable (<env>/bin/jota-gw), el
     # layout de uv tool y de venv; otro layout no se detecta, hay que pasar --exe a mano.

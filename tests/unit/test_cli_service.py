@@ -126,3 +126,18 @@ def test_systemctl_runs_user_instance(monkeypatch):
     cmd, kw = calls[0]
     assert cmd == ["systemctl", "--user", "start", "jota-gateway.service"]
     assert kw["check"] is False and kw["text"] is True and kw["capture_output"] is True
+
+
+def test_pick_exe_ignores_distant_pyproject(monkeypatch, tmp_path):
+    (tmp_path / "pyproject.toml").write_text("")  # suelto en un ancestro lejano (~)
+    exe = _tool_env(tmp_path / ".local/share/uv/tools/jota-gateway", editable=False)
+    monkeypatch.setattr(service.shutil, "which", lambda name: str(exe))
+    assert service.pick_exe(None) == exe
+
+
+def test_importing_service_does_not_load_subprocess():
+    import subprocess
+
+    code = "import sys; import jota_gateway.cli.service; print('subprocess' in sys.modules)"
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert r.stdout.strip() == "False"
