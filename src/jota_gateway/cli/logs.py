@@ -76,8 +76,11 @@ def logs(follow: bool, lines: int, level: str | None, session: str | None) -> No
         for line in proc.stdout:
             if matches(line.rstrip("\n"), level, session):
                 click.echo(line, nl=False)
+        code = proc.wait()
     except KeyboardInterrupt:
-        pass  # Ctrl+C es la forma normal de dejar `-f`: sin traceback, salida 0
+        return  # Ctrl+C es la forma normal de dejar `-f`: sin traceback, salida 0
     finally:
         proc.terminate()
         proc.wait()
+    if code:
+        raise ApiError(f"journalctl falló (código {code}).", 1)

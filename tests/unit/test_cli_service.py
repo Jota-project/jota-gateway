@@ -257,6 +257,17 @@ def test_install_active_service_new_unit_restarts(svc, monkeypatch):
                          ("restart", "jota-gateway.service")]
 
 
+def test_install_inactive_existing_unit_and_port_busy_refuses(svc, monkeypatch):
+    svc.unit.parent.mkdir(parents=True)
+    svc.unit.write_text(_unit_text(svc))
+    before = svc.unit.read_bytes()
+    svc.active = False
+    monkeypatch.setattr(service, "port_free", lambda: False)
+    r = run("--yes", "install", "--exe", EXE)
+    assert r.exit_code == 1 and "ocupado" in r.output
+    assert svc.unit.read_bytes() == before and svc.calls == []
+
+
 def test_install_without_unit_and_port_busy_still_refuses(svc, monkeypatch):
     svc.active = True  # da igual: sin unidad no se sondea
     monkeypatch.setattr(service, "port_free", lambda: False)

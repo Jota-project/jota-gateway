@@ -24,8 +24,18 @@ def serve(create_db: bool) -> None:
     """Arranca el gateway (puerto 8004, host GATEWAY_HOST)."""
     os.umask(0o077)  # lo que cree (BD, candado, data/) solo para su dueño
     import uvicorn
+    from pydantic import ValidationError
 
-    from jota_gateway.core.config import settings
+    try:
+        from jota_gateway.core.config import settings  # construye Settings(): aquí falla
+    except ValidationError as e:
+        from jota_gateway.cli.config import _errors
+
+        # Solo campo y tipo (nunca input_value: podría ser una clave); exit 3 = reintentar
+        # no lo arregla (RestartPreventExitStatus de la unidad).
+        click.echo("Configuración no válida:\n" + "\n".join(f"  {m}" for m in _errors(e)),
+                   err=True)
+        raise SystemExit(3) from None
     from jota_gateway.db import database
 
     database.CREATE_DB = create_db

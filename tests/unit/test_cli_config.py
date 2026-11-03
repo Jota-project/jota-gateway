@@ -238,13 +238,18 @@ def systemd(monkeypatch, tmp_path):
     unit = service.unit_path()
     unit.parent.mkdir(parents=True)
     unit.write_text("[Unit]\n")
-    st = SimpleNamespace(calls=[], active=True, tty=False)
+    st = SimpleNamespace(calls=[], active=True, tty=False, healthy=True, fail=False)
     monkeypatch.setattr(service, "require_systemd", lambda: None)
+    monkeypatch.setattr(service, "_probe", lambda url: st.healthy)
+    monkeypatch.setattr(service.time, "sleep", lambda s: None)
+    monkeypatch.setattr(service, "HEALTH_TIMEOUT_S", 0.05)
     monkeypatch.setattr(output, "_stdin_isatty", lambda: st.tty)
 
     def fake(*args, check=True):
         st.calls.append(args)
         rc = 0 if st.active or args[0] != "is-active" else 3
+        if st.fail and args[0] == "restart":
+            raise subprocess.CalledProcessError(1, args, "", "boom")
         return subprocess.CompletedProcess(args, rc, "", "")
 
     monkeypatch.setattr(service, "systemctl", fake)
@@ -315,3 +320,67 @@ def test_set_report_masks_secret_and_ignores_environment(home, monkeypatch):
     monkeypatch.setenv("TURN_TIMEOUT_S", "99")
     r = run("--json", "config", "set", "TURN_TIMEOUT_S", "30")
     assert json.loads(r.output)["value"] == "30"
+
+
+# --- tanda final B ----------------------------------------------------------------------------
+
+
+def test_set_database_url_password_never_shown(home):
+    url = "postgresql://u:pw-secreta-123@h/db"
+    for args in (("config", "set", "DATABASE_URL", url), ("--json", "config", "set",
+                                                           "DATABASE_URL", url + "x")):
+        r = run(*args)
+        assert r.exit_code == 0, r.output
+        assert "pw-secreta-123" not in r.output
+        assert "u:••••@h" in r.output
+
+
+def test_set_restart_failure_exits_1_with_hint(home, systemd):
+    systemd.fail = True
+    r = run("--yes", "config", "set", "LOG_FORMAT", "text")
+    assert r.exit_code == 1 and not isinstance(r.exception, subprocess.CalledProcessError)
+    assert "LOG_FORMAT=text" in _env(home).read_text()  # guardado
+    assert "guardado" in r.output and "jota-gw logs -n 50" in r.output
+
+
+def test_set_restart_not_healthy_exits_1(home, systemd):
+    systemd.healthy = False
+    r = run("--yes", "config", "set", "LOG_FORMAT", "text")
+    assert r.exit_code == 1 and "jota-gw logs -n 50" in r.output
+    assert "guardado" in r.output
+
+
+def test_set_restart_failure_json_keeps_stdout_clean(home, systemd):
+    systemd.fail = True
+    r = CliRunner().invoke(cli, ["--json", "--yes", "config", "set",
+                                                 "LOG_FORMAT", "text"])
+    assert r.exit_code == 1 and r.stdout == ""
+    assert "guardado" in r.stderr
+
+
+def test_set_restart_waits_for_healthz(home, systemd, monkeypatch):
+    answers = iter([False, False, True])
+    monkeypatch.setattr(service_mod(), "_probe", lambda url: next(answers))
+    r = run("--yes", "config", "set", "LOG_FORMAT", "text")
+    assert r.exit_code == 0, r.output
+    assert list(answers) == []
+
+
+def service_mod():
+    from jota_gateway.cli import service
+
+    return service
+
+
+def test_set_secret_dash_with_tty_prompts_hidden(home, systemd, monkeypatch):
+    import click
+
+    seen = {}
+    monkeypatch.setattr(click, "prompt", lambda *a, **kw: seen.update(kw) or "tecleado-oculto")
+    systemd.tty = True
+    systemd.active = False
+    r = run("config", "set", "OPENCLAW_TOKEN", "-")
+    assert r.exit_code == 0, r.output
+    assert seen["hide_input"] is True
+    assert "OPENCLAW_TOKEN=tecleado-oculto" in _env(home).read_text()
+    assert "tecleado-oculto" not in r.output  # click no hace eco con hide_input

@@ -325,15 +325,27 @@ def _offer_restart(ctx: click.Context, out: Out) -> bool:
     yes = bool(ctx.find_root().obj["yes"])
     if yes or (not out.as_json and output._stdin_isatty() and click.confirm(
             "¿Reiniciar el servicio para aplicarlo?", err=True)):
-        service.systemctl("restart", service.UNIT_NAME)
+        _restart(ctx)
         return True
     return False
 
 
+def _restart(ctx: click.Context) -> None:
+    """Como `jota-gw restart`; config.env ya está escrito, así que un fallo lo dice."""
+    from jota_gateway.cli import service
+
+    try:
+        service.systemctl_or_fail("restart", service.UNIT_NAME)
+        service.wait_healthy(ctx.find_root().obj["url"])
+    except api.ApiError as e:
+        hint = "" if "logs -n 50" in e.message else " Mira los registros con `jota-gw logs -n 50`."
+        raise api.ApiError("El cambio está guardado en config.env, pero el servicio no ha "
+                           f"arrancado: {e.message}{hint}", 1) from None
+
+
 def _report(ctx: click.Context, out: Out, key: str, value: str | None, changed: bool) -> None:
     # Siempre el valor guardado (nunca el del entorno), enmascarado si es un secreto.
-    secret = is_secret(key, _settings_class().model_fields[key].default)
-    saved = None if value is None else (MASK_SET if value else MASK_EMPTY) if secret else value
+    saved = None if value is None else shown(key, value)
     restarted = changed and _offer_restart(ctx, out)
     if out.as_json:
         out.json({"name": key, "value": saved, "changed": changed, "restarted": restarted})
@@ -374,7 +386,11 @@ def set_(ctx: click.Context, name: str, value: str | None) -> None:
             raise api.ApiError(f"Sin terminal para pedir {key}: pásalo por stdin con `-`.", 2)
         value = click.prompt(key, hide_input=True, err=True)
     elif value == "-":
-        value = sys.stdin.read().rstrip("\r\n")
+        from jota_gateway.cli import output
+
+        # Con terminal, el prompt oculto: leer stdin mostraría el secreto al teclearlo.
+        value = (click.prompt(key, hide_input=True, err=True) if output._stdin_isatty()
+                 else sys.stdin.read().rstrip("\r\n"))
     if "\n" in value or "\r" in value:
         raise api.ApiError(f"El valor de {key} no puede tener saltos de línea.", 2)
     changed = _apply(out, key, value)

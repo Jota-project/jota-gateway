@@ -125,3 +125,12 @@ def test_invalid_utf8_line_passes_and_loop_continues(env, monkeypatch):
     r = CliRunner().invoke(cli, ["logs", "--session", "|"])
     assert r.exit_code == 0, r.output
     assert "roto ��" in r.output and "despues" in r.output
+
+
+def test_filtered_journalctl_failure_propagates_exit_code(env, monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "Popen", lambda a, **kw: SimpleNamespace(
+        stdout=io.StringIO(""), terminate=lambda: None, wait=lambda: 1, returncode=1))
+    r = CliRunner().invoke(cli, ["logs", "--level", "error"])
+    assert r.exit_code == 1 and "journalctl falló (código 1)" in r.output
