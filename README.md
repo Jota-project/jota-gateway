@@ -86,6 +86,11 @@ jota-gw serve [--create-db]    # arranca el gateway (puerto 8004, host GATEWAY_H
 jota-gw doctor                 # diagnóstico: configuración, BD, permisos, candado, gateway y servicios
 jota-gw config show            # ajustes efectivos y su origen (entorno, config.env o por defecto)
 jota-gw config get <AJUSTE> | validate
+jota-gw config set <AJUSTE> [VALOR|-]   # escribe en config.env; unset <AJUSTE> lo quita
+jota-gw install [--exe RUTA]   # servicio de usuario de systemd: lo instala y lo arranca
+jota-gw start|stop|restart     # restart pregunta; --yes para scripts
+jota-gw uninstall              # quita el servicio (pregunta); no toca los datos
+jota-gw logs [-f] [-n N] [--level NIVEL] [--session ID]
 jota-gw status                 # gateway, versión, orquestador, STT, TTS y sesiones
 jota-gw version
 jota-gw clients list           # nombre, id corto, tipo, activo, agente y huella fp
@@ -100,6 +105,7 @@ Opciones globales: `--home` (`JOTA_GATEWAY_HOME`, por defecto `~/.jota-gateway`)
 
 - **Configuración que leen la CLI y el gateway:** variables del proceso → `<base>/config.env` → valores por defecto, con `<base>` = `--home`, `JOTA_GATEWAY_HOME` o `~/.jota-gateway`. Nunca el `.env` del directorio actual. Una `DATABASE_URL` relativa se resuelve contra `<base>`. Los secretos (`*_TOKEN`, `*_KEY`) salen siempre enmascarados, también en `--json`.
 - **`--set`:** `campo=valor` manda texto (el servidor convierte números y booleanos); `campo:=json` manda JSON (listas, `null`). Un campo desconocido sale con 2 y lista los editables.
+- **`config set`:** valida el valor antes de escribir y rechaza saltos de línea. Los secretos (`*_TOKEN`, `*_KEY`) nunca van como argumento, para que no queden en el historial: se piden por prompt oculto (`jota-gw config set ADMIN_TOKEN`) o, en scripts, se leen de un fichero por stdin (`jota-gw config set ADMIN_TOKEN - < fichero`); un `echo` dejaría el secreto en el historial. Si el servicio está activo, ofrece reiniciarlo (como `jota-gw restart`: espera a `/healthz` y sale con 1 si no arranca, con el cambio ya guardado); si no, el cambio se aplica al reiniciar (`jota-gw restart`). Avisa si la variable está también en el entorno, porque esa manda sobre `config.env`.
 - **`--import-key`** lee la clave de stdin, nunca de un argumento.
 - **En Docker:** `docker exec jota_gateway jota-gw …`. La imagen fija `JOTA_GATEWAY_HOME=/app`, así que `doctor` encuentra la BD del volumen. Sin `-t` no hay terminal: no se abre el menú y `rotate-key`/`remove` necesitan `--yes` (o usa `docker exec -it`). Con `GATEWAY_HOST` en una IP de la LAN, pasa `--url http://<esa IP>:8004`.
 
@@ -175,6 +181,15 @@ uv tool install "jota-gateway @ git+https://github.com/Jota-project/jota-gateway
 > clientes, por haberse equivocado de directorio. La crea `jota-gw init`. La imagen Docker
 > arranca con `jota-gw serve --create-db`, así que `docker compose up` con un `./data` vacío
 > funciona como siempre.
+
+### Servicio (systemd de usuario)
+
+Solo en Linux con systemd; en Docker usa `docker compose`. `jota-gw install` crea `~/.config/systemd/user/jota-gateway.service` y lo arranca. Exige una config válida, la BD ya creada (`jota-gw init`; `install` nunca la crea) y el puerto 8004 libre (para el contenedor antes). Si el servicio ya es el nuestro y está activo, reinstala, y si la unidad cambia, lo reinicia. `uninstall` y sobrescribir una unidad distinta con `install` piden confirmación (para scripts, `jota-gw --yes …`).
+
+- **Ejecutable:** usa el `jota-gw` del PATH. Rechaza uno dentro de un clon o de una instalación editable, porque la unidad se rompería al moverlo: instala con `uv tool install` o pasa `--exe RUTA`.
+- **Linger:** sin `loginctl enable-linger $USER` el servicio se para al cerrar tu sesión; `install` avisa si falta.
+- **Registros:** `jota-gw logs` lee el journal. `--level` y `--session` filtran por nivel mínimo y por sesión o cliente, tanto con `LOG_FORMAT=json` como con texto.
+- **Desinstalar:** `jota-gw uninstall` quita la unidad y deja `<base>` intacta.
 
 > **Docker:** el contenedor corre como no-root. Antes del primer `docker compose up`
 > define `GATEWAY_UID`/`GATEWAY_GID` en `.env` con el dueño de `./data`
@@ -326,7 +341,7 @@ src/jota_gateway/
 ├── db/
 │   ├── models.py            ClientRecord (SQLModel) — identidad y config por cliente
 │   └── database.py          get_engine() / run_migrations() / get_db_session()
-├── cli/                     jota-gw — init, serve, menú, doctor, config, status, version y clients
+├── cli/                     jota-gw — init, serve, menú, doctor, config, status, version, clients, service (servicio systemd) y logs
 └── services/
     ├── bridge.py            JotaBridge — coordinador de sesión WS
     ├── db_client.py         DbClient — lee ClientRecord de SQLite local (singleton, sin caché)

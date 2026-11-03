@@ -40,6 +40,21 @@ jobs:
       - name: Typecheck (mypy)
         run: uv run --no-sync mypy
 
+      # La unidad de systemd que genera `jota-gw install`, verificada por systemd de verdad
+      # (comprueba la sintaxis y que ExecStart exista: se usa el jota-gw del .venv del runner).
+      - name: Unidad de systemd (systemd-analyze verify)
+        run: |
+          mkdir -p "$RUNNER_TEMP/unit"
+          uv run --no-sync python -c "
+          import sys
+          from pathlib import Path
+          from jota_gateway.cli.service import render_unit
+          exe = Path('.venv/bin/jota-gw').resolve()
+          Path(sys.argv[1], 'jota-gateway.service').write_text(render_unit(exe, Path.home() / '.jota-gateway'))
+          " "$RUNNER_TEMP/unit"
+          cat "$RUNNER_TEMP/unit/jota-gateway.service"
+          systemd-analyze --user verify "$RUNNER_TEMP/unit/jota-gateway.service"
+
       - name: Unit tests
         run: uv run --no-sync pytest tests/unit/ -v --cov=jota_gateway --cov-report=
         env:
@@ -61,13 +76,13 @@ jobs:
   # Docker build succeeded. Add new required jobs to `needs`, not to the ruleset.
   test:
     runs-on: ubuntu-latest
-    needs: [tests, docker-build, package]
+    needs: [tests, docker-build, package, service-smoke]
     if: always()
     steps:
       - name: Require all jobs to succeed
         run: |
-          echo "tests=${{ needs.tests.result }} docker-build=${{ needs.docker-build.result }} package=${{ needs.package.result }}"
-          [ "${{ needs.tests.result }}" = "success" ] && [ "${{ needs.docker-build.result }}" = "success" ] && [ "${{ needs.package.result }}" = "success" ]
+          echo "tests=${{ needs.tests.result }} docker-build=${{ needs.docker-build.result }} package=${{ needs.package.result }} service-smoke=${{ needs.service-smoke.result }}"
+          [ "${{ needs.tests.result }}" = "success" ] && [ "${{ needs.docker-build.result }}" = "success" ] && [ "${{ needs.package.result }}" = "success" ] && [ "${{ needs.service-smoke.result }}" = "success" ]
 
   # La instalación nativa (M14c): el wheel lleva Alembic y sus migraciones, y el programa
   # instalado funciona desde cualquier directorio, sin el checkout.
@@ -160,3 +175,139 @@ jobs:
           [ "$status" = "healthy" ] || { docker logs gw2; exit 1; }
           ls -l data/gateway.db
           docker rm -f gw2
+
+  # M14d: la instalación nativa como servicio de usuario de systemd, de punta a punta en el
+  # runner de Ubuntu: init, install, healthz, reinicio de la sesión de usuario (el «reboot»),
+  # logs, config set y uninstall. Todas las esperas tienen tiempo límite.
+  service-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # journalctl sin TTY ya no pagina; esto lo garantiza para `jota-gw logs` (execvp).
+      SYSTEMD_PAGER: ""
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+
+      # Como la instalación oficial: no editable y fuera del checkout (pick_exe rechaza lo contrario).
+      - name: Instalar jota-gw como uv tool
+        run: |
+          uv export --frozen --no-dev --no-emit-project --no-hashes -o /tmp/c.txt
+          uv tool install . -c /tmp/c.txt
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          which jota-gw
+          [ "$(which jota-gw)" = "$HOME/.local/bin/jota-gw" ]
+          jota-gw version || true
+
+      - name: Preparar systemd de usuario (linger y bus)
+        run: |
+          sudo loginctl enable-linger "$USER"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          # Funciones compartidas por los pasos siguientes (cada paso es un shell nuevo).
+          cat > "$RUNNER_TEMP/h.sh" <<'EOF'
+          wait_bus() {  # hasta 60 s: bus de usuario y systemd en running o degraded
+            for i in $(seq 1 60); do
+              state=$(systemctl --user is-system-running 2>/dev/null || true)
+              if [ -S "$XDG_RUNTIME_DIR/bus" ] && { [ "$state" = running ] || [ "$state" = degraded ]; }; then
+                echo "systemd de usuario: $state"; return 0
+              fi
+              sleep 1
+            done
+            echo "systemd de usuario no está listo (state=$state)"; return 1
+          }
+          wait_health() {  # hasta $1 s (60 por defecto)
+            for i in $(seq 1 "${1:-60}"); do
+              curl -fs --max-time 2 http://127.0.0.1:8004/healthz >/dev/null && return 0
+              sleep 1
+            done
+            echo "/healthz no responde"; return 1
+          }
+          EOF
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          . "$RUNNER_TEMP/h.sh"
+          wait_bus
+
+      # init no necesita tokens: crea config.env con un ADMIN_TOKEN aleatorio y la BD.
+      - name: jota-gw init
+        run: |
+          jota-gw init
+          ls -l ~/.jota-gateway ~/.jota-gateway/data
+
+      - name: jota-gw install y healthz
+        run: |
+          . "$RUNNER_TEMP/h.sh"
+          jota-gw --yes install
+          curl -fs --max-time 2 http://127.0.0.1:8004/healthz; echo
+          [ "$(systemctl --user is-enabled jota-gateway.service)" = enabled ]
+
+      # Reinicia la sesión de usuario: para el servicio y lo vuelve a arrancar por default.target + linger.
+      # Límite: no es un reboot real del kernel; lo más cercano posible en un runner.
+      - name: Reboot simulado (user@UID.service)
+        run: |
+          . "$RUNNER_TEMP/h.sh"
+          [ "$(loginctl show-user "$USER" -p Linger --value)" = yes ]
+          old_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
+          old_pid=$(systemctl --user show -p MainPID --value jota-gateway.service)
+          echo "antes: InvocationID=$old_inv MainPID=$old_pid"
+          [ -n "$old_inv" ]
+          [ "$old_pid" -gt 0 ]
+          sudo systemctl restart "user@$(id -u).service"
+          wait_bus
+          wait_health 60
+          new_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
+          echo "después: InvocationID=$new_inv"
+          [ -n "$new_inv" ]
+          [ "$new_inv" != "$old_inv" ]
+          if kill -0 "$old_pid" 2>/dev/null; then echo "el PID viejo $old_pid sigue vivo"; exit 1; fi
+          [ "$(systemctl --user is-active jota-gateway.service)" = active ]
+
+      - name: jota-gw logs
+        run: |
+          jota-gw logs -n 20 --level WARNING  # puede no imprimir nada
+          jota-gw logs -n 5 > "$RUNNER_TEMP/logs.txt"
+          cat "$RUNNER_TEMP/logs.txt"
+          [ -s "$RUNNER_TEMP/logs.txt" ]
+
+      - name: config set LOG_FORMAT json (reinicia el servicio)
+        run: |
+          . "$RUNNER_TEMP/h.sh"
+          old_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
+          jota-gw --yes config set LOG_FORMAT json
+          wait_health 60
+          new_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
+          [ -n "$old_inv" ]
+          [ -n "$new_inv" ]
+          [ "$new_inv" != "$old_inv" ]  # hubo restart
+          jota-gw logs -n 20 > "$RUNNER_TEMP/logs.txt"
+          cat "$RUNNER_TEMP/logs.txt"
+          python3 -c "
+          import json, sys
+          for line in open(sys.argv[1]):
+              try:
+                  if isinstance(json.loads(line), dict):
+                      sys.exit(0)
+              except ValueError:
+                  pass
+          sys.exit('ninguna línea de log es JSON')
+          " "$RUNNER_TEMP/logs.txt"
+
+      - name: jota-gw uninstall (los datos se quedan)
+        run: |
+          jota-gw --yes uninstall
+          [ ! -e ~/.config/systemd/user/jota-gateway.service ]
+          [ -f ~/.jota-gateway/config.env ]
+          [ -f ~/.jota-gateway/data/gateway.db ]
+          if curl -fs --max-time 3 http://127.0.0.1:8004/healthz; then echo "el servicio sigue respondiendo"; exit 1; fi
+
+      - name: Diagnóstico del servicio
+        if: failure()
+        run: |
+          journalctl --user -u jota-gateway.service -n 200 --no-pager || true
+          systemctl --user status jota-gateway.service --no-pager || true
+          loginctl show-user "$USER" || true
+          systemctl --user show -p InvocationID,MainPID,ActiveEnterTimestamp jota-gateway.service || true

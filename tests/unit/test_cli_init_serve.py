@@ -147,3 +147,13 @@ def test_serve_constants_match_the_shutdown_budget():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert "stop_grace_period: 45s" in compose
     assert serve_mod.GRACEFUL_SHUTDOWN_S < 45
+
+
+def test_serve_invalid_config_exits_3_with_field_and_no_value(tmp_path):
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "config.env").write_text("OPENCLAW_PORT=valor-secreto-abc\n")
+    r = _cli("--home", str(base), "serve", cwd=tmp_path)
+    assert r.returncode == 3
+    assert "OPENCLAW_PORT" in r.stderr and "valor-secreto-abc" not in r.stderr + r.stdout
+    assert "Traceback" not in r.stderr

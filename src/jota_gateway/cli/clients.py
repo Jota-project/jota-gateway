@@ -7,7 +7,7 @@ from typing import Any
 import click
 
 from jota_gateway.cli import api, refs
-from jota_gateway.cli.output import ACCENT, MUTED, Out
+from jota_gateway.cli.output import ACCENT, MUTED, Out, confirm
 
 COLUMNS = [
     ("NOMBRE", "name"),
@@ -25,14 +25,6 @@ def _out(ctx: click.Context) -> Out:
 
 def _stdin_isatty() -> bool:
     return sys.stdin.isatty()
-
-
-def _confirm(ctx: click.Context, question: str) -> None:
-    if ctx.find_root().obj["yes"]:
-        return
-    if not _stdin_isatty():
-        raise api.ApiError(f"{question} Sin terminal para preguntar: repite con --yes.", 2)
-    click.confirm(question, abort=True, err=True)
 
 
 def _show_key(out: Out, data: dict[str, Any]) -> None:
@@ -231,7 +223,7 @@ def rotate_key(ctx: click.Context, ref: str) -> None:
     """Genera una clave nueva; la anterior deja de valer."""
     client = api.from_context(ctx)
     target = _find(client, ref)
-    _confirm(ctx, f"¿Rotar la clave de «{target['name']}»? La actual dejará de valer.")
+    confirm(ctx, f"¿Rotar la clave de «{target['name']}»? La actual dejará de valer.")
     _show_key(_out(ctx), client.request("POST", f"/admin/clients/{target['id']}/rotate-key"))
 
 
@@ -242,7 +234,7 @@ def remove(ctx: click.Context, ref: str) -> None:
     """Borra un cliente."""
     client = api.from_context(ctx)
     target = _find(client, ref)
-    _confirm(ctx, f"¿Borrar el cliente «{target['name']}»?")
+    confirm(ctx, f"¿Borrar el cliente «{target['name']}»?")
     client.request("DELETE", f"/admin/clients/{target['id']}")
     out = _out(ctx)
     if out.as_json:

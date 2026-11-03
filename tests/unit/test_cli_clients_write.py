@@ -5,7 +5,7 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from jota_gateway.cli import clients
+from jota_gateway.cli import clients, output
 from jota_gateway.cli.app import cli
 from tests.fakes.cli_api import FakeApi
 
@@ -22,6 +22,7 @@ def run(*args, input=None):
 @pytest.fixture()
 def tty(monkeypatch):
     monkeypatch.setattr(clients, "_stdin_isatty", lambda: True)
+    monkeypatch.setattr(output, "_stdin_isatty", lambda: True)
 
 
 # --- add ---
