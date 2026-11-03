@@ -174,14 +174,14 @@ uv tool install "jota-gateway @ git+https://github.com/Jota-project/jota-gateway
   -c https://github.com/Jota-project/jota-gateway/releases/download/v$V/constraints.txt
 jota-gw init               # <base>, config.env con ADMIN_TOKEN aleatorio y la BD
 jota-gw config set OPENCLAW_TOKEN   # prompt oculto; ver la nota de debajo
-jota-gw config set OPENCLAW_HOST    # solo si OpenClaw no está en esta máquina (y OPENCLAW_PORT, por defecto 18789)
+jota-gw config set OPENCLAW_HOST <host>   # solo si OpenClaw no está en esta máquina (y OPENCLAW_PORT, por defecto 18789)
 loginctl enable-linger $USER        # puede pedir sudo según la distro
 jota-gw install            # crea el servicio de usuario y lo arranca
 jota-gw doctor             # configuración, BD, permisos, servicio y gateway
 jota-gw logs -n 20         # últimas líneas del journal (-f para seguir)
 ```
 
-- **`OPENCLAW_TOKEN`** es el token del gateway de OpenClaw (el de su configuración). El gateway no lo exige: `install` y `serve` arrancan igual y solo registran un WARNING («OPENCLAW_TOKEN está vacío…»), y `config validate` y `doctor` lo marcan como aviso. Pero sin un token válido OpenClaw rechazará la conexión: `/ready` da 503 y las sesiones se cierran, porque el orquestador es la única dependencia fatal. Los secretos se piden por prompt oculto, ver `config set` en [Admin](#admin-requiere-x-admin-token). `OPENCLAW_HOST` y `OPENCLAW_PORT` se cambian igual con `jota-gw config set`.
+- **`OPENCLAW_TOKEN`** es el token del gateway de OpenClaw (el de su configuración). El gateway no lo exige: `install` y `serve` arrancan igual y solo registran un WARNING («OPENCLAW_TOKEN está vacío…»), y `config validate` y `doctor` lo marcan como aviso. Pero sin un token válido OpenClaw rechazará la conexión: `/ready` da 503 y las sesiones se cierran, porque el orquestador es la única dependencia fatal. Los secretos se piden por prompt oculto, ver `config set` en [Admin](#admin-requiere-x-admin-token). `OPENCLAW_HOST` y `OPENCLAW_PORT` se cambian con `jota-gw config set <AJUSTE> <valor>` (solo los secretos se piden por prompt; sin valor, un ajuste normal sale con 2).
 - **Linger y sesión:** `systemctl --user` necesita una sesión con bus de usuario: SSH normal sí; con `su` o `sudo -iu`, no (define antes `XDG_RUNTIME_DIR=/run/user/$(id -u)`).
 
 > **El gateway nunca crea una BD por su cuenta.** Si no la encuentra en `<base>/data/gateway.db`
@@ -229,33 +229,38 @@ Los datos (`config.env`, `data/gateway.db`) quedan en `<base>`; bórralos a mano
    ```bash
    cp -a <carpeta de compose>/data/gateway.db* <destino de la copia>/
    jota-gw migrate --from-docker <carpeta de compose>
-   jota-gw install          # comprueba que el 8004 está libre
    ```
-4. **Revisar la config migrada.** `jota-gw config show` y `jota-gw doctor`: los nombres que solo resuelven en la red de Docker (nombres de servicios de compose, `host.docker.internal`) hay que cambiarlos con `jota-gw config set` (p. ej. `OPENCLAW_HOST`).
-5. **Verificar.** `curl http://127.0.0.1:8004/ready`, una sesión de voz o texto, `/v1` con y sin clave, los mismos clientes (`jota-gw clients list`), `jota-gw doctor` y `jota-gw logs -n 20`.
-6. **Vuelta atrás.** `jota-gw stop` y `systemctl --user disable jota-gateway.service` (si no, tras un reinicio de la máquina arrancan los dos y se pelean por el 8004), y después `docker compose up -d`. Para volver a nativo: `docker compose stop` y `jota-gw install` (con la unidad igual no la toca: la habilita y la arranca). Los cambios de clientes hechos en un lado no están en la BD del otro.
-7. **Retirar el contenedor**, más tarde: `docker compose down`, sin borrar la imagen ni la carpeta.
+4. **Revisar la config migrada, antes de instalar.** `jota-gw config show` y `jota-gw doctor`: los nombres que solo resuelven en la red de Docker (nombres de servicios de compose, `host.docker.internal`) hay que cambiarlos con `jota-gw config set <AJUSTE> <valor>` (p. ej. `jota-gw config set OPENCLAW_HOST <host>`).
+5. **Linger e instalar.** Sin linger el servicio se para al cerrar la sesión SSH:
+   ```bash
+   loginctl enable-linger $USER   # puede pedir sudo según la distro
+   jota-gw install                # comprueba que el 8004 está libre
+   ```
+   Si `GATEWAY_HOST` es una IP concreta de la LAN, `install` espera a `/healthz` en la URL de `--url` (por defecto `http://127.0.0.1:8004`) y daría error por tiempo: usa `jota-gw --url http://<IP>:8004 install`. La comprobación de puerto libre sí mira solo `127.0.0.1`.
+6. **Verificar.** `curl http://127.0.0.1:8004/ready`, una sesión de voz o texto, `/v1` con y sin clave, los mismos clientes (`jota-gw clients list`), `jota-gw doctor` y `jota-gw logs -n 20`.
+7. **Vuelta atrás.** `jota-gw stop` y `systemctl --user disable jota-gateway.service` (si no, tras un reinicio de la máquina arrancan los dos y se pelean por el 8004), y después `docker compose up -d`. Para volver a nativo: `docker compose stop` y `jota-gw install` (con la unidad igual no la toca: la habilita y la arranca). Los cambios de clientes hechos en un lado no están en la BD del otro.
+8. **Retirar el contenedor**, más tarde: `docker compose down`, sin borrar la imagen ni la carpeta.
 
 Qué hace `migrate` (`src/jota_gateway/cli/migrate.py`):
 
-- Copia la BD con la API de backup de sqlite3, comprueba `integrity_check` y que los clientes coinciden; **nunca escribe el origen** (lo abre en solo lectura). Si algo falla, no queda nada a medias.
+- Copia la BD con la API de backup de sqlite3, comprueba `integrity_check` y que los clientes coinciden; **nunca escribe el origen** (lo abre en solo lectura). Si algo falla, no queda nada a medias, salvo un corte brusco (SIGKILL, corte de luz) entre la copia de la BD y la de `config.env`: entonces borra a mano lo creado en `<base>` y repite.
 - Exige la misma revisión de Alembic a los dos lados; si no, se niega y dice qué desplegar.
-- Se niega si el contenedor sigue en marcha (toma un candado sobre `data/gateway.lock`), si `<base>` ya tiene `config.env` o BD (o restos `-journal`/`-wal`/`-shm`), o si el `DATABASE_URL` del `.env` no apunta a `/app/data/gateway.db`.
+- Se niega si el contenedor sigue en marcha mientras el gateway de Docker tenga el candado sobre `data/gateway.lock` (por defecto sí; no con `SINGLE_PROCESS_LOCK=false`), si `<base>` ya tiene `config.env` o BD (o restos `-journal`/`-wal`/`-shm`), o si el `DATABASE_URL` del `.env` no apunta a `/app/data/gateway.db`.
 - Del `.env` quita `DATABASE_URL`, `GATEWAY_UID` y `GATEWAY_GID`, y añade `LOG_FORMAT=json` si falta (la imagen lo fijaba). Una clave del `.env` que no sea un ajuste del gateway hace que se niegue ("La configuración migrada no es válida"): quítala antes y repite.
 - Crea `<base>` y `data/` con permisos 700 y `config.env` y la BD con 600. No migra los datos más allá de `data/gateway.db`: si montabas más cosas en el volumen, cópialas a mano.
 
 ### Desarrollo en la misma máquina que producción
 
-Usa siempre `./.dev` como base (`--home ./.dev` o `JOTA_GATEWAY_HOME=./.dev`): sin él, la CLI y el gateway comparten `~/.jota-gateway`, o sea, la BD de producción. Además, `serve` usa siempre el puerto 8004 y la CLI apunta por defecto a `http://127.0.0.1:8004`: en la misma máquina el gateway de desarrollo choca con el de producción, o `clients list` acaba hablando con producción. Por eso el ejemplo de abajo usa el puerto 8005 con `uvicorn` y apunta la CLI con `JOTA_GW_URL` (o `--url`).
+Usa siempre `./.dev` como base (`--home ./.dev` o `JOTA_GATEWAY_HOME=./.dev`): sin él, la CLI y el gateway comparten `~/.jota-gateway`, o sea, la BD de producción. Además, `serve` usa siempre el puerto 8004 y la CLI apunta por defecto a `http://127.0.0.1:8004`: en la misma máquina el gateway de desarrollo choca con el de producción, o `clients list` acaba hablando con producción. Por eso el ejemplo de abajo usa el puerto 8014 (el 8005 es el `TTS_WS_URL` por defecto de jota-speaker) con `uvicorn` y apunta la CLI con `JOTA_GW_URL` (o `--url`).
 
 ```bash
 git clone https://github.com/Jota-project/jota-gateway && cd jota-gateway
 uv sync --extra dev   # crea .venv desde uv.lock (o `pip install -e .[dev]`, sin versiones fijadas)
 source .venv/bin/activate   # sin esto (o `uv run jota-gw …`), `jota-gw` es el de producción
-export JOTA_GATEWAY_HOME=./.dev JOTA_GW_URL=http://127.0.0.1:8005
+export JOTA_GATEWAY_HOME=./.dev JOTA_GW_URL=http://127.0.0.1:8014
 jota-gw init                # una vez
-uvicorn jota_gateway.main:app --port 8005 --reload   # `jota-gw serve` fija el 8004
-jota-gw clients list        # habla con el 8005
+uvicorn jota_gateway.main:app --port 8014 --reload   # `jota-gw serve` fija el 8004
+jota-gw clients list        # habla con el 8014
 ```
 
 ### Docker (alternativa)
