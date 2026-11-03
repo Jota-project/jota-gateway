@@ -23,35 +23,35 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v7
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: "pip"
+          version: "0.13.7"
 
-      - name: Install dependencies
-        run: pip install .[dev]
+      # uv.lock es la fuente única de versiones; --locked falla si no corresponde a pyproject.toml.
+      - name: Install dependencies (uv.lock)
+        run: uv sync --locked --extra dev --no-editable --python ${{ matrix.python-version }}
 
       - name: Lint (ruff)
-        run: ruff check src/ tests/
+        run: uv run --no-sync ruff check src/ tests/
         env:
           PYTHONPATH: .
 
       - name: Typecheck (mypy)
-        run: mypy
+        run: uv run --no-sync mypy
 
       - name: Unit tests
-        run: pytest tests/unit/ -v --cov=jota_gateway --cov-report=
+        run: uv run --no-sync pytest tests/unit/ -v --cov=jota_gateway --cov-report=
         env:
           PYTHONPATH: .
 
       - name: Contract tests (proveedores de voz)
-        run: pytest tests/contract/ -v --cov=jota_gateway --cov-append --cov-report=
+        run: uv run --no-sync pytest tests/contract/ -v --cov=jota_gateway --cov-append --cov-report=
         env:
           PYTHONPATH: .
 
       - name: Integration tests
-        run: pytest tests/integration/ -v --cov=jota_gateway --cov-append --cov-report=term-missing
+        run: uv run --no-sync pytest tests/integration/ -v --cov=jota_gateway --cov-append --cov-report=term-missing
         env:
           PYTHONPATH: .
 
@@ -80,9 +80,15 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+
+      # El venv limpio de abajo instala el wheel sin lock, como un usuario de pip.
       - name: Build the wheel and check it carries Alembic
         run: |
-          pip wheel --no-deps -w dist .
+          uv build --wheel -o dist
           unzip -l dist/*.whl > contents.txt
           for f in "jota_gateway/alembic.ini" "jota_gateway/migrations/env.py" \
                    "jota_gateway/migrations/script.py.mako" "jota_gateway/migrations/versions/[0-9a-f]\{12\}_.*\.py"; do

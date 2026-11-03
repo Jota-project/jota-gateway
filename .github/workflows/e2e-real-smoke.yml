@@ -14,8 +14,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install dependencies
-        run: pip install .[dev]
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+
+      - name: Install dependencies (uv.lock)
+        run: uv sync --locked --extra dev --no-editable
 
       - name: Verify required tokens are present in runner environment
         run: |
@@ -25,7 +30,7 @@ jobs:
           fi
 
       - name: Run E2E real smoke tests
-        run: PYTHONPATH=. pytest tests/e2e -m e2e_real -v
+        run: PYTHONPATH=. uv run --no-sync pytest tests/e2e -m e2e_real -v
         env:
           E2E_TEST_AGENT: ${{ vars.E2E_TEST_AGENT }}
 
