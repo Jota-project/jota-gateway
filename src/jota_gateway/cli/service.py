@@ -121,6 +121,8 @@ def port_free() -> bool:
     from jota_gateway.cli import serve
 
     with socket.socket() as s:
+        # Sin esto, conexiones en TIME_WAIT tras un `docker compose stop` darían un falso «ocupado».
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind(("127.0.0.1", serve.PORT))
         except OSError:
@@ -177,13 +179,16 @@ def install(ctx: click.Context, exe: Path | None) -> None:
     if db is not None and not db.exists():
         raise ApiError(f"No hay BD en {db}. Ejecuta `jota-gw init` (instalación nueva) o "
                        "`jota-gw migrate --from-docker <carpeta>`.", 1)
-    if not port_free():
+    unit = unit_path()
+    # Si nuestro servicio ya corre, el 8004 es suyo: se puede reinstalar o actualizar la unidad.
+    active = unit.exists() and systemctl("is-active", "--quiet", UNIT_NAME,
+                                         check=False).returncode == 0
+    if not active and not port_free():
         raise ApiError(f"El puerto {_port()} está ocupado: ¿hay otro gateway (el contenedor)? "
                        "Páralo antes de instalar el servicio.", 1)
     exe = pick_exe(exe)
     home = paths.home()
     text = render_unit(exe, home)
-    unit = unit_path()
     if unit.exists() and unit.read_text() == text:
         state = "sin cambios"
     else:
@@ -196,6 +201,8 @@ def install(ctx: click.Context, exe: Path | None) -> None:
         systemctl_or_fail("daemon-reload")
         state = "instalado"
     systemctl_or_fail("enable", "--now", UNIT_NAME)
+    if active and state == "instalado":
+        systemctl_or_fail("restart", UNIT_NAME)  # si no, seguiría corriendo el ejecutable viejo
     user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
     if not linger_enabled(user):
         out.error(f"Aviso: sin linger el servicio se para al cerrar tu sesión. "

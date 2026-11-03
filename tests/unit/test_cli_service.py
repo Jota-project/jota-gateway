@@ -178,12 +178,17 @@ def svc(monkeypatch, tmp_path):
     monkeypatch.setattr(output, "_stdin_isatty", lambda: False)
     calls: list[tuple[str, ...]] = []
 
+    state = SimpleNamespace(home=home, calls=calls, unit=service.unit_path(), tmp=tmp_path,
+                            active=False)
+
     def fake(*args, check=True):
+        if args[0] == "is-active":  # no cuenta como acción: solo sondea
+            return subprocess.CompletedProcess(args, 0 if state.active else 3, "", "")
         calls.append(args)
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr(service, "systemctl", fake)
-    return SimpleNamespace(home=home, calls=calls, unit=service.unit_path(), tmp=tmp_path)
+    return state
 
 
 def run(*args, **kw):
@@ -216,7 +221,7 @@ def test_install_refuses_when_port_busy(monkeypatch):
         srv.bind(("127.0.0.1", 0))
         srv.listen()
         monkeypatch.setattr(serve_mod, "PORT", srv.getsockname()[1])
-        assert REAL_PORT_FREE() is False
+        assert REAL_PORT_FREE() is False  # con SO_REUSEADDR sigue viendo un listener real
     assert REAL_PORT_FREE() is True  # libre al cerrar el que escucha
 
 
@@ -226,6 +231,37 @@ def test_install_stops_when_port_busy(svc, monkeypatch):
     assert r.exit_code == 1
     assert "otro gateway" in r.output and "contenedor" in r.output
     assert not svc.unit.exists() and svc.calls == []
+
+
+def test_install_active_service_same_unit_skips_port_check(svc, monkeypatch):
+    svc.unit.parent.mkdir(parents=True)
+    svc.unit.write_text(_unit_text(svc))
+    svc.active = True
+    monkeypatch.setattr(service, "port_free", lambda: False)  # el 8004 es nuestro
+    before = svc.unit.stat().st_mtime_ns
+    r = run("--json", "install", "--exe", EXE)
+    assert r.exit_code == 0, r.output
+    assert svc.unit.stat().st_mtime_ns == before
+    assert svc.calls == [("enable", "--now", "jota-gateway.service")]
+
+
+def test_install_active_service_new_unit_restarts(svc, monkeypatch):
+    svc.unit.parent.mkdir(parents=True)
+    svc.unit.write_text("viejo")
+    svc.active = True
+    monkeypatch.setattr(service, "port_free", lambda: False)
+    r = run("--yes", "install", "--exe", EXE)
+    assert r.exit_code == 0, r.output
+    assert svc.unit.read_text() == _unit_text(svc)
+    assert svc.calls == [("daemon-reload",), ("enable", "--now", "jota-gateway.service"),
+                         ("restart", "jota-gateway.service")]
+
+
+def test_install_without_unit_and_port_busy_still_refuses(svc, monkeypatch):
+    svc.active = True  # da igual: sin unidad no se sondea
+    monkeypatch.setattr(service, "port_free", lambda: False)
+    assert run("install", "--exe", EXE).exit_code == 1
+    assert svc.calls == []
 
 
 def test_install_writes_unit_and_enables(svc):
