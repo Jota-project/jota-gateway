@@ -33,7 +33,7 @@ def _c(level: str, check: str, detail: str) -> Check:
     return {"level": level, "check": check, "detail": detail}
 
 
-def _revisions() -> tuple[set[str], str | None]:
+def revisions() -> tuple[set[str], str | None]:
     # shortcut: lee revision/down_revision de los ficheros; alembic.script cuesta ~360 ms.
     revs: set[str] = set()
     downs: set[str] = set()
@@ -70,7 +70,7 @@ def _check_db(path: Path | None, url: str) -> Check:
         return _c("fail", "base de datos",
                   f"{path} no es una BD del gateway o está dañada ({type(e).__name__}).")
     current = row[0] if row else None
-    known, head = _revisions()
+    known, head = revisions()
     if head is None:
         return _c("info", "base de datos", f"{path} · migración {current}; la última, no "
                   f"comprobado (no se encuentran las migraciones en {MIGRATIONS} o hay varias).")
