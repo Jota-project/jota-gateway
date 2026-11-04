@@ -1,3 +1,10 @@
+# [1.27.0](https://github.com/Jota-project/jota-gateway/compare/v1.26.0...v1.27.0) (2026-11-04)
+
+
+### Features
+
+* **cli:** jota-gw migrate --from-docker y documentación con la vía nativa primero (M14e) ([#315](https://github.com/Jota-project/jota-gateway/issues/315)) ([b1f00b3](https://github.com/Jota-project/jota-gateway/commit/b1f00b318af7a548c36ab2d56f609a4a403ad7df))
+
 # [1.26.0](https://github.com/Jota-project/jota-gateway/compare/v1.25.0...v1.26.0) (2026-11-03)
 
 
