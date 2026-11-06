@@ -239,6 +239,23 @@ def test_orchestrator_down_through_ready_is_a_failure(base, gateway):
     assert found["TTS"]["level"] == "warn"
 
 
+VOICE_OFF = "voz desactivada: configúrala con `jota-gw onboard`"
+
+
+@pytest.mark.parametrize("online", [False, True])
+def test_voice_off_is_info_not_a_failure(base, gateway, online):
+    with open(base / "config.env", "a") as f:
+        f.write("STT_PROVIDER=off\nTTS_PROVIDER=off\n")
+    # En marcha, /ready da los proveedores `off` como no disponibles (probe() es False).
+    _Gateway.routes["/ready"] = (200, {"status": "degraded", "services": {
+        "orchestrator": "ok", "transcriber": "unavailable", "tts": "unavailable"}})
+    r = run_at(gateway, "--json", "doctor") if online else run("--json", "doctor")
+    found = checks(r)
+    for name in ("STT", "TTS"):
+        assert found[name] == {"level": "info", "check": name, "detail": VOICE_OFF}
+    assert found["configuración"]["level"] == "ok"
+
+
 def test_no_secret_in_any_output(base, gateway):
     for args in (("--json", "doctor"), ("doctor",)):
         assert SECRET not in run_at(gateway, *args).output

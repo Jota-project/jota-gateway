@@ -309,8 +309,8 @@ El STT y el TTS pasan por una capa de proveedores (`src/jota_gateway/services/sp
 
 | Variable | Default | Descripción |
 |----------|---------|-------------|
-| `STT_PROVIDER` | `jota` | `jota` (jota-transcriber) o `elevenlabs` (Scribe v2 Realtime) |
-| `TTS_PROVIDER` | `jota` | `jota` (jota-speaker) o `elevenlabs` (stream-input, `eleven_flash_v2_5`) |
+| `STT_PROVIDER` | `jota` | `jota` (jota-transcriber), `elevenlabs` (Scribe v2 Realtime) u `off` (sin voz: solo texto) |
+| `TTS_PROVIDER` | `jota` | `jota` (jota-speaker), `elevenlabs` (stream-input, `eleven_flash_v2_5`) u `off` (sin voz: solo texto) |
 | `ELEVENLABS_API_KEY` | — | Obligatoria si algún proveedor es `elevenlabs` (permisos Text to Speech y Speech to Text) |
 | `ELEVENLABS_TTS_DEFAULT_VOICE` | `gc61tTk93h3LBXPxew2V` | Voz por defecto; las voces de clientes que no son de ElevenLabs (p. ej. `af_heart`) caen en ella o se traducen con `TTS_VOICE_MAP` |
 | `STT_AUDIO_GATE` | `energy` | Puerta de energía del STT de ElevenLabs (solo se envía audio mientras se habla); `off` la quita. jota no la usa |

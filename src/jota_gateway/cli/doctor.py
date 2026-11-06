@@ -25,6 +25,7 @@ from jota_gateway.cli.output import ACCENT, ERROR, MUTED, TEXT, Out
 
 MIGRATIONS = Path(__file__).resolve().parents[1] / "migrations" / "versions"
 TCP_TIMEOUT_S = 2.0
+VOICE_OFF = "voz desactivada: configúrala con `jota-gw onboard`"
 
 Check = dict[str, str]
 
@@ -128,6 +129,12 @@ def _tcp(address: str) -> bool:
         return False
 
 
+def _voice_off(settings: Any) -> set[str]:
+    """Servicios de voz en `off`: no se sondean y su línea es informativa."""
+    providers = (("STT", settings.STT_PROVIDER), ("TTS", settings.TTS_PROVIDER)) if settings else ()
+    return {name for name, provider in providers if provider == "off"}
+
+
 def _services_offline(settings: Any) -> list[Check]:
     """Con el gateway parado: ¿aceptan conexiones las direcciones configuradas?"""
     eleven = f"{urlsplit(settings.ELEVENLABS_BASE_URL).hostname or 'api.elevenlabs.io'}:443"
@@ -137,20 +144,26 @@ def _services_offline(settings: Any) -> list[Check]:
          "warn"),
         ("TTS", eleven if settings.TTS_PROVIDER == "elevenlabs" else settings.TTS_WS_URL, "warn"),
     ]
+    off = _voice_off(settings)
     return [
-        _c("ok", name, f"{address} acepta conexiones (no prueba el servicio).")
+        _c("info", name, VOICE_OFF)
+        if name in off
+        else _c("ok", name, f"{address} acepta conexiones (no prueba el servicio).")
         if _tcp(address)
         else _c(level, name, f"Nadie escucha en {address}.")
         for name, address, level in targets
     ]
 
 
-def _services_online(client: api.Api) -> list[Check]:
+def _services_online(client: api.Api, off: set[str]) -> list[Check]:
     ready = client.request("GET", "/ready", accept=(503,))
     services = ready.get("services", {})
     result = []
     for name, key, level in (("orquestador", "orchestrator", "fail"), ("STT", "transcriber", "warn"),
                              ("TTS", "tts", "warn")):
+        if name in off:
+            result.append(_c("info", name, VOICE_OFF))
+            continue
         state = services.get(key, "?")
         ok = state == "ok"
         detail = "disponible" if ok else f"{state}: el gateway no lo alcanza"
@@ -206,7 +219,7 @@ def run_checks(url: str, token: str | None) -> list[Check]:
         out.append(_c("ok", "token", "El gateway acepta el token de administración."))
     except api.ApiError as e:
         out.append(_c("fail", "token", e.message))
-    out.extend(_services_online(client))
+    out.extend(_services_online(client, _voice_off(settings)))
     return out
 
 

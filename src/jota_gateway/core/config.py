@@ -50,8 +50,9 @@ class Settings(BaseSettings):
     TTS_TOKEN: str = ""
 
     # Proveedores de voz (src/jota_gateway/services/speech/). Se eligen al arrancar; cambiarlos = reiniciar.
-    STT_PROVIDER: Literal["jota", "elevenlabs"] = "jota"
-    TTS_PROVIDER: Literal["jota", "elevenlabs"] = "jota"
+    # "off" = sin voz: la sesión sigue solo en texto.
+    STT_PROVIDER: Literal["jota", "elevenlabs", "off"] = "jota"
+    TTS_PROVIDER: Literal["jota", "elevenlabs", "off"] = "jota"
     ELEVENLABS_API_KEY: SecretStr | None = None
     ELEVENLABS_BASE_URL: str = "wss://api.elevenlabs.io"
     # Resto de ajustes de ElevenLabs: constantes en src/jota_gateway/services/speech/elevenlabs/ (#264).
