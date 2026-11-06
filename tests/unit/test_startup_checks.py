@@ -64,20 +64,24 @@ def test_openclaw_token_empty_or_placeholder_warns(value, caplog):
     assert warn_insecure_tokens(_settings(OPENCLAW_TOKEN=value)) == ["OPENCLAW_TOKEN"]
 
 
-def test_tts_token_defaults_empty():
+def test_tts_token_defaults_empty(monkeypatch):
+    monkeypatch.delenv("TTS_TOKEN", raising=False)
     assert Settings(_env_file=None).TTS_TOKEN == ""
 
 
-def test_empty_tts_token_not_flagged():
+def test_empty_tts_token_not_flagged(monkeypatch):
+    monkeypatch.delenv("TTS_TOKEN", raising=False)
     # Vacío = «el servicio TTS no usa clave», una elección legítima (como TRANSCRIBER_TOKEN).
     s = Settings(_env_file=None, ADMIN_TOKEN=SECRET, OPENCLAW_TOKEN=SECRET)  # TTS_TOKEN por defecto
     assert "TTS_TOKEN" not in insecure_tokens(s)
     assert "TTS_TOKEN" not in insecure_tokens(_settings(TTS_TOKEN=""))
 
 
-def test_placeholder_tts_token_flagged(caplog):
+# "gateway" era el default del repositorio y aún llega en `.env` antiguos (`migrate --from-docker`).
+@pytest.mark.parametrize("value", ["changeme", "gateway"])
+def test_placeholder_tts_token_flagged(value, caplog):
     caplog.set_level(logging.WARNING)
-    assert warn_insecure_tokens(_settings(TTS_TOKEN="changeme")) == ["TTS_TOKEN"]
+    assert warn_insecure_tokens(_settings(TTS_TOKEN=value)) == ["TTS_TOKEN"]
 
 
 def test_warnings_never_contain_the_token_value(caplog):

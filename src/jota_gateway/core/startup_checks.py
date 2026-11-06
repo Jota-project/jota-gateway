@@ -37,6 +37,7 @@ _PLACEHOLDER_TOKENS = frozenset(
         "test",
         "example",
         "default",
+        "gateway",  # antiguo default de TTS_TOKEN (aún en `.env` copiados con `migrate`)
     }
 )
 
@@ -97,7 +98,7 @@ _INSECURE_TOKEN_WARNINGS = {
 
 
 def warn_insecure_tokens(settings) -> list[str]:
-    """WARNING por cada token vacío o por defecto. Devuelve los nombres avisados."""
+    """WARNING por cada token vacío (salvo TTS_TOKEN) o de ejemplo. Devuelve los nombres avisados."""
     flagged = insecure_tokens(settings)
     for name in flagged:
         logger.warning(_INSECURE_TOKEN_WARNINGS[name])
