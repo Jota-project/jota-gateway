@@ -575,9 +575,11 @@ Read in the npm package source, not observed live. A wrong or missing token is a
 ```
 
 `authReason` is also `token_missing`, `rate_limited` (with `retryable`/`retryAfterMs`), etc. The
-gateway does not read it: any `ok:false` other than `startup-sidecars` is an
-`OrchestratorHandshakeError`, and `jota-gw onboard` (`cli/verify.py`) reports it as "OpenClaw
-rejected the token".
+gateway does not read it: any `ok:false` other than `startup-sidecars` raises
+`OrchestratorRejectedError`, a subclass of `OrchestratorHandshakeError` with the same stable code.
+`jota-gw onboard` (`cli/verify.py`) reports only that subclass as "OpenClaw rejected the token";
+a malformed or unexpected handshake frame (plain `OrchestratorHandshakeError`) is reported as an
+unexpected answer instead.
 
 `GET /healthz` (and `/health`) answers 200 `{"ok":true,"status":"live"}` as soon as the HTTP
 listener is up (`dist/gateway-prewarm.js`, `handleGatewayProbeRequest`). It carries **no server
@@ -587,7 +589,8 @@ version**: `detect_openclaw()` returns `""` (found, version unknown); the versio
 ## Change log of this file
 
 - **2026-11-06**: added "Token rejected on `connect`, and `/healthz`" (server 2026.11.1, read in
-  the package source); the spent startup budget now raises `OrchestratorStartingError`.
+  the package source); the spent startup budget now raises `OrchestratorStartingError`, and an
+  `ok:false` answer to `connect` raises `OrchestratorRejectedError` (both keep the stable code).
 - **2026-11-06**: added "OpenClaw still starting: `UNAVAILABLE` / `startup-sidecars`" (server
   2026.11.1): `connect()` retries that rejection on a new socket for up to 30 s; the `connect`
   frame carries `client.displayName: "jota-gateway"`.

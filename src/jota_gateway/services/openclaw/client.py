@@ -53,6 +53,11 @@ class OrchestratorHandshakeError(RuntimeError):
         super().__init__(ORCHESTRATOR_HANDSHAKE_FAILED_ERROR)
 
 
+class OrchestratorRejectedError(OrchestratorHandshakeError):
+    """OpenClaw answered `connect` with `ok:false` (wrong or missing token, rate limit…): the
+    same stable code; `jota-gw onboard` tells it apart from a malformed or unexpected frame."""
+
+
 class OrchestratorStartingError(OrchestratorHandshakeError):
     """OpenClaw was still starting (startup-sidecars) when the retry budget ran out: the same
     stable code, but not a rejected token (`jota-gw onboard` tells them apart)."""
@@ -222,7 +227,7 @@ class OpenClawClient:
                 logger.warning(
                     "OpenClaw rejected the handshake (code=%s)", _safe_error_code(hello.get("error"))
                 )
-                raise OrchestratorHandshakeError()
+                raise OrchestratorRejectedError()
             hello_payload = hello.get("payload") or {}
             if not isinstance(hello_payload, dict):
                 raise OrchestratorHandshakeError()

@@ -1,8 +1,14 @@
 """Verificadores de proveedores de `jota-gw onboard` contra los fakes reales (nunca la red)."""
 
 import asyncio
+import contextlib
+import json
 import logging
+import os
 import socket
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 import websockets
@@ -23,6 +29,8 @@ from tests.fakes.elevenlabs_tts import FakeElevenLabsTts
 from tests.fakes.jota_upstreams import FakeTranscriber, FakeTts
 from tests.fakes.openclaw import FakeOpenClawServer
 
+ROOT = Path(__file__).resolve().parents[2]
+
 # Corto a propósito: websockets recorta los frames largos a DEBUG y uno largo no saldría entero.
 TOKEN = "oc-SECRET-42"
 
@@ -31,6 +39,24 @@ def closed_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+@contextlib.asynccontextmanager
+async def answering(frame: str):
+    """Servidor WS que manda `frame` nada más conectar y espera a que el cliente cierre."""
+
+    async def handler(ws):
+        await ws.send(frame)
+        with contextlib.suppress(websockets.ConnectionClosed):
+            async for _ in ws:
+                pass
+
+    server = await websockets.serve(handler, "127.0.0.1", 0)
+    try:
+        yield server.sockets[0].getsockname()[1]
+    finally:
+        server.close()
+        await server.wait_closed()
 
 
 @pytest.fixture
@@ -51,9 +77,9 @@ def test_is_loopback(monkeypatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", no_dns)
     monkeypatch.setattr(socket, "gethostbyname", no_dns)
-    for host in ("127.0.0.1", "127.1.2.3", "::1", "localhost"):
+    for host in ("127.0.0.1", "127.1.2.3", "::1", "[::1]", "localhost"):
         assert is_loopback(host), host
-    for host in ("192.168.1.19", "example.com", "0.0.0.0", "localhost.example.com", ""):
+    for host in ("192.168.1.19", "example.com", "0.0.0.0", "localhost.example.com", "", "[::1"):
         assert not is_loopback(host), host
 
 
@@ -105,6 +131,50 @@ async def test_verify_jota_stt_ok():
         await fake.stop()
     assert (v.ok, v.reason) == (True, "ok")
     assert len(fake.configs) == 1
+
+
+async def test_verify_jota_stt_rejected_without_token():
+    fake = FakeTranscriber(token="stt-secret")
+    await fake.start()
+    try:
+        v = await verify_jota_stt(f"127.0.0.1:{fake.port}", "")
+    finally:
+        await fake.stop()
+    assert (v.ok, v.reason) == (False, "rejected")
+    assert "sin clave" in v.detail
+
+
+async def test_verify_jota_stt_wrong_token_rejected():
+    fake = FakeTranscriber(token="stt-secret")
+    await fake.start()
+    try:
+        bad = await verify_jota_stt(f"127.0.0.1:{fake.port}", "stt-WRONG-secret")
+        good = await verify_jota_stt(f"127.0.0.1:{fake.port}", "stt-secret")
+    finally:
+        await fake.stop()
+    assert (bad.ok, bad.reason) == (False, "rejected")
+    assert "sin clave" not in bad.detail and "stt-WRONG-secret" not in bad.detail
+    assert (good.ok, good.reason) == (True, "ok")
+
+
+@pytest.mark.parametrize(
+    ("frame", "verify_call"),
+    [
+        ("esto no es json", lambda port: verify_openclaw("127.0.0.1", port, TOKEN)),
+        (
+            json.dumps({"type": "error", "message": "Configuration failed", "code": "CONFIG_ERROR"}),
+            lambda port: verify_jota_stt(f"127.0.0.1:{port}", ""),
+        ),
+        ("esto no es json", lambda port: verify_jota_tts(f"127.0.0.1:{port}", "")),
+    ],
+    ids=["openclaw-malformed", "stt-config-error", "tts-non-json"],
+)
+async def test_unexpected_answer_is_invalid_not_rejected(frame, verify_call):
+    """Solo un rechazo de autenticación es `rejected`: nunca «exige clave» por otro fallo."""
+    async with answering(frame) as port:
+        v = await verify_call(port)
+    assert (v.ok, v.reason) == (False, "invalid")
+    assert "respuesta inesperada" in v.detail
 
 
 async def test_verify_jota_stt_unreachable():
@@ -198,6 +268,53 @@ async def test_invalid_input_is_invalid_without_socket(monkeypatch, call):
     monkeypatch.setattr(websockets, "connect", no_connect)
     v = await call()
     assert (v.ok, v.reason) == (False, "invalid")
+
+
+def test_openclaw_deadline_covers_startup_retry_budget():
+    """Ruling 1: el plazo de verify_openclaw cubre el reintento de OpenClaw arrancando."""
+    from jota_gateway.services.openclaw.client import _STARTUP_RETRY_BUDGET_S
+
+    assert verify.OPENCLAW_VERIFY_TIMEOUT_S > _STARTUP_RETRY_BUDGET_S
+
+
+# En un proceso nuevo: core.config construye `Settings()` al importarse y aquí ya está cargado.
+_INVALID_CONFIG_PROBE = """
+import asyncio, json
+from jota_gateway.cli.verify import verify_elevenlabs, verify_jota_stt, verify_jota_tts, verify_openclaw
+
+async def main():
+    for call in (
+        verify_openclaw("127.0.0.1", 18789, "t"),
+        verify_jota_stt("127.0.0.1:9", ""),
+        verify_jota_tts("127.0.0.1:9", ""),
+        verify_elevenlabs("tts", "k"),
+    ):
+        v = await call
+        print(json.dumps([v.reason, v.detail]))
+
+asyncio.run(main())
+"""
+
+
+@pytest.mark.parametrize(
+    "env",
+    [{"OPENCLAW_PORT": "SECRET-abc"}, {"TTS_VOICE_MAP": "SECRET-{"}],
+    ids=["validation-error", "settings-error"],
+)
+def test_invalid_config_is_invalid_verdict_not_exception(env):
+    """Un config.env o una variable de entorno inválidos: `invalid` con campo y tipo, sin el valor."""
+    # Base de ElevenLabs local: si la configuración pasara, nunca se sale a la red real.
+    full_env = {**os.environ, "ELEVENLABS_BASE_URL": "ws://127.0.0.1:9", **env}
+    r = subprocess.run(
+        [sys.executable, "-c", _INVALID_CONFIG_PROBE],
+        cwd=ROOT, env=full_env, capture_output=True, text=True, timeout=60,
+    )
+    assert r.returncode == 0, r.stderr[-2000:]
+    verdicts = [json.loads(line) for line in r.stdout.splitlines()]
+    assert [reason for reason, _ in verdicts] == ["invalid"] * 4
+    field = next(iter(env))
+    for _, detail in verdicts:
+        assert field in detail and "SECRET" not in detail
 
 
 async def test_detect_openclaw_none_when_closed():

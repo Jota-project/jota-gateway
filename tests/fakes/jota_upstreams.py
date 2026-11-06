@@ -22,7 +22,8 @@ def _ready_ok(connection, request):
 
 
 class FakeTranscriber:
-    def __init__(self) -> None:
+    def __init__(self, token: str | None = None) -> None:
+        self.token = token  # si no es None, exige este token, como jota-transcriber con auth
         self.on_audio: list[tuple[str, bool]] = []  # emitido tras el primer frame de audio
         self.on_end: list[tuple[str, bool]] = []  # emitido al recibir {"type":"end"}
         self.configs: list[dict] = []
@@ -33,6 +34,11 @@ class FakeTranscriber:
     async def _handler(self, ws) -> None:
         cfg = json.loads(await ws.recv())
         self.configs.append(cfg)
+        if self.token is not None and cfg.get("token") != self.token:
+            # Forma real (StreamingSession::handleConfig): error AUTH_FAILED y cierre 1008.
+            await ws.send(json.dumps({"type": "error", "message": "Invalid token", "code": "AUTH_FAILED"}))
+            await ws.close(1008)
+            return
         await ws.send(json.dumps({"type": "ready", "protocol_version": 1, "session_id": "s"}))
         sent_audio = False
         try:

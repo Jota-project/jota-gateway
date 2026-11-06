@@ -10,6 +10,7 @@ pesado se importa dentro de cada función (`jota-gw --help` < 150 ms).
 from __future__ import annotations
 
 import asyncio
+import importlib
 import ipaddress
 import logging
 from collections.abc import Awaitable, Callable
@@ -42,6 +43,8 @@ def is_loopback(host: str) -> bool:
     127.0.0.1 no cuenta, para que un nombre remoto no pueda colarse por DNS."""
     if host.lower() == "localhost":
         return True
+    if host.startswith("[") and host.endswith("]"):  # `[::1]`: OpenClawClient lo respeta
+        host = host[1:-1]
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
@@ -51,7 +54,8 @@ def is_loopback(host: str) -> bool:
 async def detect_openclaw(port: int = 18789) -> str | None:
     """Versión de OpenClaw si `GET http://127.0.0.1:{port}/healthz` da 2xx; None si nada
     contesta 2xx. OpenClaw 2026.11.1 contesta `{"ok":true,"status":"live"}`, sin versión
-    (`dist/gateway-prewarm.js`): hoy devuelve "" (encontrado, versión desconocida)."""
+    (`dist/gateway-prewarm.js`): hoy devuelve "" (encontrado, versión desconocida). "" es
+    falso: quien llame debe comprobar `is not None`, nunca la verdad del valor."""
     import httpx
 
     from jota_gateway.services.reconnection import describe_error
@@ -66,16 +70,52 @@ async def detect_openclaw(port: int = 18789) -> str | None:
     return "" if r.is_success else None
 
 
+class _Rejected(Exception):
+    """El servicio contestó y rechazó la autenticación (y solo eso)."""
+
+
+class _Unexpected(Exception):
+    """El servicio contestó, pero no lo que dice su protocolo."""
+
+
+def _config_problem() -> Verdict | None:
+    """`core.config` construye `Settings()` al importarse, y todo cliente lo importa: un
+    config.env o una variable de entorno inválidos se convierten aquí en `invalid`, con el
+    campo y el tipo de error, nunca el valor (puede ser un secreto)."""
+    from pydantic import ValidationError
+    from pydantic_settings import SettingsError
+
+    from jota_gateway.cli.config import _errors, _settings_error
+    from jota_gateway.services.reconnection import describe_error
+
+    try:
+        importlib.import_module("jota_gateway.core.config")
+    except ValidationError as e:
+        problems = _errors(e)
+    except SettingsError as e:
+        problems = _settings_error(e)
+    except Exception as e:  # noqa: BLE001 — frontera del verificador (p. ej. config.env ilegible)
+        problems = [describe_error(e)]
+    else:
+        return None
+    return Verdict(
+        False,
+        "invalid",
+        f"La configuración del gateway no es válida ({'; '.join(problems)}). "
+        "Revísala con `jota-gw config validate`.",
+    )
+
+
 async def _check(
     name: str,
     address: str,
     deadline_s: float,
     connect: Callable[[], Awaitable[object]],
     close: Callable[[], Awaitable[None]],
-    rejected: tuple[type[BaseException], ...],
     rejected_detail: str,
 ) -> Verdict:
-    """Un intento con plazo total. `rejected`: el servicio contestó y rechazó la clave."""
+    """Un intento con plazo total. `connect` traduce los fallos de su cliente a `_Rejected`,
+    `_Unexpected` o `TimeoutError`; el resto es «no responde»."""
     from jota_gateway.services.reconnection import describe_error
     from jota_gateway.services.speech.elevenlabs.common import pin_websockets_logging
 
@@ -83,8 +123,14 @@ async def _check(
     try:
         async with asyncio.timeout(deadline_s):
             await connect()
-    except rejected:
+    except _Rejected:
         return Verdict(False, "rejected", rejected_detail)
+    except _Unexpected:
+        return Verdict(
+            False,
+            "invalid",
+            f"{name} dio una respuesta inesperada en {address}: comprueba que es el servicio correcto.",
+        )
     except TimeoutError:
         return Verdict(False, "timeout", f"{name} no contestó a tiempo.")
     except Exception as e:  # noqa: BLE001 — frontera del verificador: todo fallo es un Verdict
@@ -110,9 +156,12 @@ async def verify_openclaw(host: str, port: int, token: str) -> Verdict:
         return Verdict(False, "not_loopback", NOT_LOOPBACK_DETAIL)
     if not 0 < port < 65536:
         return Verdict(False, "invalid", "El puerto de OpenClaw debe estar entre 1 y 65535.")
+    if (bad := _config_problem()) is not None:
+        return bad
     from jota_gateway.services.openclaw.client import (
         OpenClawClient,
         OrchestratorHandshakeError,
+        OrchestratorRejectedError,
         OrchestratorStartingError,
     )
     from jota_gateway.services.openclaw.dispatcher import FrameDispatcher
@@ -132,6 +181,10 @@ async def verify_openclaw(host: str, port: int, token: str) -> Verdict:
             await client.connect()
         except OrchestratorStartingError:
             raise TimeoutError from None  # sigue arrancando: no es un token rechazado
+        except OrchestratorRejectedError:
+            raise _Rejected from None  # `ok:false` a `connect`
+        except OrchestratorHandshakeError:
+            raise _Unexpected from None  # frame malformado o que no es el reto de OpenClaw
 
     return await _check(
         "OpenClaw",
@@ -139,7 +192,6 @@ async def verify_openclaw(host: str, port: int, token: str) -> Verdict:
         OPENCLAW_VERIFY_TIMEOUT_S,
         connect,
         client.close,
-        (OrchestratorHandshakeError,),
         "OpenClaw rechazó el token.",
     )
 
@@ -148,20 +200,24 @@ async def verify_jota_stt(url: str, token: str) -> Verdict:
     name = "El servicio de STT"
     if _bad_url(url):
         return Verdict(False, "invalid", "La dirección del servicio de STT es host:puerto, sin ws://.")
+    if (bad := _config_problem()) is not None:
+        return bad
     from jota_gateway.services.transcriber_client import (
         TranscriberClient,
         TranscriberHandshakeError,
     )
 
     client = TranscriberClient(url, "onboard")
+
+    async def connect() -> None:
+        try:
+            await client.connect(token=token)
+        except TranscriberHandshakeError as e:
+            # Solo AUTH_REQUIRED/AUTH_FAILED rechazan la clave (CONFIG_ERROR, unexpected_frame… no).
+            raise (_Rejected if e.code.startswith("AUTH_") else _Unexpected) from None
+
     return await _check(
-        name,
-        url,
-        VERIFY_TIMEOUT_S,
-        lambda: client.connect(token=token),
-        client.close,
-        (TranscriberHandshakeError,),
-        _own_rejected(name, token),
+        name, url, VERIFY_TIMEOUT_S, connect, client.close, _own_rejected(name, token)
     )
 
 
@@ -169,17 +225,22 @@ async def verify_jota_tts(url: str, token: str) -> Verdict:
     name = "El servicio de TTS"
     if _bad_url(url):
         return Verdict(False, "invalid", "La dirección del servicio de TTS es host:puerto, sin ws://.")
-    from jota_gateway.services.tts_client import TTSAuthError, TTSClient
+    if (bad := _config_problem()) is not None:
+        return bad
+    from jota_gateway.services.tts_client import TTSAuthError, TTSClient, TTSHandshakeError
 
     client = TTSClient(url, token, "onboard")
+
+    async def connect() -> None:
+        try:
+            await client.connect()
+        except TTSAuthError:
+            raise _Rejected from None
+        except TTSHandshakeError:
+            raise _Unexpected from None  # cerró el `auth` o contestó algo que no es JSON/objeto
+
     return await _check(
-        name,
-        url,
-        VERIFY_TIMEOUT_S,
-        client.connect,
-        client.close,
-        (TTSAuthError,),
-        _own_rejected(name, token),
+        name, url, VERIFY_TIMEOUT_S, connect, client.close, _own_rejected(name, token)
     )
 
 
@@ -189,6 +250,8 @@ async def verify_elevenlabs(kind: Literal["stt", "tts"], api_key: str) -> Verdic
     rechazada o cuota agotada); cualquier otro fallo es `unreachable`."""
     if not api_key.strip():
         return Verdict(False, "invalid", "Falta la clave de ElevenLabs.")
+    if (bad := _config_problem()) is not None:
+        return bad
     from pydantic import SecretStr
 
     from jota_gateway.core.config import settings
@@ -196,11 +259,12 @@ async def verify_elevenlabs(kind: Literal["stt", "tts"], api_key: str) -> Verdic
     from jota_gateway.services.speech.elevenlabs.stt import ElevenLabsSttProvider
     from jota_gateway.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
 
-    temp = settings.model_copy(update={"ELEVENLABS_API_KEY": SecretStr(api_key)})
-    # El constructor fija `websockets` en INFO (api_key()): la cabecera xi-api-key no sale.
-    provider = (ElevenLabsSttProvider if kind == "stt" else ElevenLabsTtsProvider)(temp)
+    provider: ElevenLabsSttProvider | ElevenLabsTtsProvider | None = None
     ok = False
     try:
+        temp = settings.model_copy(update={"ELEVENLABS_API_KEY": SecretStr(api_key)})
+        # El constructor fija `websockets` en INFO (api_key()): la cabecera xi-api-key no sale.
+        provider = (ElevenLabsSttProvider if kind == "stt" else ElevenLabsTtsProvider)(temp)
         async with asyncio.timeout(VERIFY_TIMEOUT_S):
             ok = await provider.probe()
     except TimeoutError:
@@ -208,9 +272,10 @@ async def verify_elevenlabs(kind: Literal["stt", "tts"], api_key: str) -> Verdic
     except Exception as e:  # noqa: BLE001 — frontera del verificador (probe() ya no lanza)
         logger.debug("verify ElevenLabs: %s", describe_error(e))
     finally:
-        await provider.aclose()
+        if provider is not None:
+            await provider.aclose()
     if ok:
         return Verdict(True, "ok", "ElevenLabs acepta la clave.")
-    if provider._terminal:
+    if provider is not None and provider._terminal:
         return Verdict(False, "rejected", "ElevenLabs rechazó la clave (o la cuota de la cuenta está agotada).")
     return Verdict(False, "unreachable", "ElevenLabs no responde.")
