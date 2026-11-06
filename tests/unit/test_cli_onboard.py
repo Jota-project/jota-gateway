@@ -16,6 +16,7 @@ from dotenv import dotenv_values
 
 from jota_gateway.cli import app, doctor, menu, output, service, verify
 from jota_gateway.cli import init as init_mod
+from jota_gateway.cli import onboard as onboard_mod
 from jota_gateway.cli.verify import Verdict
 from tests.fakes.cli_api import FakeApi
 
@@ -30,8 +31,10 @@ SECRETS = (OC_TOKEN, STT_TOKEN, TTS_TOKEN, EL_KEY)
 NO_OPENCLAW = "Sin OpenClaw no se instala el servicio. Vuelve a ejecutar `jota-gw onboard`."
 ENV = ("ADMIN_TOKEN", "OPENCLAW_HOST", "OPENCLAW_PORT", "OPENCLAW_TOKEN", "STT_PROVIDER",
        "TTS_PROVIDER", "TRANSCRIBER_WS_URL", "TRANSCRIBER_TOKEN", "TTS_WS_URL", "TTS_TOKEN",
-       "ELEVENLABS_API_KEY", "JOTA_GW_TOKEN", "JOTA_GW_URL")
+       "ELEVENLABS_API_KEY", "GATEWAY_HOST", "JOTA_GW_TOKEN", "JOTA_GW_URL")
 REAL_INIT = init_mod.init
+LAN_IP = "192.0.2.10"
+DEFAULT = object()  # en la cola de `tty`: acepta el valor por defecto de la pregunta
 
 
 @pytest.fixture()
@@ -74,6 +77,8 @@ def gw(monkeypatch, tmp_path, use_api):
     monkeypatch.setattr(init_mod, "init", fake_init)
     monkeypatch.setattr(service, "install", fake_install)
     monkeypatch.setattr(service, "_verb", fake_verb)
+    monkeypatch.setattr(service, "require_systemd", lambda: None)
+    monkeypatch.setattr(onboard_mod, "_lan_ip", lambda: LAN_IP)  # sin socket real
     monkeypatch.setattr(doctor, "run_checks", lambda url, token: [
         {"level": "fail", "check": "orquestador", "detail": "aviso del doctor"}])
     for name in ("verify_openclaw", "verify_jota_stt", "verify_jota_tts", "verify_elevenlabs"):
@@ -87,16 +92,24 @@ def gw(monkeypatch, tmp_path, use_api):
 @pytest.fixture()
 def tty(monkeypatch):
     """Terminal interactiva: cada pregunta de questionary saca la siguiente respuesta de la
-    cola (None = Ctrl+C) y queda anotada en `asked` como (tipo, mensaje)."""
+    cola (None = Ctrl+C, DEFAULT = su valor por defecto) y queda anotada en `asked` como
+    (tipo, mensaje, kwargs). Un `select` solo acepta uno de sus valores."""
     st = SimpleNamespace(queue=[], asked=[])
 
     def question(kind):
         class _Q:
             def __init__(self, message, *args, **kwargs):
-                st.asked.append((kind, message))
+                self.kwargs = kwargs
+                st.asked.append((kind, message, kwargs))
 
             def ask(self):
-                return st.queue.pop(0) if st.queue else None
+                answer = st.queue.pop(0) if st.queue else None
+                if answer is DEFAULT:
+                    return self.kwargs["default"]
+                if kind == "select" and answer is not None:
+                    values = [c.value for c in self.kwargs["choices"]]
+                    assert answer in values, (answer, values)
+                return answer
         return _Q
 
     for kind in ("select", "text", "password", "confirm"):
@@ -128,6 +141,21 @@ def installs(gw):
     return [c for c in gw.calls if c in ("install", "restart")]
 
 
+def asked(tty, kind, part):
+    """kwargs de las preguntas de ese tipo cuyo mensaje contiene `part`."""
+    return [kw for k, message, kw in tty.asked if k == kind and part in message]
+
+
+def titles(kwargs):
+    return [c.title.lower() for c in kwargs["choices"]]
+
+
+def assert_cancelled(r):
+    # Cancelación limpia (click.Abort → «Aborted!», salida 1), no un fallo con traza.
+    assert r.exit_code == 1 and isinstance(r.exception, SystemExit), r.exception
+    assert "Aborted!" in r.output
+
+
 # --- los tests de la brief -----------------------------------------------------------------
 
 
@@ -153,14 +181,15 @@ def test_onboard_happy_path_answers_file(gw, tmp_path):
     assert r.output.count(CLIENT_KEY) == 1  # la clave, una sola vez
     assert "Recomendado: deja este servicio accesible solo desde el gateway." in r.output
     assert "aviso del doctor" in r.output  # el doctor solo informa: no cambia el código
-    assert ":8004/ws/stream" in r.output and "ws://" in r.output
+    assert f"ws://{LAN_IP}:8004/ws/stream" in r.output
 
 
 def test_onboard_openclaw_unverified_exits_without_install(gw, tmp_path):
     gw.verdicts["verify_openclaw"] = Verdict(False, "rejected", "OpenClaw rechazó el token.")
     r = onboard(write_answers(tmp_path))
     assert r.exit_code == 1
-    assert "OpenClaw rechazó el token." in r.output
+    assert "OpenClaw rechazó el token." in r.output and NO_OPENCLAW in r.output
+    assert r.output.index("OpenClaw rechazó el token.") < r.output.index(NO_OPENCLAW)
     assert installs(gw) == []
     assert dotenv_values(gw.env) == {"ADMIN_TOKEN": ADMIN}  # nada sin verificar
     assert not any(isinstance(c, tuple) and c[0] != "verify_openclaw" for c in gw.calls)
@@ -204,7 +233,7 @@ def test_onboard_interrupted_then_resumed(gw, tmp_path):
                                         "token": STT_TOKEN})
     gw.verdicts["verify_jota_stt"] = KeyboardInterrupt()
     r = onboard(path)
-    assert r.exit_code == 1
+    assert_cancelled(r)
     env = dotenv_values(gw.env)
     assert env["OPENCLAW_TOKEN"] == OC_TOKEN and env["OPENCLAW_PORT"] == "18789"
     assert "STT_PROVIDER" not in env and "TRANSCRIBER_TOKEN" not in env
@@ -398,11 +427,13 @@ def test_interactive_full_flow(gw, tty):
         "TTS_PROVIDER": "off",
     }
     assert ("verify_elevenlabs", "tts", EL_KEY) in gw.calls
-    assert [k for k, _ in tty.asked].count("password") == 2  # la clave de ElevenLabs, una vez
+    assert [k for k, _, _ in tty.asked].count("password") == 2  # la clave de ElevenLabs, una vez
     assert ("POST", "/admin/clients", {"name": "Tele", "client_type": "app"}) in gw.api.calls
     assert installs(gw) == ["install"]
     for secret in SECRETS:
         assert secret not in r.output
+    menus = asked(tty, "select", "¿Qué hago?")
+    assert [titles(kw) for kw in menus] == [["reintentar", "cambiar respuestas", "ahora no"]] * 2
 
 
 def test_interactive_openclaw_retry_then_cancel(gw, tty):
@@ -412,6 +443,8 @@ def test_interactive_openclaw_retry_then_cancel(gw, tty):
     r = run("onboard")
     assert r.exit_code == 1
     assert NO_OPENCLAW in r.output
+    assert titles(asked(tty, "select", "¿Qué hago?")[0]) == [
+        "reintentar", "cambiar respuestas", "cancelar"]
     assert [c[0] for c in gw.calls if isinstance(c, tuple)] == ["verify_openclaw"] * 2
     assert installs(gw) == [] and dotenv_values(gw.env) == {"ADMIN_TOKEN": ADMIN}
 
@@ -419,8 +452,8 @@ def test_interactive_openclaw_retry_then_cancel(gw, tty):
 def test_interactive_ctrl_c_at_openclaw_says_why(gw, tty):
     gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\n")
     r = run("onboard")  # cola vacía: la primera pregunta devuelve None (Ctrl+C)
-    assert r.exit_code == 1
-    assert NO_OPENCLAW in r.output
+    assert r.exit_code == 1 and isinstance(r.exception, SystemExit)
+    assert NO_OPENCLAW in r.output and "Traceback" not in r.output
 
 
 def test_interactive_ctrl_c_while_verifying_openclaw_says_why(gw, tty):
@@ -428,15 +461,15 @@ def test_interactive_ctrl_c_while_verifying_openclaw_says_why(gw, tty):
     gw.verdicts["verify_openclaw"] = KeyboardInterrupt()  # Ctrl+C durante la espera (hasta 35 s)
     tty.queue.extend(["127.0.0.1", "18789", OC_TOKEN])
     r = run("onboard")
-    assert r.exit_code == 1
-    assert NO_OPENCLAW in r.output
+    assert r.exit_code == 1 and isinstance(r.exception, SystemExit)
+    assert NO_OPENCLAW in r.output and "Aborted!" not in r.output
 
 
 def test_interactive_ctrl_c_at_voice_keeps_openclaw(gw, tty):
     gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\n")
     tty.queue.extend(["127.0.0.1", "18789", OC_TOKEN])  # y Ctrl+C en el STT
     r = run("onboard")
-    assert r.exit_code == 1
+    assert_cancelled(r)
     env = dotenv_values(gw.env)
     assert env["OPENCLAW_TOKEN"] == OC_TOKEN and "STT_PROVIDER" not in env
     assert installs(gw) == []
@@ -449,3 +482,183 @@ def test_menu_entry_runs_onboard(monkeypatch, tty):
     tty.queue.extend(["onboard", "exit"])
     assert run().exit_code == 0
     assert calls == [["onboard"]]
+
+
+# --- ronda de arreglos 1 --------------------------------------------------------------------
+
+
+def test_interactive_defaults_and_labels(gw, tty):
+    gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\n")
+    tty.queue.extend([
+        DEFAULT, DEFAULT, OC_TOKEN,                 # OpenClaw no detectado: host y puerto
+        "jota", DEFAULT, DEFAULT,                   # STT propio, dirección y «¿usa clave?»
+        "jota", DEFAULT, DEFAULT,                   # TTS igual
+        "Tele", "web",
+    ])
+    r = run("onboard")
+    assert r.exit_code == 0, r.output
+    assert [kw["default"] for kw in asked(tty, "text", "OpenClaw")] == ["127.0.0.1", "18789"]
+    assert [kw["default"] for kw in asked(tty, "text", "Dirección")] == [
+        "localhost:9000", "localhost:8005"]
+    assert [kw["default"] for kw in asked(tty, "confirm", "¿Usa clave?")] == [False, False]
+    for kw in asked(tty, "select", "¿qué servicio?"):
+        assert titles(kw) == ["servicio propio", "elevenlabs", "ahora no"]
+    assert ("verify_openclaw", "127.0.0.1", 18789, OC_TOKEN) in gw.calls
+    assert ("verify_jota_stt", "localhost:9000", "") in gw.calls
+    assert ("verify_jota_tts", "localhost:8005", "") in gw.calls
+    env = dotenv_values(gw.env)
+    assert env["TRANSCRIBER_WS_URL"] == "localhost:9000" and env["TTS_WS_URL"] == "localhost:8005"
+    assert r.output.count("Recomendado: deja este servicio accesible solo desde el gateway.") == 2
+    assert sorted(titles(asked(tty, "select", "Tipo")[0])) == ["app", "esp32", "ha", "web"]
+
+
+def test_answers_jota_without_url_writes_the_default(gw, tmp_path):
+    r = onboard(write_answers(tmp_path, stt={"provider": "jota"}, tts={"provider": "jota"}))
+    assert r.exit_code == 0, r.output
+    env = dotenv_values(gw.env)
+    assert env["TRANSCRIBER_WS_URL"] == "localhost:9000" and env["TTS_WS_URL"] == "localhost:8005"
+    assert env["TRANSCRIBER_TOKEN"] == "" and env["TTS_TOKEN"] == ""
+
+
+OLD_KEY = "el-clave-vieja-del-tts"
+NEW_KEY = "el-clave-nueva-del-stt"
+
+
+def _tts_already_on_elevenlabs(gw):
+    gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\nELEVENLABS_API_KEY={OLD_KEY}\nTTS_PROVIDER=elevenlabs\n")
+
+
+def test_new_stt_key_is_verified_for_an_elevenlabs_tts_interactive(gw, tty):
+    _tts_already_on_elevenlabs(gw)
+    gw.api.responses[("GET", "/admin/clients")] = [CLIENT]
+    gw.verdicts["verify_elevenlabs"] = [
+        Verdict(True, "ok", "ElevenLabs acepta la clave."),                 # STT
+        Verdict(False, "rejected", "ElevenLabs rechazó la clave."),         # la misma, para el TTS
+    ]
+    tty.queue.extend(["127.0.0.1", "18789", OC_TOKEN,
+                      "elevenlabs", NEW_KEY, "off",                         # STT → «ahora no»
+                      "off"])                                               # TTS
+    r = run("onboard")
+    assert r.exit_code == 0, r.output
+    assert [c for c in gw.calls if c[0] == "verify_elevenlabs"] == [
+        ("verify_elevenlabs", "stt", NEW_KEY), ("verify_elevenlabs", "tts", NEW_KEY)]
+    assert "El TTS ya usa ElevenLabs" in r.output
+    env = dotenv_values(gw.env)
+    assert env["ELEVENLABS_API_KEY"] == OLD_KEY and env["STT_PROVIDER"] == "off"
+    assert NEW_KEY not in r.output and OLD_KEY not in r.output
+
+
+def test_new_stt_key_is_verified_for_an_elevenlabs_tts_answers(gw, tmp_path):
+    _tts_already_on_elevenlabs(gw)
+    gw.verdicts["verify_elevenlabs"] = [
+        Verdict(True, "ok", "ElevenLabs acepta la clave."),
+        Verdict(False, "rejected", "ElevenLabs rechazó la clave."),
+    ]
+    eleven = {"provider": "elevenlabs", "api_key": NEW_KEY}
+    r = onboard(write_answers(tmp_path, stt=eleven, tts=eleven))
+    assert r.exit_code == 1
+    assert "El TTS ya usa ElevenLabs" in r.output
+    env = dotenv_values(gw.env)
+    assert env["ELEVENLABS_API_KEY"] == OLD_KEY and "STT_PROVIDER" not in env  # nada escrito
+    assert installs(gw) == []
+
+
+def test_no_tts_check_when_the_answers_replace_the_tts(gw, tmp_path):
+    _tts_already_on_elevenlabs(gw)
+    r = onboard(write_answers(tmp_path, stt={"provider": "elevenlabs", "api_key": NEW_KEY},
+                              tts={"provider": "off"}))
+    assert r.exit_code == 0, r.output
+    assert [c for c in gw.calls if c[0] == "verify_elevenlabs"] == [
+        ("verify_elevenlabs", "stt", NEW_KEY)]
+    env = dotenv_values(gw.env)
+    assert env["ELEVENLABS_API_KEY"] == NEW_KEY and env["TTS_PROVIDER"] == "off"
+
+
+def test_no_tts_check_when_the_key_does_not_change(gw, tmp_path):
+    _tts_already_on_elevenlabs(gw)
+    eleven = {"provider": "elevenlabs", "api_key": OLD_KEY}
+    assert onboard(write_answers(tmp_path, stt=eleven, tts=eleven)).exit_code == 0
+    assert [c[1] for c in gw.calls if c[0] == "verify_elevenlabs"] == ["stt", "tts"]
+
+
+@pytest.mark.parametrize("yes", [True, False])
+def test_interactive_rerun_asks_before_restarting(gw, tty, yes):
+    gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\n")
+    service.unit_path().parent.mkdir(parents=True)
+    service.unit_path().write_text("[Unit]\n")
+    gw.api.responses[("GET", "/admin/clients")] = [CLIENT]
+    tty.queue.extend(["127.0.0.1", "18789", OC_TOKEN, "off", "off", yes])
+    r = run("onboard")
+    assert r.exit_code == 0, r.output
+    (kw,) = asked(tty, "confirm", "sesiones abiertas")
+    assert kw["default"] is True
+    assert installs(gw) == (["restart"] if yes else [])
+    if not yes:
+        assert "jota-gw restart" in r.output
+
+
+def test_answers_rerun_restarts_without_asking(gw, tty, tmp_path):
+    gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\n")
+    service.unit_path().parent.mkdir(parents=True)
+    service.unit_path().write_text("[Unit]\n")
+    r = onboard(write_answers(tmp_path))
+    assert r.exit_code == 0, r.output
+    assert tty.asked == [] and installs(gw) == ["restart"]
+
+
+def test_without_systemd_fails_before_creating_or_asking(gw, tty, monkeypatch):
+    from jota_gateway.cli.api import ApiError
+
+    def no_systemd():
+        raise ApiError("Este comando necesita Linux con systemd.", 1)
+
+    monkeypatch.setattr(service, "require_systemd", no_systemd)
+    r = run("onboard")
+    assert r.exit_code == 1 and "systemd" in r.output
+    assert gw.calls == [] and tty.asked == [] and not gw.env.exists()
+
+
+@pytest.mark.parametrize("name", ["   ", "x" * 201])
+def test_answers_first_client_name_follows_server_rules(gw, tmp_path, name):
+    r = onboard(write_answers(tmp_path, first_client={"name": name, "type": "web"}))
+    assert r.exit_code == 2 and "first_client.name" in r.output
+    assert gw.calls == []  # antes de instalar nada
+
+
+def test_interactive_first_client_name_follows_server_rules(gw, tty):
+    gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\n")
+    tty.queue.extend(["127.0.0.1", "18789", OC_TOKEN, "off", "off", "Tele", "ha"])
+    assert run("onboard").exit_code == 0
+    (kw,) = asked(tty, "text", "primer cliente")
+    assert kw["validate"]("Tele") is True
+    assert kw["validate"]("   ") is not True and kw["validate"]("x" * 201) is not True
+
+
+@pytest.mark.parametrize(("host", "shown"), [
+    ("0.0.0.0", LAN_IP), ("::", LAN_IP), ("192.168.1.19", "192.168.1.19"), ("::1", "[::1]"),
+])
+def test_client_address_follows_gateway_host(gw, tmp_path, host, shown):
+    gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\nGATEWAY_HOST={host}\n")
+    r = onboard(write_answers(tmp_path))
+    assert r.exit_code == 0, r.output
+    assert f"ws://{shown}:8004/ws/stream" in r.output
+
+
+def test_lan_ip_falls_back_to_loopback(monkeypatch):
+    import socket
+
+    class NoRoute:
+        def __init__(self, *args):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def connect(self, address):
+            raise OSError("Network is unreachable")
+
+    monkeypatch.setattr(socket, "socket", NoRoute)  # sin `gw`: `_lan_ip` sin parchear
+    assert onboard_mod._lan_ip() == "127.0.0.1"

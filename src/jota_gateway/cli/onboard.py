@@ -115,16 +115,31 @@ def _openclaw(out: Out, answers: Any) -> None:
         settled = _settle(out, ask, check, not answers, ("Cancelar", "cancel"))
     except (click.Abort, KeyboardInterrupt):  # Ctrl+C en una pregunta o durante la verificación
         settled = None
+    except api.ApiError as e:  # --answers: el detalle del fallo y después el mensaje fijo
+        out.error(e.message)
+        settled = None
     if settled is None:
         raise api.ApiError(NO_OPENCLAW, 1)
     host, port, token = settled
     _write(out, {"OPENCLAW_TOKEN": token, "OPENCLAW_HOST": host, "OPENCLAW_PORT": str(port)})
 
 
+def _tts_on_other_key(key: str) -> bool:
+    """¿El TTS de config.env ya usa ElevenLabs con otra clave? Al cambiarla, la usaría sin
+    haberla verificado para el TTS (el gateway tiene una sola ELEVENLABS_API_KEY)."""
+    from dotenv import dotenv_values
+
+    current = dotenv_values(paths.config_file())
+    return current.get("TTS_PROVIDER") == "elevenlabs" and current.get(ELEVENLABS_KEY) != key
+
+
 def _voice_step(out: Out, kind: Literal["stt", "tts"], answer: Any,
-                verified: dict[str, str]) -> None:
+                verified: dict[str, str], tts_stays: bool = False) -> None:
     """STT o TTS: servicio propio, ElevenLabs u «ahora no» (`off`). Una sola clave de
-    ElevenLabs para los dos: la verificada en el STT se reutiliza (y se verifica) en el TTS."""
+    ElevenLabs para los dos: la verificada en el STT se reutiliza (y se verifica) en el TTS.
+    `tts_stays`: el TTS no se va a sustituir en esta ejecución (siempre, salvo --answers con
+    otro proveedor de TTS); si ya usa ElevenLabs, una clave nueva del STT se verifica también
+    para el TTS antes de escribirla."""
     from jota_gateway.cli import verify
 
     name, url_key, token_key, provider_key, default_url = VOICE[kind]
@@ -162,7 +177,14 @@ def _voice_step(out: Out, kind: Literal["stt", "tts"], answer: Any,
         if values[provider_key] == "jota":
             jota = getattr(verify, f"verify_jota_{kind}")
             return asyncio.run(jota(values[url_key], values[token_key]))
-        return asyncio.run(verify.verify_elevenlabs(kind, values[ELEVENLABS_KEY]))
+        key = values[ELEVENLABS_KEY]
+        verdict = asyncio.run(verify.verify_elevenlabs(kind, key))
+        if verdict.ok and kind == "stt" and tts_stays and _tts_on_other_key(key):
+            tts = asyncio.run(verify.verify_elevenlabs("tts", key))
+            if not tts.ok:
+                return verify.Verdict(False, tts.reason, "El TTS ya usa ElevenLabs y pasaría a "
+                                      f"esta clave, pero para el TTS no vale: {tts.detail}")
+        return verdict
 
     values = _settle(out, ask, check, not answer, ("Ahora no", "off")) or {provider_key: "off"}
     _write(out, values)
@@ -182,20 +204,39 @@ def _lan_ip() -> str:
         return "127.0.0.1"
 
 
-def _first_client(ctx: click.Context, out: Out, answers: Any) -> None:
-    from jota_gateway.cli import clients, menu, serve
+def _client_name(value: str) -> bool | str:
+    """Las mismas reglas que aplica el servidor al nombre (`admin_schemas._Name`)."""
+    from pydantic import TypeAdapter, ValidationError
+
+    from jota_gateway.models.admin_schemas import _Name
+
+    try:
+        TypeAdapter(_Name).validate_python(value)
+    except ValidationError:
+        return "Entre 1 y 200 caracteres."
+    return True
+
+
+def _first_client(ctx: click.Context, out: Out, answers: Any, gateway_host: str) -> None:
+    from typing import get_args
+
+    from jota_gateway.cli import clients, serve
+    from jota_gateway.models.admin_schemas import ClientType
 
     client = api.from_context(ctx)
     if not client.request("GET", "/admin/clients"):
         if answers:
             first = answers.first_client and (answers.first_client.name, answers.first_client.type)
         else:
-            first = (_ask("text", "Nombre del primer cliente", validate=_required).strip(),
-                     _choose("Tipo", [(t, t) for t in menu.CLIENT_TYPES]))
+            first = (_ask("text", "Nombre del primer cliente", validate=_client_name).strip(),
+                     _choose("Tipo", [(t, t) for t in get_args(ClientType)]))
         if first:
             body = {"name": first[0], "client_type": first[1]}
             clients._show_key(out, client.request("POST", "/admin/clients", body))
-    out.message(f"Los clientes se conectan a ws://{_lan_ip()}:{serve.PORT}/ws/stream")
+    # Solo con el gateway escuchando en todas las interfaces se adivina la IP de la LAN.
+    host = _lan_ip() if gateway_host in ("", "0.0.0.0", "::") else gateway_host
+    host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    out.message(f"Los clientes se conectan a ws://{host}:{serve.PORT}/ws/stream")
 
 
 def _read_answers(path: Path) -> Any:
@@ -206,7 +247,7 @@ def _read_answers(path: Path) -> Any:
 
     from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-    from jota_gateway.models.admin_schemas import ClientType
+    from jota_gateway.models.admin_schemas import ClientType, _Name
 
     try:
         with open(path, "rb") as f:
@@ -233,8 +274,8 @@ def _read_answers(path: Path) -> Any:
     class Off(Strict):
         provider: Literal["off"]
 
-    class FirstClient(Strict):
-        name: str = Field(min_length=1)
+    class FirstClient(Strict):  # las reglas del servidor: un nombre malo falla antes de instalar
+        name: _Name
         type: ClientType
 
     class Answers(Strict):
@@ -262,23 +303,28 @@ def _run(ctx: click.Context, out: Out, answers: Any) -> None:
     from jota_gateway.cli import doctor, service
     from jota_gateway.cli import init as init_mod
 
+    service.require_systemd()  # antes de crear o preguntar nada
     if not paths.config_file().is_file():
         ctx.invoke(init_mod.init)
-    cfg._load_or_fail(out)  # antes de preguntar nada: campo y tipo, sin traza
+    settings, _ = cfg._load_or_fail(out)  # antes de preguntar nada: campo y tipo, sin traza
     _openclaw(out, answers)
     verified: dict[str, str] = {}
-    _voice_step(out, "stt", answers and answers.stt, verified)
+    tts_stays = answers is None or answers.tts.provider == "elevenlabs"
+    _voice_step(out, "stt", answers and answers.stt, verified, tts_stays)
     _voice_step(out, "tts", answers and answers.tts, verified)
-    if service.unit_path().exists():
-        # Sin la confirmación de `jota-gw restart`: aplicar lo configurado es lo que se ha pedido.
+    if not service.unit_path().exists():
+        ctx.invoke(service.install)
+    # Nunca el confirm() de `jota-gw restart`: sin terminal saldría con 2 y config.env escrito.
+    elif answers or _ask("confirm", "Reinicio el servicio para aplicarlo; se cortarán las "
+                         "sesiones abiertas. ¿Sigo?", default=True):
         service._verb(ctx, "restart", "reiniciado", wait=True)
     else:
-        ctx.invoke(service.install)
+        out.message("Sin reiniciar: lo nuevo se aplica con `jota-gw restart`.", MUTED)
     try:
         ctx.invoke(doctor.doctor)
     except click.exceptions.Exit:
         out.message("El diagnóstico marca algún fallo (arriba); el asistente sigue.", MUTED)
-    _first_client(ctx, out, answers)
+    _first_client(ctx, out, answers, settings.GATEWAY_HOST)
 
 
 @click.command()
