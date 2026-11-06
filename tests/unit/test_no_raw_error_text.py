@@ -356,7 +356,8 @@ async def test_ready_ping_failure_logs_type_only(caplog):
     state = SimpleNamespace(
         openclaw=SimpleNamespace(ping=failing),
         speech=SimpleNamespace(
-            stt=SimpleNamespace(probe=failing), tts=SimpleNamespace(probe=failing)
+            stt=SimpleNamespace(name="jota", probe=failing),
+            tts=SimpleNamespace(name="jota", probe=failing),
         ),
     )
     response = Response()

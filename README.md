@@ -41,7 +41,7 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la guía completa 
 | Endpoint | Método | Auth | Descripción |
 |----------|--------|------|-------------|
 | `/healthz` | GET | ninguna | Liveness — siempre 200 si el proceso vive |
-| `/ready` | GET | ninguna | Readiness — 200 ok/degraded, 503 si OpenClaw no responde |
+| `/ready` | GET | ninguna | Readiness — 200 ok/degraded, 503 si OpenClaw no responde. Un proveedor de voz en `off` sale `unavailable` en `services` pero no degrada `status` |
 
 ```json
 // GET /ready — ejemplo degradado

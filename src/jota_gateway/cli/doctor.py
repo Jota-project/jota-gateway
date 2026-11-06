@@ -135,6 +135,17 @@ def _voice_off(settings: Any) -> set[str]:
     return {name for name, provider in providers if provider == "off"}
 
 
+def _live_off(state: Any, settings: Any) -> set[str]:
+    """Con el gateway en marcha manda el proceso (/admin/state), no config.env: puede no haberse
+    reiniciado tras cambiarla. Si no se puede leer, la config local."""
+    try:
+        services = state["services"]
+        return {name for name, key in (("STT", "stt"), ("TTS", "tts"))
+                if services[key]["provider"] == "off"}
+    except (KeyError, TypeError):  # sin token válido (None) o una respuesta sin esos campos
+        return _voice_off(settings)
+
+
 def _services_offline(settings: Any) -> list[Check]:
     """Con el gateway parado: ¿aceptan conexiones las direcciones configuradas?"""
     eleven = f"{urlsplit(settings.ELEVENLABS_BASE_URL).hostname or 'api.elevenlabs.io'}:443"
@@ -213,13 +224,14 @@ def run_checks(url: str, token: str | None) -> list[Check]:
             out.extend(_services_offline(settings))
         return out
     out.append(_c("ok", "gateway", f"Responde en {urlsplit(url).netloc}."))
+    state = None
     try:
         client.token = api.resolve_token(token)
-        client.request("GET", "/admin/state")
+        state = client.request("GET", "/admin/state")
         out.append(_c("ok", "token", "El gateway acepta el token de administración."))
     except api.ApiError as e:
         out.append(_c("fail", "token", e.message))
-    out.extend(_services_online(client, _voice_off(settings)))
+    out.extend(_services_online(client, _live_off(state, settings)))
     return out
 
 
