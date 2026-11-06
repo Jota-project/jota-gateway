@@ -441,10 +441,13 @@ def real_ws_client(port: int) -> OpenClawClient:
 async def test_connect_retries_on_startup_sidecars():
     async with FakeOpenClawServer(startup_pending=1) as server:
         client = real_ws_client(server.port)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
         info = await client.connect()
         try:
             assert info.default_agent_id == "main"
             assert server.connections == 2  # el segundo handshake va en un socket nuevo
+            assert loop.time() - started >= 0.09  # esperó: retryAfterMs 50 → suelo de 100 ms
         finally:
             await client.close()
 
@@ -461,6 +464,7 @@ _SIDECARS = {"code": "UNAVAILABLE", "retryable": True, "details": {"reason": "st
         (_SIDECARS, 0.5),  # sin retryAfterMs: 500 ms, como su cliente de referencia
         ({**_SIDECARS, "retryAfterMs": True}, 0.5),
         ({**_SIDECARS, "retryAfterMs": float("nan")}, 0.5),
+        ({**_SIDECARS, "retryAfterMs": 10**400}, 5.0),  # int enorme: sin OverflowError
         ({**_SIDECARS, "retryable": False}, None),
         ({**_SIDECARS, "details": {"reason": "authenticated-profile-unavailable"}}, None),
         ({**_SIDECARS, "code": "UNAUTHORIZED"}, None),
@@ -473,20 +477,23 @@ def test_startup_retry_after_only_for_startup_sidecars(error, wait_s):
 
 
 @pytest.mark.asyncio
-async def test_connect_gives_up_after_budget(monkeypatch, caplog):
+@pytest.mark.parametrize("retry_after_ms", [50, 5000])  # 5000: la espera se recorta a lo que queda
+async def test_connect_gives_up_after_budget(monkeypatch, caplog, retry_after_ms):
     caplog.set_level(logging.DEBUG, logger="jota_gateway")
     monkeypatch.setattr("jota_gateway.services.openclaw.client._STARTUP_RETRY_BUDGET_S", 0.3)
-    async with FakeOpenClawServer(startup_pending=10**6) as server:
+    async with FakeOpenClawServer(startup_pending=10**6, startup_retry_after_ms=retry_after_ms) as server:
         client = real_ws_client(server.port)
         loop = asyncio.get_running_loop()
         started = loop.time()
         with pytest.raises(OrchestratorHandshakeError) as excinfo:
             await client.connect()
-        assert loop.time() - started < 1.0
+        assert 0.3 <= loop.time() - started < 1.0  # agota el presupuesto, sin pasarse
         assert excinfo.type is OrchestratorHandshakeError  # el mismo código estable de hoy
         assert server.connections > 1
         assert client._ws is None
         assert "retry shortly" not in caplog.text  # nunca el texto de OpenClaw
+        retry_levels = [r.levelno for r in caplog.records if "startup-sidecars" in r.getMessage()]
+        assert retry_levels.count(logging.INFO) == 1  # solo el primer reintento; el resto, DEBUG
 
 
 @pytest.mark.asyncio

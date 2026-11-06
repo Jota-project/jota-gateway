@@ -472,7 +472,8 @@ For operator diagnostics, a rejected `hello`, a failed `agents.list` and a rejec
 WARNING line with OpenClaw's `error.code` (`code=...`), only when it matches
 `[A-Za-z0-9_.:-]{1,48}`; otherwise `code=unspecified`. `error.message` and the rest of the body
 are never read (the one exception: a rejected `connect`'s `retryable`, `retryAfterMs` and
-`details.reason`, read only to recognise `startup-sidecars` and never logged).
+`details.reason`, read only to recognise `startup-sidecars` and compute the wait; only that
+computed wait is logged, never the raw error).
 
 Note: the `websockets` library itself logs raw frames at DEBUG on its own `websockets.*`
 loggers; keep those at their default level in production.
@@ -544,13 +545,15 @@ the socket with **1013** `"gateway starting"`:
   `retryAfterMs` is missing.
 
 How the gateway reacts (`OpenClawClient._do_connect`): on exactly that error it waits
-`retryAfterMs` (500 ms if missing or invalid, at least 100 ms, at most 5 s) and repeats the whole
-handshake on a new socket; it never starts an attempt past 30 s from the first one. After that
-it raises the usual `OrchestratorHandshakeError` (`orchestrator_handshake_failed`) and the
-reconnect loop takes over. Any other `UNAVAILABLE` (e.g. `details.reason:
+`retryAfterMs` (500 ms if missing or invalid, at least 100 ms, at most 5 s, and never longer
+than what is left of a 30 s budget counted from the first attempt) and repeats the whole
+handshake on a new socket. Once the budget is spent no new attempt starts: it raises the usual
+`OrchestratorHandshakeError` (`orchestrator_handshake_failed`) and the reconnect loop takes over. Any other `UNAVAILABLE` (e.g. `details.reason:
 "authenticated-profile-unavailable"`) fails the handshake at once, as before. Only the fixed text
-and the computed wait are logged, never `message` or `details`. Side effect: the lifespan's first
-`connect()` can hold the gateway's startup for up to those 30 s while OpenClaw boots.
+and the computed wait are logged (the first retry of a `connect()` at INFO, the rest at DEBUG),
+never `message` or `details`. Side effect: the lifespan's first `connect()` can hold the
+gateway's startup (port 8004 still closed) for up to those 30 s while OpenClaw boots; that is why
+`jota-gw install|start|restart` wait up to 45 s for `/healthz` (`HEALTH_TIMEOUT_S`).
 
 The `connect` frame also carries `client.displayName: "jota-gateway"` since this date. The
 `client` object is closed (`additionalProperties: false`), but `displayName` is an optional

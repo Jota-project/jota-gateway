@@ -85,7 +85,8 @@ def _startup_retry_after_s(error: object) -> float | None:
     ms = error.get("retryAfterMs")
     if isinstance(ms, bool) or not isinstance(ms, int | float) or not ms >= 0:  # `not >=` catches NaN
         ms = 500
-    return min(max(ms / 1000, 0.1), _STARTUP_RETRY_MAX_WAIT_S)
+    # Clamp before dividing: a huge int / 1000 raises OverflowError.
+    return max(100, min(ms, _STARTUP_RETRY_MAX_WAIT_S * 1000)) / 1000
 
 
 # Inbound frame size limit (G-05). websockets defaults to 1 MiB while OpenClaw announces
@@ -164,21 +165,30 @@ class OpenClawClient:
 
     async def _do_connect(self) -> GatewayInfo:
         """One handshake; while OpenClaw is still starting its sidecars, another on a new
-        socket after each retryAfterMs, never starting one past _STARTUP_RETRY_BUDGET_S."""
+        socket after each retryAfterMs, each wait capped at what is left of
+        _STARTUP_RETRY_BUDGET_S and no attempt once it is spent."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _STARTUP_RETRY_BUDGET_S
+        retries = 0
         while True:
             try:
                 return await self._connect_once()
             except _StartupPending as e:
-                if loop.time() + e.wait_s > deadline:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
                     logger.warning(
                         "OpenClaw rejected the handshake (code=UNAVAILABLE): still starting, %.0fs retry budget spent",
                         _STARTUP_RETRY_BUDGET_S,
                     )
                     raise OrchestratorHandshakeError() from None
-                logger.info("OpenClaw is starting (startup-sidecars): new handshake in %.0f ms", e.wait_s * 1000)
-                await asyncio.sleep(e.wait_s)  # the failed attempt already closed its socket
+                wait_s = min(e.wait_s, remaining)
+                logger.log(
+                    logging.DEBUG if retries else logging.INFO,  # one INFO per connect(), not per retry
+                    "OpenClaw is starting (startup-sidecars): new handshake in %.0f ms",
+                    wait_s * 1000,
+                )
+                retries += 1
+                await asyncio.sleep(wait_s)  # the failed attempt already closed its socket
 
     async def _connect_once(self) -> GatewayInfo:
         # Last roster known from a previous connect, kept as fallback if agents.list

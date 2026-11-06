@@ -323,6 +323,13 @@ def test_install_fails_with_hint_when_not_healthy(svc, monkeypatch):
     assert r.exit_code == 1 and "jota-gw logs -n 50" in r.output
 
 
+def test_health_wait_outlasts_openclaw_startup_retry():
+    # El lifespan espera el primer connect (que reintenta mientras OpenClaw arranca) antes de abrir el 8004.
+    from jota_gateway.services.openclaw.client import _STARTUP_RETRY_BUDGET_S
+
+    assert service.HEALTH_TIMEOUT_S > _STARTUP_RETRY_BUDGET_S
+
+
 def test_wait_healthy_retries_until_ok(svc, monkeypatch):
     answers = iter([False, False, True])
     monkeypatch.setattr(service, "_probe", lambda url: next(answers))
