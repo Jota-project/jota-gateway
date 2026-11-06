@@ -52,6 +52,42 @@ class OrchestratorHandshakeError(RuntimeError):
     def __init__(self) -> None:
         super().__init__(ORCHESTRATOR_HANDSHAKE_FAILED_ERROR)
 
+
+# OpenClaw ≥2026.11 answers `connect` with a retryable UNAVAILABLE while its startup sidecars
+# boot (docs/openclaw-protocol.md): connect() retries the handshake within this budget.
+_STARTUP_RETRY_BUDGET_S = 30.0
+_STARTUP_RETRY_MAX_WAIT_S = 5.0  # per wait, whatever retryAfterMs says
+
+
+class _StartupPending(Exception):
+    """Internal: OpenClaw is still starting; never escapes _do_connect."""
+
+    def __init__(self, wait_s: float) -> None:
+        super().__init__()
+        self.wait_s = wait_s
+
+
+def _startup_retry_after_s(error: object) -> float | None:
+    """Wait before the next handshake if `error` is OpenClaw's startup-sidecars UNAVAILABLE
+    (its own test: code, retryable and details.reason), else None. Like its reference
+    client: retryAfterMs missing/invalid → 500 ms, never below 100 ms; capped here at
+    _STARTUP_RETRY_MAX_WAIT_S."""
+    if not isinstance(error, dict):
+        return None
+    details = error.get("details")
+    if not (
+        error.get("code") == "UNAVAILABLE"
+        and error.get("retryable") is True
+        and isinstance(details, dict)
+        and details.get("reason") == "startup-sidecars"
+    ):
+        return None
+    ms = error.get("retryAfterMs")
+    if isinstance(ms, bool) or not isinstance(ms, int | float) or not ms >= 0:  # `not >=` catches NaN
+        ms = 500
+    return min(max(ms / 1000, 0.1), _STARTUP_RETRY_MAX_WAIT_S)
+
+
 # Inbound frame size limit (G-05). websockets defaults to 1 MiB while OpenClaw announces
 # up to 25 MiB in hello-ok's policy.maxPayload; a larger frame closed the socket with
 # 1009 and dropped every multiplexed session. The connect happens *before* hello-ok, so
@@ -127,6 +163,24 @@ class OpenClawClient:
             return await self._do_connect()
 
     async def _do_connect(self) -> GatewayInfo:
+        """One handshake; while OpenClaw is still starting its sidecars, another on a new
+        socket after each retryAfterMs, never starting one past _STARTUP_RETRY_BUDGET_S."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _STARTUP_RETRY_BUDGET_S
+        while True:
+            try:
+                return await self._connect_once()
+            except _StartupPending as e:
+                if loop.time() + e.wait_s > deadline:
+                    logger.warning(
+                        "OpenClaw rejected the handshake (code=UNAVAILABLE): still starting, %.0fs retry budget spent",
+                        _STARTUP_RETRY_BUDGET_S,
+                    )
+                    raise OrchestratorHandshakeError() from None
+                logger.info("OpenClaw is starting (startup-sidecars): new handshake in %.0f ms", e.wait_s * 1000)
+                await asyncio.sleep(e.wait_s)  # the failed attempt already closed its socket
+
+    async def _connect_once(self) -> GatewayInfo:
         # Last roster known from a previous connect, kept as fallback if agents.list
         # fails on this one (#151). Captured before gateway_info is rebuilt below.
         previous_agents = list(self.gateway_info.agents) if self.gateway_info else []
@@ -145,6 +199,9 @@ class OpenClawClient:
             raw = await asyncio.wait_for(self._ws.recv(), timeout=30.0)
             hello = self._parse_handshake_frame(raw)
             if not hello.get("ok"):
+                wait_s = _startup_retry_after_s(hello.get("error"))
+                if wait_s is not None:
+                    raise _StartupPending(wait_s)
                 logger.warning(
                     "OpenClaw rejected the handshake (code=%s)", _safe_error_code(hello.get("error"))
                 )

@@ -35,12 +35,17 @@ class FakeOpenClawServer:
                  `res {aborted: false}`. Tras el abort, `push_end`/`push_fail` no emiten nada.
 
     Cada `chat.send` y cada push tienen su `runId` (en el ack y en sus eventos), como el real.
+
+    `startup_pending=n`: los `n` primeros `connect` reciben el `UNAVAILABLE`/`startup-sidecars`
+    de OpenClaw 2026.11.1 arrancando (`retryAfterMs = startup_retry_after_ms`) y cierre 1013.
     """
 
-    def __init__(self, hello_payload=None, big_bytes=2 * MIB):
+    def __init__(self, hello_payload=None, big_bytes=2 * MIB, startup_pending=0, startup_retry_after_ms=50):
         self.connections = 0
         self.release = asyncio.Event()
         self.big_bytes = big_bytes
+        self.startup_pending = startup_pending
+        self.startup_retry_after_ms = startup_retry_after_ms
         self.hello_payload = hello_payload or {
             "type": "hello-ok",
             "protocol": 4,
@@ -146,7 +151,19 @@ class FakeOpenClawServer:
             async for raw in ws:
                 frame = json.loads(raw)
                 method, rid, params = frame.get("method"), frame.get("id"), frame.get("params", {})
-                if method == "connect":
+                if method == "connect" and self.startup_pending > 0:
+                    self.startup_pending -= 1
+                    # Forma real: rejectGatewayStartupConnect (dist/message-handler-*.mjs).
+                    error = {
+                        "code": "UNAVAILABLE",
+                        "message": "gateway starting; retry shortly",
+                        "retryable": True,
+                        "retryAfterMs": self.startup_retry_after_ms,
+                        "details": {"reason": "startup-sidecars"},
+                    }
+                    await ws.send(json.dumps({"type": "res", "id": rid, "ok": False, "error": error}))
+                    await ws.close(1013, "gateway starting")
+                elif method == "connect":
                     await ws.send(self._res(rid, self.hello_payload))
                 elif method == "agents.list":
                     await ws.send(self._res(rid, {"defaultId": "main", "agents": [{"id": "main"}]}))

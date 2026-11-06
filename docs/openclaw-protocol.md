@@ -461,7 +461,9 @@ them to a log. What it does instead:
 Handshake (`connect()`): a rejected `hello`, a first frame that is not `connect.challenge`, or
 a challenge/`hello`/`hello.payload` that is not a JSON object all raise
 `OrchestratorHandshakeError`, whose reason is the fixed `orchestrator_handshake_failed`. It is
-retried by the reconnect loop like any failed connect. `ReconnectingOpenClawClient`'s
+retried by the reconnect loop like any failed connect (the one exception, the retryable
+`startup-sidecars` `UNAVAILABLE`, is first retried inside `connect()` itself — see "OpenClaw
+still starting" below). `ReconnectingOpenClawClient`'s
 `last_error` (exposed by `GET /admin/orchestrators/{name}/status`) holds that code, or just the
 exception type name (`OSError`, `TimeoutError`...) for anything else. The same `last_error`
 rule applies to every wrapper that goes through `reconnect_with_backoff`.
@@ -469,7 +471,8 @@ rule applies to every wrapper that goes through `reconnect_with_backoff`.
 For operator diagnostics, a rejected `hello`, a failed `agents.list` and a rejected turn log one
 WARNING line with OpenClaw's `error.code` (`code=...`), only when it matches
 `[A-Za-z0-9_.:-]{1,48}`; otherwise `code=unspecified`. `error.message` and the rest of the body
-are never read.
+are never read (the one exception: a rejected `connect`'s `retryable`, `retryAfterMs` and
+`details.reason`, read only to recognise `startup-sidecars` and never logged).
 
 Note: the `websockets` library itself logs raw frames at DEBUG on its own `websockets.*`
 loggers; keep those at their default level in production.
@@ -508,8 +511,57 @@ lost. Fix belongs to M9 (correlate by `runId`; issue #202).
 
 ---
 
+## OpenClaw still starting: `UNAVAILABLE` / `startup-sidecars` on `connect` (2026-11-06, server 2026.11.1)
+
+Read from the npm package `openclaw@2026.11.1` (not captured live). The `connect.challenge`
+arrives before the server has finished booting; while its startup sidecars are pending, the
+answer to `connect` is a retryable rejection instead of `hello-ok`, and then the server closes
+the socket with **1013** `"gateway starting"`:
+
+```json
+{
+  "type": "res", "id": "...", "ok": false,
+  "error": {
+    "code": "UNAVAILABLE",
+    "message": "gateway starting; retry shortly",
+    "retryable": true,
+    "retryAfterMs": 500,
+    "details": {"reason": "startup-sidecars"}
+  }
+}
+```
+
+- `reason` lives in `error.details.reason`; `retryAfterMs` and `retryable` are top-level fields
+  of `error` (`ErrorShapeSchema`: `retryAfterMs` integer ≥ 0, `dist/sessions-CVESrViJ.mjs:2065`).
+- Emitted by `rejectGatewayStartupConnect` (`dist/message-handler-D_4tBaZX.mjs:590-604`), with
+  the constants in `dist/startup-unavailable-D0-EeFjq.mjs` (`GATEWAY_STARTUP_CLOSE_CODE = 1013`).
+  Documented in `docs/gateway/protocol/handshake.md` ("Retry within your connection budget
+  instead of treating it as a terminal handshake failure") and `docs/gateway/embedding.md`
+  ("Wait for protocol readiness").
+- OpenClaw's own test, `isRetryableGatewayStartupUnavailableError`, requires `code ==
+  "UNAVAILABLE"`, `retryable === true` and `details.reason == "startup-sidecars"`; its reference
+  client (`resolveGatewayStartupRetryAfterMs`) clamps the wait to 100–2000 ms, 500 ms when
+  `retryAfterMs` is missing.
+
+How the gateway reacts (`OpenClawClient._do_connect`): on exactly that error it waits
+`retryAfterMs` (500 ms if missing or invalid, at least 100 ms, at most 5 s) and repeats the whole
+handshake on a new socket; it never starts an attempt past 30 s from the first one. After that
+it raises the usual `OrchestratorHandshakeError` (`orchestrator_handshake_failed`) and the
+reconnect loop takes over. Any other `UNAVAILABLE` (e.g. `details.reason:
+"authenticated-profile-unavailable"`) fails the handshake at once, as before. Only the fixed text
+and the computed wait are logged, never `message` or `details`. Side effect: the lifespan's first
+`connect()` can hold the gateway's startup for up to those 30 s while OpenClaw boots.
+
+The `connect` frame also carries `client.displayName: "jota-gateway"` since this date. The
+`client` object is closed (`additionalProperties: false`), but `displayName` is an optional
+non-empty string in `ConnectParamsSchema` both in 2026.11.1 (`dist/sessions-CVESrViJ.mjs:1936`)
+and in 2026.4.12 (`dist/protocol-9t-_D3R4.js`), so every supported server (≥ 2026.6.11) accepts it.
+
 ## Change log of this file
 
+- **2026-11-06**: added "OpenClaw still starting: `UNAVAILABLE` / `startup-sidecars`" (server
+  2026.11.1): `connect()` retries that rejection on a new socket for up to 30 s; the `connect`
+  frame carries `client.displayName: "jota-gateway"`.
 - **2026-11-01**: added "Agent failure after the turn was accepted" (issue #300): `chat`
   `state: "error"` and `agent` `phase: "error"` are terminal.
 - **2026-10-28**: minimum supported server is now **2026.6.11** (issue #262). Removed the
