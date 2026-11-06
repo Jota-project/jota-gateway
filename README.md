@@ -162,21 +162,23 @@ La vía recomendada es la **instalación nativa** (servicio de usuario de system
 
 ### Instalación nativa
 
-**Requisitos:** Linux con systemd de usuario, `git`, `curl` y [uv](https://docs.astral.sh/uv/), y un OpenClaw accesible (2026.6.11 o posterior). Instala uv con `curl -LsSf https://astral.sh/uv/install.sh | sh`. `uv tool` deja `jota-gw` en `~/.local/bin`: si no está en el PATH, ejecuta `uv tool update-shell` y reabre la terminal, porque `jota-gw install` pone en la unidad el `jota-gw` que encuentre en el PATH.
-
-`V` es la última versión de [las releases](https://github.com/Jota-project/jota-gateway/releases) sin la `v` (p. ej. `V=1.27.0` para la release `v1.27.0`). `constraints.txt` existe desde la v1.26.0 y `jota-gw migrate`, solo desde la versión que lo incluye.
-
-Con las mismas versiones que la imagen Docker: cada release publica `constraints.txt` (exportado de `uv.lock`, sin hashes porque uv no los admite en constraints) y `-c` acepta la URL directamente.
-
-**Con el asistente** (recomendado):
+**Requisitos:** Linux (x86_64 o aarch64) con systemd de usuario y un OpenClaw accesible (2026.6.11 o posterior). Lo demás lo comprueba el instalador.
 
 ```bash
-V=<versión>   # la última de las releases, sin la v
-uv tool install "jota-gateway @ git+https://github.com/Jota-project/jota-gateway@v$V" \
-  -c https://github.com/Jota-project/jota-gateway/releases/download/v$V/constraints.txt
-loginctl enable-linger $USER        # puede pedir sudo según la distro
-jota-gw onboard
+curl -fsSL https://github.com/Jota-project/jota-gateway/releases/latest/download/install.sh | sh
 ```
+
+Qué hace `install.sh`:
+
+1. Comprueba Linux, la arquitectura y `systemctl --user`. Si falta `git` (`sudo apt-get install -y git`) o linger (`sudo loginctl enable-linger $USER`; sin él, el servicio se para al cerrar tu sesión), enseña el comando y pregunta «¿lo ejecuto yo? [s/N]»: nada con `sudo` sin una `s`. Sin terminal, o con otra respuesta, sale y te dice qué ejecutar.
+2. Instala [uv](https://docs.astral.sh/uv/) si falta, y `jota-gw` con `uv tool install` en la versión de la release, con su `constraints.txt` (las mismas versiones que la imagen Docker). `uv tool update-shell` deja `~/.local/bin` en el PATH de las terminales nuevas.
+3. La primera vez lanza el asistente, `jota-gw onboard` (abajo). Sin terminal (p. ej. `ssh host 'curl … | sh'`) se para ahí: «Instalado. Configúralo con `jota-gw onboard`.»
+
+**Volver a ejecutarlo actualiza:** con el servicio ya instalado, reinstala `jota-gw`, reinicia el servicio (corta las sesiones abiertas) y pasa `jota-gw doctor`, sin preguntar nada y sin tocar `config.env`.
+
+**Versión:** el `install.sh` de `releases/latest` instala la última release, y el de una release concreta (`…/releases/download/vX.Y.Z/install.sh`), la suya. Para elegir otra: `curl -fsSL … | JOTA_VERSION=X.Y.Z sh`. Con `sh -s -- --no-onboard` solo instala `jota-gw`, sin el asistente (es el primer paso para [pasar de Docker a nativo](#pasar-de-docker-a-nativo)); las versiones anteriores a `jota-gw onboard` (desde la v1.26.0, la primera con `constraints.txt`) solo se instalan así.
+
+#### El asistente: `jota-gw onboard`
 
 `jota-gw onboard` pregunta lo mínimo y **verifica cada proveedor contra el servicio real antes de guardarlo** en `config.env`:
 
@@ -198,6 +200,24 @@ Si lo cortas a medias, `config.env` queda como estaba más lo ya verificado, y v
 ```
 
 `stt` y `tts`: `{"provider": "jota", "url"?, "token"?}` (por defecto `localhost:9000` / `localhost:8005`, sin clave), `{"provider": "elevenlabs", "api_key"}` (la misma en los dos; si el TTS de `config.env` ya usa ElevenLabs con otra clave, la nueva del STT se verifica también para el TTS antes de guardarla, salvo con `"tts": {"provider": "off"}`) o `{"provider": "off"}`. `first_client`: `{"name", "type"}` (`ha`, `esp32`, `web` o `app`) o `null`. Un campo que falte o sobre es un error.
+
+#### Sin el instalador
+
+Hace falta además `git`, `curl` y [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`). `uv tool` deja `jota-gw` en `~/.local/bin`: si no está en el PATH, ejecuta `uv tool update-shell` y reabre la terminal, porque `jota-gw install` pone en la unidad el `jota-gw` que encuentre en el PATH.
+
+`V` es la última versión de [las releases](https://github.com/Jota-project/jota-gateway/releases) sin la `v` (p. ej. `V=1.27.0` para la release `v1.27.0`). `constraints.txt` existe desde la v1.26.0 y `jota-gw migrate`, solo desde la versión que lo incluye.
+
+Con las mismas versiones que la imagen Docker: cada release publica `constraints.txt` (exportado de `uv.lock`, sin hashes porque uv no los admite en constraints) y `-c` acepta la URL directamente.
+
+**Con el asistente:**
+
+```bash
+V=<versión>   # la última de las releases, sin la v
+uv tool install "jota-gateway @ git+https://github.com/Jota-project/jota-gateway@v$V" \
+  -c https://github.com/Jota-project/jota-gateway/releases/download/v$V/constraints.txt
+loginctl enable-linger $USER        # puede pedir sudo según la distro
+jota-gw onboard
+```
 
 **A mano**, paso a paso:
 
@@ -233,7 +253,13 @@ Solo en Linux con systemd. `jota-gw install` crea `~/.config/systemd/user/jota-g
 
 ### Actualizar
 
-Instala la nueva versión sobre la anterior y reinicia (pregunta; `--yes` para scripts). Las migraciones de la BD se aplican solas al arrancar y no hay vuelta atrás automática de versión: copia `<base>/data/gateway.db` antes. En scripts, `jota-gw --yes restart`.
+Las migraciones de la BD se aplican solas al arrancar y no hay vuelta atrás automática de versión: copia `<base>/data/gateway.db` antes. Después, vuelve a ejecutar el instalador: instala la última release encima, reinicia el servicio y pasa `jota-gw doctor`, sin preguntar (`JOTA_VERSION=X.Y.Z` para otra versión).
+
+```bash
+curl -fsSL https://github.com/Jota-project/jota-gateway/releases/latest/download/install.sh | sh
+```
+
+A mano: instala la nueva versión sobre la anterior y reinicia (pregunta; en scripts, `jota-gw --yes restart`).
 
 ```bash
 V=<versión>   # la nueva, sin la v
@@ -256,7 +282,11 @@ Los datos (`config.env`, `data/gateway.db`) quedan en `<base>`; bórralos a mano
 
 `jota-gw migrate --from-docker <carpeta de compose>` copia `.env` y `data/gateway.db` de una instalación Docker a `<base>`. Procedimiento, con la ventana de parada y la vuelta atrás:
 
-1. **Misma versión a los dos lados.** Despliega la versión vN en Docker e instala la vN nativa **sin arrancarla**: el comando de [Instalación nativa](#instalación-nativa) con la misma `V` que Docker, y **nada más** (ni `jota-gw init`, ni `jota-gw onboard`, ni `jota-gw install`: `migrate` se niega si `<base>` ya tiene `config.env`, BD o restos de SQLite); `jota-gw version` da la versión nativa y `docker exec jota_gateway jota-gw version` la de Docker.
+1. **Misma versión a los dos lados.** Despliega la versión vN en Docker e instala la vN nativa **sin arrancarla**, con el instalador y `--no-onboard`:
+   ```bash
+   curl -fsSL https://github.com/Jota-project/jota-gateway/releases/latest/download/install.sh | JOTA_VERSION=<N> sh -s -- --no-onboard
+   ```
+   y **nada más** (ni `jota-gw init`, ni `jota-gw onboard`, ni `jota-gw install`: `migrate` se niega si `<base>` ya tiene `config.env`, BD o restos de SQLite). `<N>` es la versión de Docker sin la `v`: `jota-gw version` da la nativa y `docker exec jota_gateway jota-gw version` la de Docker. El instalador ya deja linger activado.
 2. **Ventana sin sesiones.** `docker exec jota_gateway jota-gw status` debe mostrar 0 sesiones.
 3. **Parar, copiar y migrar.** `docker compose stop` (sin `down`), copia de seguridad de la BD y migra (usa un usuario que pueda leer `<carpeta>/data` y su `gateway.lock`):
    ```bash
@@ -264,11 +294,7 @@ Los datos (`config.env`, `data/gateway.db`) quedan en `<base>`; bórralos a mano
    jota-gw migrate --from-docker <carpeta de compose>
    ```
 4. **Revisar la config migrada, antes de instalar.** `jota-gw config show` y `jota-gw doctor`: los nombres que solo resuelven en la red de Docker (nombres de servicios de compose, `host.docker.internal`) hay que cambiarlos con `jota-gw config set <AJUSTE> <valor>` (p. ej. `jota-gw config set OPENCLAW_HOST <host>`).
-5. **Linger e instalar.** Sin linger el servicio se para al cerrar la sesión SSH:
-   ```bash
-   loginctl enable-linger $USER   # puede pedir sudo según la distro
-   jota-gw install                # comprueba que el 8004 está libre
-   ```
+5. **Instalar el servicio:** `jota-gw install`, que comprueba que el 8004 está libre.
    Si `GATEWAY_HOST` es una IP concreta de la LAN, `install` espera a `/healthz` en la URL de `--url` (por defecto `http://127.0.0.1:8004`) y daría error por tiempo: usa `jota-gw --url http://<IP>:8004 install`. La comprobación de puerto libre sí mira solo `127.0.0.1`.
 6. **Verificar.** `curl http://127.0.0.1:8004/ready`, una sesión de voz o texto, `/v1` con y sin clave, los mismos clientes (`jota-gw clients list`), `jota-gw doctor` y `jota-gw logs -n 20`.
 7. **Vuelta atrás.** `jota-gw stop` y `systemctl --user disable jota-gateway.service` (si no, tras un reinicio de la máquina arrancan los dos y se pelean por el 8004), y después `docker compose up -d`. Para volver a nativo: `docker compose stop` y `jota-gw install` (con la unidad igual no la toca: la habilita y la arranca). Los cambios de clientes hechos en un lado no están en la BD del otro.

@@ -43,10 +43,12 @@ class FakeOpenClawServer:
     `token`: si no es None, un `connect` con otro `auth.token` recibe el rechazo real
     (`INVALID_REQUEST`, `details.authReason = token_mismatch`) y cierre 1008.
     `GET /healthz` -> 200 `{"ok":true,"status":"live"}`, como el real (sin versión).
+    `port`: 0 = uno libre; el CI del instalador lo fija en el 18789 de OpenClaw.
     """
 
     def __init__(
-        self, hello_payload=None, big_bytes=2 * MIB, startup_pending=0, startup_retry_after_ms=50, token=None
+        self, hello_payload=None, big_bytes=2 * MIB, startup_pending=0, startup_retry_after_ms=50, token=None,
+        port=0,
     ):
         self.connections = 0
         self.token = token
@@ -64,14 +66,14 @@ class FakeOpenClawServer:
         self._server = None
         self._tasks: set[asyncio.Task] = set()
         self._conns: set = set()
-        self.port = 0
+        self.port = port
         self._runs = 0
         self._held: list[tuple[asyncio.Event, asyncio.Event]] = []  # (seguir, terminado)
         self._open_pushes: dict[str, str] = {}  # sessionKey -> runId del push abierto
 
     async def __aenter__(self):
         self._server = await websockets.serve(
-            self._handler, "127.0.0.1", 0, max_size=64 * MIB, process_request=self._healthz
+            self._handler, "127.0.0.1", self.port, max_size=64 * MIB, process_request=self._healthz
         )
         self.port = self._server.sockets[0].getsockname()[1]
         return self
