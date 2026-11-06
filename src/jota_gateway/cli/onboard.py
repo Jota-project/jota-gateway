@@ -137,9 +137,9 @@ def _voice_step(out: Out, kind: Literal["stt", "tts"], answer: Any,
                 verified: dict[str, str], tts_stays: bool = False) -> None:
     """STT o TTS: servicio propio, ElevenLabs u «ahora no» (`off`). Una sola clave de
     ElevenLabs para los dos: la verificada en el STT se reutiliza (y se verifica) en el TTS.
-    `tts_stays`: el TTS no se va a sustituir en esta ejecución (siempre, salvo --answers con
-    otro proveedor de TTS); si ya usa ElevenLabs, una clave nueva del STT se verifica también
-    para el TTS antes de escribirla."""
+    `tts_stays`: el TTS podría seguir en ElevenLabs tras esta ejecución (siempre, salvo
+    --answers con TTS `off`); si ya lo usa, una clave nueva del STT se verifica también para el
+    TTS antes de escribirla."""
     from jota_gateway.cli import verify
 
     name, url_key, token_key, provider_key, default_url = VOICE[kind]
@@ -309,7 +309,9 @@ def _run(ctx: click.Context, out: Out, answers: Any) -> None:
     settings, _ = cfg._load_or_fail(out)  # antes de preguntar nada: campo y tipo, sin traza
     _openclaw(out, answers)
     verified: dict[str, str] = {}
-    tts_stays = answers is None or answers.tts.provider == "elevenlabs"
+    # Solo un TTS `off` en el fichero se libra: su paso no falla. Con jota o ElevenLabs, el paso
+    # TTS puede fallar (o cortarse) y dejar el TTS en ElevenLabs con la clave nueva.
+    tts_stays = answers is None or answers.tts.provider != "off"
     _voice_step(out, "stt", answers and answers.stt, verified, tts_stays)
     _voice_step(out, "tts", answers and answers.tts, verified)
     if not service.unit_path().exists():

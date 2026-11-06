@@ -563,6 +563,31 @@ def test_new_stt_key_is_verified_for_an_elevenlabs_tts_answers(gw, tmp_path):
     assert installs(gw) == []
 
 
+def test_new_stt_key_is_verified_for_tts_even_if_answers_move_tts_to_jota(gw, tmp_path):
+    # El TTS de jota puede fallar después: config.env se quedaría con el TTS en ElevenLabs y B.
+    _tts_already_on_elevenlabs(gw)
+    gw.verdicts["verify_elevenlabs"] = [
+        Verdict(True, "ok", "ElevenLabs acepta la clave."),
+        Verdict(False, "rejected", "ElevenLabs rechazó la clave."),
+    ]
+    r = onboard(write_answers(tmp_path, stt={"provider": "elevenlabs", "api_key": NEW_KEY}))
+    assert r.exit_code == 1 and "El TTS ya usa ElevenLabs" in r.output
+    env = dotenv_values(gw.env)
+    assert env["ELEVENLABS_API_KEY"] == OLD_KEY and "STT_PROVIDER" not in env
+    assert not any(c[0] == "verify_jota_tts" for c in gw.calls if isinstance(c, tuple))
+
+
+def test_tts_check_passes_then_jota_tts_fails_leaves_a_verified_key(gw, tmp_path):
+    _tts_already_on_elevenlabs(gw)
+    gw.verdicts["verify_jota_tts"] = Verdict(False, "unreachable", "El servicio de TTS no responde.")
+    r = onboard(write_answers(tmp_path, stt={"provider": "elevenlabs", "api_key": NEW_KEY}))
+    assert r.exit_code == 1 and "El servicio de TTS no responde." in r.output
+    assert [c for c in gw.calls if c[0] == "verify_elevenlabs"] == [
+        ("verify_elevenlabs", "stt", NEW_KEY), ("verify_elevenlabs", "tts", NEW_KEY)]
+    env = dotenv_values(gw.env)  # el TTS sigue en ElevenLabs, con una clave verificada para él
+    assert env["ELEVENLABS_API_KEY"] == NEW_KEY and env["TTS_PROVIDER"] == "elevenlabs"
+
+
 def test_no_tts_check_when_the_answers_replace_the_tts(gw, tmp_path):
     _tts_already_on_elevenlabs(gw)
     r = onboard(write_answers(tmp_path, stt={"provider": "elevenlabs", "api_key": NEW_KEY},

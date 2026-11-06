@@ -197,7 +197,7 @@ Si lo cortas a medias, `config.env` queda como estaba más lo ya verificado, y v
 }
 ```
 
-`stt` y `tts`: `{"provider": "jota", "url"?, "token"?}` (por defecto `localhost:9000` / `localhost:8005`, sin clave), `{"provider": "elevenlabs", "api_key"}` (la misma en los dos; si el TTS ya usa ElevenLabs con otra clave, la nueva se verifica también para él) o `{"provider": "off"}`. `first_client`: `{"name", "type"}` (`ha`, `esp32`, `web` o `app`) o `null`. Un campo que falte o sobre es un error.
+`stt` y `tts`: `{"provider": "jota", "url"?, "token"?}` (por defecto `localhost:9000` / `localhost:8005`, sin clave), `{"provider": "elevenlabs", "api_key"}` (la misma en los dos; si el TTS de `config.env` ya usa ElevenLabs con otra clave, la nueva del STT se verifica también para el TTS antes de guardarla, salvo con `"tts": {"provider": "off"}`) o `{"provider": "off"}`. `first_client`: `{"name", "type"}` (`ha`, `esp32`, `web` o `app`) o `null`. Un campo que falte o sobre es un error.
 
 **A mano**, paso a paso:
 
