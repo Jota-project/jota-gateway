@@ -5,7 +5,8 @@ onboard.py
 contra el servicio real (`cli/verify.py`) antes de guardarlo con `cli/config.py::_apply`,
 instala o reinicia el servicio y crea el primer cliente. Con `--answers FICHERO` (JSON 600)
 no pregunta nada: es el modo de `install.sh` y del CI. Cortarlo a medias deja config.env
-como estaba más lo ya verificado; volver a ejecutarlo retoma.
+como estaba más lo ya verificado; volver a ejecutarlo retoma, y con terminal ofrece primero
+«Dejar como está» en cada paso que config.env ya tiene (ni verifica ni escribe).
 
 `questionary`, `pydantic` y los verificadores se importan al usarse (`--help` < 150 ms).
 """
@@ -34,6 +35,7 @@ VOICE = {
     "stt": ("STT", "TRANSCRIBER_WS_URL", "TRANSCRIBER_TOKEN", "STT_PROVIDER", "localhost:9000"),
     "tts": ("TTS", "TTS_WS_URL", "TTS_TOKEN", "TTS_PROVIDER", "localhost:8005"),
 }
+KEEP = {"jota": "servicio propio", "elevenlabs": "ElevenLabs", "off": "desactivado"}
 
 
 def _ask(kind: str, message: str, **kwargs: Any) -> Any:
@@ -48,12 +50,19 @@ def _ask(kind: str, message: str, **kwargs: Any) -> Any:
     return answer
 
 
-def _choose(message: str, options: list[tuple[str, str]]) -> str:
+def _choose(message: str, options: list[tuple[str, str]], default: str | None = None) -> str:
     import questionary
 
     choices = [questionary.Choice(title, value=value) for title, value in options]
-    answer: str = _ask("select", message, choices=choices)
+    answer: str = _ask("select", message, choices=choices, default=default)
     return answer
+
+
+def _file() -> dict[str, str | None]:
+    """config.env tal cual (sin entorno ni valores por defecto): lo que ya está configurado."""
+    from dotenv import dotenv_values
+
+    return dotenv_values(paths.config_file())
 
 
 def _required(value: str) -> bool | str:
@@ -88,9 +97,15 @@ def _write(out: Out, values: dict[str, str]) -> None:
         cfg._apply(out, key, value)
 
 
-def _openclaw(out: Out, answers: Any) -> None:
+def _openclaw(out: Out, answers: Any, settings: Any) -> None:
     from jota_gateway.cli import verify
 
+    if not answers and _file().get("OPENCLAW_TOKEN"):
+        where = f"{settings.OPENCLAW_HOST}:{settings.OPENCLAW_PORT}"
+        if _choose("OpenClaw ya está configurado: ¿lo cambio?",
+                   [(f"Dejar como está ({where})", "keep"), ("Cambiarlo", "change")],
+                   default="keep") == "keep":
+            return
     found = None if answers else asyncio.run(verify.detect_openclaw())
     if found is not None:  # "" = encontrado, sin versión (OpenClaw 2026.11.1)
         version = f" {found}" if found else ""
@@ -124,30 +139,34 @@ def _openclaw(out: Out, answers: Any) -> None:
     _write(out, {"OPENCLAW_TOKEN": token, "OPENCLAW_HOST": host, "OPENCLAW_PORT": str(port)})
 
 
-def _tts_on_other_key(key: str) -> bool:
-    """¿El TTS de config.env ya usa ElevenLabs con otra clave? Al cambiarla, la usaría sin
-    haberla verificado para el TTS (el gateway tiene una sola ELEVENLABS_API_KEY)."""
-    from dotenv import dotenv_values
-
-    current = dotenv_values(paths.config_file())
-    return current.get("TTS_PROVIDER") == "elevenlabs" and current.get(ELEVENLABS_KEY) != key
+def _on_other_key(kind: str, key: str) -> bool:
+    """¿El `kind` de config.env ya usa ElevenLabs con otra clave? Al cambiarla, la usaría sin
+    haberla verificado para él (el gateway tiene una sola ELEVENLABS_API_KEY)."""
+    current = _file()
+    return current.get(VOICE[kind][3]) == "elevenlabs" and current.get(ELEVENLABS_KEY) != key
 
 
 def _voice_step(out: Out, kind: Literal["stt", "tts"], answer: Any,
-                verified: dict[str, str], tts_stays: bool = False) -> None:
-    """STT o TTS: servicio propio, ElevenLabs u «ahora no» (`off`). Una sola clave de
-    ElevenLabs para los dos: la verificada en el STT se reutiliza (y se verifica) en el TTS.
-    `tts_stays`: el TTS podría seguir en ElevenLabs tras esta ejecución (siempre, salvo
-    --answers con TTS `off`); si ya lo usa, una clave nueva del STT se verifica también para el
-    TTS antes de escribirla."""
+                verified: dict[str, str], other_stays: bool = True) -> None:
+    """STT o TTS: servicio propio, ElevenLabs u «ahora no» (`off`), o con terminal «Dejar como
+    está» si config.env ya lo tiene. Una sola clave de ElevenLabs para los dos: la verificada en
+    el STT se reutiliza (y se verifica) en el TTS. `other_stays`: el otro servicio podría seguir
+    en ElevenLabs tras esta ejecución (el STT, ya resuelto, siempre; el TTS, salvo --answers con
+    TTS `off`); si ya lo usa, una clave nueva se verifica también para él antes de escribirla."""
     from jota_gateway.cli import verify
 
     name, url_key, token_key, provider_key, default_url = VOICE[kind]
+    other: Literal["stt", "tts"] = "tts" if kind == "stt" else "stt"
+    current = None if answer else _file().get(provider_key)
 
     def ask() -> dict[str, str]:
+        options = [("Servicio propio", "jota"), ("ElevenLabs", "elevenlabs"), ("Ahora no", "off")]
+        if current:
+            options.insert(0, (f"Dejar como está ({KEEP.get(current, current)})", "keep"))
         provider = answer.provider if answer else _choose(
-            f"Voz, {name}: ¿qué servicio?",
-            [("Servicio propio", "jota"), ("ElevenLabs", "elevenlabs"), ("Ahora no", "off")])
+            f"Voz, {name}: ¿qué servicio?", options, default="keep" if current else None)
+        if provider == "keep":
+            return {}
         if provider == "jota":
             if answer:
                 url, token = answer.url or default_url, answer.token
@@ -171,6 +190,8 @@ def _voice_step(out: Out, kind: Literal["stt", "tts"], answer: Any,
         return {provider_key: "off"}
 
     def check(values: dict[str, str]) -> Any:
+        if not values:
+            return verify.Verdict(True, "ok", f"{name}: sin cambios.")
         if values[provider_key] == "off":
             return verify.Verdict(True, "ok", f"{name} desactivado: actívalo cuando quieras "
                                   "con `jota-gw onboard`.")
@@ -179,14 +200,17 @@ def _voice_step(out: Out, kind: Literal["stt", "tts"], answer: Any,
             return asyncio.run(jota(values[url_key], values[token_key]))
         key = values[ELEVENLABS_KEY]
         verdict = asyncio.run(verify.verify_elevenlabs(kind, key))
-        if verdict.ok and kind == "stt" and tts_stays and _tts_on_other_key(key):
-            tts = asyncio.run(verify.verify_elevenlabs("tts", key))
-            if not tts.ok:
-                return verify.Verdict(False, tts.reason, "El TTS ya usa ElevenLabs y pasaría a "
-                                      f"esta clave, pero para el TTS no vale: {tts.detail}")
+        if verdict.ok and other_stays and _on_other_key(other, key):
+            also = asyncio.run(verify.verify_elevenlabs(other, key))
+            if not also.ok:
+                o = VOICE[other][0]
+                return verify.Verdict(False, also.reason, f"El {o} ya usa ElevenLabs y pasaría a "
+                                      f"esta clave, pero para el {o} no vale: {also.detail}")
         return verdict
 
-    values = _settle(out, ask, check, not answer, ("Ahora no", "off")) or {provider_key: "off"}
+    values = _settle(out, ask, check, not answer, ("Ahora no", "off"))
+    if values is None:  # «Ahora no» tras un fallo ({} es «Dejar como está»: no escribe nada)
+        values = {provider_key: "off"}
     _write(out, values)
     verified.update((k, v) for k, v in values.items() if k == ELEVENLABS_KEY)
 
@@ -304,10 +328,13 @@ def _run(ctx: click.Context, out: Out, answers: Any) -> None:
     from jota_gateway.cli import init as init_mod
 
     service.require_systemd()  # antes de crear o preguntar nada
-    if not paths.config_file().is_file():
+    settings, errors, _ = cfg.load()
+    db = paths.sqlite_file(settings.DATABASE_URL) if settings else None
+    # init no toca lo que ya existe: también retoma una base con config.env y sin BD.
+    if not paths.config_file().is_file() or (db is not None and not db.exists()):
         ctx.invoke(init_mod.init)
     settings, _ = cfg._load_or_fail(out)  # antes de preguntar nada: campo y tipo, sin traza
-    _openclaw(out, answers)
+    _openclaw(out, answers, settings)
     verified: dict[str, str] = {}
     # Solo un TTS `off` en el fichero se libra: su paso no falla. Con jota o ElevenLabs, el paso
     # TTS puede fallar (o cortarse) y dejar el TTS en ElevenLabs con la clave nueva.

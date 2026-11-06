@@ -182,13 +182,13 @@ Qué hace `install.sh`:
 
 `jota-gw onboard` pregunta lo mínimo y **verifica cada proveedor contra el servicio real antes de guardarlo** en `config.env`:
 
-1. Si no hay `config.env`, prepara `<base>` como `jota-gw init`.
+1. Si falta `config.env` o la BD, prepara `<base>` como `jota-gw init` (no toca lo que ya exista).
 2. OpenClaw: lo busca en este equipo (si no, pregunta host y puerto) y pide su token (`openclaw config get gateway.auth.token`). Solo en loopback: para un OpenClaw de otra máquina, un túnel SSH (`ssh -L 18789:127.0.0.1:18789 …`). Sin OpenClaw verificado no sigue.
 3. STT y TTS: servicio propio (`host:puerto` y, si la usa, su clave), ElevenLabs (una sola clave para los dos) o «ahora no» (`off`, solo texto).
 4. Instala el servicio, o lo reinicia si ya estaba instalado (con terminal pregunta antes, porque corta las sesiones abiertas), y pasa `jota-gw doctor`.
 5. Si aún no hay clientes, crea el primero, enseña su clave una sola vez y la dirección `ws://<host>:8004/ws/stream` (`GATEWAY_HOST`, o la IP de la LAN si escucha en todas las interfaces).
 
-Si lo cortas a medias, `config.env` queda como estaba más lo ya verificado, y volver a ejecutarlo retoma. También sirve para cambiar de proveedores más adelante (en el menú de `jota-gw`, «Configurar proveedores»). Necesita una terminal; para scripts, `jota-gw onboard --answers respuestas.json` no pregunta nada y un fallo de verificación sale con 1 y su motivo. El fichero lleva secretos: tiene que ser tuyo y con permisos 600 (`chmod 600`).
+Si lo cortas a medias, `config.env` queda como estaba más lo ya verificado, y volver a ejecutarlo retoma. También sirve para cambiar de proveedores más adelante (en el menú de `jota-gw`, «Configurar proveedores»): cada paso que `config.env` ya tiene ofrece primero «Dejar como está», que ni verifica ni escribe nada. Necesita una terminal; para scripts, `jota-gw onboard --answers respuestas.json` no pregunta nada y un fallo de verificación sale con 1 y su motivo. El fichero lleva secretos: tiene que ser tuyo y con permisos 600 (`chmod 600`).
 
 ```json
 {

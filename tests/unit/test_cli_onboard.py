@@ -4,6 +4,7 @@ Nunca toca la red, systemd ni el ~/.config real: `verify.*`, `service.*`, `init`
 `doctor.run_checks` y la API de /admin van parcheados; la base y XDG_CONFIG_HOME son temporales.
 """
 
+import io
 import json
 import logging
 import os
@@ -39,21 +40,30 @@ DEFAULT = object()  # en la cola de `tty`: acepta el valor por defecto de la pre
 
 @pytest.fixture()
 def gw(monkeypatch, tmp_path, use_api):
-    """Base vacía (sin config.env), unidad en un XDG temporal y todo lo externo parcheado."""
+    """Base sin config.env (con la BD), unidad en un XDG temporal y todo lo externo parcheado."""
     base = tmp_path / "base"
     base.mkdir()
     monkeypatch.setenv("JOTA_GATEWAY_HOME", str(base))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     for name in ENV:
         monkeypatch.delenv(name, raising=False)
-    st = SimpleNamespace(calls=[], verdicts={}, detected=None, env=base / "config.env")
+    st = SimpleNamespace(calls=[], verdicts={}, detected=None, env=base / "config.env",
+                         db=base / "data" / "gateway.db")
+    st.db.parent.mkdir()
+    st.db.touch()
 
-    def fake_init():
+    def fake_init():  # como el real: crea lo que falta y no toca lo que existe
         st.calls.append("init")
-        st.env.write_text(f"ADMIN_TOKEN={ADMIN}\n")
+        if not st.env.exists():
+            st.env.write_text(f"ADMIN_TOKEN={ADMIN}\n")
+        st.db.touch()
 
     def fake_install():
+        from jota_gateway.cli.api import ApiError
+
         st.calls.append("install")
+        if not st.db.exists():  # como el real: sin BD no instala
+            raise ApiError("No existe la base de datos.", 1)
         service.unit_path().parent.mkdir(parents=True, exist_ok=True)
         service.unit_path().write_text("[Unit]\n")
 
@@ -687,3 +697,111 @@ def test_lan_ip_falls_back_to_loopback(monkeypatch):
 
     monkeypatch.setattr(socket, "socket", NoRoute)  # sin `gw`: `_lan_ip` sin parchear
     assert onboard_mod._lan_ip() == "127.0.0.1"
+
+
+# --- ola final: init sin BD y «Dejar como está» -------------------------------------------
+
+
+def test_onboard_runs_init_when_only_the_db_is_missing(gw, tmp_path):
+    gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\nGATEWAY_HOST=127.0.0.1\n")
+    gw.db.unlink()
+    r = onboard(write_answers(tmp_path))
+    assert r.exit_code == 0, r.output
+    assert gw.calls.count("init") == 1 and installs(gw) == ["install"]
+    assert dotenv_values(gw.env)["GATEWAY_HOST"] == "127.0.0.1"  # init no toca lo que existe
+
+
+def test_onboard_with_config_and_db_does_not_run_init(gw, tmp_path):
+    gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\n")
+    assert onboard(write_answers(tmp_path)).exit_code == 0
+    assert "init" not in gw.calls
+
+
+CONFIGURED = (f"ADMIN_TOKEN={ADMIN}\nOPENCLAW_TOKEN={OC_TOKEN}\nOPENCLAW_HOST=127.0.0.1\n"
+              "OPENCLAW_PORT=18789\nTRANSCRIBER_WS_URL=stt.lan:9000\nTRANSCRIBER_TOKEN=\n"
+              "STT_PROVIDER=jota\nTTS_PROVIDER=off\n")
+
+
+def _configured_rerun(gw, env=CONFIGURED):
+    """Un relanzamiento: config.env ya escrito, servicio instalado y clientes creados."""
+    gw.env.write_text(env)
+    service.unit_path().parent.mkdir(parents=True)
+    service.unit_path().write_text("[Unit]\n")
+    gw.api.responses[("GET", "/admin/clients")] = [CLIENT]
+
+
+def test_interactive_rerun_keeps_everything_by_default(gw, tty):
+    _configured_rerun(gw)
+    tty.queue.extend([DEFAULT, DEFAULT, DEFAULT, True])  # OpenClaw, STT, TTS y reinicio
+    r = run("onboard")
+    assert r.exit_code == 0, r.output
+    (oc,) = asked(tty, "select", "OpenClaw")
+    assert titles(oc)[0] == "dejar como está (127.0.0.1:18789)" and oc["default"] == "keep"
+    stt, tts = asked(tty, "select", "¿qué servicio?")
+    assert titles(stt) == ["dejar como está (servicio propio)", "servicio propio", "elevenlabs",
+                           "ahora no"]
+    assert titles(tts)[0] == "dejar como está (desactivado)"
+    assert stt["default"] == tts["default"] == "keep"
+    assert not any(isinstance(c, tuple) for c in gw.calls)  # ni verifica ni busca OpenClaw
+    assert dotenv_values(gw.env) == dotenv_values(stream=io.StringIO(CONFIGURED))
+    assert asked(tty, "password", "") == []  # no pide ningún token
+    assert installs(gw) == ["restart"]
+
+
+def test_interactive_rerun_keeps_openclaw_and_changes_stt(gw, tty):
+    _configured_rerun(gw)
+    tty.queue.extend(["keep", "elevenlabs", EL_KEY, "keep", True])
+    r = run("onboard")
+    assert r.exit_code == 0, r.output
+    assert [c for c in gw.calls if isinstance(c, tuple)] == [("verify_elevenlabs", "stt", EL_KEY)]
+    env = dotenv_values(gw.env)
+    assert env["OPENCLAW_TOKEN"] == OC_TOKEN and env["STT_PROVIDER"] == "elevenlabs"
+    assert env["ELEVENLABS_API_KEY"] == EL_KEY and env["TTS_PROVIDER"] == "off"
+    assert installs(gw) == ["restart"]
+
+
+def test_interactive_rerun_can_change_openclaw(gw, tty):
+    _configured_rerun(gw)
+    tty.queue.extend(["change", "127.0.0.1", "18790", "oc-otro-token", "keep", "keep", True])
+    r = run("onboard")
+    assert r.exit_code == 0, r.output
+    assert ("verify_openclaw", "127.0.0.1", 18790, "oc-otro-token") in gw.calls
+    assert dotenv_values(gw.env)["OPENCLAW_PORT"] == "18790"
+
+
+def test_no_keep_option_on_a_first_run(gw, tty):
+    gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\n")
+    tty.queue.extend(["127.0.0.1", "18789", OC_TOKEN, "off", "off", "Tele", "web"])
+    assert run("onboard").exit_code == 0
+    assert asked(tty, "select", "OpenClaw") == []
+    for kw in asked(tty, "select", "¿qué servicio?"):
+        assert "keep" not in [c.value for c in kw["choices"]]
+
+
+def test_answers_rerun_never_keeps(gw, tmp_path):
+    gw.env.write_text(CONFIGURED)
+    r = onboard(write_answers(tmp_path))
+    assert r.exit_code == 0, r.output
+    assert [c[0] for c in gw.calls if isinstance(c, tuple)] == ["verify_openclaw",
+                                                                "verify_jota_tts"]
+    env = dotenv_values(gw.env)
+    assert env["STT_PROVIDER"] == "off" and env["TTS_PROVIDER"] == "jota"
+
+
+def test_new_tts_key_is_verified_for_a_kept_elevenlabs_stt(gw, tty):
+    # STT se queda en ElevenLabs con la clave vieja; el TTS trae otra: el STT pasaría a usarla.
+    _configured_rerun(gw, f"ADMIN_TOKEN={ADMIN}\nOPENCLAW_TOKEN={OC_TOKEN}\n"
+                          f"ELEVENLABS_API_KEY={OLD_KEY}\nSTT_PROVIDER=elevenlabs\n")
+    gw.verdicts["verify_elevenlabs"] = [
+        Verdict(True, "ok", "ElevenLabs acepta la clave."),                 # TTS
+        Verdict(False, "rejected", "ElevenLabs rechazó la clave."),         # la misma, para el STT
+    ]
+    tty.queue.extend(["keep", "keep", "elevenlabs", NEW_KEY, "off", True])
+    r = run("onboard")
+    assert r.exit_code == 0, r.output
+    assert [c for c in gw.calls if c[0] == "verify_elevenlabs"] == [
+        ("verify_elevenlabs", "tts", NEW_KEY), ("verify_elevenlabs", "stt", NEW_KEY)]
+    assert "El STT ya usa ElevenLabs" in r.output
+    env = dotenv_values(gw.env)
+    assert env["ELEVENLABS_API_KEY"] == OLD_KEY and env["TTS_PROVIDER"] == "off"
+    assert NEW_KEY not in r.output and OLD_KEY not in r.output
