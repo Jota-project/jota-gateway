@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from http import HTTPStatus
 
 import websockets
 
@@ -38,10 +39,17 @@ class FakeOpenClawServer:
 
     `startup_pending=n`: los `n` primeros `connect` reciben el `UNAVAILABLE`/`startup-sidecars`
     de OpenClaw 2026.11.1 arrancando (`retryAfterMs = startup_retry_after_ms`) y cierre 1013.
+
+    `token`: si no es None, un `connect` con otro `auth.token` recibe el rechazo real
+    (`INVALID_REQUEST`, `details.authReason = token_mismatch`) y cierre 1008.
+    `GET /healthz` -> 200 `{"ok":true,"status":"live"}`, como el real (sin versión).
     """
 
-    def __init__(self, hello_payload=None, big_bytes=2 * MIB, startup_pending=0, startup_retry_after_ms=50):
+    def __init__(
+        self, hello_payload=None, big_bytes=2 * MIB, startup_pending=0, startup_retry_after_ms=50, token=None
+    ):
         self.connections = 0
+        self.token = token
         self.release = asyncio.Event()
         self.big_bytes = big_bytes
         self.startup_pending = startup_pending
@@ -62,13 +70,21 @@ class FakeOpenClawServer:
         self._open_pushes: dict[str, str] = {}  # sessionKey -> runId del push abierto
 
     async def __aenter__(self):
-        self._server = await websockets.serve(self._handler, "127.0.0.1", 0, max_size=64 * MIB)
+        self._server = await websockets.serve(
+            self._handler, "127.0.0.1", 0, max_size=64 * MIB, process_request=self._healthz
+        )
         self.port = self._server.sockets[0].getsockname()[1]
         return self
 
     async def __aexit__(self, *exc):
         self._server.close()
         await self._server.wait_closed()
+
+    @staticmethod
+    def _healthz(connection, request):
+        if request.path == "/healthz":
+            return connection.respond(HTTPStatus.OK, '{"ok":true,"status":"live"}')
+        return None
 
     @staticmethod
     def _res(req_id, payload, ok=True):
@@ -163,6 +179,15 @@ class FakeOpenClawServer:
                     }
                     await ws.send(json.dumps({"type": "res", "id": rid, "ok": False, "error": error}))
                     await ws.close(1013, "gateway starting")
+                elif method == "connect" and self.token is not None and params.get("auth", {}).get("token") != self.token:
+                    # Forma real: sendHandshakeErrorResponse (dist/message-handler-*.mjs).
+                    error = {
+                        "code": "INVALID_REQUEST",
+                        "message": "unauthorized: gateway token mismatch",
+                        "details": {"authReason": "token_mismatch"},
+                    }
+                    await ws.send(json.dumps({"type": "res", "id": rid, "ok": False, "error": error}))
+                    await ws.close(1008, "unauthorized: gateway token mismatch")
                 elif method == "connect":
                     await ws.send(self._res(rid, self.hello_payload))
                 elif method == "agents.list":

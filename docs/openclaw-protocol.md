@@ -547,8 +547,10 @@ the socket with **1013** `"gateway starting"`:
 How the gateway reacts (`OpenClawClient._do_connect`): on exactly that error it waits
 `retryAfterMs` (500 ms if missing or invalid, at least 100 ms, at most 5 s, and never longer
 than what is left of a 30 s budget counted from the first attempt) and repeats the whole
-handshake on a new socket. Once the budget is spent no new attempt starts: it raises the usual
-`OrchestratorHandshakeError` (`orchestrator_handshake_failed`) and the reconnect loop takes over. Any other `UNAVAILABLE` (e.g. `details.reason:
+handshake on a new socket. Once the budget is spent no new attempt starts: it raises
+`OrchestratorStartingError`, a subclass of `OrchestratorHandshakeError` with the same stable code
+(`orchestrator_handshake_failed`), and the reconnect loop takes over (`jota-gw onboard` uses the
+subclass to say "not answering in time" instead of "token rejected"). Any other `UNAVAILABLE` (e.g. `details.reason:
 "authenticated-profile-unavailable"`) fails the handshake at once, as before. Only the fixed text
 and the computed wait are logged (the first retry of a `connect()` at INFO, the rest at DEBUG),
 never `message` or `details`. Side effect: the lifespan's first `connect()` can hold the
@@ -560,8 +562,32 @@ The `connect` frame also carries `client.displayName: "jota-gateway"` since this
 non-empty string in `ConnectParamsSchema` both in 2026.11.1 (`dist/sessions-CVESrViJ.mjs:1936`)
 and in 2026.4.12 (`dist/protocol-9t-_D3R4.js`), so every supported server (≥ 2026.6.11) accepts it.
 
+## Token rejected on `connect`, and `/healthz` (2026-11-06, server 2026.11.1)
+
+Read in the npm package source, not observed live. A wrong or missing token is answered with
+`ok:false` and then a close with **1008** (`dist/message-handler-D_4tBaZX.mjs`,
+`sendHandshakeErrorResponse`):
+
+```json
+{"type": "res", "id": "...", "ok": false,
+ "error": {"code": "INVALID_REQUEST", "message": "unauthorized: gateway token mismatch (...)",
+           "details": {"code": "...", "authReason": "token_mismatch", "...": "..."}}}
+```
+
+`authReason` is also `token_missing`, `rate_limited` (with `retryable`/`retryAfterMs`), etc. The
+gateway does not read it: any `ok:false` other than `startup-sidecars` is an
+`OrchestratorHandshakeError`, and `jota-gw onboard` (`cli/verify.py`) reports it as "OpenClaw
+rejected the token".
+
+`GET /healthz` (and `/health`) answers 200 `{"ok":true,"status":"live"}` as soon as the HTTP
+listener is up (`dist/gateway-prewarm.js`, `handleGatewayProbeRequest`). It carries **no server
+version**: `detect_openclaw()` returns `""` (found, version unknown); the version only arrives in
+`hello-ok`, after a successful token handshake.
+
 ## Change log of this file
 
+- **2026-11-06**: added "Token rejected on `connect`, and `/healthz`" (server 2026.11.1, read in
+  the package source); the spent startup budget now raises `OrchestratorStartingError`.
 - **2026-11-06**: added "OpenClaw still starting: `UNAVAILABLE` / `startup-sidecars`" (server
   2026.11.1): `connect()` retries that rejection on a new socket for up to 30 s; the `connect`
   frame carries `client.displayName: "jota-gateway"`.

@@ -7,8 +7,10 @@ from unittest.mock import patch
 import pytest
 
 from jota_gateway.services.openclaw.client import (
+    ORCHESTRATOR_HANDSHAKE_FAILED_ERROR,
     OpenClawClient,
     OrchestratorHandshakeError,
+    OrchestratorStartingError,
     _startup_retry_after_s,
 )
 from jota_gateway.services.openclaw.dispatcher import FrameDispatcher
@@ -437,6 +439,20 @@ def real_ws_client(port: int) -> OpenClawClient:
     return OpenClawClient("127.0.0.1", port, "tok", turns, FrameDispatcher(turns, ClientRegistry()))
 
 
+@pytest.mark.parametrize(
+    ("host", "uri"),
+    [
+        ("::1", "ws://[::1]:18789"),
+        ("[::1]", "ws://[::1]:18789"),  # ya entre corchetes a mano (instalación manual): igual que antes
+        ("127.0.0.1", "ws://127.0.0.1:18789"),
+    ],
+)
+def test_ipv6_host_is_bracketed_in_uri(host, uri):
+    turns = TurnRegistry()
+    client = OpenClawClient(host, 18789, "tok", turns, FrameDispatcher(turns, ClientRegistry()))
+    assert client._uri == uri
+
+
 @pytest.mark.asyncio
 async def test_connect_retries_on_startup_sidecars():
     async with FakeOpenClawServer(startup_pending=1) as server:
@@ -488,7 +504,9 @@ async def test_connect_gives_up_after_budget(monkeypatch, caplog, retry_after_ms
         with pytest.raises(OrchestratorHandshakeError) as excinfo:
             await client.connect()
         assert 0.3 <= loop.time() - started < 1.0  # agota el presupuesto, sin pasarse
-        assert excinfo.type is OrchestratorHandshakeError  # el mismo código estable de hoy
+        # Distinguible de un token rechazado (verify_openclaw), con el mismo código estable de hoy.
+        assert excinfo.type is OrchestratorStartingError
+        assert excinfo.value.stable_code == ORCHESTRATOR_HANDSHAKE_FAILED_ERROR
         assert server.connections > 1
         assert client._ws is None
         assert "retry shortly" not in caplog.text  # nunca el texto de OpenClaw

@@ -53,6 +53,11 @@ class OrchestratorHandshakeError(RuntimeError):
         super().__init__(ORCHESTRATOR_HANDSHAKE_FAILED_ERROR)
 
 
+class OrchestratorStartingError(OrchestratorHandshakeError):
+    """OpenClaw was still starting (startup-sidecars) when the retry budget ran out: the same
+    stable code, but not a rejected token (`jota-gw onboard` tells them apart)."""
+
+
 # OpenClaw ≥2026.11 answers `connect` with a retryable UNAVAILABLE while its startup sidecars
 # boot (docs/openclaw-protocol.md): connect() retries the handshake within this budget.
 _STARTUP_RETRY_BUDGET_S = 30.0
@@ -144,7 +149,9 @@ class OpenClawClient:
         turn_registry: TurnRegistry,
         dispatcher: FrameDispatcher,
     ) -> None:
-        self._uri = f"ws://{host}:{port}"
+        # An IPv6 literal (`::1`) goes in brackets inside the URI, unless it already has them.
+        bare_ipv6 = ":" in host and not host.startswith("[")
+        self._uri = f"ws://[{host}]:{port}" if bare_ipv6 else f"ws://{host}:{port}"
         self._token = token
         self._turn_registry = turn_registry
         self._dispatcher = dispatcher
@@ -180,7 +187,7 @@ class OpenClawClient:
                         "OpenClaw rejected the handshake (code=UNAVAILABLE): still starting, %.0fs retry budget spent",
                         _STARTUP_RETRY_BUDGET_S,
                     )
-                    raise OrchestratorHandshakeError() from None
+                    raise OrchestratorStartingError() from None
                 wait_s = min(e.wait_s, remaining)
                 logger.log(
                     logging.DEBUG if retries else logging.INFO,  # one INFO per connect(), not per retry

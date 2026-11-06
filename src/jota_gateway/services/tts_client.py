@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 MAX_BUFFER_BYTES = 10 * 1024 * 1024
 
 
+class TTSAuthError(RuntimeError):
+    """The TTS answered `auth` with something other than `auth_ok` (jota-speaker: `auth_error`)."""
+
+
 class TTSClient:
     """
     Client for jota-speaker TTS service (port 8005).
@@ -38,7 +42,8 @@ class TTSClient:
         voice: str | None = None,
         speed: float | None = None,
     ) -> None:
-        """Open WS and authenticate. Raises RuntimeError on auth failure."""
+        """Open WS and authenticate. Raises RuntimeError on auth failure (TTSAuthError when
+        the service refused the token)."""
         ws_url = f"ws://{self.url}/ws"
         _authenticated = False
         try:
@@ -78,7 +83,7 @@ class TTSClient:
                 # G-40 (#216): only the protocol error `code` (short identifier), never
                 # the rest of the message.
                 code = safe_code(msg.get("code"))
-                raise RuntimeError(f"[{self.client_id}] TTS auth failed (code={code})")
+                raise TTSAuthError(f"[{self.client_id}] TTS auth failed (code={code})")
 
             _authenticated = True
             logger.info("[%s] Connected to TTS at ws://%s/ws", self.client_id, self.url)
