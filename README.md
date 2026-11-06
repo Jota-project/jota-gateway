@@ -82,6 +82,7 @@ Los campos de un cliente (`POST`/`PATCH /admin/clients`) están en `src/jota_gat
 ```bash
 jota-gw                        # en una terminal: menú interactivo; en un script: la ayuda
 jota-gw init                   # instalación nueva: <base>, config.env con ADMIN_TOKEN aleatorio y la BD
+jota-gw onboard [--answers FICHERO]   # asistente: OpenClaw, voz, servicio y primer cliente
 jota-gw serve [--create-db]    # arranca el gateway (puerto 8004, host GATEWAY_HOST)
 jota-gw doctor                 # diagnóstico: configuración, BD, permisos, candado, gateway y servicios
 jota-gw config show            # ajustes efectivos y su origen (entorno, config.env o por defecto)
@@ -162,7 +163,7 @@ La vía recomendada es la **instalación nativa** (servicio de usuario de system
 
 ### Instalación nativa
 
-**Requisitos:** Linux (x86_64 o aarch64) con systemd de usuario y un OpenClaw accesible (2026.6.11 o posterior). Lo demás lo comprueba el instalador. Ejecútalo con tu usuario, no como root: el servicio es de tu usuario.
+**Requisitos:** Linux (x86_64 o aarch64) con systemd de usuario y un OpenClaw en este mismo equipo (o accesible por túnel SSH), 2026.6.11 o posterior. Lo demás lo comprueba el instalador. Ejecútalo con tu usuario, no como root: el servicio es de tu usuario.
 
 ```bash
 curl -fsSL https://github.com/Jota-project/jota-gateway/releases/latest/download/install.sh | sh
@@ -184,11 +185,11 @@ Qué hace `install.sh`:
 
 1. Si falta `config.env` o la BD, prepara `<base>` como `jota-gw init` (no toca lo que ya exista).
 2. OpenClaw: lo busca en este equipo (si no, pregunta host y puerto) y pide su token (`openclaw config get gateway.auth.token`). Solo en loopback: para un OpenClaw de otra máquina, un túnel SSH (`ssh -L 18789:127.0.0.1:18789 …`). Sin OpenClaw verificado no sigue.
-3. STT y TTS: servicio propio (`host:puerto` y, si la usa, su clave), ElevenLabs (una sola clave para los dos) o «ahora no» (`off`, solo texto).
+3. STT y TTS: servicio propio (`host:puerto` y, si la usa, su clave), ElevenLabs (una sola clave para los dos) o «ahora no» (`off`: sin STT no hay transcripción y sin TTS las respuestas llegan solo en texto).
 4. Instala el servicio, o lo reinicia si ya estaba instalado (con terminal pregunta antes, porque corta las sesiones abiertas), y pasa `jota-gw doctor`.
 5. Si aún no hay clientes, crea el primero, enseña su clave una sola vez y la dirección `ws://<host>:8004/ws/stream` (`GATEWAY_HOST`, o la IP de la LAN si escucha en todas las interfaces).
 
-Si lo cortas a medias, `config.env` queda como estaba más lo ya verificado, y volver a ejecutarlo retoma. También sirve para cambiar de proveedores más adelante (en el menú de `jota-gw`, «Configurar proveedores»): cada paso que `config.env` ya tiene ofrece primero «Dejar como está», que ni verifica ni escribe nada. Necesita una terminal; para scripts, `jota-gw onboard --answers respuestas.json` no pregunta nada y un fallo de verificación sale con 1 y su motivo. El fichero lleva secretos: tiene que ser tuyo y con permisos 600 (`chmod 600`).
+Si lo cortas a medias, `config.env` queda como estaba más lo ya verificado, y volver a ejecutarlo retoma. También sirve para cambiar de proveedores más adelante (en el menú de `jota-gw`, «Configurar proveedores»): cada paso que `config.env` ya tiene ofrece primero «Dejar como está», que ni verifica ni escribe nada. Necesita una terminal; para scripts, `jota-gw onboard --answers respuestas.json` no pregunta nada y un fallo de verificación sale con 1 y su motivo. El fichero lleva secretos: tiene que ser tuyo y con permisos 600. Créalo ya privado, para que no haya un momento en que otros puedan leerlo: `(umask 077; cat > respuestas.json)` y pega el JSON (termina con Ctrl+D), o `install -m 600 /dev/null respuestas.json` antes de editarlo. Escribirlo y después hacer `chmod` deja esa ventana abierta.
 
 ```json
 {
@@ -368,8 +369,8 @@ El STT y el TTS pasan por una capa de proveedores (`src/jota_gateway/services/sp
 
 | Variable | Default | Descripción |
 |----------|---------|-------------|
-| `STT_PROVIDER` | `jota` | `jota` (jota-transcriber), `elevenlabs` (Scribe v2 Realtime) u `off` (sin voz: solo texto) |
-| `TTS_PROVIDER` | `jota` | `jota` (jota-speaker), `elevenlabs` (stream-input, `eleven_flash_v2_5`) u `off` (sin voz: solo texto) |
+| `STT_PROVIDER` | `jota` | `jota` (jota-transcriber), `elevenlabs` (Scribe v2 Realtime) u `off` (sin transcripción: el audio de los clientes se descarta y solo entra texto) |
+| `TTS_PROVIDER` | `jota` | `jota` (jota-speaker), `elevenlabs` (stream-input, `eleven_flash_v2_5`) u `off` (sin respuestas en audio: solo en texto) |
 | `ELEVENLABS_API_KEY` | — | Obligatoria si algún proveedor es `elevenlabs` (permisos Text to Speech y Speech to Text) |
 | `ELEVENLABS_TTS_DEFAULT_VOICE` | `gc61tTk93h3LBXPxew2V` | Voz por defecto; las voces de clientes que no son de ElevenLabs (p. ej. `af_heart`) caen en ella o se traducen con `TTS_VOICE_MAP` |
 | `STT_AUDIO_GATE` | `energy` | Puerta de energía del STT de ElevenLabs (solo se envía audio mientras se habla); `off` la quita. jota no la usa |
@@ -478,7 +479,7 @@ src/jota_gateway/
 ├── db/
 │   ├── models.py            ClientRecord (SQLModel) — identidad y config por cliente
 │   └── database.py          get_engine() / run_migrations() / get_db_session()
-├── cli/                     jota-gw — init, serve, menú, doctor, config, status, version, clients, service (servicio systemd), logs y migrate
+├── cli/                     jota-gw — init, serve, menú, doctor, config, status, version, clients, service (servicio systemd), logs, migrate y onboard (onboard.py, el asistente; verify.py, que verifica cada proveedor contra el servicio real)
 └── services/
     ├── bridge.py            JotaBridge — coordinador de sesión WS
     ├── db_client.py         DbClient — lee ClientRecord de SQLite local (singleton, sin caché)
@@ -491,7 +492,7 @@ src/jota_gateway/
     ├── orchestration.py     call_orchestrator() — helper compartido WS+HTTP
     ├── pipeline_tracker.py  PipelineTracker — latencias por turno
     ├── session_registry.py  SessionRegistry — observabilidad de sesiones
-    ├── speech/              Proveedores STT/TTS: ports.py, factory.py, jota.py, elevenlabs/
+    ├── speech/              Proveedores STT/TTS: ports.py, factory.py, jota.py, elevenlabs/, off.py (voz desactivada)
     └── openclaw/
         ├── client.py        OpenClawClient — WebSocket v4, multiplexado
         ├── reconnecting.py  ReconnectingOpenClawClient — backoff + DEGRADED
@@ -499,6 +500,8 @@ src/jota_gateway/
         ├── registry.py      TurnRegistry + ClientRegistry (+ broadcast_status a todas las sesiones)
         └── models.py        GatewayInfo
 ```
+
+En la raíz del repo, `install.sh` es el instalador nativo (se publica como asset de cada release; el job `installer-smoke` del CI lo prueba).
 
 ## Licencia
 

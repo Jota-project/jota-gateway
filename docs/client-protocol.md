@@ -112,7 +112,7 @@ Si el handshake es válido y todos los servicios críticos responden, el gateway
 
 Espera este mensaje antes de enviar audio o texto. Si no llega, la conexión fue cerrada por un error de handshake.
 
-> **Voz desactivada.** Si el gateway tiene la voz en `off` (`STT_PROVIDER`/`TTS_PROVIDER`), se comporta como con ese servicio caído: antes de `ready` llega `status` con `state: "unavailable"` para `transcriber` y/o `tts`, y `live_capabilities.transcriber`/`tts` (y `barge_in`) valen `false`. La sesión sigue abierta en texto: `send` funciona, el audio que mandes se descarta y no hay avisos de recuperación.
+> **Voz desactivada.** Si el gateway tiene la voz en `off` (`STT_PROVIDER`/`TTS_PROVIDER`), se comporta como con ese servicio caído, y solo para lo que pidió la sesión: antes de `ready` llega `status` con `state: "unavailable"` para `transcriber` si `input_mode` es `"audio"`, y para `tts` si `output_mode` incluye `"audio"`; una sesión solo de texto no recibe ninguno. `live_capabilities.transcriber`/`tts` (y `barge_in`) valen `false`. La sesión sigue abierta en texto: `send` funciona, el audio que mandes se descarta y no hay avisos de recuperación.
 
 > **Incompatibilidad de protocolo — #114 (v1.15.0)**
 > `ready.capabilities` fue reemplazado por `ready.requested_capabilities` + `ready.live_capabilities`.
