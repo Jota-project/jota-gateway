@@ -1,0 +1,38 @@
+/* Jota Dusk en oscuro, el mismo lenguaje que JScreen (tv-canvas: remote/public/shared/tokens-mando.css).
+   Contraste medido allí contra el peor punto de las luces: texto 8,3:1, soft 5,4:1, accent-text 5,8:1.
+   El tema claro se deriva en el bloque 17g de M17. */
+:root,
+:root[data-theme='oscuro'] {
+  --bg: #211b2a;
+  --orb: 0.24;
+  --pad: rgba(246, 243, 240, 0.045);
+  --hl: rgba(246, 243, 240, 0.06);
+  --text: #f6f3f0;
+  --text-soft: #d6d0de;
+  --text-faint: #a39bb0;
+  --accent: #7c6aae;
+  --accent-press: #6c5b9d;
+  --accent-text: #d2c9ee;
+  --accent-tint: #3e3554;
+  --on-accent: #fff;
+  --status: #8fa8d8;
+  --warn: #e8b26a;
+  --bad: #ef8a7c;
+  --panel: #272030;
+  --switch-off: #7f7590;
+  --shadow: rgba(10, 8, 14, 0.5);
+  --play-shadow: 0 10px 26px rgba(60, 40, 110, 0.38);
+  color-scheme: dark;
+}
+
+:root {
+  --serif: 'Fraunces Variable', Georgia, serif;
+  --sans: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --ease: cubic-bezier(0.32, 0.72, 0, 1); /* ease-salon */
+  --r-s: 12px;
+  --r-m: 16px;
+  --r-l: 24px;
+  --r-xl: 28px;
+  --malva: #7c6aae;
+  --cielo: #6e8cc4;
+}

@@ -1,0 +1,86 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  scrollbar-color: #3d3449 transparent;
+}
+
+::selection {
+  background: #4b4068;
+  color: var(--text);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+
+a {
+  color: var(--accent-text);
+}
+
+a:hover {
+  color: var(--text);
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+input,
+textarea {
+  caret-color: var(--accent-text);
+}
+
+::placeholder {
+  color: var(--text-faint);
+}
+
+.tab {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Títulos de pantalla y cifras protagonistas, como en JScreen. Por debajo de 60 px,
+   opsz 36 para que no se pierdan los trazos finos (auditoría de JScreen, K2). */
+.display {
+  font-family: var(--serif);
+  font-weight: 360;
+  font-variation-settings: 'opsz' 144;
+  letter-spacing: -0.02em;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
