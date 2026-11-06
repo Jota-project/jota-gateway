@@ -46,7 +46,8 @@ class Settings(BaseSettings):
     # Token de servicio para el transcriber (su AUTH_TOKEN). Nunca la client_key (#218).
     TRANSCRIBER_TOKEN: str = ""
     TTS_WS_URL: str = "localhost:8005"
-    TTS_TOKEN: str = "gateway"
+    # Vacío = el servicio TTS no usa clave (como TRANSCRIBER_TOKEN).
+    TTS_TOKEN: str = ""
 
     # Proveedores de voz (src/jota_gateway/services/speech/). Se eligen al arrancar; cambiarlos = reiniciar.
     STT_PROVIDER: Literal["jota", "elevenlabs"] = "jota"

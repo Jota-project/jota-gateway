@@ -287,7 +287,7 @@ Variables de entorno o, si no, de `<base>/config.env` (instalación nativa). En 
 | `GATEWAY_HOST` | `0.0.0.0` | Host de escucha de `jota-gw serve` (`127.0.0.1` detrás de un proxy en el mismo host) |
 | `TRANSCRIBER_WS_URL` | `localhost:9000` | jota-transcriber |
 | `TTS_WS_URL` | `localhost:8005` | jota-speaker |
-| `TTS_TOKEN` | `gateway` | Token de auth para jota-speaker |
+| `TTS_TOKEN` | — | Token de auth para jota-speaker; vacío si el TTS no exige clave |
 | `OPENCLAW_HOST` | `127.0.0.1` | Host de OpenClaw |
 | `OPENCLAW_PORT` | `18789` | Puerto de OpenClaw |
 | `OPENCLAW_TOKEN` | — | Token de OpenClaw. Sin él el gateway arranca con un aviso, pero OpenClaw rechaza la conexión (`/ready` 503) |
