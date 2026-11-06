@@ -532,6 +532,8 @@ jobs:
       - name: install.sh --no-onboard con terminal (jota-gw instalado; ni unidad ni base)
         run: |
           command -v script >/dev/null || { echo "falta script (util-linux)"; exit 1; }
+          # Control positivo: si el pty no diera terminal, el paso pasaría sin probar el flag.
+          timeout 30 script -qec 'test -t 1 && : </dev/tty' /dev/null </dev/null || { echo "script no da un TTY"; exit 1; }
           rc=0
           timeout 180 script -qec "JOTA_SOURCE=$GITHUB_WORKSPACE sh install.sh --no-onboard" /dev/null \
             < /dev/null > "$RUNNER_TEMP/pty.txt" 2>&1 || rc=$?

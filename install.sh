@@ -124,12 +124,16 @@ main() {
   fi
   # shellcheck disable=SC2016 # las comillas invertidas son texto
   todo='Instalado. Configúralo con `jota-gw onboard`.'
+  interactive=
+  if [ -z "$no_onboard" ] && [ -t 1 ] && has_tty; then
+    interactive=1
+  fi
   if ! jota-gw onboard --help >/dev/null 2>&1; then  # las versiones anteriores al asistente
-    [ -n "$no_onboard" ] ||
+    [ -z "$interactive" ] ||
       fail "Esta versión de jota-gateway no tiene \`jota-gw onboard\`: instala una más nueva o vuelve a lanzar el instalador con \`sh -s -- --no-onboard\` y configúralo a mano ($REPO#sin-el-instalador)."
     todo="Instalado. Esta versión no tiene \`jota-gw onboard\`: configúralo a mano ($REPO#sin-el-instalador)."
   fi
-  if [ -z "$no_onboard" ] && [ -t 1 ] && has_tty; then
+  if [ -n "$interactive" ]; then
     jota-gw onboard </dev/tty
   else
     say "$todo"

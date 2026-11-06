@@ -176,7 +176,7 @@ Qué hace `install.sh`:
 
 **Volver a ejecutarlo actualiza:** con el servicio ya instalado, reinstala `jota-gw`, reinicia el servicio (corta las sesiones abiertas) y pasa `jota-gw doctor`, sin preguntar nada y sin tocar `config.env`.
 
-**Versión:** el `install.sh` de `releases/latest` instala la última release, y el de una release concreta (`…/releases/download/vX.Y.Z/install.sh`), la suya. Para elegir otra: `curl -fsSL … | JOTA_VERSION=X.Y.Z sh`. Con `sh -s -- --no-onboard` solo instala `jota-gw`, sin el asistente (es el primer paso para [pasar de Docker a nativo](#pasar-de-docker-a-nativo)); las versiones anteriores a `jota-gw onboard` (desde la v1.26.0, la primera con `constraints.txt`) solo se instalan así.
+**Versión:** el `install.sh` de `releases/latest` instala la última release, y el de una release concreta (`…/releases/download/vX.Y.Z/install.sh`), la suya. Para elegir otra: `curl -fsSL … | JOTA_VERSION=X.Y.Z sh`. Con `sh -s -- --no-onboard` solo instala `jota-gw`, sin el asistente (es el primer paso para [pasar de Docker a nativo](#pasar-de-docker-a-nativo)); las versiones anteriores a `jota-gw onboard` (desde la v1.26.0, la primera con `constraints.txt`) solo se instalan con `--no-onboard` o sin terminal.
 
 #### El asistente: `jota-gw onboard`
 
