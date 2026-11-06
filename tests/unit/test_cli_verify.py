@@ -312,13 +312,14 @@ def test_openclaw_deadline_covers_startup_retry_budget():
 
 
 # En un proceso nuevo: core.config construye `Settings()` al importarse y aquí ya está cargado.
+# argv[1]: un puerto cerrado, nunca el 18789 de un OpenClaw real del equipo.
 _INVALID_CONFIG_PROBE = """
-import asyncio, json
+import asyncio, json, sys
 from jota_gateway.cli.verify import verify_elevenlabs, verify_jota_stt, verify_jota_tts, verify_openclaw
 
 async def main():
     for call in (
-        verify_openclaw("127.0.0.1", 18789, "t"),
+        verify_openclaw("127.0.0.1", int(sys.argv[1]), "t"),
         verify_jota_stt("127.0.0.1:9", ""),
         verify_jota_tts("127.0.0.1:9", ""),
         verify_elevenlabs("tts", "k"),
@@ -340,7 +341,7 @@ def test_invalid_config_is_invalid_verdict_not_exception(env):
     # Base de ElevenLabs local: si la configuración pasara, nunca se sale a la red real.
     full_env = {**os.environ, "ELEVENLABS_BASE_URL": "ws://127.0.0.1:9", **env}
     r = subprocess.run(
-        [sys.executable, "-c", _INVALID_CONFIG_PROBE],
+        [sys.executable, "-c", _INVALID_CONFIG_PROBE, str(closed_port())],
         cwd=ROOT, env=full_env, capture_output=True, text=True, timeout=60,
     )
     assert r.returncode == 0, r.stderr[-2000:]
