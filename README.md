@@ -170,9 +170,9 @@ curl -fsSL https://github.com/Jota-project/jota-gateway/releases/latest/download
 
 Qué hace `install.sh`:
 
-1. Comprueba Linux, la arquitectura y `systemctl --user`. Si falta `git` (`sudo apt-get install -y git`) o linger (`sudo loginctl enable-linger $USER`; sin él, el servicio se para al cerrar tu sesión), enseña el comando y pregunta «¿lo ejecuto yo? [s/N]»: nada con `sudo` sin una `s`. Sin terminal, o con otra respuesta, sale y te dice qué ejecutar.
-2. Instala [uv](https://docs.astral.sh/uv/) si falta, y `jota-gw` con `uv tool install` en la versión de la release, con su `constraints.txt` (las mismas versiones que la imagen Docker). `uv tool update-shell` deja `~/.local/bin` en el PATH de las terminales nuevas.
-3. La primera vez lanza el asistente, `jota-gw onboard` (abajo). Sin terminal (p. ej. `ssh host 'curl … | sh'`) se para ahí: «Instalado. Configúralo con `jota-gw onboard`.»
+1. Comprueba Linux, la arquitectura y `systemctl --user`. Si falta `git` (`sudo apt-get install -y git`) o linger (`sudo loginctl enable-linger $(id -un)`; sin él, el servicio se para al cerrar tu sesión), enseña el comando y pregunta «¿lo ejecuto yo? [s/N]»: nada con `sudo` sin una `s`. Sin terminal, o con otra respuesta, sale y te dice qué ejecutar.
+2. Instala [uv](https://docs.astral.sh/uv/) si falta, y `jota-gw` con `uv tool install` en la versión de la release, con su `constraints.txt` (las mismas versiones que la imagen Docker). `uv tool update-shell` deja `~/.local/bin` en el PATH de las terminales nuevas; si la tuya aún no lo tiene, el instalador acaba diciéndolo (abre otra terminal o usa `~/.local/bin/jota-gw`).
+3. La primera vez lanza el asistente, `jota-gw onboard` (abajo). Sin terminal (p. ej. `ssh host 'curl … | sh'`) se para ahí: «Instalado. Configúralo con `jota-gw onboard` o, si vienes de Docker, `jota-gw migrate --from-docker DIR` y `jota-gw install`.»
 
 **Volver a ejecutarlo actualiza:** con el servicio ya instalado, reinstala `jota-gw`, reinicia el servicio (corta las sesiones abiertas) y pasa `jota-gw doctor`, sin preguntar nada y sin tocar `config.env`.
 
@@ -286,7 +286,7 @@ Los datos (`config.env`, `data/gateway.db`) quedan en `<base>`; bórralos a mano
    ```bash
    curl -fsSL https://github.com/Jota-project/jota-gateway/releases/latest/download/install.sh | JOTA_VERSION=<N> sh -s -- --no-onboard
    ```
-   y **nada más** (ni `jota-gw init`, ni `jota-gw onboard`, ni `jota-gw install`: `migrate` se niega si `<base>` ya tiene `config.env`, BD o restos de SQLite). `<N>` es la versión de Docker sin la `v`: `jota-gw version` da la nativa y `docker exec jota_gateway jota-gw version` la de Docker. El instalador ya deja linger activado.
+   y **nada más** (ni `jota-gw init`, ni `jota-gw onboard`, ni `jota-gw install`: `migrate` se niega si `<base>` ya tiene `config.env`, BD o restos de SQLite). El instalador acaba con «Configúralo con `jota-gw onboard` o, si vienes de Docker, …»: tú sigues la vía de Docker, con `migrate` en el paso 3 e `install` en el 5. `<N>` es la versión de Docker sin la `v`: `jota-gw version` da la nativa y `docker exec jota_gateway jota-gw version` la de Docker. El instalador ya deja linger activado.
 2. **Ventana sin sesiones.** `docker exec jota_gateway jota-gw status` debe mostrar 0 sesiones.
 3. **Parar, copiar y migrar.** `docker compose stop` (sin `down`), copia de seguridad de la BD y migra (usa un usuario que pueda leer `<carpeta>/data` y su `gateway.lock`):
    ```bash

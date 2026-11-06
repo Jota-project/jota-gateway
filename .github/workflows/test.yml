@@ -437,6 +437,8 @@ jobs:
       # Ni FAKE_* ni nada de aquí es un ajuste del gateway: no se cuelan en su configuración.
       FAKE_OPENCLAW_TOKEN: ci-openclaw-token
       FAKE_TTS_TOKEN: ci-tts-token
+      # La última línea de install.sh sin asistente, tal cual (no la de una versión sin onboard).
+      INSTALLED_MSG: "Instalado. Configúralo con `jota-gw onboard` o, si vienes de Docker, `jota-gw migrate --from-docker DIR` y `jota-gw install`."
     steps:
       - uses: actions/checkout@v7
 
@@ -480,18 +482,19 @@ jobs:
             done
             echo "systemd de usuario no está listo (state=$state)"; return 1
           }
-          wait_ready() {  # hasta $1 s: /ready con OpenClaw y TTS «ok» (con STT off es «degraded»)
+          wait_ready() {  # hasta $1 s: /ready «ok» con OpenClaw y TTS ok (el STT off no lo degrada)
             for i in $(seq 1 "${1:-60}"); do
               body=$(curl -fs --max-time 10 http://127.0.0.1:8004/ready || true)
               if [ -n "$body" ] && printf '%s' "$body" | python3 -c "
           import json, sys
-          s = json.load(sys.stdin)['services']
-          sys.exit(s['orchestrator'] != 'ok' or s['tts'] != 'ok')"; then
+          r = json.load(sys.stdin)
+          s = r['services']
+          sys.exit(r['status'] != 'ok' or s['orchestrator'] != 'ok' or s['tts'] != 'ok')"; then
                 echo "$body"; return 0
               fi
               sleep 1
             done
-            echo "/ready sin OpenClaw y TTS ok: $body"; return 1
+            echo "/ready sin status, OpenClaw y TTS ok: $body"; return 1
           }
           EOF
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
@@ -539,7 +542,7 @@ jobs:
             < /dev/null > "$RUNNER_TEMP/pty.txt" 2>&1 || rc=$?
           cat "$RUNNER_TEMP/pty.txt"
           [ "$rc" = 0 ]
-          grep -qF 'Instalado. Configúralo con' "$RUNNER_TEMP/pty.txt"
+          grep -qF "$INSTALLED_MSG" "$RUNNER_TEMP/pty.txt"  # sin -x: el pty acaba las líneas en \r\n
           [ -x "$HOME/.local/bin/jota-gw" ]
           [ ! -e "$HOME/.config/systemd/user/jota-gateway.service" ]
           [ ! -e "$HOME/.jota-gateway" ]  # lo que necesita `migrate --from-docker` después
@@ -551,7 +554,7 @@ jobs:
           JOTA_SOURCE="$GITHUB_WORKSPACE" sh install.sh < /dev/null > "$RUNNER_TEMP/notty.txt" 2>&1 || rc=$?
           cat "$RUNNER_TEMP/notty.txt"
           [ "$rc" = 0 ]
-          grep -qF 'jota-gw onboard' "$RUNNER_TEMP/notty.txt"
+          grep -qxF "$INSTALLED_MSG" "$RUNNER_TEMP/notty.txt"
           [ ! -e "$HOME/.config/systemd/user/jota-gateway.service" ]
           [ ! -e "$HOME/.jota-gateway" ]
 
@@ -574,6 +577,21 @@ jobs:
           [ "$(systemctl --user is-active jota-gateway.service)" = active ]
           curl -fs --max-time 2 http://127.0.0.1:8004/healthz; echo
           wait_ready 60
+          # «doctor sale limpio»: ningún fallo, y el STT off como información, no como caída.
+          rc=0
+          jota-gw --json doctor > "$RUNNER_TEMP/doctor.json" || rc=$?
+          cat "$RUNNER_TEMP/doctor.json"
+          python3 - "$RUNNER_TEMP/doctor.json" <<'EOF'
+          import json, sys
+          checks = json.load(open(sys.argv[1]))
+          fails = [c["check"] for c in checks if c["level"] == "fail"]
+          stt = [c for c in checks if c["check"] == "STT"]
+          if fails:
+              sys.exit(f"doctor con fallos: {fails}")
+          if len(stt) != 1 or stt[0]["level"] != "info" or "voz desactivada" not in stt[0]["detail"]:
+              sys.exit(f"el STT off no sale como información: {stt}")
+          EOF
+          [ "$rc" = 0 ]
           jota-gw --json clients list > "$RUNNER_TEMP/clients.json"
           python3 -c "
           import json, sys

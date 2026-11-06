@@ -80,7 +80,7 @@ main() {
       fail "Falta git: instálalo con el gestor de paquetes de tu distribución y vuelve a lanzar el instalador."
     offer "Falta git" sudo apt-get install -y git
   fi
-  user=${USER:-$(id -un)}
+  user=$(id -un)  # no $USER: puede venir heredado (su, sudo) y nombrar a otro usuario
   if [ "$(loginctl show-user "$user" -p Linger --value 2>/dev/null || true)" != yes ]; then
     offer "Sin linger, el servicio se para al cerrar tu sesión" sudo loginctl enable-linger "$user"
   fi
@@ -113,17 +113,25 @@ main() {
   # reconoce la shell, falla con su motivo; no impide seguir (aquí el PATH se fija abajo).
   uv_bin=$(command -v uv)
   PATH=$user_path "$uv_bin" tool update-shell || true
-  PATH="$(uv tool dir --bin):$PATH"
+  tool_bin=$(uv tool dir --bin)
+  PATH="$tool_bin:$PATH"
   export PATH
+  # La terminal desde la que se lanzó no ve el PATH nuevo de update-shell hasta abrir otra.
+  path_note=
+  case ":$user_path:" in
+    *":$tool_bin:"*) ;;
+    *) path_note="Si esta terminal no encuentra \`jota-gw\`, abre otra nueva o usa $tool_bin/jota-gw." ;;
+  esac
 
   unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/jota-gateway.service"
   if [ -e "$unit" ]; then
     jota-gw --yes restart
     jota-gw doctor || say "El diagnóstico marca algún fallo (arriba); la actualización está hecha."
+    [ -z "$path_note" ] || say "$path_note"
     return
   fi
   # shellcheck disable=SC2016 # las comillas invertidas son texto
-  todo='Instalado. Configúralo con `jota-gw onboard`.'
+  todo='Instalado. Configúralo con `jota-gw onboard` o, si vienes de Docker, `jota-gw migrate --from-docker DIR` y `jota-gw install`.'
   interactive=
   if [ -z "$no_onboard" ] && [ -t 1 ] && has_tty; then
     interactive=1
@@ -138,6 +146,7 @@ main() {
   else
     say "$todo"
   fi
+  [ -z "$path_note" ] || say "$path_note"
 }
 
 main "$@"
