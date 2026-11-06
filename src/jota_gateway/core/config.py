@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     TTS_TOKEN: str = ""
 
     # Proveedores de voz (src/jota_gateway/services/speech/). Se eligen al arrancar; cambiarlos = reiniciar.
-    # "off" = sin voz: la sesión sigue solo en texto.
+    # "off" = como con el servicio caído: STT off, solo entra texto; TTS off, respuestas en texto.
     STT_PROVIDER: Literal["jota", "elevenlabs", "off"] = "jota"
     TTS_PROVIDER: Literal["jota", "elevenlabs", "off"] = "jota"
     ELEVENLABS_API_KEY: SecretStr | None = None
