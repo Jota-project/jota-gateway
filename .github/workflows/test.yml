@@ -468,7 +468,7 @@ jobs:
         run: |
           sudo loginctl enable-linger "$USER"
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
-          # Las funciones de service-smoke (los jobs no comparten ficheros) más wait_ready.
+          # wait_bus, copiada de service-smoke porque los jobs no comparten ficheros, y wait_ready.
           cat > "$RUNNER_TEMP/h.sh" <<'EOF'
           wait_bus() {  # hasta 60 s: bus de usuario y systemd en running o degraded
             for i in $(seq 1 60); do
@@ -479,13 +479,6 @@ jobs:
               sleep 1
             done
             echo "systemd de usuario no está listo (state=$state)"; return 1
-          }
-          wait_health() {  # hasta $1 s (60 por defecto)
-            for i in $(seq 1 "${1:-60}"); do
-              curl -fs --max-time 2 http://127.0.0.1:8004/healthz >/dev/null && return 0
-              sleep 1
-            done
-            echo "/healthz no responde"; return 1
           }
           wait_ready() {  # hasta $1 s: /ready con OpenClaw y TTS «ok» (con STT off es «degraded»)
             for i in $(seq 1 "${1:-60}"); do
@@ -535,9 +528,16 @@ jobs:
           curl -fs --max-time 2 "http://127.0.0.1:$(cat "$RUNNER_TEMP/tts.port")/ready"
           cat "$RUNNER_TEMP/fakes.log"
 
-      - name: install.sh --no-onboard (jota-gw instalado; ni unidad ni base)
+      # Bajo un pty (script de util-linux): con terminal, solo --no-onboard impide el asistente.
+      - name: install.sh --no-onboard con terminal (jota-gw instalado; ni unidad ni base)
         run: |
-          JOTA_SOURCE="$GITHUB_WORKSPACE" sh install.sh --no-onboard
+          command -v script >/dev/null || { echo "falta script (util-linux)"; exit 1; }
+          rc=0
+          timeout 180 script -qec "JOTA_SOURCE=$GITHUB_WORKSPACE sh install.sh --no-onboard" /dev/null \
+            < /dev/null > "$RUNNER_TEMP/pty.txt" 2>&1 || rc=$?
+          cat "$RUNNER_TEMP/pty.txt"
+          [ "$rc" = 0 ]
+          grep -qF 'Instalado. Configúralo con' "$RUNNER_TEMP/pty.txt"
           [ -x "$HOME/.local/bin/jota-gw" ]
           [ ! -e "$HOME/.config/systemd/user/jota-gateway.service" ]
           [ ! -e "$HOME/.jota-gateway" ]  # lo que necesita `migrate --from-docker` después

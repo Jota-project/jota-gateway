@@ -162,7 +162,7 @@ La vía recomendada es la **instalación nativa** (servicio de usuario de system
 
 ### Instalación nativa
 
-**Requisitos:** Linux (x86_64 o aarch64) con systemd de usuario y un OpenClaw accesible (2026.6.11 o posterior). Lo demás lo comprueba el instalador.
+**Requisitos:** Linux (x86_64 o aarch64) con systemd de usuario y un OpenClaw accesible (2026.6.11 o posterior). Lo demás lo comprueba el instalador. Ejecútalo con tu usuario, no como root: el servicio es de tu usuario.
 
 ```bash
 curl -fsSL https://github.com/Jota-project/jota-gateway/releases/latest/download/install.sh | sh

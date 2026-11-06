@@ -45,9 +45,10 @@ resolve_version() {
     version=${url##*/tag/v}
   fi
   version=${version#v}
+  # Exactamente X.Y.Z, solo dígitos: va a una URL y a la especificación de uv.
   case $version in
-    *[!0-9.]*) ;;
-    [0-9]*.[0-9]*.[0-9]*) return 0 ;;
+    '' | *[!0-9.]* | .* | *. | *..* | *.*.*.*) ;;
+    *.*.*) return 0 ;;
   esac
   fail "Versión no válida: «$version». Usa JOTA_VERSION=X.Y.Z."
 }
@@ -68,6 +69,8 @@ main() {
     x86_64 | aarch64) ;;
     *) fail "Arquitectura no soportada: $(uname -m). Solo x86_64 o aarch64." ;;
   esac
+  [ "$(id -u)" != 0 ] ||
+    fail "No lo ejecutes como root: jota-gateway es un servicio de systemd de tu usuario. Lánzalo con tu usuario; el instalador pide sudo solo para lo que lo necesita."
 
   if ! systemctl --user show-environment >/dev/null 2>&1; then
     fail "No hay systemd de usuario (\`systemctl --user\`), y jota-gateway se instala como servicio de usuario. Si has entrado con su o sudo -iu, entra por SSH o define XDG_RUNTIME_DIR=/run/user/$(id -u)."
@@ -82,11 +85,13 @@ main() {
     offer "Sin linger, el servicio se para al cerrar tu sesión" sudo loginctl enable-linger "$user"
   fi
 
+  # Una shell de ssh sin login no suele llevar ~/.local/bin, que es donde están uv y jota-gw.
+  user_path=$PATH
+  PATH="$HOME/.local/bin:$PATH"
+  export PATH
   if ! command -v uv >/dev/null 2>&1; then
     say "Instalando uv…"
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    PATH="$HOME/.local/bin:$PATH"
-    export PATH
     command -v uv >/dev/null 2>&1 || fail "No se ha podido instalar uv."
   fi
 
@@ -104,9 +109,10 @@ main() {
     say "Instalando jota-gateway v$version…"
   fi
   uv tool install --reinstall "$spec" -c "$constraints"
-  # Antes de tocar el PATH: con el directorio ya en el PATH, update-shell no cambia nada. Si no
+  # Con el PATH del usuario: si ya lleva el directorio, update-shell no cambia nada. Si no
   # reconoce la shell, falla con su motivo; no impide seguir (aquí el PATH se fija abajo).
-  uv tool update-shell || true
+  uv_bin=$(command -v uv)
+  PATH=$user_path "$uv_bin" tool update-shell || true
   PATH="$(uv tool dir --bin):$PATH"
   export PATH
 
@@ -118,6 +124,11 @@ main() {
   fi
   # shellcheck disable=SC2016 # las comillas invertidas son texto
   todo='Instalado. Configúralo con `jota-gw onboard`.'
+  if ! jota-gw onboard --help >/dev/null 2>&1; then  # las versiones anteriores al asistente
+    [ -n "$no_onboard" ] ||
+      fail "Esta versión de jota-gateway no tiene \`jota-gw onboard\`: instala una más nueva o vuelve a lanzar el instalador con \`sh -s -- --no-onboard\` y configúralo a mano ($REPO#sin-el-instalador)."
+    todo="Instalado. Esta versión no tiene \`jota-gw onboard\`: configúralo a mano ($REPO#sin-el-instalador)."
+  fi
   if [ -z "$no_onboard" ] && [ -t 1 ] && has_tty; then
     jota-gw onboard </dev/tty
   else
