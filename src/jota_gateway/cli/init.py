@@ -57,4 +57,5 @@ def init(ctx: click.Context) -> None:
         return
     out.pairs([("base", paths.home()), ("configuración", f"{config}: {config_state}"),
                ("BD", f"{db}: {db_state}" if db else db_state)])
-    out.message("Siguiente paso: completa config.env (OPENCLAW_TOKEN…) y arranca con `jota-gw serve`.")
+    if ctx.find_root().invoked_subcommand != "onboard":  # el asistente ya es el paso siguiente
+        out.message("Siguiente paso: completa config.env (OPENCLAW_TOKEN…) y arranca con `jota-gw serve`.")

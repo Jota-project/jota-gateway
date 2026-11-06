@@ -168,6 +168,39 @@ La vía recomendada es la **instalación nativa** (servicio de usuario de system
 
 Con las mismas versiones que la imagen Docker: cada release publica `constraints.txt` (exportado de `uv.lock`, sin hashes porque uv no los admite en constraints) y `-c` acepta la URL directamente.
 
+**Con el asistente** (recomendado):
+
+```bash
+V=<versión>   # la última de las releases, sin la v
+uv tool install "jota-gateway @ git+https://github.com/Jota-project/jota-gateway@v$V" \
+  -c https://github.com/Jota-project/jota-gateway/releases/download/v$V/constraints.txt
+loginctl enable-linger $USER        # puede pedir sudo según la distro
+jota-gw onboard
+```
+
+`jota-gw onboard` pregunta lo mínimo y **verifica cada proveedor contra el servicio real antes de guardarlo** en `config.env`:
+
+1. Si no hay `config.env`, prepara `<base>` como `jota-gw init`.
+2. OpenClaw: lo busca en este equipo (si no, pregunta host y puerto) y pide su token (`openclaw config get gateway.auth.token`). Solo en loopback: para un OpenClaw de otra máquina, un túnel SSH (`ssh -L 18789:127.0.0.1:18789 …`). Sin OpenClaw verificado no sigue.
+3. STT y TTS: servicio propio (`host:puerto` y, si la usa, su clave), ElevenLabs (una sola clave para los dos) o «ahora no» (`off`, solo texto).
+4. Instala el servicio, o lo reinicia si ya estaba instalado, y pasa `jota-gw doctor`.
+5. Si aún no hay clientes, crea el primero, enseña su clave una sola vez y la dirección `ws://<IP de la LAN>:8004/ws/stream`.
+
+Si lo cortas a medias, `config.env` queda como estaba más lo ya verificado, y volver a ejecutarlo retoma. También sirve para cambiar de proveedores más adelante (en el menú de `jota-gw`, «Configurar proveedores»). Necesita una terminal; para scripts, `jota-gw onboard --answers respuestas.json` no pregunta nada y un fallo de verificación sale con 1 y su motivo. El fichero lleva secretos: tiene que ser tuyo y con permisos 600 (`chmod 600`).
+
+```json
+{
+  "openclaw_host": "127.0.0.1", "openclaw_port": 18789, "openclaw_token": "…",
+  "stt": {"provider": "off"},
+  "tts": {"provider": "jota", "url": "localhost:8005", "token": "…"},
+  "first_client": {"name": "salón", "type": "ha"}
+}
+```
+
+`stt` y `tts`: `{"provider": "jota", "url"?, "token"?}` (por defecto `localhost:9000` / `localhost:8005`, sin clave), `{"provider": "elevenlabs", "api_key"}` (la misma en los dos) o `{"provider": "off"}`. `first_client`: `{"name", "type"}` (`ha`, `esp32`, `web` o `app`) o `null`. Un campo que falte o sobre es un error.
+
+**A mano**, paso a paso:
+
 ```bash
 V=<versión>   # la última de las releases, sin la v
 uv tool install "jota-gateway @ git+https://github.com/Jota-project/jota-gateway@v$V" \
@@ -223,7 +256,7 @@ Los datos (`config.env`, `data/gateway.db`) quedan en `<base>`; bórralos a mano
 
 `jota-gw migrate --from-docker <carpeta de compose>` copia `.env` y `data/gateway.db` de una instalación Docker a `<base>`. Procedimiento, con la ventana de parada y la vuelta atrás:
 
-1. **Misma versión a los dos lados.** Despliega la versión vN en Docker e instala la vN nativa **sin arrancarla**: el comando de [Instalación nativa](#instalación-nativa) con la misma `V` que Docker, y **nada más** (ni `jota-gw init` ni `jota-gw install`: `migrate` se niega si `<base>` ya tiene `config.env`, BD o restos de SQLite); `jota-gw version` da la versión nativa y `docker exec jota_gateway jota-gw version` la de Docker.
+1. **Misma versión a los dos lados.** Despliega la versión vN en Docker e instala la vN nativa **sin arrancarla**: el comando de [Instalación nativa](#instalación-nativa) con la misma `V` que Docker, y **nada más** (ni `jota-gw init`, ni `jota-gw onboard`, ni `jota-gw install`: `migrate` se niega si `<base>` ya tiene `config.env`, BD o restos de SQLite); `jota-gw version` da la versión nativa y `docker exec jota_gateway jota-gw version` la de Docker.
 2. **Ventana sin sesiones.** `docker exec jota_gateway jota-gw status` debe mostrar 0 sesiones.
 3. **Parar, copiar y migrar.** `docker compose stop` (sin `down`), copia de seguridad de la BD y migra (usa un usuario que pueda leer `<carpeta>/data` y su `gateway.lock`):
    ```bash

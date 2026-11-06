@@ -16,6 +16,7 @@ from jota_gateway.cli.app import cli
 import jota_gateway.cli.clients, jota_gateway.cli.status, jota_gateway.cli.version
 import jota_gateway.cli.config, jota_gateway.cli.doctor, jota_gateway.cli.menu
 import jota_gateway.cli.init, jota_gateway.cli.serve, jota_gateway.cli.service, jota_gateway.cli.logs, jota_gateway.cli.migrate
+import jota_gateway.cli.onboard
 try:
     cli(["--help"], standalone_mode=False)
 except SystemExit:
