@@ -42,14 +42,16 @@ def closed_port() -> int:
 
 
 @contextlib.asynccontextmanager
-async def answering(frame: str):
-    """Servidor WS que manda `frame` nada más conectar y espera a que el cliente cierre."""
+async def answering(*frames: str | bytes):
+    """Servidor WS que manda `frames[0]` al conectar y el siguiente tras cada mensaje del cliente."""
 
     async def handler(ws):
-        await ws.send(frame)
+        pending = list(frames)
+        await ws.send(pending.pop(0))
         with contextlib.suppress(websockets.ConnectionClosed):
             async for _ in ws:
-                pass
+                if pending:
+                    await ws.send(pending.pop(0))
 
     server = await websockets.serve(handler, "127.0.0.1", 0)
     try:
@@ -157,24 +159,56 @@ async def test_verify_jota_stt_wrong_token_rejected():
     assert (good.ok, good.reason) == (True, "ok")
 
 
+_CHALLENGE = json.dumps({"type": "event", "event": "connect.challenge", "payload": {}})
+
+
+def _openclaw(port):
+    return verify_openclaw("127.0.0.1", port, TOKEN)
+
+
+def _stt(port):
+    return verify_jota_stt(f"127.0.0.1:{port}", "")
+
+
 @pytest.mark.parametrize(
-    ("frame", "verify_call"),
+    ("frames", "verify_call"),
     [
-        ("esto no es json", lambda port: verify_openclaw("127.0.0.1", port, TOKEN)),
-        (
-            json.dumps({"type": "error", "message": "Configuration failed", "code": "CONFIG_ERROR"}),
-            lambda port: verify_jota_stt(f"127.0.0.1:{port}", ""),
-        ),
-        ("esto no es json", lambda port: verify_jota_tts(f"127.0.0.1:{port}", "")),
+        (("esto no es json",), _openclaw),
+        ((_CHALLENGE, json.dumps({"type": "event", "event": "tick"})), _openclaw),
+        ((_CHALLENGE, json.dumps({"type": "res", "id": "x"})), _openclaw),
+        ((json.dumps({"type": "error", "message": "Configuration failed", "code": "CONFIG_ERROR"}),), _stt),
+        (("esto no es json",), _stt),
+        ((b"\x80\x81\x82",), _stt),  # UTF-8 inválido: UnicodeDecodeError, no JSONDecodeError
+        ((json.dumps({"type": 5}),), _stt),
+        ((json.dumps({"foo": 1}),), _stt),
+        (("[]",), _stt),
+        (("esto no es json",), lambda port: verify_jota_tts(f"127.0.0.1:{port}", "")),
     ],
-    ids=["openclaw-malformed", "stt-config-error", "tts-non-json"],
+    ids=[
+        "openclaw-malformed",
+        "openclaw-event-instead-of-res",
+        "openclaw-res-without-ok",
+        "stt-config-error",
+        "stt-non-json",
+        "stt-binary",
+        "stt-schema-type",
+        "stt-schema-missing",
+        "stt-non-object",
+        "tts-non-json",
+    ],
 )
-async def test_unexpected_answer_is_invalid_not_rejected(frame, verify_call):
+async def test_unexpected_answer_is_invalid_not_rejected(frames, verify_call):
     """Solo un rechazo de autenticación es `rejected`: nunca «exige clave» por otro fallo."""
-    async with answering(frame) as port:
+    async with answering(*frames) as port:
         v = await verify_call(port)
     assert (v.ok, v.reason) == (False, "invalid")
     assert "respuesta inesperada" in v.detail
+
+
+async def test_verify_jota_stt_bad_port_is_unreachable_not_unexpected():
+    """websockets.connect lanza un ValueError a secas: no es una respuesta inesperada."""
+    v = await verify_jota_stt("127.0.0.1:99999", "")
+    assert (v.ok, v.reason) == (False, "unreachable")
 
 
 async def test_verify_jota_stt_unreachable():

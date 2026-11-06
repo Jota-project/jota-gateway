@@ -575,11 +575,12 @@ Read in the npm package source, not observed live. A wrong or missing token is a
 ```
 
 `authReason` is also `token_missing`, `rate_limited` (with `retryable`/`retryAfterMs`), etc. The
-gateway does not read it: any `ok:false` other than `startup-sidecars` raises
-`OrchestratorRejectedError`, a subclass of `OrchestratorHandshakeError` with the same stable code.
-`jota-gw onboard` (`cli/verify.py`) reports only that subclass as "OpenClaw rejected the token";
-a malformed or unexpected handshake frame (plain `OrchestratorHandshakeError`) is reported as an
-unexpected answer instead.
+gateway does not read it: a `type: "res"` frame with `ok: false` (other than `startup-sidecars`)
+raises `OrchestratorRejectedError`, a subclass of `OrchestratorHandshakeError` with the same stable
+code. Anything else in its place (an event such as `tick`, a `res` whose `ok` is missing or not
+`false`, a malformed or non-object frame) raises the plain `OrchestratorHandshakeError`.
+`jota-gw onboard` (`cli/verify.py`) reports only the subclass as "OpenClaw rejected the token",
+and the plain error as an unexpected answer.
 
 `GET /healthz` (and `/health`) answers 200 `{"ok":true,"status":"live"}` as soon as the HTTP
 listener is up (`dist/gateway-prewarm.js`, `handleGatewayProbeRequest`). It carries **no server

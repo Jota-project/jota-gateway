@@ -227,7 +227,9 @@ class OpenClawClient:
                 logger.warning(
                     "OpenClaw rejected the handshake (code=%s)", _safe_error_code(hello.get("error"))
                 )
-                raise OrchestratorRejectedError()
+                if hello.get("type") == "res" and hello.get("ok") is False:
+                    raise OrchestratorRejectedError()  # a real `ok:false` answer to `connect`
+                raise OrchestratorHandshakeError()  # an event, or a `res` without ok:false
             hello_payload = hello.get("payload") or {}
             if not isinstance(hello_payload, dict):
                 raise OrchestratorHandshakeError()

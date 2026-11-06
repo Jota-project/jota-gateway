@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import ipaddress
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -202,6 +203,8 @@ async def verify_jota_stt(url: str, token: str) -> Verdict:
         return Verdict(False, "invalid", "La dirección del servicio de STT es host:puerto, sin ws://.")
     if (bad := _config_problem()) is not None:
         return bad
+    from pydantic import ValidationError
+
     from jota_gateway.services.transcriber_client import (
         TranscriberClient,
         TranscriberHandshakeError,
@@ -215,6 +218,10 @@ async def verify_jota_stt(url: str, token: str) -> Verdict:
         except TranscriberHandshakeError as e:
             # Solo AUTH_REQUIRED/AUTH_FAILED rechazan la clave (CONFIG_ERROR, unexpected_frame… no).
             raise (_Rejected if e.code.startswith("AUTH_") else _Unexpected) from None
+        # Primer frame que no es JSON (también binario), ni un objeto, ni un TranscriberMessage.
+        # Por nombre: un puerto inválido es un ValueError a secas de websockets.connect.
+        except (json.JSONDecodeError, UnicodeDecodeError, ValidationError, TypeError):
+            raise _Unexpected from None
 
     return await _check(
         name, url, VERIFY_TIMEOUT_S, connect, client.close, _own_rejected(name, token)
