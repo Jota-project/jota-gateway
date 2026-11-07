@@ -21,7 +21,8 @@ class TranscriberHandshakeError(RuntimeError):
     frame (saneado), nunca su `message` (#238); describe_error lo usa en logs y last_error."""
 
     def __init__(self, code: object) -> None:
-        self.stable_code = f"transcriber_handshake_failed[{safe_code(code)}]"
+        self.code = safe_code(code)  # p. ej. AUTH_FAILED: `jota-gw onboard` separa los de auth
+        self.stable_code = f"transcriber_handshake_failed[{self.code}]"
         super().__init__(self.stable_code)
 
 

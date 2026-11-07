@@ -16,6 +16,14 @@ logger = logging.getLogger(__name__)
 MAX_BUFFER_BYTES = 10 * 1024 * 1024
 
 
+class TTSHandshakeError(RuntimeError):
+    """The auth exchange failed after the socket opened: closed, non-JSON or non-object frame."""
+
+
+class TTSAuthError(TTSHandshakeError):
+    """The TTS answered `auth` with something other than `auth_ok` (jota-speaker: `auth_error`)."""
+
+
 class TTSClient:
     """
     Client for jota-speaker TTS service (port 8005).
@@ -38,7 +46,8 @@ class TTSClient:
         voice: str | None = None,
         speed: float | None = None,
     ) -> None:
-        """Open WS and authenticate. Raises RuntimeError on auth failure."""
+        """Open WS and authenticate. Raises TTSHandshakeError (a RuntimeError) on auth failure;
+        TTSAuthError when the service refused the token."""
         ws_url = f"ws://{self.url}/ws"
         _authenticated = False
         try:
@@ -58,7 +67,7 @@ class TTSClient:
             except ConnectionClosed as exc:
                 # Sin `exc`: el motivo de cierre lo pone el servidor (#238).
                 close_code = exc.rcvd.code if exc.rcvd else "none"
-                raise RuntimeError(
+                raise TTSHandshakeError(
                     f"[{self.client_id}] TTS connection closed during auth (code={close_code})"
                 ) from exc
 
@@ -66,11 +75,11 @@ class TTSClient:
                 msg = json.loads(raw)
             except (json.JSONDecodeError, TypeError) as exc:
                 # G-40 (#216): never the frame content, only a fixed reason.
-                raise RuntimeError(f"[{self.client_id}] TTS sent non-JSON during auth") from exc
+                raise TTSHandshakeError(f"[{self.client_id}] TTS sent non-JSON during auth") from exc
 
             if not isinstance(msg, dict):
                 # G-66 (#214): valid JSON but not an object — name the type only.
-                raise RuntimeError(
+                raise TTSHandshakeError(
                     f"[{self.client_id}] TTS sent non-object during auth ({type(msg).__name__})"
                 )
 
@@ -78,7 +87,7 @@ class TTSClient:
                 # G-40 (#216): only the protocol error `code` (short identifier), never
                 # the rest of the message.
                 code = safe_code(msg.get("code"))
-                raise RuntimeError(f"[{self.client_id}] TTS auth failed (code={code})")
+                raise TTSAuthError(f"[{self.client_id}] TTS auth failed (code={code})")
 
             _authenticated = True
             logger.info("[%s] Connected to TTS at ws://%s/ws", self.client_id, self.url)

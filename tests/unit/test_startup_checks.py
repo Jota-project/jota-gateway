@@ -64,18 +64,32 @@ def test_openclaw_token_empty_or_placeholder_warns(value, caplog):
     assert warn_insecure_tokens(_settings(OPENCLAW_TOKEN=value)) == ["OPENCLAW_TOKEN"]
 
 
-def test_tts_token_default_warns(caplog):
+def test_tts_token_defaults_empty(monkeypatch):
+    monkeypatch.delenv("TTS_TOKEN", raising=False)
+    assert Settings(_env_file=None).TTS_TOKEN == ""
+
+
+def test_empty_tts_token_not_flagged(monkeypatch):
+    monkeypatch.delenv("TTS_TOKEN", raising=False)
+    # Vacío = «el servicio TTS no usa clave», una elección legítima (como TRANSCRIBER_TOKEN).
+    s = Settings(_env_file=None, ADMIN_TOKEN=SECRET, OPENCLAW_TOKEN=SECRET)  # TTS_TOKEN por defecto
+    assert "TTS_TOKEN" not in insecure_tokens(s)
+    assert "TTS_TOKEN" not in insecure_tokens(_settings(TTS_TOKEN=""))
+
+
+# "gateway" era el default del repositorio y aún llega en `.env` antiguos (`migrate --from-docker`).
+@pytest.mark.parametrize("value", ["changeme", "gateway"])
+def test_placeholder_tts_token_flagged(value, caplog):
     caplog.set_level(logging.WARNING)
-    assert warn_insecure_tokens(_settings(TTS_TOKEN="gateway")) == ["TTS_TOKEN"]
+    assert warn_insecure_tokens(_settings(TTS_TOKEN=value)) == ["TTS_TOKEN"]
 
 
 def test_warnings_never_contain_the_token_value(caplog):
     caplog.set_level(logging.DEBUG)
     warn_insecure_tokens(_settings(ADMIN_TOKEN="changeme", OPENCLAW_TOKEN="changeme"))
-    warn_insecure_tokens(_settings(TTS_TOKEN="gateway"))
+    warn_insecure_tokens(_settings(TTS_TOKEN="changeme"))
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert "changeme" not in text.lower()
-    assert "gateway" not in text.lower()
 
 
 def test_lock_is_exclusive_within_the_same_process_and_released(tmp_path):
@@ -170,7 +184,7 @@ def test_flock_busy_errnos_still_mean_another_process(tmp_path, monkeypatch):
 
 def test_insecure_tokens_lists_names_without_logging(caplog):
     caplog.set_level(logging.DEBUG)
-    s = Settings(_env_file=None, ADMIN_TOKEN="", OPENCLAW_TOKEN="changeme", TTS_TOKEN="gateway")
+    s = Settings(_env_file=None, ADMIN_TOKEN="", OPENCLAW_TOKEN="changeme", TTS_TOKEN="changeme")
     assert insecure_tokens(s) == ["ADMIN_TOKEN", "OPENCLAW_TOKEN", "TTS_TOKEN"]
     assert caplog.records == []
 

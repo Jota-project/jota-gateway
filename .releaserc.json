@@ -9,7 +9,7 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "printf '# Lo reescribe semantic-release en cada release (.releaserc, @semantic-release/exec).\\n__version__ = \"${nextRelease.version}\"\\n' > src/jota_gateway/_version.py && uv export --frozen --no-dev --no-emit-project --no-hashes -o constraints.txt"
+        "prepareCmd": "printf '# Lo reescribe semantic-release en cada release (.releaserc, @semantic-release/exec).\\n__version__ = \"${nextRelease.version}\"\\n' > src/jota_gateway/_version.py && uv export --frozen --no-dev --no-emit-project --no-hashes -o constraints.txt && sed -i \"s/^JOTA_RELEASE=.*/JOTA_RELEASE=${nextRelease.version}/\" install.sh"
       }
     ],
     [
@@ -29,6 +29,10 @@
           {
             "path": "constraints.txt",
             "label": "Versiones fijadas (uv tool install -c)"
+          },
+          {
+            "path": "install.sh",
+            "label": "Instalador"
           }
         ]
       }

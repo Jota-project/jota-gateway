@@ -7,6 +7,10 @@ GET /ready    — readiness: pings OpenClaw (critical), TTS and transcriber (non
 OpenClaw down → 503 "unavailable"
 TTS or transcriber down → 200 "degraded"
 All ok → 200 "ok"
+
+A provider set to `off` (voice disabled on purpose) still reports "unavailable" in `services`
+but does not count for the aggregate `status`: otherwise a monitor that tolerates a permanent
+"degraded" would miss a real outage of the other provider.
 """
 
 import asyncio
@@ -66,10 +70,12 @@ async def ready(request: Request, response: Response) -> dict:
         "tts": _resolve("tts", results[2]),
     }
 
+    speech = request.app.state.speech
+    off = {k for k, p in (("transcriber", speech.stt), ("tts", speech.tts)) if p.name == "off"}
     if services["orchestrator"] == "unavailable":
         status = "unavailable"
         response.status_code = 503
-    elif any(v == "unavailable" for v in services.values()):
+    elif any(v == "unavailable" for k, v in services.items() if k not in off):
         status = "degraded"
     else:
         status = "ok"

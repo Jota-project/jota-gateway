@@ -1,11 +1,18 @@
 import asyncio
 import json
+import logging
 import uuid
 from unittest.mock import patch
 
 import pytest
 
-from jota_gateway.services.openclaw.client import OpenClawClient
+from jota_gateway.services.openclaw.client import (
+    ORCHESTRATOR_HANDSHAKE_FAILED_ERROR,
+    OpenClawClient,
+    OrchestratorHandshakeError,
+    OrchestratorStartingError,
+    _startup_retry_after_s,
+)
 from jota_gateway.services.openclaw.dispatcher import FrameDispatcher
 from jota_gateway.services.openclaw.reconnecting import ReconnectingOpenClawClient
 from jota_gateway.services.openclaw.registry import (
@@ -14,6 +21,7 @@ from jota_gateway.services.openclaw.registry import (
     TurnRegistry,
 )
 from jota_gateway.services.reconnection import ConnectionState
+from tests.fakes.openclaw import FakeOpenClawServer
 
 HELLO_OK_PAYLOAD = {
     "type": "hello-ok",
@@ -421,6 +429,105 @@ async def test_connect_frame_schema(fake_ws):
     assert "token" in p["auth"]
     assert p["client"]["mode"] == "backend"
     await client.close()
+
+
+# ── OpenClaw ≥2026.11 arrancando: UNAVAILABLE / startup-sidecars ───
+
+
+def real_ws_client(port: int) -> OpenClawClient:
+    turns = TurnRegistry()
+    return OpenClawClient("127.0.0.1", port, "tok", turns, FrameDispatcher(turns, ClientRegistry()))
+
+
+@pytest.mark.parametrize(
+    ("host", "uri"),
+    [
+        ("::1", "ws://[::1]:18789"),
+        ("[::1]", "ws://[::1]:18789"),  # ya entre corchetes a mano (instalación manual): igual que antes
+        ("127.0.0.1", "ws://127.0.0.1:18789"),
+    ],
+)
+def test_ipv6_host_is_bracketed_in_uri(host, uri):
+    turns = TurnRegistry()
+    client = OpenClawClient(host, 18789, "tok", turns, FrameDispatcher(turns, ClientRegistry()))
+    assert client._uri == uri
+
+
+@pytest.mark.asyncio
+async def test_connect_retries_on_startup_sidecars():
+    async with FakeOpenClawServer(startup_pending=1) as server:
+        client = real_ws_client(server.port)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        info = await client.connect()
+        try:
+            assert info.default_agent_id == "main"
+            assert server.connections == 2  # el segundo handshake va en un socket nuevo
+            assert loop.time() - started >= 0.09  # esperó: retryAfterMs 50 → suelo de 100 ms
+        finally:
+            await client.close()
+
+
+_SIDECARS = {"code": "UNAVAILABLE", "retryable": True, "details": {"reason": "startup-sidecars"}}
+
+
+@pytest.mark.parametrize(
+    ("error", "wait_s"),
+    [
+        ({**_SIDECARS, "retryAfterMs": 500}, 0.5),
+        ({**_SIDECARS, "retryAfterMs": 60_000}, 5.0),  # tope de 5 s por espera
+        ({**_SIDECARS, "retryAfterMs": 0}, 0.1),  # suelo: no martillear a OpenClaw
+        (_SIDECARS, 0.5),  # sin retryAfterMs: 500 ms, como su cliente de referencia
+        ({**_SIDECARS, "retryAfterMs": True}, 0.5),
+        ({**_SIDECARS, "retryAfterMs": float("nan")}, 0.5),
+        ({**_SIDECARS, "retryAfterMs": 10**400}, 5.0),  # int enorme: sin OverflowError
+        ({**_SIDECARS, "retryable": False}, None),
+        ({**_SIDECARS, "details": {"reason": "authenticated-profile-unavailable"}}, None),
+        ({**_SIDECARS, "code": "UNAUTHORIZED"}, None),
+        ({"code": "UNAVAILABLE", "retryable": True, "retryAfterMs": 500}, None),
+        (None, None),
+    ],
+)
+def test_startup_retry_after_only_for_startup_sidecars(error, wait_s):
+    assert _startup_retry_after_s(error) == wait_s
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_after_ms", [50, 5000])  # 5000: la espera se recorta a lo que queda
+async def test_connect_gives_up_after_budget(monkeypatch, caplog, retry_after_ms):
+    caplog.set_level(logging.DEBUG, logger="jota_gateway")
+    monkeypatch.setattr("jota_gateway.services.openclaw.client._STARTUP_RETRY_BUDGET_S", 0.3)
+    async with FakeOpenClawServer(startup_pending=10**6, startup_retry_after_ms=retry_after_ms) as server:
+        client = real_ws_client(server.port)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        with pytest.raises(OrchestratorHandshakeError) as excinfo:
+            await client.connect()
+        assert 0.3 <= loop.time() - started < 1.0  # agota el presupuesto, sin pasarse
+        # Distinguible de un token rechazado (verify_openclaw), con el mismo código estable de hoy.
+        assert excinfo.type is OrchestratorStartingError
+        assert excinfo.value.stable_code == ORCHESTRATOR_HANDSHAKE_FAILED_ERROR
+        assert server.connections > 1
+        assert client._ws is None
+        assert "retry shortly" not in caplog.text  # nunca el texto de OpenClaw
+        retry_levels = [r.levelno for r in caplog.records if "startup-sidecars" in r.getMessage()]
+        assert retry_levels.count(logging.INFO) == 1  # solo el primer reintento; el resto, DEBUG
+
+
+@pytest.mark.asyncio
+async def test_close_during_startup_wait_cancels_retry():
+    """close() del wrapper corta la espera de retryAfterMs: no queda socket ni otro intento."""
+    async with FakeOpenClawServer(startup_pending=1, startup_retry_after_ms=5000) as server:
+        inner = real_ws_client(server.port)
+        roc = ReconnectingOpenClawClient(inner, name="openclaw", initial_backoff=60.0)
+        roc.trigger_reconnect()
+        async with asyncio.timeout(2):
+            while not (server.connections == 1 and not server._conns and inner._ws is None):
+                await asyncio.sleep(0.005)
+        async with asyncio.timeout(1):
+            await roc.close()
+        assert server.connections == 1
+        assert inner._ws is None
 
 
 @pytest.mark.asyncio

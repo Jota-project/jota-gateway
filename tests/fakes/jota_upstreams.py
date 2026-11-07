@@ -22,7 +22,8 @@ def _ready_ok(connection, request):
 
 
 class FakeTranscriber:
-    def __init__(self) -> None:
+    def __init__(self, token: str | None = None) -> None:
+        self.token = token  # si no es None, exige este token, como jota-transcriber con auth
         self.on_audio: list[tuple[str, bool]] = []  # emitido tras el primer frame de audio
         self.on_end: list[tuple[str, bool]] = []  # emitido al recibir {"type":"end"}
         self.configs: list[dict] = []
@@ -33,6 +34,11 @@ class FakeTranscriber:
     async def _handler(self, ws) -> None:
         cfg = json.loads(await ws.recv())
         self.configs.append(cfg)
+        if self.token is not None and cfg.get("token") != self.token:
+            # Forma real (StreamingSession::handleConfig): error AUTH_FAILED y cierre 1008.
+            await ws.send(json.dumps({"type": "error", "message": "Invalid token", "code": "AUTH_FAILED"}))
+            await ws.close(1008)
+            return
         await ws.send(json.dumps({"type": "ready", "protocol_version": 1, "session_id": "s"}))
         sent_audio = False
         try:
@@ -66,8 +72,11 @@ class FakeTranscriber:
 
 
 class FakeTts:
-    def __init__(self, chunk: bytes = b"\x01\x00" * 240, chunks_per_reply: int = 3) -> None:
+    def __init__(
+        self, chunk: bytes = b"\x01\x00" * 240, chunks_per_reply: int = 3, token: str | None = None
+    ) -> None:
         self.chunk = chunk
+        self.token = token  # si no es None, exige este token, como jota-speaker con auth
         self.chunks_per_reply = chunks_per_reply
         self.tokens: list[str] = []
         self.auths: list[dict] = []
@@ -75,7 +84,13 @@ class FakeTts:
         self.port = 0
 
     async def _handler(self, ws) -> None:
-        self.auths.append(json.loads(await ws.recv()))
+        auth = json.loads(await ws.recv())
+        self.auths.append(auth)
+        if self.token is not None and auth.get("token") != self.token:
+            # Forma real (README de jota-speaker): `auth_error` y cierre 1008.
+            await ws.send(json.dumps({"type": "auth_error", "reason": "Invalid token"}))
+            await ws.close(1008, "Invalid token")
+            return
         await ws.send(json.dumps({"type": "auth_ok"}))
         try:
             async for msg in ws:

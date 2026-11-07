@@ -41,7 +41,7 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la guía completa 
 | Endpoint | Método | Auth | Descripción |
 |----------|--------|------|-------------|
 | `/healthz` | GET | ninguna | Liveness — siempre 200 si el proceso vive |
-| `/ready` | GET | ninguna | Readiness — 200 ok/degraded, 503 si OpenClaw no responde |
+| `/ready` | GET | ninguna | Readiness — 200 ok/degraded, 503 si OpenClaw no responde. Un proveedor de voz en `off` sale `unavailable` en `services` pero no degrada `status` |
 
 ```json
 // GET /ready — ejemplo degradado
@@ -82,6 +82,7 @@ Los campos de un cliente (`POST`/`PATCH /admin/clients`) están en `src/jota_gat
 ```bash
 jota-gw                        # en una terminal: menú interactivo; en un script: la ayuda
 jota-gw init                   # instalación nueva: <base>, config.env con ADMIN_TOKEN aleatorio y la BD
+jota-gw onboard [--answers FICHERO]   # asistente: OpenClaw, voz, servicio y primer cliente
 jota-gw serve [--create-db]    # arranca el gateway (puerto 8004, host GATEWAY_HOST)
 jota-gw doctor                 # diagnóstico: configuración, BD, permisos, candado, gateway y servicios
 jota-gw config show            # ajustes efectivos y su origen (entorno, config.env o por defecto)
@@ -162,11 +163,64 @@ La vía recomendada es la **instalación nativa** (servicio de usuario de system
 
 ### Instalación nativa
 
-**Requisitos:** Linux con systemd de usuario, `git`, `curl` y [uv](https://docs.astral.sh/uv/), y un OpenClaw accesible (2026.6.11 o posterior). Instala uv con `curl -LsSf https://astral.sh/uv/install.sh | sh`. `uv tool` deja `jota-gw` en `~/.local/bin`: si no está en el PATH, ejecuta `uv tool update-shell` y reabre la terminal, porque `jota-gw install` pone en la unidad el `jota-gw` que encuentre en el PATH.
+**Requisitos:** Linux (x86_64 o aarch64) con systemd de usuario y un OpenClaw en este mismo equipo (o accesible por túnel SSH), 2026.6.11 o posterior. Lo demás lo comprueba el instalador. Ejecútalo con tu usuario, no como root: el servicio es de tu usuario.
+
+```bash
+curl -fsSL https://github.com/Jota-project/jota-gateway/releases/latest/download/install.sh | sh
+```
+
+Qué hace `install.sh`:
+
+1. Comprueba Linux, la arquitectura y `systemctl --user`. Si falta `git` (`sudo apt-get install -y git`) o linger (`sudo loginctl enable-linger $(id -un)`; sin él, el servicio se para al cerrar tu sesión), enseña el comando y pregunta «¿lo ejecuto yo? [s/N]»: nada con `sudo` sin una `s`. Sin terminal, o con otra respuesta, sale y te dice qué ejecutar.
+2. Instala [uv](https://docs.astral.sh/uv/) si falta, y `jota-gw` con `uv tool install` en la versión de la release, con su `constraints.txt` (las mismas versiones que la imagen Docker). `uv tool update-shell` deja `~/.local/bin` en el PATH de las terminales nuevas; si la tuya aún no lo tiene, el instalador acaba diciéndolo (abre otra terminal o usa `~/.local/bin/jota-gw`).
+3. La primera vez lanza el asistente, `jota-gw onboard` (abajo). Sin terminal (p. ej. `ssh host 'curl … | sh'`) se para ahí: «Instalado. Configúralo con `jota-gw onboard` o, si vienes de Docker, `jota-gw migrate --from-docker DIR` y `jota-gw install`.»
+
+**Volver a ejecutarlo actualiza:** con el servicio ya instalado, reinstala `jota-gw`, reinicia el servicio (corta las sesiones abiertas) y pasa `jota-gw doctor`, sin preguntar nada y sin tocar `config.env`.
+
+**Versión:** el `install.sh` de `releases/latest` instala la última release, y el de una release concreta (`…/releases/download/vX.Y.Z/install.sh`), la suya. Para elegir otra: `curl -fsSL … | JOTA_VERSION=X.Y.Z sh`. Con `sh -s -- --no-onboard` solo instala `jota-gw`, sin el asistente (es el primer paso para [pasar de Docker a nativo](#pasar-de-docker-a-nativo)); las versiones anteriores a `jota-gw onboard` (desde la v1.26.0, la primera con `constraints.txt`) solo se instalan con `--no-onboard` o sin terminal.
+
+#### El asistente: `jota-gw onboard`
+
+`jota-gw onboard` pregunta lo mínimo y **verifica cada proveedor contra el servicio real antes de guardarlo** en `config.env`:
+
+1. Si falta `config.env` o la BD, prepara `<base>` como `jota-gw init` (no toca lo que ya exista).
+2. OpenClaw: lo busca en este equipo (si no, pregunta host y puerto) y pide su token (`openclaw config get gateway.auth.token`). Solo en loopback: para un OpenClaw de otra máquina, un túnel SSH (`ssh -L 18789:127.0.0.1:18789 …`). Sin OpenClaw verificado no sigue.
+3. STT y TTS: servicio propio (`host:puerto` y, si la usa, su clave), ElevenLabs (una sola clave para los dos) o «ahora no» (`off`: sin STT no hay transcripción y sin TTS las respuestas llegan solo en texto).
+4. Instala el servicio, o lo reinicia si ya estaba instalado (con terminal pregunta antes, porque corta las sesiones abiertas), y pasa `jota-gw doctor`.
+5. Si aún no hay clientes, crea el primero, enseña su clave una sola vez y la dirección `ws://<host>:8004/ws/stream` (`GATEWAY_HOST`, o la IP de la LAN si escucha en todas las interfaces).
+
+Si lo cortas a medias, `config.env` queda como estaba más lo ya verificado, y volver a ejecutarlo retoma. También sirve para cambiar de proveedores más adelante (en el menú de `jota-gw`, «Configurar proveedores»): cada paso que `config.env` ya tiene ofrece primero «Dejar como está», que ni verifica ni escribe nada. Necesita una terminal; para scripts, `jota-gw onboard --answers respuestas.json` no pregunta nada y un fallo de verificación sale con 1 y su motivo. El fichero lleva secretos: tiene que ser tuyo y con permisos 600. Créalo ya privado, para que no haya un momento en que otros puedan leerlo: `(umask 077; cat > respuestas.json)` y pega el JSON (termina con Ctrl+D), o `install -m 600 /dev/null respuestas.json` antes de editarlo. Escribirlo y después hacer `chmod` deja esa ventana abierta.
+
+```json
+{
+  "openclaw_host": "127.0.0.1", "openclaw_port": 18789, "openclaw_token": "…",
+  "stt": {"provider": "off"},
+  "tts": {"provider": "jota", "url": "localhost:8005", "token": "…"},
+  "first_client": {"name": "salón", "type": "ha"}
+}
+```
+
+`stt` y `tts`: `{"provider": "jota", "url"?, "token"?}` (por defecto `localhost:9000` / `localhost:8005`, sin clave), `{"provider": "elevenlabs", "api_key"}` (la misma en los dos; si el TTS de `config.env` ya usa ElevenLabs con otra clave, la nueva del STT se verifica también para el TTS antes de guardarla, salvo con `"tts": {"provider": "off"}`) o `{"provider": "off"}`. `first_client`: `{"name", "type"}` (`ha`, `esp32`, `web` o `app`) o `null`. Un campo que falte o sobre es un error.
+
+#### Sin el instalador
+
+Hace falta además `git`, `curl` y [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`). `uv tool` deja `jota-gw` en `~/.local/bin`: si no está en el PATH, ejecuta `uv tool update-shell` y reabre la terminal, porque `jota-gw install` pone en la unidad el `jota-gw` que encuentre en el PATH.
 
 `V` es la última versión de [las releases](https://github.com/Jota-project/jota-gateway/releases) sin la `v` (p. ej. `V=1.27.0` para la release `v1.27.0`). `constraints.txt` existe desde la v1.26.0 y `jota-gw migrate`, solo desde la versión que lo incluye.
 
 Con las mismas versiones que la imagen Docker: cada release publica `constraints.txt` (exportado de `uv.lock`, sin hashes porque uv no los admite en constraints) y `-c` acepta la URL directamente.
+
+**Con el asistente:**
+
+```bash
+V=<versión>   # la última de las releases, sin la v
+uv tool install "jota-gateway @ git+https://github.com/Jota-project/jota-gateway@v$V" \
+  -c https://github.com/Jota-project/jota-gateway/releases/download/v$V/constraints.txt
+loginctl enable-linger $USER        # puede pedir sudo según la distro
+jota-gw onboard
+```
+
+**A mano**, paso a paso:
 
 ```bash
 V=<versión>   # la última de las releases, sin la v
@@ -200,7 +254,13 @@ Solo en Linux con systemd. `jota-gw install` crea `~/.config/systemd/user/jota-g
 
 ### Actualizar
 
-Instala la nueva versión sobre la anterior y reinicia (pregunta; `--yes` para scripts). Las migraciones de la BD se aplican solas al arrancar y no hay vuelta atrás automática de versión: copia `<base>/data/gateway.db` antes. En scripts, `jota-gw --yes restart`.
+Las migraciones de la BD se aplican solas al arrancar y no hay vuelta atrás automática de versión: copia `<base>/data/gateway.db` antes. Después, vuelve a ejecutar el instalador: instala la última release encima, reinicia el servicio y pasa `jota-gw doctor`, sin preguntar (`JOTA_VERSION=X.Y.Z` para otra versión).
+
+```bash
+curl -fsSL https://github.com/Jota-project/jota-gateway/releases/latest/download/install.sh | sh
+```
+
+A mano: instala la nueva versión sobre la anterior y reinicia (pregunta; en scripts, `jota-gw --yes restart`).
 
 ```bash
 V=<versión>   # la nueva, sin la v
@@ -223,7 +283,11 @@ Los datos (`config.env`, `data/gateway.db`) quedan en `<base>`; bórralos a mano
 
 `jota-gw migrate --from-docker <carpeta de compose>` copia `.env` y `data/gateway.db` de una instalación Docker a `<base>`. Procedimiento, con la ventana de parada y la vuelta atrás:
 
-1. **Misma versión a los dos lados.** Despliega la versión vN en Docker e instala la vN nativa **sin arrancarla**: el comando de [Instalación nativa](#instalación-nativa) con la misma `V` que Docker, y **nada más** (ni `jota-gw init` ni `jota-gw install`: `migrate` se niega si `<base>` ya tiene `config.env`, BD o restos de SQLite); `jota-gw version` da la versión nativa y `docker exec jota_gateway jota-gw version` la de Docker.
+1. **Misma versión a los dos lados.** Despliega la versión vN en Docker e instala la vN nativa **sin arrancarla**, con el instalador y `--no-onboard`:
+   ```bash
+   curl -fsSL https://github.com/Jota-project/jota-gateway/releases/latest/download/install.sh | JOTA_VERSION=<N> sh -s -- --no-onboard
+   ```
+   y **nada más** (ni `jota-gw init`, ni `jota-gw onboard`, ni `jota-gw install`: `migrate` se niega si `<base>` ya tiene `config.env`, BD o restos de SQLite). El instalador acaba con «Configúralo con `jota-gw onboard` o, si vienes de Docker, …»: tú sigues la vía de Docker, con `migrate` en el paso 3 e `install` en el 5. `<N>` es la versión de Docker sin la `v`: `jota-gw version` da la nativa y `docker exec jota_gateway jota-gw version` la de Docker. El instalador ya deja linger activado.
 2. **Ventana sin sesiones.** `docker exec jota_gateway jota-gw status` debe mostrar 0 sesiones.
 3. **Parar, copiar y migrar.** `docker compose stop` (sin `down`), copia de seguridad de la BD y migra (usa un usuario que pueda leer `<carpeta>/data` y su `gateway.lock`):
    ```bash
@@ -231,11 +295,7 @@ Los datos (`config.env`, `data/gateway.db`) quedan en `<base>`; bórralos a mano
    jota-gw migrate --from-docker <carpeta de compose>
    ```
 4. **Revisar la config migrada, antes de instalar.** `jota-gw config show` y `jota-gw doctor`: los nombres que solo resuelven en la red de Docker (nombres de servicios de compose, `host.docker.internal`) hay que cambiarlos con `jota-gw config set <AJUSTE> <valor>` (p. ej. `jota-gw config set OPENCLAW_HOST <host>`).
-5. **Linger e instalar.** Sin linger el servicio se para al cerrar la sesión SSH:
-   ```bash
-   loginctl enable-linger $USER   # puede pedir sudo según la distro
-   jota-gw install                # comprueba que el 8004 está libre
-   ```
+5. **Instalar el servicio:** `jota-gw install`, que comprueba que el 8004 está libre.
    Si `GATEWAY_HOST` es una IP concreta de la LAN, `install` espera a `/healthz` en la URL de `--url` (por defecto `http://127.0.0.1:8004`) y daría error por tiempo: usa `jota-gw --url http://<IP>:8004 install`. La comprobación de puerto libre sí mira solo `127.0.0.1`.
 6. **Verificar.** `curl http://127.0.0.1:8004/ready`, una sesión de voz o texto, `/v1` con y sin clave, los mismos clientes (`jota-gw clients list`), `jota-gw doctor` y `jota-gw logs -n 20`.
 7. **Vuelta atrás.** `jota-gw stop` y `systemctl --user disable jota-gateway.service` (si no, tras un reinicio de la máquina arrancan los dos y se pelean por el 8004), y después `docker compose up -d`. Para volver a nativo: `docker compose stop` y `jota-gw install` (con la unidad igual no la toca: la habilita y la arranca). Los cambios de clientes hechos en un lado no están en la BD del otro.
@@ -287,7 +347,7 @@ Variables de entorno o, si no, de `<base>/config.env` (instalación nativa). En 
 | `GATEWAY_HOST` | `0.0.0.0` | Host de escucha de `jota-gw serve` (`127.0.0.1` detrás de un proxy en el mismo host) |
 | `TRANSCRIBER_WS_URL` | `localhost:9000` | jota-transcriber |
 | `TTS_WS_URL` | `localhost:8005` | jota-speaker |
-| `TTS_TOKEN` | `gateway` | Token de auth para jota-speaker |
+| `TTS_TOKEN` | — | Token de auth para jota-speaker; vacío si el TTS no exige clave |
 | `OPENCLAW_HOST` | `127.0.0.1` | Host de OpenClaw |
 | `OPENCLAW_PORT` | `18789` | Puerto de OpenClaw |
 | `OPENCLAW_TOKEN` | — | Token de OpenClaw. Sin él el gateway arranca con un aviso, pero OpenClaw rechaza la conexión (`/ready` 503) |
@@ -309,8 +369,8 @@ El STT y el TTS pasan por una capa de proveedores (`src/jota_gateway/services/sp
 
 | Variable | Default | Descripción |
 |----------|---------|-------------|
-| `STT_PROVIDER` | `jota` | `jota` (jota-transcriber) o `elevenlabs` (Scribe v2 Realtime) |
-| `TTS_PROVIDER` | `jota` | `jota` (jota-speaker) o `elevenlabs` (stream-input, `eleven_flash_v2_5`) |
+| `STT_PROVIDER` | `jota` | `jota` (jota-transcriber), `elevenlabs` (Scribe v2 Realtime) u `off` (sin transcripción: el audio de los clientes se descarta y solo entra texto) |
+| `TTS_PROVIDER` | `jota` | `jota` (jota-speaker), `elevenlabs` (stream-input, `eleven_flash_v2_5`) u `off` (sin respuestas en audio: solo en texto) |
 | `ELEVENLABS_API_KEY` | — | Obligatoria si algún proveedor es `elevenlabs` (permisos Text to Speech y Speech to Text) |
 | `ELEVENLABS_TTS_DEFAULT_VOICE` | `gc61tTk93h3LBXPxew2V` | Voz por defecto; las voces de clientes que no son de ElevenLabs (p. ej. `af_heart`) caen en ella o se traducen con `TTS_VOICE_MAP` |
 | `STT_AUDIO_GATE` | `energy` | Puerta de energía del STT de ElevenLabs (solo se envía audio mientras se habla); `off` la quita. jota no la usa |
@@ -419,7 +479,7 @@ src/jota_gateway/
 ├── db/
 │   ├── models.py            ClientRecord (SQLModel) — identidad y config por cliente
 │   └── database.py          get_engine() / run_migrations() / get_db_session()
-├── cli/                     jota-gw — init, serve, menú, doctor, config, status, version, clients, service (servicio systemd), logs y migrate
+├── cli/                     jota-gw — init, serve, menú, doctor, config, status, version, clients, service (servicio systemd), logs, migrate y onboard (onboard.py, el asistente; verify.py, que verifica cada proveedor contra el servicio real)
 └── services/
     ├── bridge.py            JotaBridge — coordinador de sesión WS
     ├── db_client.py         DbClient — lee ClientRecord de SQLite local (singleton, sin caché)
@@ -432,7 +492,7 @@ src/jota_gateway/
     ├── orchestration.py     call_orchestrator() — helper compartido WS+HTTP
     ├── pipeline_tracker.py  PipelineTracker — latencias por turno
     ├── session_registry.py  SessionRegistry — observabilidad de sesiones
-    ├── speech/              Proveedores STT/TTS: ports.py, factory.py, jota.py, elevenlabs/
+    ├── speech/              Proveedores STT/TTS: ports.py, factory.py, jota.py, elevenlabs/, off.py (voz desactivada)
     └── openclaw/
         ├── client.py        OpenClawClient — WebSocket v4, multiplexado
         ├── reconnecting.py  ReconnectingOpenClawClient — backoff + DEGRADED
@@ -440,6 +500,8 @@ src/jota_gateway/
         ├── registry.py      TurnRegistry + ClientRegistry (+ broadcast_status a todas las sesiones)
         └── models.py        GatewayInfo
 ```
+
+En la raíz del repo, `install.sh` es el instalador nativo (se publica como asset de cada release; el job `installer-smoke` del CI lo prueba).
 
 ## Licencia
 
