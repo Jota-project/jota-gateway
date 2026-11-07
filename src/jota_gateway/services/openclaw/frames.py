@@ -14,6 +14,7 @@ def connect_backend(req_id: str, token: str) -> dict:
             "maxProtocol": 4,
             "client": {
                 "id": "gateway-client",
+                "displayName": "jota-gateway",
                 "version": "1.0.0",
                 "platform": "linux",
                 "mode": "backend",

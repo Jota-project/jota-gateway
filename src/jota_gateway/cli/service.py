@@ -25,7 +25,8 @@ if TYPE_CHECKING:
     from subprocess import CompletedProcess
 
 UNIT_NAME = "jota-gateway.service"
-HEALTH_TIMEOUT_S = 20.0
+# Más que los 30 s de reintento ante startup-sidecars (+ el último intento): el lifespan los espera antes de abrir el 8004.
+HEALTH_TIMEOUT_S = 45.0
 DOCKERENV = Path("/.dockerenv")
 NO_SERVICE_MSG = ("No hay servicio instalado. En Docker: `docker compose restart` / "
                   "`docker compose logs -f`. Para instalarlo: `jota-gw install`.")

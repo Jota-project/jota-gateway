@@ -414,6 +414,8 @@ Consequences observable on the wire:
 - Events come back tagged with that same `sessionKey`; the gateway recovers the client with
   `sk.rsplit(":", 1)[-1]` (safe for agent names or keys containing extra colons).
 - The REST trusted-origin legacy path (no Bearer) has no client row, so it uses the fixed id `ha`.
+- Since server 2026.11.1, `chat.send` rejects session keys that do not identify an agent; ours
+  always do (see "Connect deadline and `chat.send` session keys" below).
 
 How the `agent` segment is resolved and validated lives in `src/jota_gateway/core/agent_policy.py`
 (summarised for clients in `docs/client-protocol.md` §1, "Selección de agente").
@@ -461,7 +463,9 @@ them to a log. What it does instead:
 Handshake (`connect()`): a rejected `hello`, a first frame that is not `connect.challenge`, or
 a challenge/`hello`/`hello.payload` that is not a JSON object all raise
 `OrchestratorHandshakeError`, whose reason is the fixed `orchestrator_handshake_failed`. It is
-retried by the reconnect loop like any failed connect. `ReconnectingOpenClawClient`'s
+retried by the reconnect loop like any failed connect (the one exception, the retryable
+`startup-sidecars` `UNAVAILABLE`, is first retried inside `connect()` itself — see "OpenClaw
+still starting" below). `ReconnectingOpenClawClient`'s
 `last_error` (exposed by `GET /admin/orchestrators/{name}/status`) holds that code, or just the
 exception type name (`OSError`, `TimeoutError`...) for anything else. The same `last_error`
 rule applies to every wrapper that goes through `reconnect_with_backoff`.
@@ -469,7 +473,9 @@ rule applies to every wrapper that goes through `reconnect_with_backoff`.
 For operator diagnostics, a rejected `hello`, a failed `agents.list` and a rejected turn log one
 WARNING line with OpenClaw's `error.code` (`code=...`), only when it matches
 `[A-Za-z0-9_.:-]{1,48}`; otherwise `code=unspecified`. `error.message` and the rest of the body
-are never read.
+are never read (the one exception: a rejected `connect`'s `retryable`, `retryAfterMs` and
+`details.reason`, read only to recognise `startup-sidecars` and compute the wait; only that
+computed wait is logged, never the raw error).
 
 Note: the `websockets` library itself logs raw frames at DEBUG on its own `websockets.*`
 loggers; keep those at their default level in production.
@@ -508,8 +514,113 @@ lost. Fix belongs to M9 (correlate by `runId`; issue #202).
 
 ---
 
+## OpenClaw still starting: `UNAVAILABLE` / `startup-sidecars` on `connect` (2026-11-06, server 2026.11.1)
+
+Read from the npm package `openclaw@2026.11.1` (not captured live). The `connect.challenge`
+arrives before the server has finished booting; while its startup sidecars are pending, the
+answer to `connect` is a retryable rejection instead of `hello-ok`, and then the server closes
+the socket with **1013** `"gateway starting"`:
+
+```json
+{
+  "type": "res", "id": "...", "ok": false,
+  "error": {
+    "code": "UNAVAILABLE",
+    "message": "gateway starting; retry shortly",
+    "retryable": true,
+    "retryAfterMs": 500,
+    "details": {"reason": "startup-sidecars"}
+  }
+}
+```
+
+- `reason` lives in `error.details.reason`; `retryAfterMs` and `retryable` are top-level fields
+  of `error` (`ErrorShapeSchema`: `retryAfterMs` integer ≥ 0, `dist/sessions-CVESrViJ.mjs:2065`).
+- Emitted by `rejectGatewayStartupConnect` (`dist/message-handler-D_4tBaZX.mjs:590-604`), with
+  the constants in `dist/startup-unavailable-D0-EeFjq.mjs` (`GATEWAY_STARTUP_CLOSE_CODE = 1013`).
+  Documented in `docs/gateway/protocol/handshake.md` ("Retry within your connection budget
+  instead of treating it as a terminal handshake failure") and `docs/gateway/embedding.md`
+  ("Wait for protocol readiness").
+- OpenClaw's own test, `isRetryableGatewayStartupUnavailableError`, requires `code ==
+  "UNAVAILABLE"`, `retryable === true` and `details.reason == "startup-sidecars"`; its reference
+  client (`resolveGatewayStartupRetryAfterMs`) clamps the wait to 100–2000 ms, 500 ms when
+  `retryAfterMs` is missing.
+
+How the gateway reacts (`OpenClawClient._do_connect`): on exactly that error it waits
+`retryAfterMs` (500 ms if missing or invalid, at least 100 ms, at most 5 s, and never longer
+than what is left of a 30 s budget counted from the first attempt) and repeats the whole
+handshake on a new socket. Once the budget is spent no new attempt starts: it raises
+`OrchestratorStartingError`, a subclass of `OrchestratorHandshakeError` with the same stable code
+(`orchestrator_handshake_failed`), and the reconnect loop takes over (`jota-gw onboard` uses the
+subclass to say "not answering in time" instead of "token rejected"). Any other `UNAVAILABLE`
+(e.g. `details.reason: "authenticated-profile-unavailable"`) fails the handshake at once, as
+before. Only the fixed text
+and the computed wait are logged (the first retry of a `connect()` at INFO, the rest at DEBUG),
+never `message` or `details`. Side effect: the lifespan's first `connect()` can hold the
+gateway's startup (port 8004 still closed) for up to those 30 s while OpenClaw boots; that is why
+`jota-gw install|start|restart`, and `jota-gw config set` when it restarts the service, wait up
+to 45 s for `/healthz` (`HEALTH_TIMEOUT_S`).
+
+The `connect` frame also carries `client.displayName: "jota-gateway"` since this date. The
+`client` object is closed (`additionalProperties: false`), but `displayName` is an optional
+non-empty string in `ConnectParamsSchema` both in 2026.11.1 (`dist/sessions-CVESrViJ.mjs:1936`)
+and in 2026.4.12 (`dist/protocol-9t-_D3R4.js`), so every supported server (≥ 2026.6.11) accepts it.
+
+## Token rejected on `connect`, and `/healthz` (2026-11-06, server 2026.11.1)
+
+Read in the npm package source, not observed live. A wrong or missing token is answered with
+`ok:false` and then a close with **1008** (`dist/message-handler-D_4tBaZX.mjs`,
+`sendHandshakeErrorResponse`):
+
+```json
+{"type": "res", "id": "...", "ok": false,
+ "error": {"code": "INVALID_REQUEST", "message": "unauthorized: gateway token mismatch (...)",
+           "details": {"code": "...", "authReason": "token_mismatch", "...": "..."}}}
+```
+
+`authReason` is also `token_missing`, `rate_limited` (with `retryable`/`retryAfterMs`), etc. The
+gateway does not read it: a `type: "res"` frame with `ok: false` (other than `startup-sidecars`)
+raises `OrchestratorRejectedError`, a subclass of `OrchestratorHandshakeError` with the same stable
+code. Anything else in its place (an event such as `tick`, a `res` whose `ok` is missing, `null`
+or another falsy value other than `false`, a malformed or non-object frame) raises the plain
+`OrchestratorHandshakeError`.
+`jota-gw onboard` (`cli/verify.py`) reports only the subclass as "OpenClaw rejected the token",
+and the plain error as an unexpected answer.
+
+`GET /healthz` (and `/health`) answers 200 `{"ok":true,"status":"live"}` as soon as the HTTP
+listener is up (`dist/gateway-prewarm.js`, `handleGatewayProbeRequest`). It carries **no server
+version**: `detect_openclaw()` returns `""` (found, version unknown); the version only arrives in
+`hello-ok`, after a successful token handshake.
+
+## Connect deadline and `chat.send` session keys (2026-11-06, server 2026.11.1)
+
+Read in the package source of 2026.11.1 and compared with 2026.10.5, not observed live:
+
+- **Handshake deadline 15 s → 30 s.** `DEFAULT_PREAUTH_HANDSHAKE_TIMEOUT_MS` went from `15e3` to
+  `3e4` (`dist/timeouts-ClVlVfGz.mjs`). Per `docs/gateway/protocol/handshake.md` it is a *total*
+  deadline for challenge → `connect` → `hello-ok`, not an idle timeout, shared by the server's
+  pre-auth timer and OpenClaw's own client; operators can change it with
+  `OPENCLAW_HANDSHAKE_TIMEOUT_MS`. The gateway's own waits (15 s for `connect.challenge`, then
+  30 s for `hello-ok`, in `OpenClawClient._connect_once`) are not shorter than that default, so a
+  slow host is not cut short by the gateway; a server that closes at its deadline fails that
+  attempt like any closed socket and the reconnect loop takes over.
+- **`chat.send` rejects ambiguous session keys** with `INVALID_REQUEST`: malformed keys, an
+  `agentId` that conflicts with an agent-qualified key, and unqualified keys that do not identify
+  an agent (`docs/gateway/protocol/rpc-session-control.md:14`, absent in 2026.10.5). The gateway is
+  not affected: every `sessionKey` it sends is agent-qualified (`agent:{agent}:{client.id}`, see
+  "Session key carries the per-client identity") and `frames.chat_send` never sends `agentId`.
+
 ## Change log of this file
 
+- **2026-11-06**: added "Connect deadline and `chat.send` session keys" (server 2026.11.1, read in
+  the package source): the handshake deadline is now 30 s and `chat.send` rejects session keys
+  that do not identify an agent; no gateway change needed.
+- **2026-11-06**: added "Token rejected on `connect`, and `/healthz`" (server 2026.11.1, read in
+  the package source); the spent startup budget now raises `OrchestratorStartingError`, and an
+  `ok:false` answer to `connect` raises `OrchestratorRejectedError` (both keep the stable code).
+- **2026-11-06**: added "OpenClaw still starting: `UNAVAILABLE` / `startup-sidecars`" (server
+  2026.11.1): `connect()` retries that rejection on a new socket for up to 30 s; the `connect`
+  frame carries `client.displayName: "jota-gateway"`.
 - **2026-11-01**: added "Agent failure after the turn was accepted" (issue #300): `chat`
   `state: "error"` and `agent` `phase: "error"` are terminal.
 - **2026-10-28**: minimum supported server is now **2026.6.11** (issue #262). Removed the

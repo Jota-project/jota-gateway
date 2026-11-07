@@ -38,9 +38,21 @@ def _build_elevenlabs_stt(settings) -> SpeechToTextProvider:
     return ElevenLabsSttProvider(settings)
 
 
+def _build_off_stt(settings) -> SpeechToTextProvider:
+    from jota_gateway.services.speech.off import OffSttProvider
+
+    return OffSttProvider()
+
+
+def _build_off_tts(settings) -> TextToSpeechProvider:
+    from jota_gateway.services.speech.off import OffTtsProvider
+
+    return OffTtsProvider()
+
+
 PROVIDER_BUILDERS: dict[str, dict[str, Callable]] = {
-    "stt": {"jota": _build_jota_stt, "elevenlabs": _build_elevenlabs_stt},
-    "tts": {"jota": _build_jota_tts, "elevenlabs": _build_elevenlabs_tts},
+    "stt": {"jota": _build_jota_stt, "elevenlabs": _build_elevenlabs_stt, "off": _build_off_stt},
+    "tts": {"jota": _build_jota_tts, "elevenlabs": _build_elevenlabs_tts, "off": _build_off_tts},
 }
 
 

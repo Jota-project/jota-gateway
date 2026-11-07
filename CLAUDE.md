@@ -33,6 +33,7 @@ docker compose up
 # Admin CLI (talks to /admin, never writes the DB; doctor/config also work with the gateway stopped)
 jota-gw                                               # interactive menu on a TTY, help otherwise
 jota-gw [--home DIR] init | serve [--create-db]      # new install; start the gateway
+jota-gw onboard [--answers FILE]                     # setup wizard: OpenClaw, voice, service, first client
 jota-gw doctor | config show|get|validate|set|unset | status | version
 jota-gw install [--exe PATH] | uninstall | start | stop | restart   # systemd user service
 jota-gw migrate --from-docker DIR                    # copy a Docker install (.env + DB) to native; see README
@@ -41,7 +42,7 @@ jota-gw clients list | show <ref> | add --name … | edit <ref> | enable|disable
 docker exec jota_gateway jota-gw …                    # inside the container
 ```
 
-CI (`.github/workflows/test.yml`, installs from `uv.lock`) runs ruff, mypy and pytest over `tests/unit`, `tests/contract` and `tests/integration`: run all three locally before opening a PR. `tests/e2e` (marker `e2e_real`, real OpenClaw) and `tests/live` (marker `live`, real ElevenLabs, `JGW_LIVE=1`) only run on demand; see the README.
+CI (`.github/workflows/test.yml`, installs from `uv.lock`) runs ruff, mypy and pytest over `tests/unit`, `tests/contract` and `tests/integration`: run all three locally before opening a PR. `tests/e2e` (marker `e2e_real`, real OpenClaw) and `tests/live` (marker `live`, real ElevenLabs, `JGW_LIVE=1`) only run on demand; see the README. The `installer-smoke` job runs `install.sh` (native installer at the repo root, published as a release asset) and `jota-gw onboard --answers` against fake OpenClaw/TTS under a real systemd user session.
 
 ## What this is
 
@@ -56,7 +57,7 @@ A BFF: the single entry point for Jota-Screen, jota-voice (Mac and Android/Termu
 | `api/routes.py` | `/ws/stream`: handshake (size, timeout, auth, agent policy) → `QueuedSender` → `PipelineTracker` → `JotaBridge` → health check → `ready` → `bridge.run()` |
 | `api/admin_routes.py` | `/admin/*` (`X-Admin-Token` via `api/deps.py`): client CRUD, sessions, service status, `GET /admin/speech`, `/admin/state` (+ SSE stream) |
 | `api/openai_routes.py` | `/v1/models`, `/v1/chat/completions` (Home Assistant); auth in `resolve_ha_caller` + `core/network.py` |
-| `api/health_routes.py` | `/healthz` (liveness), `/ready` (503 only if OpenClaw is down) |
+| `api/health_routes.py` | `/healthz` (liveness), `/ready` (503 only if OpenClaw is down; an `off` speech provider reports `unavailable` but does not degrade `status`) |
 | `core/config.py` | `Settings` (pydantic-settings, env → `<base>/config.env`); `DATABASE_URL` made absolute against the base, default included |
 | `core/agent_policy.py` | `resolve_agent()`: handshake/`model` → client `default_agent` → OpenClaw default → `"main"`, then `allowed_agents` and roster checks |
 | `core/network.py` | `resolve_client_ip()`; `X-Real-IP` trusted only from `TRUSTED_PROXIES` |
@@ -70,12 +71,12 @@ A BFF: the single entry point for Jota-Screen, jota-voice (Mac and Android/Termu
 | `services/pacing.py` | `AudioPacer`: envía el audio TTS a 1× con `AUDIO_LEAD_S` de adelanto |
 | `services/db_client.py` | `get_session(client_key)` → `(Client, ClientConfig)` straight from the DB (no cache) |
 | `services/openclaw/` | `OpenClawClient` (one multiplexed WS v4 connection), `ReconnectingOpenClawClient`, `FrameDispatcher`, `TurnRegistry`/`ClientRegistry`, `ChatTextTracker` |
-| `services/speech/` | STT/TTS ports (`ports.py`), `factory.py`, `jota.py` (jota-transcriber/jota-speaker), `elevenlabs/`; `SpeechProviders` holder in `app.state.speech` |
+| `services/speech/` | STT/TTS ports (`ports.py`), `factory.py`, `jota.py` (jota-transcriber/jota-speaker), `elevenlabs/`, `off.py` (voice disabled, no upstream); `SpeechProviders` holder in `app.state.speech` |
 | `services/reconnection.py` | Shared `ConnectionState`, `ServiceHealth`, backoff loop, `describe_error()` |
 | `services/pipeline_tracker.py`, `session_registry.py`, `stats.py` | Per-session events/latencies, `/admin/sessions`, in-process counters |
-| `cli/` | `jota-gw` admin CLI over `/admin` (click; `rich`, `questionary`, `pydantic` and every command imported lazily, `--help` < 150 ms guarded by `tests/unit/test_cli_startup.py`). Reads config from env → `<JOTA_GATEWAY_HOME or ~/.jota-gateway>/config.env` → defaults, never the cwd `.env`; `doctor` opens the DB read-only and never takes the lock. `serve` owns the uvicorn settings (port 8004, no proxy headers, 1 MiB WS cap, 35 s graceful shutdown) and passes the app as an import string so uvicorn configures its loggers first (`core/logging.py` relies on that order). `service.py` owns the systemd user unit (`install` needs the DB and a free 8004, never creates the DB; rejects a clone/editable exe without `--exe`; `uninstall` leaves data alone). `logs.py` reads the journal and filters `--level`/`--session` itself for both log formats. `config set` takes secrets only by prompt or stdin (`-`). `migrate.py` (`migrate --from-docker DIR`) copies `DIR/.env` + `DIR/data/gateway.db` into `<base>`: read-only source, same Alembic revision required, refuses while the container holds the lock or `<base>` is already populated, never leaves partial files |
+| `cli/` | `jota-gw` admin CLI over `/admin` (click; `rich`, `questionary`, `pydantic` and every command imported lazily, `--help` < 150 ms guarded by `tests/unit/test_cli_startup.py`). Reads config from env → `<JOTA_GATEWAY_HOME or ~/.jota-gateway>/config.env` → defaults, never the cwd `.env`; `doctor` opens the DB read-only and never takes the lock. `serve` owns the uvicorn settings (port 8004, no proxy headers, 1 MiB WS cap, 35 s graceful shutdown) and passes the app as an import string so uvicorn configures its loggers first (`core/logging.py` relies on that order). `service.py` owns the systemd user unit (`install` needs the DB and a free 8004, never creates the DB; rejects a clone/editable exe without `--exe`; `uninstall` leaves data alone). `logs.py` reads the journal and filters `--level`/`--session` itself for both log formats. `config set` takes secrets only by prompt or stdin (`-`). `migrate.py` (`migrate --from-docker DIR`) copies `DIR/.env` + `DIR/data/gateway.db` into `<base>`: read-only source, same Alembic revision required, refuses while the container holds the lock or `<base>` is already populated, never leaves partial files. `verify.py` checks each provider against the real service, reusing the gateway's clients: never raises, `rejected` only for real auth refusals, OpenClaw only on loopback. `onboard.py` (`onboard [--answers FILE]`) writes only values verified in that run, through `config._apply` |
 
-Speech providers are chosen at startup with `STT_PROVIDER`/`TTS_PROVIDER` (`jota` or `elevenlabs`); changing them needs a restart (`GET /admin/speech` only reads). Every remaining ElevenLabs tunable is a module constant in `services/speech/elevenlabs/`.
+Speech providers are chosen at startup with `STT_PROVIDER`/`TTS_PROVIDER` (`jota`, `elevenlabs` or `off`: no voice, the session opens degraded and text still works, `services/speech/off.py`); changing them needs a restart (`GET /admin/speech` only reads). Every remaining ElevenLabs tunable is a module constant in `services/speech/elevenlabs/`.
 
 ## Hard invariants
 
@@ -95,7 +96,7 @@ Breaking any of these is a bug, whatever the change is for.
 
 ## Testing notes
 
-- `tests/unit` (bridge and services with light fakes), `tests/contract` (the same battery against every speech adapter, fakes in `tests/fakes/`), `tests/integration` (`TestClient`, fake upstreams; a few use real uvicorn).
+- `tests/unit` (bridge and services with light fakes), `tests/contract` (the same battery against every networked speech adapter, fakes in `tests/fakes/`; `off` has no upstream and is covered by `tests/unit/test_speech_off.py`), `tests/integration` (`TestClient`, fake upstreams; a few use real uvicorn).
 - `tests/integration/conftest.py`: `db_engine` (autouse) puts a file-backed SQLite in `tmp_path` into `jota_gateway.db.database._engine`; `_skip_lifespan_migrations` and `_noop_dispose_engine` (autouse) keep the lifespan off that DB; `seed_client` (not autouse — admin tests need an empty DB) inserts `VALID_KEY`/`CLIENT_ID`; `client` is a full `TestClient` with a mock orchestrator.
 - `tests/conftest.py` points `JOTA_GATEWAY_HOME` at a temp dir **before** the first `jota_gateway` import (so the suite never reads or writes the real `~/.jota-gateway`; subprocesses inherit it), disables the single-process lock, resets `gateway_stats` and forces `ELEVENLABS_API_KEY=None` for every test.
 - If imports of `src`/`tests` fail oddly, check the Python environment for stray `.pth` files or a foreign `tests` package before assuming the code is broken.

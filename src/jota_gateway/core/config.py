@@ -46,11 +46,13 @@ class Settings(BaseSettings):
     # Token de servicio para el transcriber (su AUTH_TOKEN). Nunca la client_key (#218).
     TRANSCRIBER_TOKEN: str = ""
     TTS_WS_URL: str = "localhost:8005"
-    TTS_TOKEN: str = "gateway"
+    # Vacío = el servicio TTS no usa clave (como TRANSCRIBER_TOKEN).
+    TTS_TOKEN: str = ""
 
     # Proveedores de voz (src/jota_gateway/services/speech/). Se eligen al arrancar; cambiarlos = reiniciar.
-    STT_PROVIDER: Literal["jota", "elevenlabs"] = "jota"
-    TTS_PROVIDER: Literal["jota", "elevenlabs"] = "jota"
+    # "off" = como con el servicio caído: STT off, solo entra texto; TTS off, respuestas en texto.
+    STT_PROVIDER: Literal["jota", "elevenlabs", "off"] = "jota"
+    TTS_PROVIDER: Literal["jota", "elevenlabs", "off"] = "jota"
     ELEVENLABS_API_KEY: SecretStr | None = None
     ELEVENLABS_BASE_URL: str = "wss://api.elevenlabs.io"
     # Resto de ajustes de ElevenLabs: constantes en src/jota_gateway/services/speech/elevenlabs/ (#264).

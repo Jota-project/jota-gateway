@@ -42,6 +42,13 @@ def test_connect_backend_default_client_id():
     assert p["client"]["id"] == "gateway-client"
 
 
+def test_connect_frame_has_display_name():
+    client = frames.connect_backend("r1", "tok")["params"]["client"]
+    assert client["id"] == "gateway-client"
+    assert client["mode"] == "backend"
+    assert client["displayName"] == "jota-gateway"
+
+
 def test_connect_backend_operator_role():
     p = frames.connect_backend("r1", "tok")["params"]
     assert p["role"] == "operator"

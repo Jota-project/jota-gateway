@@ -76,13 +76,13 @@ jobs:
   # Docker build succeeded. Add new required jobs to `needs`, not to the ruleset.
   test:
     runs-on: ubuntu-latest
-    needs: [tests, docker-build, package, service-smoke]
+    needs: [tests, docker-build, package, service-smoke, installer-smoke]
     if: always()
     steps:
       - name: Require all jobs to succeed
         run: |
-          echo "tests=${{ needs.tests.result }} docker-build=${{ needs.docker-build.result }} package=${{ needs.package.result }} service-smoke=${{ needs.service-smoke.result }}"
-          [ "${{ needs.tests.result }}" = "success" ] && [ "${{ needs.docker-build.result }}" = "success" ] && [ "${{ needs.package.result }}" = "success" ] && [ "${{ needs.service-smoke.result }}" = "success" ]
+          echo "tests=${{ needs.tests.result }} docker-build=${{ needs.docker-build.result }} package=${{ needs.package.result }} service-smoke=${{ needs.service-smoke.result }} installer-smoke=${{ needs.installer-smoke.result }}"
+          [ "${{ needs.tests.result }}" = "success" ] && [ "${{ needs.docker-build.result }}" = "success" ] && [ "${{ needs.package.result }}" = "success" ] && [ "${{ needs.service-smoke.result }}" = "success" ] && [ "${{ needs.installer-smoke.result }}" = "success" ]
 
   # La instalación nativa (M14c): el wheel lleva Alembic y sus migraciones, y el programa
   # instalado funciona desde cualquier directorio, sin el checkout.
@@ -426,3 +426,207 @@ jobs:
           systemctl --user status jota-gateway.service --no-pager || true
           loginctl show-user "$USER" || true
           systemctl --user show -p InvocationID,MainPID,ActiveEnterTimestamp jota-gateway.service || true
+
+  # install.sh de punta a punta en el runner: lo que hace `curl … | sh`, con JOTA_SOURCE apuntando
+  # al checkout (sin GitHub de por medio). OpenClaw y TTS falsos que exigen token, en segundo plano
+  # durante todo el job. Todas las esperas tienen tiempo límite.
+  installer-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Ni FAKE_* ni nada de aquí es un ajuste del gateway: no se cuelan en su configuración.
+      FAKE_OPENCLAW_TOKEN: ci-openclaw-token
+      FAKE_TTS_TOKEN: ci-tts-token
+      # La última línea de install.sh sin asistente, tal cual (no la de una versión sin onboard).
+      INSTALLED_MSG: "Instalado. Configúralo con `jota-gw onboard` o, si vienes de Docker, `jota-gw migrate --from-docker DIR` y `jota-gw install`."
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+
+      - name: shellcheck install.sh
+        run: uvx --from shellcheck-py==0.11.0.1 shellcheck install.sh
+
+      # El prepareCmd de .releaserc.json tal cual (con su escapado JSON), sobre una copia.
+      - name: test_release_stamp
+        run: |
+          cp -a "$GITHUB_WORKSPACE" "$RUNNER_TEMP/rel"
+          python3 - "$RUNNER_TEMP/rel" <<'EOF'
+          import json, subprocess, sys
+          plugins = json.load(open(".releaserc.json"))["plugins"]
+          cmd = next(p[1]["prepareCmd"] for p in plugins if p[0] == "@semantic-release/exec")
+          subprocess.run(["sh", "-c", cmd.replace("${nextRelease.version}", "1.2.3")],
+                         cwd=sys.argv[1], check=True)
+          EOF
+          sh -n "$RUNNER_TEMP/rel/install.sh"
+          grep -x 'JOTA_RELEASE=1.2.3' "$RUNNER_TEMP/rel/install.sh"
+          [ "$(grep -c '^JOTA_RELEASE=' "$RUNNER_TEMP/rel/install.sh")" = 1 ]
+          grep -x 'JOTA_RELEASE=' install.sh  # el del repo sigue sin sellar
+
+      - name: Preparar systemd de usuario (linger y bus)
+        run: |
+          sudo loginctl enable-linger "$USER"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          # wait_bus, copiada de service-smoke porque los jobs no comparten ficheros, y wait_ready.
+          cat > "$RUNNER_TEMP/h.sh" <<'EOF'
+          wait_bus() {  # hasta 60 s: bus de usuario y systemd en running o degraded
+            for i in $(seq 1 60); do
+              state=$(systemctl --user is-system-running 2>/dev/null || true)
+              if [ -S "$XDG_RUNTIME_DIR/bus" ] && { [ "$state" = running ] || [ "$state" = degraded ]; }; then
+                echo "systemd de usuario: $state"; return 0
+              fi
+              sleep 1
+            done
+            echo "systemd de usuario no está listo (state=$state)"; return 1
+          }
+          wait_ready() {  # hasta $1 s: /ready «ok» con OpenClaw y TTS ok (el STT off no lo degrada)
+            for i in $(seq 1 "${1:-60}"); do
+              body=$(curl -fs --max-time 10 http://127.0.0.1:8004/ready || true)
+              if [ -n "$body" ] && printf '%s' "$body" | python3 -c "
+          import json, sys
+          r = json.load(sys.stdin)
+          s = r['services']
+          sys.exit(r['status'] != 'ok' or s['orchestrator'] != 'ok' or s['tts'] != 'ok')"; then
+                echo "$body"; return 0
+              fi
+              sleep 1
+            done
+            echo "/ready sin status, OpenClaw y TTS ok: $body"; return 1
+          }
+          EOF
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          . "$RUNNER_TEMP/h.sh"
+          wait_bus
+
+      # Siguen vivos en los pasos siguientes (el runner los mata al acabar el job). El puerto
+      # del TTS lo elige el sistema; el fichero se escribe cuando los dos ya escuchan.
+      - name: OpenClaw (127.0.0.1:18789) y TTS falsos con token, en segundo plano
+        run: |
+          uv sync --locked
+          nohup uv run --no-sync python -u -c "
+          import asyncio, os, sys
+          from pathlib import Path
+          from tests.fakes.jota_upstreams import FakeTts
+          from tests.fakes.openclaw import FakeOpenClawServer
+
+          async def main():
+              tts = FakeTts(token=os.environ['FAKE_TTS_TOKEN'])
+              await tts.start()
+              async with FakeOpenClawServer(token=os.environ['FAKE_OPENCLAW_TOKEN'], port=18789):
+                  Path(sys.argv[1]).write_text(str(tts.port))
+                  print('OpenClaw en 18789, TTS en', tts.port)
+                  await asyncio.Event().wait()
+
+          asyncio.run(main())
+          " "$RUNNER_TEMP/tts.port" > "$RUNNER_TEMP/fakes.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/fakes.pid"
+          for i in $(seq 1 30); do [ -s "$RUNNER_TEMP/tts.port" ] && break; sleep 1; done
+          if [ ! -s "$RUNNER_TEMP/tts.port" ]; then
+            echo "los fakes no arrancan (PID $(cat "$RUNNER_TEMP/fakes.pid"))"; cat "$RUNNER_TEMP/fakes.log"; exit 1
+          fi
+          curl -fs --max-time 2 http://127.0.0.1:18789/healthz; echo
+          curl -fs --max-time 2 "http://127.0.0.1:$(cat "$RUNNER_TEMP/tts.port")/ready"
+          cat "$RUNNER_TEMP/fakes.log"
+
+      # Bajo un pty (script de util-linux): con terminal, solo --no-onboard impide el asistente.
+      - name: install.sh --no-onboard con terminal (jota-gw instalado; ni unidad ni base)
+        run: |
+          command -v script >/dev/null || { echo "falta script (util-linux)"; exit 1; }
+          # Control positivo: si el pty no diera terminal, el paso pasaría sin probar el flag.
+          timeout 30 script -qec 'test -t 1 && : </dev/tty' /dev/null </dev/null || { echo "script no da un TTY"; exit 1; }
+          rc=0
+          timeout 180 script -qec "JOTA_SOURCE=$GITHUB_WORKSPACE sh install.sh --no-onboard" /dev/null \
+            < /dev/null > "$RUNNER_TEMP/pty.txt" 2>&1 || rc=$?
+          cat "$RUNNER_TEMP/pty.txt"
+          [ "$rc" = 0 ]
+          grep -qF "$INSTALLED_MSG" "$RUNNER_TEMP/pty.txt"  # sin -x: el pty acaba las líneas en \r\n
+          [ -x "$HOME/.local/bin/jota-gw" ]
+          [ ! -e "$HOME/.config/systemd/user/jota-gateway.service" ]
+          [ ! -e "$HOME/.jota-gateway" ]  # lo que necesita `migrate --from-docker` después
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: test_install_without_tty_skips_onboard
+        run: |
+          rc=0
+          JOTA_SOURCE="$GITHUB_WORKSPACE" sh install.sh < /dev/null > "$RUNNER_TEMP/notty.txt" 2>&1 || rc=$?
+          cat "$RUNNER_TEMP/notty.txt"
+          [ "$rc" = 0 ]
+          grep -qxF "$INSTALLED_MSG" "$RUNNER_TEMP/notty.txt"
+          [ ! -e "$HOME/.config/systemd/user/jota-gateway.service" ]
+          [ ! -e "$HOME/.jota-gateway" ]
+
+      - name: jota-gw onboard --answers (OpenClaw y TTS falsos, STT off, cliente smoke)
+        run: |
+          . "$RUNNER_TEMP/h.sh"
+          port=$(cat "$RUNNER_TEMP/tts.port")
+          umask 077
+          cat > "$RUNNER_TEMP/answers.json" <<EOF
+          {"openclaw_host": "127.0.0.1", "openclaw_port": 18789, "openclaw_token": "$FAKE_OPENCLAW_TOKEN",
+           "stt": {"provider": "off"},
+           "tts": {"provider": "jota", "url": "127.0.0.1:$port", "token": "$FAKE_TTS_TOKEN"},
+           "first_client": {"name": "smoke", "type": "web"}}
+          EOF
+          [ "$(stat -c %a "$RUNNER_TEMP/answers.json")" = 600 ]
+          # La salida lleva la clave del cliente: solo se enseña si falla.
+          if ! jota-gw onboard --answers "$RUNNER_TEMP/answers.json" > "$RUNNER_TEMP/onboard.txt" 2>&1; then
+            cat "$RUNNER_TEMP/onboard.txt"; exit 1
+          fi
+          [ "$(systemctl --user is-active jota-gateway.service)" = active ]
+          curl -fs --max-time 2 http://127.0.0.1:8004/healthz; echo
+          wait_ready 60
+          # «doctor sale limpio»: ningún fallo, y el STT off como información, no como caída.
+          rc=0
+          jota-gw --json doctor > "$RUNNER_TEMP/doctor.json" || rc=$?
+          cat "$RUNNER_TEMP/doctor.json"
+          python3 - "$RUNNER_TEMP/doctor.json" <<'EOF'
+          import json, sys
+          checks = json.load(open(sys.argv[1]))
+          fails = [c["check"] for c in checks if c["level"] == "fail"]
+          stt = [c for c in checks if c["check"] == "STT"]
+          if fails:
+              sys.exit(f"doctor con fallos: {fails}")
+          if len(stt) != 1 or stt[0]["level"] != "info" or "voz desactivada" not in stt[0]["detail"]:
+              sys.exit(f"el STT off no sale como información: {stt}")
+          EOF
+          [ "$rc" = 0 ]
+          jota-gw --json clients list > "$RUNNER_TEMP/clients.json"
+          python3 -c "
+          import json, sys
+          rows = json.load(open(sys.argv[1]))
+          sys.exit(0 if any(r['name'] == 'smoke' for r in rows) else 'falta el cliente smoke')
+          " "$RUNNER_TEMP/clients.json"
+          [ "$(grep -c '^TTS_TOKEN=' ~/.jota-gateway/config.env)" = 1 ]
+          cp ~/.jota-gateway/config.env "$RUNNER_TEMP/config.env.before"
+
+      - name: reejecutar install.sh actualiza (reinicia, no pregunta, config.env igual)
+        run: |
+          . "$RUNNER_TEMP/h.sh"
+          old_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
+          [ -n "$old_inv" ]
+          rc=0
+          JOTA_SOURCE="$GITHUB_WORKSPACE" sh install.sh < /dev/null > "$RUNNER_TEMP/rerun.txt" 2>&1 || rc=$?
+          cat "$RUNNER_TEMP/rerun.txt"
+          [ "$rc" = 0 ]  # no ha preguntado: sin TTY, una pregunta sale con 1 (o con 2, restart sin --yes)
+          new_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
+          echo "InvocationID: $old_inv -> $new_inv"
+          [ -n "$new_inv" ]
+          [ "$new_inv" != "$old_inv" ]  # hubo restart
+          [ "$(systemctl --user is-active jota-gateway.service)" = active ]
+          cmp "$RUNNER_TEMP/config.env.before" ~/.jota-gateway/config.env
+          wait_ready 60
+          jota-gw --json clients list > "$RUNNER_TEMP/clients.json"
+          grep -q '"smoke"' "$RUNNER_TEMP/clients.json"
+
+      - name: Diagnóstico del instalador
+        if: failure()
+        run: |
+          echo "fakes (PID $(cat "$RUNNER_TEMP/fakes.pid" 2>/dev/null)):"
+          ps -p "$(cat "$RUNNER_TEMP/fakes.pid" 2>/dev/null || echo 0)" -o pid,stat,cmd || echo "los fakes no siguen vivos"
+          cat "$RUNNER_TEMP/fakes.log" || true
+          journalctl --user -u jota-gateway.service -n 200 --no-pager || true
+          systemctl --user status jota-gateway.service --no-pager || true
+          loginctl show-user "$USER" || true
+          ls -la ~/.local/bin ~/.config/systemd/user ~/.jota-gateway || true

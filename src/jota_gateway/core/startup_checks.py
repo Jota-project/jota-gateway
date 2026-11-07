@@ -37,6 +37,7 @@ _PLACEHOLDER_TOKENS = frozenset(
         "test",
         "example",
         "default",
+        "gateway",  # antiguo default de TTS_TOKEN (aún en `.env` copiados con `migrate`)
     }
 )
 
@@ -74,13 +75,14 @@ def _is_placeholder(value: str) -> bool:
 
 
 def insecure_tokens(settings) -> list[str]:
-    """Nombres de los tokens vacíos o por defecto, sin escribir en el log (`jota-gw doctor`)."""
+    """Nombres de los tokens vacíos o de ejemplo, sin escribir en el log (`jota-gw doctor`)."""
     flagged: list[str] = []
     if not settings.ADMIN_TOKEN or _is_placeholder(settings.ADMIN_TOKEN):
         flagged.append("ADMIN_TOKEN")
     if not settings.OPENCLAW_TOKEN or _is_placeholder(settings.OPENCLAW_TOKEN):
         flagged.append("OPENCLAW_TOKEN")
-    if type(settings).model_fields["TTS_TOKEN"].default == settings.TTS_TOKEN:
+    # Vacío = «sin clave», legítimo (no es un placeholder): solo se marca un valor de ejemplo.
+    if _is_placeholder(settings.TTS_TOKEN):
         flagged.append("TTS_TOKEN")
     return flagged
 
@@ -90,13 +92,13 @@ _INSECURE_TOKEN_WARNINGS = {
     "(vacío) o protegido por un secreto adivinable. Define uno propio.",
     "OPENCLAW_TOKEN": "OPENCLAW_TOKEN está vacío o es un valor de ejemplo: la conexión con "
     "OpenClaw probablemente fallará o usa un secreto adivinable.",
-    "TTS_TOKEN": "TTS_TOKEN tiene el valor por defecto del repositorio: cámbialo y configura "
-    "el mismo token en el servicio TTS.",
+    "TTS_TOKEN": "TTS_TOKEN es un valor de ejemplo: cámbialo y configura el mismo token en el "
+    "servicio TTS, o déjalo vacío si el TTS no usa clave.",
 }
 
 
 def warn_insecure_tokens(settings) -> list[str]:
-    """WARNING por cada token vacío o por defecto. Devuelve los nombres avisados."""
+    """WARNING por cada token vacío (salvo TTS_TOKEN) o de ejemplo. Devuelve los nombres avisados."""
     flagged = insecure_tokens(settings)
     for name in flagged:
         logger.warning(_INSECURE_TOKEN_WARNINGS[name])

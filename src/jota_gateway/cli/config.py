@@ -123,7 +123,7 @@ def validation_checks(settings: Any) -> list[dict[str, str]]:
         if name == "ADMIN_TOKEN" and empty:
             checks.append(_check("fail", name, f"Vacío: /admin no funciona. Defínelo en {where}."))
         elif name == "TTS_TOKEN":
-            checks.append(_check("warn", name, "Tiene el valor por defecto del repositorio."))
+            checks.append(_check("warn", name, "Es un valor de ejemplo."))
         else:
             checks.append(_check("warn", name, "Vacío o con un valor de ejemplo."))
     try:

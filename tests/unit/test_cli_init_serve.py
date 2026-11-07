@@ -47,7 +47,8 @@ def test_init_creates_private_home_config_and_migrated_db(tmp_path):
 
 def test_init_never_overwrites(tmp_path):
     base = tmp_path / "base"
-    assert _cli("--home", str(base), "init", cwd=tmp_path).returncode == 0
+    r = _cli("--home", str(base), "init", cwd=tmp_path)
+    assert r.returncode == 0 and "Siguiente paso" in r.stdout
     config_before = (base / "config.env").read_text()
     db_before = (base / "data" / "gateway.db").stat().st_mtime_ns
     r = _cli("--home", str(base), "--json", "init", cwd=tmp_path)

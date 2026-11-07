@@ -19,6 +19,7 @@ MAIN = [
     ("Diagnóstico", "doctor", ["doctor"]),
     ("Clientes", "clients", None),
     ("Configuración", "config", ["config", "show"]),
+    ("Configurar proveedores", "onboard", ["onboard"]),
     ("Salir", "exit", None),
 ]
 CLIENT_ACTIONS = [

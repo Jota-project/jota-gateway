@@ -197,13 +197,20 @@ class _Gateway(BaseHTTPRequestHandler):
         pass
 
 
+def _state(stt: str, tts: str) -> tuple[int, dict]:
+    """/admin/state con los proveedores que ha cargado el proceso en marcha."""
+    return 200, {"gateway": {"version": "1.23.0"}, "services": {
+        "stt": {"provider": stt, "state": "connected"},
+        "tts": {"provider": tts, "state": "connected"}}}
+
+
 @pytest.fixture()
 def gateway():
     srv = ThreadingHTTPServer(("127.0.0.1", 0), _Gateway)
     threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True).start()
     _Gateway.routes = {
         "/healthz": (200, {"status": "ok"}),
-        "/admin/state": (200, {"gateway": {"version": "1.23.0"}}),
+        "/admin/state": _state("jota", "jota"),
         "/ready": (200, {"status": "ok", "services": {
             "orchestrator": "ok", "transcriber": "ok", "tts": "ok"}}),
     }
@@ -237,6 +244,67 @@ def test_orchestrator_down_through_ready_is_a_failure(base, gateway):
     assert found["orquestador"]["level"] == "fail"
     assert found["STT"]["level"] == "ok"
     assert found["TTS"]["level"] == "warn"
+
+
+VOICE_OFF = "voz desactivada: configúrala con `jota-gw onboard`"
+
+
+VOICE_OFF_READY = (200, {"status": "ok", "services": {  # `off` no cuenta para `status`
+    "orchestrator": "ok", "transcriber": "unavailable", "tts": "unavailable"}})
+
+
+@pytest.mark.parametrize("online", [False, True])
+def test_voice_off_is_info_not_a_failure(base, gateway, online):
+    with open(base / "config.env", "a") as f:
+        f.write("STT_PROVIDER=off\nTTS_PROVIDER=off\n")
+    # En marcha, /ready da los proveedores `off` como no disponibles (probe() es False).
+    _Gateway.routes["/admin/state"] = _state("off", "off")
+    _Gateway.routes["/ready"] = VOICE_OFF_READY
+    r = run_at(gateway, "--json", "doctor") if online else run("--json", "doctor")
+    found = checks(r)
+    for name in ("STT", "TTS"):
+        assert found[name] == {"level": "info", "check": name, "detail": VOICE_OFF}
+    assert found["configuración"]["level"] == "ok"
+    assert r.exit_code == (0 if online else 1)  # parado: el orquestador configurado no escucha
+
+
+@pytest.mark.parametrize("ready", ["ok", "unavailable"])
+def test_running_gateway_decides_off_not_local_config(base, gateway, ready):
+    """config.env dice `off`, pero el proceso en marcha cargó jota (no se ha reiniciado)."""
+    with open(base / "config.env", "a") as f:
+        f.write("STT_PROVIDER=off\nTTS_PROVIDER=off\n")
+    _Gateway.routes["/ready"] = (200, {"status": "ok" if ready == "ok" else "degraded",
+                                       "services": {"orchestrator": "ok", "transcriber": ready,
+                                                    "tts": ready}})
+    found = checks(run_at(gateway, "--json", "doctor"))
+    for name in ("STT", "TTS"):
+        assert found[name]["level"] == ("ok" if ready == "ok" else "warn"), found[name]
+        assert found[name]["detail"] != VOICE_OFF
+
+
+def test_running_gateway_with_voice_off_is_info_whatever_the_config(base, gateway):
+    _Gateway.routes["/admin/state"] = _state("off", "jota")  # config.env: jota (por defecto)
+    _Gateway.routes["/ready"] = (200, {"status": "ok", "services": {
+        "orchestrator": "ok", "transcriber": "unavailable", "tts": "ok"}})
+    r = run_at(gateway, "--json", "doctor")
+    found = checks(r)
+    assert found["STT"] == {"level": "info", "check": "STT", "detail": VOICE_OFF}
+    assert found["TTS"]["level"] == "ok"
+    assert r.exit_code == 0
+
+
+@pytest.mark.parametrize("state", [(401, {"detail": "Invalid admin token"}),
+                                   (200, {"gateway": {"version": "1.23.0"}}),
+                                   (200, {"services": {"stt": {"provider": "off"}}})],
+                         ids=["unauthorized", "no-services", "no-tts"])
+def test_unreadable_state_falls_back_to_local_config(base, gateway, state):
+    with open(base / "config.env", "a") as f:
+        f.write("STT_PROVIDER=off\nTTS_PROVIDER=off\n")
+    _Gateway.routes["/admin/state"] = state
+    _Gateway.routes["/ready"] = VOICE_OFF_READY
+    found = checks(run_at(gateway, "--json", "doctor"))
+    for name in ("STT", "TTS"):
+        assert found[name] == {"level": "info", "check": name, "detail": VOICE_OFF}
 
 
 def test_no_secret_in_any_output(base, gateway):
