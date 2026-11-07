@@ -1,3 +1,10 @@
+# [1.28.0](https://github.com/Jota-project/jota-gateway/compare/v1.27.0...v1.28.0) (2026-11-07)
+
+
+### Features
+
+* **instalador:** install.sh, jota-gw onboard con proveedores verificados y voz off ([#316](https://github.com/Jota-project/jota-gateway/issues/316)) ([803c78d](https://github.com/Jota-project/jota-gateway/commit/803c78d3606ed124837a5c3d184ecd0e8a3e32ca)), closes [#297](https://github.com/Jota-project/jota-gateway/issues/297)
+
 # [1.27.0](https://github.com/Jota-project/jota-gateway/compare/v1.26.0...v1.27.0) (2026-11-04)
 
 
