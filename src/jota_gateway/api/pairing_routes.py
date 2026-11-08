@@ -3,7 +3,7 @@
 Descubrimiento y emparejamiento de clientes (#317).
 
 Público, sin autenticación:
-  GET    /.well-known/jota-gateway  — «soy un Jota»: servicio, versión, nombre y si hay códigos abiertos
+  GET    /.well-known/jota-gateway  — «soy un Jota»: servicio, versión y nombre
   POST   /pair                      — el cliente canjea un código y recibe su client_key (una sola vez)
 
 Administración (X-Admin-Token):
@@ -14,16 +14,15 @@ Administración (X-Admin-Token):
 
 /pair va fuera de /v1 a propósito: /v1 es la API compatible con OpenAI y tiene su propia
 autenticación. Sin aprobación automática por loopback: un proxy en el mismo host haría pasar
-internet por 127.0.0.1. Ni el código ni la clave van a los logs.
+internet por 127.0.0.1. Contra quien intente adivinar basta la quema a los MAX_FAILED fallos (un
+límite por IP no frena nada antes que ella y, tras el túnel, todo internet comparte IP). El
+`/.well-known` no dice si hay códigos abiertos: sería el aviso para quemarlos. Ni el código ni la
+clave van a los logs.
 """
 
 import logging
 import secrets
 import socket
-import threading
-import time
-from collections import deque
-from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -42,34 +41,8 @@ from jota_gateway.services.pairing import InvalidCode, Pairing, PairingFull, Pai
 
 logger = logging.getLogger(__name__)
 
-PAIR_RATE_LIMIT = 10  # peticiones a /pair por IP y ventana
-PAIR_RATE_WINDOW_S = 60.0
-
 public_router = APIRouter()
 admin_router = APIRouter(prefix="/admin/pairing", dependencies=[Depends(get_admin_auth)])
-
-
-class RateLimiter:
-    """Ventana deslizante por clave, en memoria (un solo proceso por BD)."""
-
-    def __init__(self, limit: int, window_s: float, clock: Callable[[], float] = time.monotonic) -> None:
-        self._limit, self._window, self._clock = limit, window_s, clock
-        self._hits: dict[str, deque[float]] = {}
-        self._lock = threading.Lock()
-
-    def allow(self, key: str) -> bool:
-        now = self._clock()
-        with self._lock:
-            # Olvida las claves sin actividad reciente: el dict no crece con cada IP que pasa.
-            for k in [k for k, q in self._hits.items() if now - q[-1] >= self._window]:
-                del self._hits[k]
-            hits = self._hits.setdefault(key, deque())
-            while hits and now - hits[0] >= self._window:
-                hits.popleft()
-            if len(hits) >= self._limit:
-                return False
-            hits.append(now)
-            return True
 
 
 def gateway_name() -> str:
@@ -87,12 +60,11 @@ def _store(request: Request) -> PairingStore:
 
 
 @public_router.get("/.well-known/jota-gateway")
-def well_known(request: Request) -> dict[str, Any]:
+def well_known() -> dict[str, Any]:
     return {
         "service": "jota-gateway",
         "version": __version__,
         "name": gateway_name(),
-        "pairing": _store(request).has_open(),
     }
 
 
@@ -102,13 +74,6 @@ def pair(
     request: Request,
     session: Session = Depends(get_db_session),
 ) -> dict[str, Any]:
-    ip = resolve_client_ip(request)
-    if not request.app.state.pair_limiter.allow(ip):
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="too many requests",
-            headers={"Retry-After": str(int(PAIR_RATE_WINDOW_S))},
-        )
     offered = body.model_dump(include={"name", "client_type", "output_mode"}, exclude_none=True)
 
     def create(template: dict[str, Any]) -> ClientRecord:
@@ -121,7 +86,7 @@ def pair(
     except InvalidCode as e:
         logger.warning(
             "Emparejamiento: código no válido desde %s%s",
-            ip,
+            resolve_client_ip(request),
             "; anulados los códigos abiertos tras varios fallos" if e.burned else "",
         )
         raise HTTPException(status_code=400, detail="invalid or expired code") from None
@@ -157,7 +122,9 @@ def open_pairing(body: PairingCreate, request: Request) -> dict[str, Any]:
     # Se valida aquí y no al canjear: un error tiene que salir en la CLI, no en la tele.
     _check_agent_consistency(body.default_agent, body.allowed_agents)
     try:
-        item = _store(request).open(body.model_dump(exclude_unset=True, exclude={"client_key"}))
+        # Sin los null: no deben pisar lo que proponga el cliente (ni dejarlo sin nombre).
+        template = body.model_dump(exclude_unset=True, exclude_none=True)
+        item = _store(request).open(template)
     except PairingFull:
         raise HTTPException(status_code=409, detail="too many open pairing codes") from None
     logger.info("Emparejamiento: código abierto (id=%s)", item.id)

@@ -14,7 +14,6 @@ from jota_gateway.services import pairing
 from tests.integration.conftest import ADMIN_TOKEN, _configure_app_mocks
 
 ADMIN = {"x-admin-token": ADMIN_TOKEN}
-PROXY_PEER = ("127.0.0.1", 50000)  # en TRUSTED_PROXIES por defecto
 LAN_PEER = ("192.168.1.50", 40000)
 
 
@@ -61,20 +60,14 @@ def test_well_known_shape(http):
     r = http.get("/.well-known/jota-gateway")
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"service", "version", "name", "pairing"}
+    assert set(body) == {"service", "version", "name"}
     assert body["service"] == "jota-gateway"
     assert body["name"]  # nombre del equipo por defecto
-    assert body["pairing"] is False
 
 
 def test_well_known_uses_gateway_name(http, monkeypatch):
     monkeypatch.setattr(settings, "GATEWAY_NAME", "green-house")
     assert http.get("/.well-known/jota-gateway").json()["name"] == "green-house"
-
-
-def test_well_known_reports_pairing_open(http):
-    _open(http, client_type="screen")
-    assert http.get("/.well-known/jota-gateway").json()["pairing"] is True
 
 
 # --- /admin/pairing ---
@@ -172,6 +165,15 @@ def test_pair_client_fields_fill_gaps(http, db_engine):
     assert json.loads(row.output_mode) == ["audio", "text", "status"]
 
 
+def test_null_template_fields_do_not_override_client(http, db_engine):
+    item = _open(http, name=None, client_type=None, output_mode=None, default_agent="j")
+    assert item["template"] == {"default_agent": "j"}
+    r = http.post("/pair", json={"code": item["code"], "name": "tele", "client_type": "screen"})
+    assert r.status_code == 201, r.text
+    [row] = _rows(db_engine)
+    assert (row.name, row.client_type, row.default_agent) == ("tele", "screen", "j")
+
+
 def test_pair_without_any_name_gets_one(http, db_engine):
     item = _open(http)
     assert http.post("/pair", json={"code": item["code"], "client_type": "screen"}).status_code == 201
@@ -214,25 +216,6 @@ def test_failed_attempts_burn_all_codes(http):
         assert http.post("/pair", json={"code": _wrong(a["code"])}).status_code == 400
     assert http.get("/admin/pairing", headers=ADMIN).json() == []
     assert http.post("/pair", json={"code": b["code"]}).status_code == 400
-
-
-def test_rate_limit_uses_resolved_ip(make_client):
-    from jota_gateway.api.pairing_routes import RateLimiter
-
-    lan, proxy = make_client(LAN_PEER), make_client(PROXY_PEER)
-    app.state.pair_limiter = RateLimiter(2, 60.0)  # después de los dos arranques (misma app)
-
-    def hit(c, **headers):
-        return c.post("/pair", json={"code": "000000"}, headers=headers).status_code
-
-    # Tras el proxy, cada X-Real-IP es su propio cubo.
-    assert [hit(proxy, **{"x-real-ip": "203.0.113.1"}) for _ in range(3)] == [400, 400, 429]
-    assert hit(proxy, **{"x-real-ip": "203.0.113.2"}) == 400
-    # El proxy sin X-Real-IP comparte un único cubo (fail-closed), distinto del de la LAN.
-    assert [hit(proxy) for _ in range(3)] == [400, 400, 429]
-    assert hit(lan) == 400
-    r = proxy.post("/pair", json={"code": "000000"})
-    assert r.headers["retry-after"] == "60"
 
 
 def test_create_failure_keeps_code_open(http, monkeypatch, db_engine):

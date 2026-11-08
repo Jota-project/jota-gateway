@@ -86,9 +86,6 @@ class PairingStore:
             self._sweep()
             return [p for p in self._items.values() if p.state == "open"]
 
-    def has_open(self) -> bool:
-        return bool(self.list_open())
-
     def cancel(self, pairing_id: str) -> bool:
         with self._lock:
             self._sweep()

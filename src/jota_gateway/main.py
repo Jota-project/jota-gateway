@@ -13,11 +13,6 @@ from jota_gateway import paths
 from jota_gateway.api.admin_routes import router as admin_router
 from jota_gateway.api.health_routes import router as health_router
 from jota_gateway.api.openai_routes import router as openai_router
-from jota_gateway.api.pairing_routes import (
-    PAIR_RATE_LIMIT,
-    PAIR_RATE_WINDOW_S,
-    RateLimiter,
-)
 from jota_gateway.api.pairing_routes import admin_router as pairing_admin_router
 from jota_gateway.api.pairing_routes import public_router as pairing_public_router
 from jota_gateway.api.routes import router as stream_router
@@ -162,7 +157,6 @@ async def _lifespan_body(app: FastAPI):
     app.state.client_registry = client_registry
     app.state.session_registry = SessionRegistry()
     app.state.pairing = PairingStore()  # códigos de emparejamiento, en memoria (#317)
-    app.state.pair_limiter = RateLimiter(PAIR_RATE_LIMIT, PAIR_RATE_WINDOW_S)
 
     try:
         yield
