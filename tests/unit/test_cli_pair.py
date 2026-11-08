@@ -68,6 +68,15 @@ def test_pair_ctrl_c_cancels_code(use_api):
     assert ("DELETE", "/admin/pairing/p1", None) in fake.calls
 
 
+def test_pair_error_while_waiting_cancels_code(use_api):
+    from jota_gateway.cli.api import ApiError
+
+    fake = use_api(PollingApi([{}, ApiError("El gateway no responde", 3)]))
+    r = run("pair")
+    assert r.exit_code == 3
+    assert ("DELETE", "/admin/pairing/p1", None) in fake.calls
+
+
 def test_pair_no_wait_json(use_api):
     fake = use_api(PollingApi([]))
     r = run("--json", "pair", "--no-wait")

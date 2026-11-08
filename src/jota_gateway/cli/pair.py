@@ -65,13 +65,13 @@ def pair(
     if no_wait:
         out.message(f"Caduca a las {expires}.", MUTED)
         return
-    gateway = client.request("GET", "/.well-known/jota-gateway")["name"]
-    out.message(
-        f"Escríbelo en el cliente para emparejarlo con «{gateway}». Caduca a las {expires}; "
-        "Ctrl+C lo anula.",
-        MUTED,
-    )
     try:
+        gateway = client.request("GET", "/.well-known/jota-gateway")["name"]
+        out.message(
+            f"Escríbelo en el cliente para emparejarlo con «{gateway}». Caduca a las {expires}; "
+            "Ctrl+C lo anula.",
+            MUTED,
+        )
         while True:
             _sleep(POLL_S)
             state = client.request("GET", f"/admin/pairing/{item['id']}")
@@ -82,5 +82,15 @@ def pair(
                 verb = "caducado" if state["state"] == "expired" else "sido anulado"
                 raise api.ApiError(f"El código ha {verb}. Abre otro con `jota-gw pair`.")
     except KeyboardInterrupt:
-        client.request("DELETE", f"/admin/pairing/{item['id']}", accept=(404,))
+        _cancel(client, item["id"])
         raise api.ApiError("Código anulado.") from None
+    except api.ApiError:
+        _cancel(client, item["id"])  # nadie vigila ya el código: que no quede abierto
+        raise
+
+
+def _cancel(client: api.Api, pairing_id: str) -> None:
+    try:
+        client.request("DELETE", f"/admin/pairing/{pairing_id}", accept=(404,))
+    except api.ApiError:
+        pass  # si el gateway no responde, el código caduca solo en 10 minutos

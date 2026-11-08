@@ -80,12 +80,12 @@ Regla: **el cliente dice qué es** (tipo y formatos) **y el administrador decide
 |-----------|---------------|
 | `201 {"client_id", "name", "client_key", "gateway": {"name", "version"}}` | Emparejado. **`client_key` solo llega aquí, una vez:** guárdala ya junto a la dirección del gateway, con permisos 0600 si va a un fichero, y nunca la escribas en un log. `name` es el nombre con el que quedó dado de alta (puede no ser el que propusiste) |
 | `400 {"detail": "invalid or expired code"}` | Código desconocido, caducado, ya usado o mal escrito (siempre el mismo mensaje). Deja corregirlo |
-| `422` | `name` (1–200 caracteres), `client_type` u `output_mode` no válidos: es un fallo de tu cliente, no del usuario. No cuenta como intento |
+| `422` | `code` no es un texto de hasta 32 caracteres (mándalo como texto, no como número), o `name` (1–200 caracteres), `client_type` u `output_mode` no válidos: es un fallo de tu cliente, no del usuario. No cuenta como intento |
 | `5xx` o sin respuesta | Si el gateway falló al crear el cliente, el código sigue abierto: reintenta con el mismo código. Si se cortó la conexión después del `201`, el código ya está gastado y la clave perdida: pide otro código |
 
 Después abre la sesión normal (§1) con esa `client_key`.
 
-**Intentos fallidos:** mientras haya códigos abiertos, cada `400` cuenta (un código caducado o ya usado también), sea de quien sea, y al quinto se anulan todos los abiertos; el administrador tiene que abrir otro. Es la defensa contra quien intente adivinar, porque `/pair` puede estar expuesto a internet a través de un proxy. El cliente no puede saber cuántos intentos quedan: si tras un `400` el usuario está seguro del código, dile que pida uno nuevo.
+**Intentos fallidos:** mientras haya códigos abiertos, cada `400` cuenta (un código caducado o ya usado también), sea de quien sea, y al quinto seguido se anulan todos los abiertos (un canje correcto pone la cuenta a 0); el administrador tiene que abrir otro. Es la defensa contra quien intente adivinar, porque `/pair` puede estar expuesto a internet a través de un proxy. El cliente no puede saber cuántos intentos quedan: si tras un `400` el usuario está seguro del código, dile que pida uno nuevo.
 
 ### Cuando la clave deja de valer
 

@@ -632,10 +632,9 @@ jobs:
             -H 'Content-Type: application/json' -d "{\"code\": \"$1\"}" http://127.0.0.1:8004/pair; }
           [ "$(post "$wrong")" = 400 ]
           [ "$(post "$code")" = 201 ]
-          [ "$(post "$code")" = 400 ]  # de un solo uso
           PAIRED_KEY=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1]))['client_key'])" "$RUNNER_TEMP/paired.json")
-          python3 -c "import json, sys; sys.exit(json.load(open(sys.argv[1]))['client_key'] is None)" "$RUNNER_TEMP/paired.json"
           export PAIRED_KEY
+          [ "$(post "$code")" = 400 ]  # de un solo uso (sobrescribe paired.json: la clave ya está leída)
           uv run --no-sync python - <<'EOF'
           import asyncio, json, os
           import websockets
@@ -655,9 +654,10 @@ jobs:
           EOF
           journalctl --user -u jota-gateway.service --no-pager > "$RUNNER_TEMP/journal.txt"
           grep -q "Emparejamiento: cliente" "$RUNNER_TEMP/journal.txt"
-          ! grep -qF "$PAIRED_KEY" "$RUNNER_TEMP/journal.txt"
-          ! grep -qwF "$code" "$RUNNER_TEMP/journal.txt"
-          ! grep -qwF "$wrong" "$RUNNER_TEMP/journal.txt"
+          # `|| exit 1`: bash -e no corta en un `!` negado.
+          ! grep -qF "$PAIRED_KEY" "$RUNNER_TEMP/journal.txt" || { echo "la clave está en el journal"; exit 1; }
+          ! grep -qwF "$code" "$RUNNER_TEMP/journal.txt" || { echo "el código está en el journal"; exit 1; }
+          ! grep -qwF "$wrong" "$RUNNER_TEMP/journal.txt" || { echo "el código erróneo está en el journal"; exit 1; }
 
       - name: Diagnóstico del instalador
         if: failure()

@@ -18,7 +18,7 @@ from jota_gateway.db.models import ClientRecord
 
 CODE_TTL_S = 600
 MAX_OPEN = 5
-# Fallos seguidos (entre todos los clientes) que anulan los códigos abiertos: con 6 cifras,
+# Fallos seguidos (entre todos los clientes; un canje correcto pone la cuenta a 0) que anulan los códigos abiertos: con 6 cifras,
 # 10 minutos y 5 intentos, adivinar uno no es viable aunque /pair esté expuesto a internet.
 MAX_FAILED = 5
 
@@ -123,6 +123,7 @@ class PairingStore:
             record = create(match.template)
             match.client_id, match.client_name = record.id, record.name
             self._close(match, "used")
+            self._failed = 0  # «5 fallos seguidos»: un canje correcto vuelve a empezar
             return record
 
     def _close(self, item: Pairing, state: State) -> None:

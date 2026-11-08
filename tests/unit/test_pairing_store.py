@@ -129,17 +129,17 @@ def test_failures_do_not_count_without_open_codes(store):
     assert store.get(item.id).state == "open"
 
 
-def test_success_counts_no_failure(store):
-    item = store.open({})
+def test_success_resets_failures(store):
+    item, other = store.open({}), store.open({})
     for _ in range(pairing.MAX_FAILED - 1):
         with pytest.raises(InvalidCode):
-            store.redeem(_wrong(item.code), _create())
+            store.redeem("abc", _create())
     store.redeem(item.code, _create())
-    # Ya no hay abiertos: el contador vuelve a 0 y el siguiente código empieza limpio.
-    other = store.open({})
+    # Con `other` aún abierto, la cuenta empieza de nuevo: un fallo más no lo quema.
     with pytest.raises(InvalidCode) as exc:
-        store.redeem(_wrong(other.code), _create())
+        store.redeem("abc", _create())
     assert not exc.value.burned
+    assert store.get(other.id).state == "open"
 
 
 def test_create_failure_keeps_code_open(store):
