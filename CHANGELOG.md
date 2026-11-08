@@ -1,3 +1,10 @@
+# [1.29.0](https://github.com/Jota-project/jota-gateway/compare/v1.28.0...v1.29.0) (2026-11-08)
+
+
+### Features
+
+* descubrimiento y emparejamiento de clientes ([#317](https://github.com/Jota-project/jota-gateway/issues/317)) ([#318](https://github.com/Jota-project/jota-gateway/issues/318)) ([27c7073](https://github.com/Jota-project/jota-gateway/commit/27c7073c9936e7f600bf8cca3fba92e80caa7d24))
+
 # [1.28.0](https://github.com/Jota-project/jota-gateway/compare/v1.27.0...v1.28.0) (2026-11-07)
 
 
