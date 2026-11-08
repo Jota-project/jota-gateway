@@ -620,6 +620,45 @@ jobs:
           jota-gw --json clients list > "$RUNNER_TEMP/clients.json"
           grep -q '"smoke"' "$RUNNER_TEMP/clients.json"
 
+      # #317: el alta por código de punta a punta, y ni el código ni la clave en el journal.
+      - name: emparejar un cliente (jota-gw pair, POST /pair y la clave abre sesión)
+        run: |
+          curl -fs --max-time 5 http://127.0.0.1:8004/.well-known/jota-gateway \
+            | python3 -c "import json, sys; sys.exit(json.load(sys.stdin)['service'] != 'jota-gateway')"
+          jota-gw --json pair --no-wait --type screen --name smoke-tele > "$RUNNER_TEMP/pair.json"
+          code=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1]))['code'])" "$RUNNER_TEMP/pair.json")
+          wrong=$(python3 -c "import sys; print(f'{(int(sys.argv[1]) + 1) % 10**6:06d}')" "$code")
+          post() { curl -s --max-time 5 -o "$RUNNER_TEMP/paired.json" -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' -d "{\"code\": \"$1\"}" http://127.0.0.1:8004/pair; }
+          [ "$(post "$wrong")" = 400 ]
+          [ "$(post "$code")" = 201 ]
+          [ "$(post "$code")" = 400 ]  # de un solo uso
+          PAIRED_KEY=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1]))['client_key'])" "$RUNNER_TEMP/paired.json")
+          python3 -c "import json, sys; sys.exit(json.load(open(sys.argv[1]))['client_key'] is None)" "$RUNNER_TEMP/paired.json"
+          export PAIRED_KEY
+          uv run --no-sync python - <<'EOF'
+          import asyncio, json, os
+          import websockets
+
+          async def main():
+              async with websockets.connect("ws://127.0.0.1:8004/ws/stream") as ws:
+                  await ws.send(json.dumps({"client_key": os.environ["PAIRED_KEY"],
+                                            "input_mode": "text", "output_mode": ["text"]}))
+                  for _ in range(5):
+                      msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                      if msg.get("type") == "ready":
+                          print("sesión abierta con la clave emparejada")
+                          return
+                  raise SystemExit("sin ready con la clave emparejada")
+
+          asyncio.run(main())
+          EOF
+          journalctl --user -u jota-gateway.service --no-pager > "$RUNNER_TEMP/journal.txt"
+          grep -q "Emparejamiento: cliente" "$RUNNER_TEMP/journal.txt"
+          ! grep -qF "$PAIRED_KEY" "$RUNNER_TEMP/journal.txt"
+          ! grep -qwF "$code" "$RUNNER_TEMP/journal.txt"
+          ! grep -qwF "$wrong" "$RUNNER_TEMP/journal.txt"
+
       - name: Diagnóstico del instalador
         if: failure()
         run: |

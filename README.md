@@ -55,6 +55,15 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la guía completa 
 }
 ```
 
+### Descubrimiento y emparejamiento (públicos)
+
+| Endpoint | Método | Auth | Descripción |
+|----------|--------|------|-------------|
+| `/.well-known/jota-gateway` | GET | ninguna | Identifica al gateway: `{"service": "jota-gateway", "version", "name"}` (`name` = `GATEWAY_NAME` o el nombre del equipo) |
+| `/pair` | POST | un código de `jota-gw pair` | El cliente canjea el código y recibe su `client_key`, la única vez que se ve. Ver [Emparejar un cliente](#emparejar-un-cliente) |
+
+Los dos son públicos: detrás de un proxy o un túnel también llegan desde internet. `/pair` solo acepta un código abierto por el administrador, y 5 códigos erróneos seguidos anulan todos los abiertos. El protocolo para clientes está en [`docs/client-protocol.md` §0](docs/client-protocol.md#0-descubrir-el-gateway-y-emparejarse).
+
 ### Admin (requiere `X-Admin-Token`)
 
 | Endpoint | Método | Descripción |
@@ -72,6 +81,10 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la guía completa 
 | `/admin/clients/{id}` | PATCH | Actualizar cliente (campos parciales) |
 | `/admin/clients/{id}` | DELETE | Borrar cliente |
 | `/admin/clients/{id}/rotate-key` | POST | Rotar `client_key` (la respuesta trae la nueva) |
+| `/admin/pairing` | POST | Abrir un código de emparejamiento con la plantilla del cliente (los campos de `POST /admin/clients`, nombre opcional y sin clave). La respuesta trae el código, la única vez que se ve. Como mucho 5 abiertos (409) |
+| `/admin/pairing` | GET | Códigos abiertos (sin el código) |
+| `/admin/pairing/{id}` | GET | Estado de un código: `open`, `used` (con `client_id` y `client_name`), `expired` o `cancelled` |
+| `/admin/pairing/{id}` | DELETE | Anular un código abierto |
 | `/admin/state` | GET | Instantánea viva: versión, uptime, estado de servicios, contadores y una fila por sesión |
 | `/admin/state/stream` | GET | La misma instantánea por SSE cada segundo; cada stream termina solo a los 25 s, el cliente debe reconectar (`EventSource` lo hace solo) |
 
@@ -97,10 +110,11 @@ jota-gw status                 # gateway, versión, orquestador, STT, TTS y sesi
 jota-gw version
 jota-gw clients list           # nombre, id corto, tipo, activo, agente y huella fp
 jota-gw clients show <ref>     # <ref>: id, prefijo de id (≥ 4) o nombre
-jota-gw clients add --name … [--type ha|esp32|web|app] [--agent …] [--allowed-agent …] [--import-key]
+jota-gw clients add --name … [--type ha|esp32|web|app|screen] [--agent …] [--allowed-agent …] [--import-key]
 jota-gw clients edit <ref> [--name …] [--set tts_speed=1.2 …] [--set output_mode:='["text"]']
 jota-gw clients enable|disable <ref>
 jota-gw clients rotate-key|remove <ref>    # preguntan; en scripts: jota-gw --yes clients remove <ref>
+jota-gw pair [--name …] [--type …] [--agent …] [--set …] [--no-wait]   # código para que un cliente se dé de alta solo
 ```
 
 Opciones globales: van **antes** del subcomando (`jota-gw --yes clients remove X`; después, click no las reconoce): `--home` (`JOTA_GATEWAY_HOME`, por defecto `~/.jota-gateway`), `--url` (`JOTA_GW_URL`, por defecto `http://127.0.0.1:8004`), `--token` (`JOTA_GW_TOKEN`; si no, `ADMIN_TOKEN` o `config.env`), `--json` y `--yes`. `JOTA_GATEWAY_HOME` la leen el gateway y la CLI; `JOTA_GW_URL` y `JOTA_GW_TOKEN`, solo la CLI. Códigos de salida: 0 bien, 1 error, 2 uso incorrecto, 3 gateway inalcanzable.
@@ -200,7 +214,24 @@ Si lo cortas a medias, `config.env` queda como estaba más lo ya verificado, y v
 }
 ```
 
-`stt` y `tts`: `{"provider": "jota", "url"?, "token"?}` (por defecto `localhost:9000` / `localhost:8005`, sin clave), `{"provider": "elevenlabs", "api_key"}` (la misma en los dos; si el TTS de `config.env` ya usa ElevenLabs con otra clave, la nueva del STT se verifica también para el TTS antes de guardarla, salvo con `"tts": {"provider": "off"}`) o `{"provider": "off"}`. `first_client`: `{"name", "type"}` (`ha`, `esp32`, `web` o `app`) o `null`. Un campo que falte o sobre es un error.
+`stt` y `tts`: `{"provider": "jota", "url"?, "token"?}` (por defecto `localhost:9000` / `localhost:8005`, sin clave), `{"provider": "elevenlabs", "api_key"}` (la misma en los dos; si el TTS de `config.env` ya usa ElevenLabs con otra clave, la nueva del STT se verifica también para el TTS antes de guardarla, salvo con `"tts": {"provider": "off"}`) o `{"provider": "off"}`. `first_client`: `{"name", "type"}` (`ha`, `esp32`, `web`, `app` o `screen`) o `null`. Un campo que falte o sobre es un error.
+
+#### Emparejar un cliente
+
+En vez de crear el cliente y copiar su clave a mano, el cliente puede darse de alta solo con un código:
+
+```bash
+jota-gw pair --type screen --name tele --agent j-assistant --allowed-agent j-assistant \
+  --set tts_voice=ef_dora --set barge_in_enabled:=false
+```
+
+1. Enseña un código de 6 cifras (`482 913`), el nombre del gateway y a qué hora caduca (10 minutos).
+2. Escríbelo en la pantalla de emparejamiento del cliente. El cliente encuentra el gateway solo (en el mismo equipo o en la tailnet) y llama a `POST /pair`.
+3. `jota-gw pair` espera hasta que se use: «Cliente «tele» emparejado». Ctrl+C anula el código.
+
+Las opciones son las de `clients add` más `--set` para cualquier otro campo (voz, turno…), y deciden cómo se comporta el cliente. El cliente aporta su tipo, lo que sabe reproducir (`output_mode`) y un nombre propuesto; lo que fijes aquí manda. Con `--no-wait` (o `--json`) enseña el código y termina, para scripts.
+
+El código es de un solo uso. Si alguien escribe 5 códigos erróneos seguidos, se anulan todos los abiertos y hay que abrir otro. `jota-gw clients add` sigue siendo la vía manual.
 
 #### Sin el instalador
 
@@ -345,6 +376,7 @@ Variables de entorno o, si no, de `<base>/config.env` (instalación nativa). En 
 |----------|---------|-------------|
 | `DATABASE_URL` | `sqlite:///data/gateway.db` | Base de datos SQLite local (identidad y configuración de clientes). Una ruta relativa cuelga de `<base>` |
 | `GATEWAY_HOST` | `0.0.0.0` | Host de escucha de `jota-gw serve` (`127.0.0.1` detrás de un proxy en el mismo host) |
+| `GATEWAY_NAME` | — | Nombre con el que se anuncia a los clientes (`/.well-known/jota-gateway`). Vacío = nombre del equipo; en Docker conviene fijarlo |
 | `TRANSCRIBER_WS_URL` | `localhost:9000` | jota-transcriber |
 | `TTS_WS_URL` | `localhost:8005` | jota-speaker |
 | `TTS_TOKEN` | — | Token de auth para jota-speaker; vacío si el TTS no exige clave |

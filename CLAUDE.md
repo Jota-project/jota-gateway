@@ -39,6 +39,7 @@ jota-gw install [--exe PATH] | uninstall | start | stop | restart   # systemd us
 jota-gw migrate --from-docker DIR                    # copy a Docker install (.env + DB) to native; see README
 jota-gw logs [-f] [-n N] [--level L] [--session ID]
 jota-gw clients list | show <ref> | add --name … | edit <ref> | enable|disable|rotate-key|remove <ref>
+jota-gw pair [--type …] [--set …] [--no-wait]        # pairing code for a client to self-register
 docker exec jota_gateway jota-gw …                    # inside the container
 ```
 
@@ -57,6 +58,7 @@ A BFF: the single entry point for Jota-Screen, jota-voice (Mac and Android/Termu
 | `api/routes.py` | `/ws/stream`: handshake (size, timeout, auth, agent policy) → `QueuedSender` → `PipelineTracker` → `JotaBridge` → health check → `ready` → `bridge.run()` |
 | `api/admin_routes.py` | `/admin/*` (`X-Admin-Token` via `api/deps.py`): client CRUD, sessions, service status, `GET /admin/speech`, `/admin/state` (+ SSE stream) |
 | `api/openai_routes.py` | `/v1/models`, `/v1/chat/completions` (Home Assistant); auth in `resolve_ha_caller` + `core/network.py` |
+| `api/pairing_routes.py` | Public `GET /.well-known/jota-gateway` (identity only, never whether codes are open) and `POST /pair` (redeem a code → `client_key` once; template fields win over client-offered `name`/`client_type`/`output_mode`); `/admin/pairing` to open/list/get/cancel codes (#317) |
 | `api/health_routes.py` | `/healthz` (liveness), `/ready` (503 only if OpenClaw is down; an `off` speech provider reports `unavailable` but does not degrade `status`) |
 | `core/config.py` | `Settings` (pydantic-settings, env → `<base>/config.env`); `DATABASE_URL` made absolute against the base, default included |
 | `core/agent_policy.py` | `resolve_agent()`: handshake/`model` → client `default_agent` → OpenClaw default → `"main"`, then `allowed_agents` and roster checks |
@@ -72,6 +74,7 @@ A BFF: the single entry point for Jota-Screen, jota-voice (Mac and Android/Termu
 | `services/db_client.py` | `get_session(client_key)` → `(Client, ClientConfig)` straight from the DB (no cache) |
 | `services/openclaw/` | `OpenClawClient` (one multiplexed WS v4 connection), `ReconnectingOpenClawClient`, `FrameDispatcher`, `TurnRegistry`/`ClientRegistry`, `ChatTextTracker` |
 | `services/speech/` | STT/TTS ports (`ports.py`), `factory.py`, `jota.py` (jota-transcriber/jota-speaker), `elevenlabs/`, `off.py` (voice disabled, no upstream); `SpeechProviders` holder in `app.state.speech` |
+| `services/pairing.py` | `PairingStore`: in-memory pairing codes (6 digits, 10 min, single use, ≤ 5 open); `redeem` creates the client under the lock, `MAX_FAILED` wrong codes burn every open code, a failed create keeps the code open |
 | `services/reconnection.py` | Shared `ConnectionState`, `ServiceHealth`, backoff loop, `describe_error()` |
 | `services/pipeline_tracker.py`, `session_registry.py`, `stats.py` | Per-session events/latencies, `/admin/sessions`, in-process counters |
 | `cli/` | `jota-gw` admin CLI over `/admin` (click; `rich`, `questionary`, `pydantic` and every command imported lazily, `--help` < 150 ms guarded by `tests/unit/test_cli_startup.py`). Reads config from env → `<JOTA_GATEWAY_HOME or ~/.jota-gateway>/config.env` → defaults, never the cwd `.env`; `doctor` opens the DB read-only and never takes the lock. `serve` owns the uvicorn settings (port 8004, no proxy headers, 1 MiB WS cap, 35 s graceful shutdown) and passes the app as an import string so uvicorn configures its loggers first (`core/logging.py` relies on that order). `service.py` owns the systemd user unit (`install` needs the DB and a free 8004, never creates the DB; rejects a clone/editable exe without `--exe`; `uninstall` leaves data alone). `logs.py` reads the journal and filters `--level`/`--session` itself for both log formats. `config set` takes secrets only by prompt or stdin (`-`). `migrate.py` (`migrate --from-docker DIR`) copies `DIR/.env` + `DIR/data/gateway.db` into `<base>`: read-only source, same Alembic revision required, refuses while the container holds the lock or `<base>` is already populated, never leaves partial files. `verify.py` checks each provider against the real service, reusing the gateway's clients: never raises, `rejected` only for real auth refusals, OpenClaw only on loopback. `onboard.py` (`onboard [--answers FILE]`) writes only values verified in that run, through `config._apply` |
@@ -92,6 +95,7 @@ Breaking any of these is a bug, whatever the change is for.
 - **No error is lost, no foreign cancellation is swallowed** (#221). Catch only at boundaries (service wrappers, session, lifespan); everything else propagates. A broad `except` logs the type (`describe_error`) and carries `# noqa: BLE001 — <why it is a boundary>`; `except: pass` and `contextlib.suppress` are lint errors. Teardown goes through `services/teardown.py` (`Teardown`): it finishes every step and re-raises a foreign `CancelledError` at the end.
 - **OpenClaw drift:** when you discover a protocol change, inconsistency or undocumented event shape, update `docs/openclaw-protocol.md` (dated, server version if known, "Breaking change — vX.Y.Z" style). That file is the source of truth for the protocol; this one only says how the code reacts.
 - **Nothing resolves against the working directory, and the gateway never creates a DB silently** (M14c). Paths come from `paths.py`; only `jota-gw init`, `jota-gw migrate` (copies it from Docker) and `jota-gw serve --create-db` (the Docker image) may create `gateway.db`.
+- **Pairing codes and the keys they mint never reach logs** (#317), not even masked; `/pair` is public (it may be reachable from the Internet through the proxy), so its only defence is `MAX_FAILED` burning every open code, and there is no loopback auto-approval (a same-host proxy makes the Internet look like 127.0.0.1). New clients go through `admin_routes.create_client_record`, the single creation path.
 - `.env.sample` must list every `Settings` field with its default; `/admin/*` input is validated in `admin_schemas.py` (new client type → extend `ClientType`).
 
 ## Testing notes
