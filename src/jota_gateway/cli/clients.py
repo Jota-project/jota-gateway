@@ -2,6 +2,7 @@
 
 import json
 import sys
+from collections.abc import Iterable
 from typing import Any
 
 import click
@@ -41,11 +42,11 @@ def _show_key(out: Out, data: dict[str, Any]) -> None:
 READ_ONLY = {"id", "key_fp", "created_at", "client_key"}
 
 
-def _set_values(pairs: tuple[str, ...], client: dict[str, Any]) -> dict[str, Any]:
-    """`campo=texto` o `campo:=json`, como httpie. El nombre se comprueba contra los campos del
-    propio cliente: la API ignora los desconocidos a propósito (#100), así que un error de
-    tecleo no cambiaría nada sin avisar (#306)."""
-    editable = sorted(set(client) - READ_ONLY)
+def set_values(pairs: tuple[str, ...], fields: Iterable[str]) -> dict[str, Any]:
+    """`campo=texto` o `campo:=json`, como httpie. El nombre se comprueba contra `fields`: la API
+    ignora los desconocidos a propósito (#100), así que un error de tecleo no cambiaría nada
+    sin avisar (#306). También lo usa `jota-gw pair` (#317)."""
+    editable = sorted(fields)
     values: dict[str, Any] = {}
     for item in pairs:
         field, sep, raw = item.partition("=")
@@ -175,7 +176,7 @@ def edit(
         body["allowed_agents"] = list(allowed)
     client = api.from_context(ctx)
     target = _find(client, ref)
-    body.update(_set_values(sets, target))
+    body.update(set_values(sets, set(target) - READ_ONLY))
     if not body:
         raise api.ApiError("Nada que cambiar: indica al menos una opción.", 2)
     data = _no_key(client.request("PATCH", f"/admin/clients/{target['id']}", body))

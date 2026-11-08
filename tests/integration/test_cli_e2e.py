@@ -92,3 +92,24 @@ async def test_full_client_lifecycle_through_the_cli(server):
 
     for text in quiet:
         assert key not in text and new_key not in text
+
+
+async def test_pairing_through_the_cli_opens_a_session(server):
+    """#317: `jota-gw pair` abre el código, el cliente lo canjea en /pair y su clave abre sesión."""
+    import urllib.request
+
+    port = server
+    item = _cli(port, "pair", "--no-wait", "--type", "screen", "--set", "tts_voice=ef_dora",
+                json_out=True)
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/pair", method="POST",
+        data=json.dumps({"code": item["code"], "name": "Tele del salón"}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        paired = json.loads(resp.read())
+    ws = await _open(port, paired["client_key"])
+    await ws.close()
+    shown = _cli(port, "clients", "show", "Tele del salón", json_out=True)
+    assert (shown["client_type"], shown["tts_voice"]) == ("screen", "ef_dora")
+    assert paired["client_key"] not in _cli(port, "clients", "list")
