@@ -111,7 +111,7 @@ def show(ctx: click.Context, ref: str) -> None:
 
 @clients.command()
 @click.option("--name", required=True, help="Nombre del cliente.")
-@click.option("--type", "client_type", help="Tipo: ha, esp32, web o app.")
+@click.option("--type", "client_type", help="Tipo: ha, esp32, web, app o screen.")
 @click.option("--agent", help="Agente por defecto.")
 @click.option("--allowed-agent", "allowed", multiple=True, help="Agente permitido (repetible).")
 @click.option("--import-key", is_flag=True, help="Importar una clave existente desde stdin.")
@@ -148,7 +148,7 @@ def add(
 @clients.command()
 @click.argument("ref")
 @click.option("--name", help="Nombre nuevo.")
-@click.option("--type", "client_type", help="Tipo: ha, esp32, web o app.")
+@click.option("--type", "client_type", help="Tipo: ha, esp32, web, app o screen.")
 @click.option("--agent", help="Agente por defecto.")
 @click.option("--allowed-agent", "allowed", multiple=True, help="Agente permitido (repetible).")
 @click.option("--set", "sets", multiple=True, metavar="CAMPO=TEXTO|CAMPO:=JSON",

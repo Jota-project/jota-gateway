@@ -264,7 +264,7 @@ def test_patch_client_ignores_system_prompt_extra(http):
     assert "system_prompt_extra" not in r.json()
 
 
-@pytest.mark.parametrize("client_type", ["ha", "esp32", "web", "app"])
+@pytest.mark.parametrize("client_type", ["ha", "esp32", "web", "app", "screen"])
 def test_create_client_accepts_known_client_types(http, client_type):
     r = http.post("/admin/clients", json={"name": "X", "client_type": client_type}, headers=HEADERS)
     assert r.status_code == 201

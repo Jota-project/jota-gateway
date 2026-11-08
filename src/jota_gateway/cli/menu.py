@@ -33,7 +33,7 @@ CLIENT_ACTIONS = [
     ("Borrar", "remove"),
     ("Volver", "back"),
 ]
-CLIENT_TYPES = ["ha", "esp32", "web", "app"]
+CLIENT_TYPES = ["ha", "esp32", "web", "app", "screen"]  # = ClientType (sin importar pydantic: --help < 150 ms)
 
 
 def interactive() -> bool:

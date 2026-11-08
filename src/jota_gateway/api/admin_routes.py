@@ -107,11 +107,8 @@ def list_clients(session: Session = Depends(get_db_session)) -> list[ClientRespo
     return [ClientResponse.from_record(r) for r in records]
 
 
-@router.post("/clients", response_model=ClientWithKey, status_code=status.HTTP_201_CREATED)
-def create_client(
-    body: ClientCreate,
-    session: Session = Depends(get_db_session),
-) -> ClientWithKey:
+def create_client_record(session: Session, body: ClientCreate) -> ClientRecord:
+    """Crea el cliente: la única vía, la usan `POST /admin/clients` y el emparejamiento (#317)."""
     _check_agent_consistency(body.default_agent, body.allowed_agents)
     data = _lists_to_json(body.model_dump())
     data["client_key"] = data["client_key"] or secrets.token_urlsafe(32)
@@ -128,7 +125,15 @@ def create_client(
             status_code=status.HTTP_409_CONFLICT, detail="client_key already exists"
         ) from None
     session.refresh(record)
-    return ClientWithKey.from_record(record)
+    return record
+
+
+@router.post("/clients", response_model=ClientWithKey, status_code=status.HTTP_201_CREATED)
+def create_client(
+    body: ClientCreate,
+    session: Session = Depends(get_db_session),
+) -> ClientWithKey:
+    return ClientWithKey.from_record(create_client_record(session, body))
 
 
 @router.get("/clients/{client_id}", response_model=ClientResponse)

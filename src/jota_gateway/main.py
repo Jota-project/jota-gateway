@@ -13,6 +13,13 @@ from jota_gateway import paths
 from jota_gateway.api.admin_routes import router as admin_router
 from jota_gateway.api.health_routes import router as health_router
 from jota_gateway.api.openai_routes import router as openai_router
+from jota_gateway.api.pairing_routes import (
+    PAIR_RATE_LIMIT,
+    PAIR_RATE_WINDOW_S,
+    RateLimiter,
+)
+from jota_gateway.api.pairing_routes import admin_router as pairing_admin_router
+from jota_gateway.api.pairing_routes import public_router as pairing_public_router
 from jota_gateway.api.routes import router as stream_router
 from jota_gateway.core.config import settings
 from jota_gateway.core.logging import configure_logging
@@ -31,6 +38,7 @@ from jota_gateway.services.openclaw.client import OpenClawClient
 from jota_gateway.services.openclaw.dispatcher import FrameDispatcher
 from jota_gateway.services.openclaw.reconnecting import ReconnectingOpenClawClient
 from jota_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
+from jota_gateway.services.pairing import PairingStore
 from jota_gateway.services.reconnection import (
     ConnectionState,
     describe_error,
@@ -153,6 +161,8 @@ async def _lifespan_body(app: FastAPI):
     app.state.turn_registry = turn_registry  # read by routes.py for queue depths (#219)
     app.state.client_registry = client_registry
     app.state.session_registry = SessionRegistry()
+    app.state.pairing = PairingStore()  # códigos de emparejamiento, en memoria (#317)
+    app.state.pair_limiter = RateLimiter(PAIR_RATE_LIMIT, PAIR_RATE_WINDOW_S)
 
     try:
         yield
@@ -214,3 +224,5 @@ app.include_router(stream_router)  # WS /ws/stream
 app.include_router(openai_router)  # HTTP /v1/*
 app.include_router(health_router)  # HTTP /healthz, /ready
 app.include_router(admin_router)  # HTTP /admin/*
+app.include_router(pairing_public_router)  # HTTP /.well-known/jota-gateway, /pair
+app.include_router(pairing_admin_router)  # HTTP /admin/pairing
