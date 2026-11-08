@@ -109,3 +109,12 @@ def test_menu_module_import_is_light():
     r = subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).resolve().parents[2],
                        capture_output=True, text=True, check=True)
     assert r.stdout.strip() == "HEAVY="
+
+
+def test_menu_client_types_match_client_type():
+    # El menú repite la lista para no importar pydantic al arrancar; no puede quedarse atrás.
+    from typing import get_args
+
+    from jota_gateway.models.admin_schemas import ClientType
+
+    assert list(get_args(ClientType)) == menu.CLIENT_TYPES

@@ -19,7 +19,7 @@ from jota_gateway.models.schemas import OutputMode
 
 # Etiqueta de cliente. Solo se valida la ENTRADA (create/update/CLI); la respuesta
 # sigue siendo `str` para no romper la lectura de filas antiguas con valores libres (#122).
-ClientType = Literal["ha", "esp32", "web", "app"]
+ClientType = Literal["ha", "esp32", "web", "app", "screen"]
 
 
 # Tipos acotados solo para la ENTRADA (#217 / G-28). Los topes superiores evitan
@@ -165,3 +165,26 @@ class ClientWithKey(ClientResponse):
     @classmethod
     def from_record(cls, r: ClientRecord) -> "ClientWithKey":
         return cls(**ClientResponse.from_record(r).model_dump(), client_key=r.client_key)
+
+
+# ---------------------------------------------------------------------------
+# Emparejamiento (#317)
+# ---------------------------------------------------------------------------
+
+
+class PairingCreate(ClientCreate):
+    """Plantilla del cliente que creará el código: los mismos campos que `ClientCreate`, con el
+    nombre opcional (lo puede proponer el cliente) y sin clave (la genera el gateway)."""
+
+    name: _Name | None = None  # type: ignore[assignment]
+    client_key: None = None  # type: ignore[assignment]
+
+
+class PairRequest(BaseModel):
+    """Lo que envía el cliente a `POST /pair`. La persona solo teclea `code`; el resto lo pone el
+    cliente y solo se usa si la plantilla del administrador no lo fija."""
+
+    code: Annotated[str, StringConstraints(max_length=32)]
+    name: _Name | None = None
+    client_type: ClientType | None = None
+    output_mode: list[OutputMode] | None = None

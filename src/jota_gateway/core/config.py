@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     # 127.0.0.1. Vacío = 0.0.0.0, como el `${GATEWAY_HOST:-0.0.0.0}` del CMD anterior.
     GATEWAY_HOST: str = "0.0.0.0"
 
+    # Nombre con el que se anuncia en /.well-known/jota-gateway (#317). Vacío = nombre del equipo;
+    # en Docker conviene fijarlo, porque ahí el nombre del equipo suele ser el id del contenedor.
+    GATEWAY_NAME: str = ""
+
     # Un solo proceso por base de datos (M6f, #218): flock sobre <dir de la BD>/gateway.lock.
     # Estado en memoria (sesiones, cachés, registro de bridges) no se comparte entre workers.
     SINGLE_PROCESS_LOCK: bool = True

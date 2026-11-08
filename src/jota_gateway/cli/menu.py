@@ -18,6 +18,7 @@ MAIN = [
     ("Estado", "status", ["status"]),
     ("Diagnóstico", "doctor", ["doctor"]),
     ("Clientes", "clients", None),
+    ("Emparejar un cliente", "pair", ["pair"]),
     ("Configuración", "config", ["config", "show"]),
     ("Configurar proveedores", "onboard", ["onboard"]),
     ("Salir", "exit", None),
@@ -33,7 +34,7 @@ CLIENT_ACTIONS = [
     ("Borrar", "remove"),
     ("Volver", "back"),
 ]
-CLIENT_TYPES = ["ha", "esp32", "web", "app"]
+CLIENT_TYPES = ["ha", "esp32", "web", "app", "screen"]  # = ClientType (sin importar pydantic: --help < 150 ms)
 
 
 def interactive() -> bool:

@@ -519,7 +519,7 @@ def test_interactive_defaults_and_labels(gw, tty):
     env = dotenv_values(gw.env)
     assert env["TRANSCRIBER_WS_URL"] == "localhost:9000" and env["TTS_WS_URL"] == "localhost:8005"
     assert r.output.count("Recomendado: deja este servicio accesible solo desde el gateway.") == 2
-    assert sorted(titles(asked(tty, "select", "Tipo")[0])) == ["app", "esp32", "ha", "web"]
+    assert sorted(titles(asked(tty, "select", "Tipo")[0])) == ["app", "esp32", "ha", "screen", "web"]
 
 
 def test_answers_jota_without_url_writes_the_default(gw, tmp_path):

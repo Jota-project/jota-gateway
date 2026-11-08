@@ -8,6 +8,7 @@ Guía completa para implementar clientes que se conecten a jota-gateway. Cubre e
 
 ## Índice
 
+0. [Descubrir el gateway y emparejarse](#0-descubrir-el-gateway-y-emparejarse)
 1. [Conexión y handshake](#1-conexión-y-handshake)
 2. [Mensaje ready](#2-mensaje-ready)
 3. [Enviar audio de micrófono](#3-enviar-audio-de-micrófono)
@@ -21,6 +22,74 @@ Guía completa para implementar clientes que se conecten a jota-gateway. Cubre e
 11. [Modos de operación](#11-modos-de-operación)
 12. [Referencia completa de mensajes](#12-referencia-completa-de-mensajes)
 13. [Timeouts y cierre de sesión](#13-timeouts-y-cierre-de-sesión)
+
+---
+
+## 0. Descubrir el gateway y emparejarse
+
+Antes de la sesión, tu cliente necesita dos cosas: **dónde está el gateway** y **su `client_key`**. Las dos pueden venir de la configuración (un administrador creó el cliente con `jota-gw clients add` y te pasó la clave), pero lo cómodo es que el cliente las consiga solo. Esta sección es lo que tiene que implementar.
+
+### Encontrar el gateway
+
+Un gateway se identifica en un endpoint público, sin autenticación:
+
+```http
+GET http://<host>:8004/.well-known/jota-gateway
+```
+
+```json
+{"service": "jota-gateway", "version": "1.29.0", "name": "green-house"}
+```
+
+Es un Jota si responde 200 con `"service": "jota-gateway"`. No basta con `/healthz`: su `{"status": "ok"}` lo devolvería cualquier servicio. `name` es el nombre que enseñar al usuario (`GATEWAY_NAME`, o el del equipo).
+
+Una dirección es `host` o `host:puerto` (puerto 8004 por defecto), sin protocolo. En la LAN y en la tailnet se habla en claro (`http://`, `ws://`); detrás de un proxy con TLS, `https://` y `wss://`.
+
+Si ya estás emparejado, usa la dirección que guardaste junto a la clave: la clave solo vale en el gateway que la emitió. Si no, busca en este orden y quédate con el primero que responda, con un plazo corto por intento (1–2 s):
+
+1. **La dirección configurada**, si el usuario puso una.
+2. **El mismo equipo:** `127.0.0.1:8004`. Vale igual para el gateway nativo y para Docker con el puerto publicado. Si tu cliente admite otro puerto por configuración, úsalo; no barras puertos. Un gateway que escucha solo en una IP de la LAN (`GATEWAY_HOST`) no responde aquí: ese caso cae en el paso 4.
+3. **La tailnet, si hay Tailscale:** `tailscale status --json` lista los equipos (`Peer[*]`, con `Online`, `DNSName` y `TailscaleIPs`). Pregunta en `:8004` a cada equipo en línea, por su `DNSName` sin el punto final, en paralelo y con un plazo total de unos 3 s. Si `tailscale` no está o no tiene sesión, salta este paso. Si responde más de uno, deja elegir al usuario por `name`.
+4. **Si no aparece ninguno,** pide la dirección a mano y compruébala igual, con `/.well-known/jota-gateway`.
+
+No escanees redes ni rangos de IP.
+
+### Emparejarse
+
+El administrador abre un código en el gateway con `jota-gw pair` (ver el [README](../README.md#emparejar-un-cliente)). El gateway lo enseña: 6 cifras, de un solo uso y válido 10 minutos. En la configuración del código el administrador ya ha fijado cómo se comportará tu cliente: agente, voz, barge-in…
+
+Tu cliente necesita **una pantalla de emparejamiento donde la persona solo escribe el código**. Todo lo demás lo pone el cliente:
+
+```http
+POST http://<host>:8004/pair
+Content-Type: application/json
+
+{"code": "482913", "name": "Tele del salón", "client_type": "screen", "output_mode": ["audio", "text", "status"]}
+```
+
+| Campo | Requerido | Quién lo pone |
+|-------|-----------|---------------|
+| `code` | ✓ | La persona. El gateway ignora los espacios (`"482 913"`); comprueba en el cliente que quedan 6 cifras antes de enviarlo, para no gastar un intento en una errata |
+| `name` | — | El cliente propone uno (el nombre del dispositivo o el que elija el usuario, si le dejas). Si el administrador fijó otro, gana el suyo; si nadie da uno, el gateway pone `<tipo>-xxxx` |
+| `client_type` | — | Fijo en tu cliente: `ha`, `esp32`, `web`, `app` o `screen` |
+| `output_mode` | — | Fijo en tu cliente: lo que sabe reproducir (`"audio"`, `"text"`, `"status"`, como en §1). Se guarda en la ficha del cliente para el administrador; en cada sesión manda el `output_mode` del handshake |
+
+Regla: **el cliente dice qué es** (tipo y formatos) **y el administrador decide cómo se comporta**. Lo que fijó el administrador al abrir el código manda sobre lo que mandes. El handshake de cada sesión (§1) sigue llevando `input_mode` y `output_mode`; no mandes `agent` salvo que el usuario elija uno, para que valga el que fijó el administrador.
+
+| Respuesta | Qué significa |
+|-----------|---------------|
+| `201 {"client_id", "name", "client_key", "gateway": {"name", "version"}}` | Emparejado. **`client_key` solo llega aquí, una vez:** guárdala ya junto a la dirección del gateway, con permisos 0600 si va a un fichero, y nunca la escribas en un log. `name` es el nombre con el que quedó dado de alta (puede no ser el que propusiste) |
+| `400 {"detail": "invalid or expired code"}` | Código desconocido, caducado, ya usado o mal escrito (siempre el mismo mensaje). Deja corregirlo |
+| `422` | `code` no es un texto de hasta 32 caracteres (mándalo como texto, no como número), o `name` (1–200 caracteres), `client_type` u `output_mode` no válidos: es un fallo de tu cliente, no del usuario. No cuenta como intento |
+| `5xx` o sin respuesta | Si el gateway falló al crear el cliente, el código sigue abierto: reintenta con el mismo código. Si se cortó la conexión después del `201`, el código ya está gastado y la clave perdida: pide otro código |
+
+Después abre la sesión normal (§1) con esa `client_key`.
+
+**Intentos fallidos:** mientras haya códigos abiertos, cada `400` cuenta (un código caducado o ya usado también), sea de quien sea, y al quinto seguido se anulan todos los abiertos (un canje correcto pone la cuenta a 0); el administrador tiene que abrir otro. Es la defensa contra quien intente adivinar, porque `/pair` puede estar expuesto a internet a través de un proxy. El cliente no puede saber cuántos intentos quedan: si tras un `400` el usuario está seguro del código, dile que pida uno nuevo.
+
+### Cuando la clave deja de valer
+
+Si al abrir la sesión el gateway cierra con 1008 `"Clave de cliente invalida o inactiva."`, o una sesión abierta se cierra con 1008 `"revoked"` (§13), el administrador ha borrado, desactivado o rotado tu cliente. Estos dos textos son estables: compáralos tal cual. Borra la clave guardada y vuelve a la pantalla de emparejamiento. Cualquier otro cierre 1008 (handshake mal formado, agente no permitido) es un fallo de tu cliente y no invalida la clave. No reintentes en bucle con la misma clave.
 
 ---
 

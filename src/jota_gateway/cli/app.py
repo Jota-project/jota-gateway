@@ -23,6 +23,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "logs": ("jota_gateway.cli.logs:logs", "Registros del servicio."),
     "migrate": ("jota_gateway.cli.migrate:migrate", "Copia una instalación Docker a la nativa."),
     "onboard": ("jota_gateway.cli.onboard:onboard", "Asistente: OpenClaw, voz, servicio y primer cliente."),
+    "pair": ("jota_gateway.cli.pair:pair", "Empareja un cliente con un código."),
     "serve": ("jota_gateway.cli.serve:serve", "Arranca el gateway."),
     "start": ("jota_gateway.cli.service:start", "Arranca el servicio."),
     "status": ("jota_gateway.cli.status:status", "Estado del gateway y sus servicios."),
