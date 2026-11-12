@@ -60,6 +60,7 @@ A BFF: the single entry point for Fogar TV, jota-voice (Mac and Android/Termux),
 | `api/openai_routes.py` | `/v1/models`, `/v1/chat/completions` (Home Assistant); auth in `resolve_ha_caller` + `core/network.py` |
 | `api/pairing_routes.py` | Public `GET /.well-known/fogar-gateway` (identity only, never whether codes are open) and `POST /pair` (redeem a code → `client_key` once; template fields win over client-offered `name`/`client_type`/`output_mode`); `/admin/pairing` to open/list/get/cancel codes (#317) |
 | `api/health_routes.py` | `/healthz` (liveness), `/ready` (503 only if OpenClaw is down; an `off` speech provider reports `unavailable` but does not degrade `status`) |
+| `api/web_routes.py` | The web panel (`web/` build) at `/`, from `fogar_gateway/web/` inside the package (never the cwd): `assets/*` immutable, `index.html` no-cache, CSP and security headers only on web responses, any non-API GET falls back to `index.html`; API prefixes keep their JSON 404. Mounted last in `main.py`; without a build `/` is 404 and the lifespan warns once |
 | `core/config.py` | `Settings` (pydantic-settings, env → `<base>/config.env`); `DATABASE_URL` made absolute against the base, default included |
 | `core/agent_policy.py` | `resolve_agent()`: handshake/`model` → client `default_agent` → OpenClaw default → `"main"`, then `allowed_agents` and roster checks |
 | `core/network.py` | `resolve_client_ip()`; `X-Real-IP` trusted only from `TRUSTED_PROXIES` |

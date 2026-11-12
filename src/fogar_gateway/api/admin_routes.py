@@ -213,6 +213,7 @@ def _serialize_events(events) -> list[dict]:
             "stage": e.stage,
             "ts_ms": round(e.ts_ms),
             "elapsed_ms": round(e.elapsed_ms),
+            "turn": e.turn,  # la web agrupa las etapas por turno (M18)
             "meta": e.meta,
         }
         for e in events

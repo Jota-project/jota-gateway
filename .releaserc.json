@@ -9,7 +9,7 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "printf '# Lo reescribe semantic-release en cada release (.releaserc, @semantic-release/exec).\\n__version__ = \"${nextRelease.version}\"\\n' > src/fogar_gateway/_version.py && uv export --frozen --no-dev --no-emit-project --no-hashes -o constraints.txt && sed -i \"s/^FOGAR_RELEASE=.*/FOGAR_RELEASE=${nextRelease.version}/\" install.sh"
+        "prepareCmd": "printf '# Lo reescribe semantic-release en cada release (.releaserc, @semantic-release/exec).\\n__version__ = \"${nextRelease.version}\"\\n' > src/fogar_gateway/_version.py && uv export --frozen --no-dev --no-emit-project --no-hashes -o constraints.txt && sed -i \"s/^FOGAR_RELEASE=.*/FOGAR_RELEASE=${nextRelease.version}/\" install.sh && sh scripts/build-web.sh && uv build --wheel -o dist"
       }
     ],
     [
@@ -26,6 +26,10 @@
       "@semantic-release/github",
       {
         "assets": [
+          {
+            "path": "dist/fogar_gateway-*.whl",
+            "label": "Paquete con la web (lo instala install.sh)"
+          },
           {
             "path": "constraints.txt",
             "label": "Versiones fijadas (uv tool install -c)"

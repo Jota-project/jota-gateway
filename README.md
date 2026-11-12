@@ -28,6 +28,10 @@ No hay dependencia de `jota-db` — la identidad y configuración de clientes vi
 
 ## Endpoints
 
+### Web
+
+`http://<host>:8004/` es el panel de Fogar: se entra con el token de administrador (`ADMIN_TOKEN`) y desde ahí se ve el estado en vivo y las sesiones, y se emparejan, crean, editan, rotan y borran clientes. Lo sirve el propio gateway desde su paquete, sin Node en la máquina; las rutas de la API de abajo tienen siempre prioridad. Si el paquete no lleva la web compilada (un clon sin build), `/` da 404, el gateway funciona igual y lo avisa una vez en el log. Para desarrollarla, [`web/README.md`](web/README.md).
+
 ### WebSocket
 
 | Endpoint | Auth | Descripción |
@@ -239,13 +243,13 @@ Hace falta además `git`, `curl` y [uv](https://docs.astral.sh/uv/) (`curl -LsSf
 
 `V` es la última versión de [las releases](https://github.com/fogarhome/fogar-gateway/releases) sin la `v` (p. ej. `V=1.27.0` para la release `v1.27.0`). `constraints.txt` existe desde la v1.26.0 y `fogar-gw migrate`, solo desde la versión que lo incluye.
 
-Con las mismas versiones que la imagen Docker: cada release publica `constraints.txt` (exportado de `uv.lock`, sin hashes porque uv no los admite en constraints) y `-c` acepta la URL directamente.
+Cada release publica el wheel `fogar_gateway-<versión>-py3-none-any.whl`, que ya lleva la web compilada (instalar desde `git+` no la trae, porque se compila en la release). Con las mismas versiones que la imagen Docker: cada release publica también `constraints.txt` (exportado de `uv.lock`, sin hashes porque uv no los admite en constraints) y `-c` acepta la URL directamente.
 
 **Con el asistente:**
 
 ```bash
 V=<versión>   # la última de las releases, sin la v
-uv tool install "fogar-gateway @ git+https://github.com/fogarhome/fogar-gateway@v$V" \
+uv tool install "fogar-gateway @ https://github.com/fogarhome/fogar-gateway/releases/download/v$V/fogar_gateway-$V-py3-none-any.whl" \
   -c https://github.com/fogarhome/fogar-gateway/releases/download/v$V/constraints.txt
 loginctl enable-linger $USER        # puede pedir sudo según la distro
 fogar-gw onboard
@@ -255,7 +259,7 @@ fogar-gw onboard
 
 ```bash
 V=<versión>   # la última de las releases, sin la v
-uv tool install "fogar-gateway @ git+https://github.com/fogarhome/fogar-gateway@v$V" \
+uv tool install "fogar-gateway @ https://github.com/fogarhome/fogar-gateway/releases/download/v$V/fogar_gateway-$V-py3-none-any.whl" \
   -c https://github.com/fogarhome/fogar-gateway/releases/download/v$V/constraints.txt
 fogar-gw init               # <base>, config.env con ADMIN_TOKEN aleatorio y la BD
 fogar-gw config set OPENCLAW_TOKEN   # prompt oculto; ver la nota de debajo
@@ -295,7 +299,7 @@ A mano: instala la nueva versión sobre la anterior y reinicia (pregunta; en scr
 
 ```bash
 V=<versión>   # la nueva, sin la v
-uv tool install --reinstall "fogar-gateway @ git+https://github.com/fogarhome/fogar-gateway@v$V" \
+uv tool install --reinstall "fogar-gateway @ https://github.com/fogarhome/fogar-gateway/releases/download/v$V/fogar_gateway-$V-py3-none-any.whl" \
   -c https://github.com/fogarhome/fogar-gateway/releases/download/v$V/constraints.txt
 fogar-gw restart
 fogar-gw version           # versión de la CLI y del gateway en marcha

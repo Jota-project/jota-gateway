@@ -161,3 +161,24 @@ async def test_get_session_avg_latencies_exclude_cancelled_turns(client, admin_h
     assert data["summary"]["avg_llm_first_token_ms"] is not None
     assert data["summary"]["avg_llm_first_token_ms"] >= 40
     app.state.session_registry.close("sess:cancel", "completed")
+
+
+async def test_get_session_events_carry_their_turn(client, admin_headers):
+    from fogar_gateway.main import app
+
+    tracker = PipelineTracker(
+        session_id="sess:turns",
+        client_id="c1",
+        input_mode="text",
+        output_mode=["text"],
+        sender=DirectSender(AsyncMock()),
+        registry=MagicMock(),
+    )
+    tracker.start_turn()
+    await tracker.record("llm_start")
+    tracker.start_turn()
+    await tracker.record("llm_start")
+    app.state.session_registry.register(tracker)
+    r = client.get("/admin/sessions/sess:turns", headers=admin_headers)
+    assert [e["turn"] for e in r.json()["events"] if e["stage"] == "llm_start"] == [1, 2]
+    app.state.session_registry.close("sess:turns", "completed")

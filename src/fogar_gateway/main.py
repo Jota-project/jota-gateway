@@ -16,6 +16,8 @@ from fogar_gateway.api.openai_routes import router as openai_router
 from fogar_gateway.api.pairing_routes import admin_router as pairing_admin_router
 from fogar_gateway.api.pairing_routes import public_router as pairing_public_router
 from fogar_gateway.api.routes import router as stream_router
+from fogar_gateway.api.web_routes import WEB_DIR, web_available
+from fogar_gateway.api.web_routes import router as web_router
 from fogar_gateway.core.config import settings
 from fogar_gateway.core.logging import configure_logging
 from fogar_gateway.core.network import warn_if_open_proxy_config
@@ -63,6 +65,8 @@ async def lifespan(app: FastAPI):
         "" if config.is_file() else " (no existe)",
         paths.sqlite_file(settings.DATABASE_URL) or settings.DATABASE_URL.split(":", 1)[0],
     )
+    if not web_available():
+        logger.warning("Sin la web compilada en %s: / no sirve el panel (la API va igual)", WEB_DIR)
     # Decisión 5 de M14c: sin BD se para aquí, antes de que el candado cree data/ y gateway.lock.
     require_database()
     lock_handle = None
@@ -220,3 +224,5 @@ app.include_router(health_router)  # HTTP /healthz, /ready
 app.include_router(admin_router)  # HTTP /admin/*
 app.include_router(pairing_public_router)  # HTTP /.well-known/fogar-gateway, /pair
 app.include_router(pairing_admin_router)  # HTTP /admin/pairing
+# La web va la última: su GET /{path} recoge lo que no es de la API (rutas de Vue).
+app.include_router(web_router)  # HTTP / (panel)
