@@ -17,12 +17,12 @@ from unittest.mock import AsyncMock
 import pytest
 import websockets
 
-from jota_gateway.services.openclaw.client import OpenClawClient
-from jota_gateway.services.openclaw.dispatcher import FrameDispatcher
-from jota_gateway.services.openclaw.reconnecting import ReconnectingOpenClawClient
-from jota_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
-from jota_gateway.services.protocol import OrchestratorEvent
-from jota_gateway.services.reconnection import ConnectionState
+from fogar_gateway.services.openclaw.client import OpenClawClient
+from fogar_gateway.services.openclaw.dispatcher import FrameDispatcher
+from fogar_gateway.services.openclaw.reconnecting import ReconnectingOpenClawClient
+from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
+from fogar_gateway.services.protocol import OrchestratorEvent
+from fogar_gateway.services.reconnection import ConnectionState
 
 MARK = "SECRET-INTERNAL"
 SK = "agent:main:client-a"
@@ -104,10 +104,10 @@ async def run_turn(client):
 
 
 def assert_clean(caplog, *texts):
-    # Solo los loggers del gateway (`jota_gateway.*`): la librería `websockets` registra a DEBUG los
+    # Solo los loggers del gateway (`fogar_gateway.*`): la librería `websockets` registra a DEBUG los
     # frames crudos y no es código nuestro (se deja en su nivel por defecto).
     logs = "\n".join(
-        r.getMessage() + (r.exc_text or "") for r in caplog.records if r.name.startswith("jota_gateway")
+        r.getMessage() + (r.exc_text or "") for r in caplog.records if r.name.startswith("fogar_gateway")
     )
     assert MARK not in logs + "".join(str(t) for t in texts)
 
@@ -116,7 +116,7 @@ def assert_clean(caplog, *texts):
 
 
 async def test_res_ok_false_gives_stable_error_not_openclaw_text(caplog):
-    caplog.set_level(logging.DEBUG, logger="jota_gateway")
+    caplog.set_level(logging.DEBUG, logger="fogar_gateway")
 
     async def on_chat(ws, rid):
         await ws.send(_res(rid, ok=False, error={"code": "X", "message": MARK}))
@@ -136,7 +136,7 @@ async def test_res_ok_false_gives_stable_error_not_openclaw_text(caplog):
 
 
 async def test_send_failure_gives_stable_error_not_exception_text(caplog):
-    caplog.set_level(logging.DEBUG, logger="jota_gateway")
+    caplog.set_level(logging.DEBUG, logger="fogar_gateway")
 
     async def on_chat(ws, rid):
         pass
@@ -159,7 +159,7 @@ async def test_send_failure_gives_stable_error_not_exception_text(caplog):
 
 
 async def test_reconnecting_stream_exception_gives_stable_error(caplog):
-    caplog.set_level(logging.DEBUG, logger="jota_gateway")
+    caplog.set_level(logging.DEBUG, logger="fogar_gateway")
     inner = AsyncMock(spec=OpenClawClient)
     inner.on_disconnect = None
     inner.gateway_info = None
@@ -181,7 +181,7 @@ async def test_reconnecting_stream_exception_gives_stable_error(caplog):
 
 
 async def _failed_connect(srv_kwargs, caplog):
-    caplog.set_level(logging.DEBUG, logger="jota_gateway")
+    caplog.set_level(logging.DEBUG, logger="fogar_gateway")
     async with Server(**srv_kwargs) as srv:
         roc = ReconnectingOpenClawClient(
             make_client(srv.port), "test", initial_backoff=0.01, max_backoff=0.02, max_duration=0.3
@@ -222,7 +222,7 @@ async def test_non_object_challenge_is_stable_handshake_failure(caplog):
 
 
 async def test_connect_exception_last_error_is_type_name_only(caplog):
-    caplog.set_level(logging.DEBUG, logger="jota_gateway")
+    caplog.set_level(logging.DEBUG, logger="fogar_gateway")
     inner = AsyncMock(spec=OpenClawClient)
     inner.on_disconnect = None
     inner.connect.side_effect = OSError(MARK)
@@ -244,7 +244,7 @@ EVIL_CODE = "BAD\nSECRET-INTERNAL " + "x" * 200
 
 
 def _src_log(caplog):
-    return "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("jota_gateway"))
+    return "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("fogar_gateway"))
 
 
 def _no_leak(log):
@@ -278,7 +278,7 @@ async def test_rejected_hello_with_non_object_error_logs_unspecified(error, capl
 
 
 async def test_agents_list_failure_logs_safe_code_but_never_message(caplog):
-    caplog.set_level(logging.DEBUG, logger="jota_gateway")
+    caplog.set_level(logging.DEBUG, logger="fogar_gateway")
     async with Server(agents_error={"code": "AGENTS_DOWN", "message": MARK}) as srv:
         client = make_client(srv.port)
         await client.connect()
@@ -289,7 +289,7 @@ async def test_agents_list_failure_logs_safe_code_but_never_message(caplog):
 
 
 async def test_agents_list_failure_with_unsafe_code_logs_unspecified(caplog):
-    caplog.set_level(logging.DEBUG, logger="jota_gateway")
+    caplog.set_level(logging.DEBUG, logger="fogar_gateway")
     async with Server(agents_error={"code": EVIL_CODE, "message": MARK}) as srv:
         client = make_client(srv.port)
         await client.connect()
@@ -300,7 +300,7 @@ async def test_agents_list_failure_with_unsafe_code_logs_unspecified(caplog):
 
 
 async def _turn_log(error, caplog):
-    caplog.set_level(logging.DEBUG, logger="jota_gateway")
+    caplog.set_level(logging.DEBUG, logger="fogar_gateway")
 
     async def on_chat(ws, rid):
         await ws.send(_res(rid, ok=False, error=error))

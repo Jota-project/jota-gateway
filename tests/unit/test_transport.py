@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
-from jota_gateway.core import transport as transport_mod
-from jota_gateway.core.transport import (
+from fogar_gateway.core import transport as transport_mod
+from fogar_gateway.core.transport import (
     TransportCaptureMiddleware,
     abort_client_transport,
     drop_slow_client,
@@ -91,7 +91,7 @@ def test_abort_client_transport_that_raises_returns_false_and_does_not_propagate
             raise RuntimeError("transport roto")
 
     ws = SimpleNamespace(scope={"state": {"transport": _Broken()}})
-    with caplog.at_level("WARNING", logger="jota_gateway.core.transport"):
+    with caplog.at_level("WARNING", logger="fogar_gateway.core.transport"):
         assert abort_client_transport(ws) is False
     assert any("abort falló" in r.getMessage() for r in caplog.records)
 
@@ -107,7 +107,7 @@ async def test_drop_slow_client_survives_an_abort_that_raises():
 def test_main_registers_the_transport_capture_middleware():
     """Under TestClient there is no transport either way, so a missing or misplaced
     registration would be invisible: pin it here."""
-    from jota_gateway.main import app
+    from fogar_gateway.main import app
 
     assert any(m.cls is TransportCaptureMiddleware for m in app.user_middleware)
 
@@ -187,7 +187,7 @@ async def test_drop_slow_client_still_aborts_when_it_is_cancelled_midway():
 async def test_drop_slow_client_without_transport_does_not_raise(caplog):
     """Without a captured transport the drop only logs a WARNING and never raises."""
     ws = _WS(None, _ok)
-    with caplog.at_level("WARNING", logger="jota_gateway.core.transport"):
+    with caplog.at_level("WARNING", logger="fogar_gateway.core.transport"):
         await drop_slow_client(ws)
     assert [c for c, _ in ws.closed_with] == [1013]
     assert any(r.levelname == "WARNING" for r in caplog.records)

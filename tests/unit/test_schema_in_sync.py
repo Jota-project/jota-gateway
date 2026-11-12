@@ -3,9 +3,9 @@ from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine
 from sqlmodel import SQLModel
 
-import jota_gateway.db.models  # noqa: F401 - registra ClientRecord en SQLModel.metadata
-from jota_gateway.core.config import settings
-from jota_gateway.db import database
+import fogar_gateway.db.models  # noqa: F401 - registra ClientRecord en SQLModel.metadata
+from fogar_gateway.core.config import settings
+from fogar_gateway.db import database
 
 
 def test_head_migrations_match_current_model(tmp_path, monkeypatch):

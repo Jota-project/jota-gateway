@@ -1,12 +1,12 @@
-# jota-gateway
+# fogar-gateway
 
-BFF (Backend For Frontend) del ecosistema Jota IA. Punto de entrada único para todos los clientes: Jota-Screen (tele), jota-voice (Mac y Android), la app de iPhone (fase inicial) y Home Assistant. Un cliente ESP32 está planificado (*planned*) y sin desarrollar.
+BFF (Backend For Frontend) del ecosistema Fogar IA. Punto de entrada único para todos los clientes: Fogar TV (tele), jota-voice (Mac y Android), la app de iPhone (fase inicial) y Home Assistant. Un cliente ESP32 está planificado (*planned*) y sin desarrollar.
 
 ```
-Jota-Screen / jota-voice / App iPhone / Home Assistant
+Fogar TV / jota-voice / App iPhone / Home Assistant
         │
         ▼
-  jota-gateway (FastAPI :8004)
+  fogar-gateway (FastAPI :8004)
   ├── /ws/stream          WebSocket — sesión interactiva de voz/texto
   ├── /healthz            Liveness probe
   ├── /ready              Readiness probe
@@ -17,12 +17,12 @@ Jota-Screen / jota-voice / App iPhone / Home Assistant
   ┌──────────────────────────────────────────┐
   │             Microservicios               │
   │  OpenClaw         WebSocket v4           │
-  │  jota-transcriber WebSocket              │
-  │  jota-speaker     WebSocket              │
+  │  fogar-transcriber WebSocket              │
+  │  fogar-speaker     WebSocket              │
   └──────────────────────────────────────────┘
 ```
 
-No hay dependencia de `jota-db` — la identidad y configuración de clientes viven en una base de datos SQLite local (`<base>/data/gateway.db`, con `<base>` = `~/.jota-gateway` por defecto). Requiere OpenClaw **2026.6.11 o posterior** (detalles del protocolo en [`docs/openclaw-protocol.md`](docs/openclaw-protocol.md)).
+No hay dependencia de `jota-db` — la identidad y configuración de clientes viven en una base de datos SQLite local (`<base>/data/gateway.db`, con `<base>` = `~/.fogar-gateway` por defecto). Requiere OpenClaw **2026.6.11 o posterior** (detalles del protocolo en [`docs/openclaw-protocol.md`](docs/openclaw-protocol.md)).
 
 ---
 
@@ -59,8 +59,8 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la guía completa 
 
 | Endpoint | Método | Auth | Descripción |
 |----------|--------|------|-------------|
-| `/.well-known/jota-gateway` | GET | ninguna | Identifica al gateway: `{"service": "jota-gateway", "version", "name"}` (`name` = `GATEWAY_NAME` o el nombre del equipo) |
-| `/pair` | POST | un código de `jota-gw pair` | El cliente canjea el código y recibe su `client_key`, la única vez que se ve. Ver [Emparejar un cliente](#emparejar-un-cliente) |
+| `/.well-known/fogar-gateway` | GET | ninguna | Identifica al gateway: `{"service": "fogar-gateway", "version", "name"}` (`name` = `GATEWAY_NAME` o el nombre del equipo) |
+| `/pair` | POST | un código de `fogar-gw pair` | El cliente canjea el código y recibe su `client_key`, la única vez que se ve. Ver [Emparejar un cliente](#emparejar-un-cliente) |
 
 Los dos son públicos: detrás de un proxy o un túnel también llegan desde internet. `/pair` solo acepta un código abierto por el administrador, y 5 códigos erróneos seguidos anulan todos los abiertos. El protocolo para clientes está en [`docs/client-protocol.md` §0](docs/client-protocol.md#0-descubrir-el-gateway-y-emparejarse).
 
@@ -72,7 +72,7 @@ Los dos son públicos: detrás de un proxy o un túnel también llegan desde int
 | `/admin/sessions/{id}` | GET | Detalle con eventos y latencias por turno |
 | `/admin/orchestrators/{name}/status` | GET | Estado del orquestador (CONNECTED / RECONNECTING / DEGRADED) |
 | `/admin/orchestrators/{name}/reconnect` | POST | Fuerza reconexión — responde 202 |
-| `/admin/transcriber/status` | GET | Estado del proveedor STT activo (`provider`; con jota, reachability en vivo; con ElevenLabs, salud cacheada + `counters`) |
+| `/admin/transcriber/status` | GET | Estado del proveedor STT activo (`provider`; con fogar, reachability en vivo; con ElevenLabs, salud cacheada + `counters`) |
 | `/admin/tts/status` | GET | Estado del proveedor TTS activo (`provider`, breaker, último error; con ElevenLabs, `counters`) |
 | `/admin/speech` | GET | Proveedores de voz activos (`stt`, `tts`) y puerta de audio efectiva |
 | `/admin/clients` | GET | Lista clientes (sin `client_key`; la huella `key_fp`) |
@@ -90,46 +90,46 @@ Los dos son públicos: detrás de un proxy o un túnel también llegan desde int
 
 Los tres endpoints `*/status` comparten la forma `{"name", "state", "connected_at", "reconnect_attempts", "last_error"}`; los de transcriber y TTS añaden `provider` y, con ElevenLabs, `counters`.
 
-Los campos de un cliente (`POST`/`PATCH /admin/clients`) están en `src/jota_gateway/models/admin_schemas.py` y sus defaults en `src/jota_gateway/db/models.py`. Desde la terminal, `jota-gw`. Los comandos de clientes y de estado necesitan el gateway en marcha y pasan por esta API (la CLI nunca escribe en la BD); `doctor` y `config` funcionan también con el gateway parado:
+Los campos de un cliente (`POST`/`PATCH /admin/clients`) están en `src/fogar_gateway/models/admin_schemas.py` y sus defaults en `src/fogar_gateway/db/models.py`. Desde la terminal, `fogar-gw`. Los comandos de clientes y de estado necesitan el gateway en marcha y pasan por esta API (la CLI nunca escribe en la BD); `doctor` y `config` funcionan también con el gateway parado:
 
 ```bash
-jota-gw                        # en una terminal: menú interactivo; en un script: la ayuda
-jota-gw init                   # instalación nueva: <base>, config.env con ADMIN_TOKEN aleatorio y la BD
-jota-gw onboard [--answers FICHERO]   # asistente: OpenClaw, voz, servicio y primer cliente
-jota-gw serve [--create-db]    # arranca el gateway (puerto 8004, host GATEWAY_HOST)
-jota-gw doctor                 # diagnóstico: configuración, BD, permisos, candado, gateway y servicios
-jota-gw config show            # ajustes efectivos y su origen (entorno, config.env o por defecto)
-jota-gw config get <AJUSTE> | validate
-jota-gw config set <AJUSTE> [VALOR|-]   # escribe en config.env; unset <AJUSTE> lo quita
-jota-gw install [--exe RUTA]   # servicio de usuario de systemd: lo instala y lo arranca
-jota-gw start|stop|restart     # restart pregunta; en scripts: jota-gw --yes restart
-jota-gw uninstall              # quita el servicio (pregunta); no toca los datos
-jota-gw migrate --from-docker DIR   # copia una instalación Docker (.env y BD) a la nativa
-jota-gw logs [-f] [-n N] [--level NIVEL] [--session ID]
-jota-gw status                 # gateway, versión, orquestador, STT, TTS y sesiones
-jota-gw version
-jota-gw clients list           # nombre, id corto, tipo, activo, agente y huella fp
-jota-gw clients show <ref>     # <ref>: id, prefijo de id (≥ 4) o nombre
-jota-gw clients add --name … [--type ha|esp32|web|app|screen] [--agent …] [--allowed-agent …] [--import-key]
-jota-gw clients edit <ref> [--name …] [--set tts_speed=1.2 …] [--set output_mode:='["text"]']
-jota-gw clients enable|disable <ref>
-jota-gw clients rotate-key|remove <ref>    # preguntan; en scripts: jota-gw --yes clients remove <ref>
-jota-gw pair [--name …] [--type …] [--agent …] [--set …] [--no-wait]   # código para que un cliente se dé de alta solo
+fogar-gw                        # en una terminal: menú interactivo; en un script: la ayuda
+fogar-gw init                   # instalación nueva: <base>, config.env con ADMIN_TOKEN aleatorio y la BD
+fogar-gw onboard [--answers FICHERO]   # asistente: OpenClaw, voz, servicio y primer cliente
+fogar-gw serve [--create-db]    # arranca el gateway (puerto 8004, host GATEWAY_HOST)
+fogar-gw doctor                 # diagnóstico: configuración, BD, permisos, candado, gateway y servicios
+fogar-gw config show            # ajustes efectivos y su origen (entorno, config.env o por defecto)
+fogar-gw config get <AJUSTE> | validate
+fogar-gw config set <AJUSTE> [VALOR|-]   # escribe en config.env; unset <AJUSTE> lo quita
+fogar-gw install [--exe RUTA]   # servicio de usuario de systemd: lo instala y lo arranca
+fogar-gw start|stop|restart     # restart pregunta; en scripts: fogar-gw --yes restart
+fogar-gw uninstall              # quita el servicio (pregunta); no toca los datos
+fogar-gw migrate --from-docker DIR   # copia una instalación Docker (.env y BD) a la nativa
+fogar-gw logs [-f] [-n N] [--level NIVEL] [--session ID]
+fogar-gw status                 # gateway, versión, orquestador, STT, TTS y sesiones
+fogar-gw version
+fogar-gw clients list           # nombre, id corto, tipo, activo, agente y huella fp
+fogar-gw clients show <ref>     # <ref>: id, prefijo de id (≥ 4) o nombre
+fogar-gw clients add --name … [--type ha|esp32|web|app|screen] [--agent …] [--allowed-agent …] [--import-key]
+fogar-gw clients edit <ref> [--name …] [--set tts_speed=1.2 …] [--set output_mode:='["text"]']
+fogar-gw clients enable|disable <ref>
+fogar-gw clients rotate-key|remove <ref>    # preguntan; en scripts: fogar-gw --yes clients remove <ref>
+fogar-gw pair [--name …] [--type …] [--agent …] [--set …] [--no-wait]   # código para que un cliente se dé de alta solo
 ```
 
-Opciones globales: van **antes** del subcomando (`jota-gw --yes clients remove X`; después, click no las reconoce): `--home` (`JOTA_GATEWAY_HOME`, por defecto `~/.jota-gateway`), `--url` (`JOTA_GW_URL`, por defecto `http://127.0.0.1:8004`), `--token` (`JOTA_GW_TOKEN`; si no, `ADMIN_TOKEN` o `config.env`), `--json` y `--yes`. `JOTA_GATEWAY_HOME` la leen el gateway y la CLI; `JOTA_GW_URL` y `JOTA_GW_TOKEN`, solo la CLI. Códigos de salida: 0 bien, 1 error, 2 uso incorrecto, 3 gateway inalcanzable.
+Opciones globales: van **antes** del subcomando (`fogar-gw --yes clients remove X`; después, click no las reconoce): `--home` (`FOGAR_GATEWAY_HOME`, por defecto `~/.fogar-gateway`), `--url` (`FOGAR_GW_URL`, por defecto `http://127.0.0.1:8004`), `--token` (`FOGAR_GW_TOKEN`; si no, `ADMIN_TOKEN` o `config.env`), `--json` y `--yes`. `FOGAR_GATEWAY_HOME` la leen el gateway y la CLI; `FOGAR_GW_URL` y `FOGAR_GW_TOKEN`, solo la CLI. Códigos de salida: 0 bien, 1 error, 2 uso incorrecto, 3 gateway inalcanzable.
 
-- **Configuración que leen la CLI y el gateway:** variables del proceso → `<base>/config.env` → valores por defecto, con `<base>` = `--home`, `JOTA_GATEWAY_HOME` o `~/.jota-gateway`. Nunca el `.env` del directorio actual. Una `DATABASE_URL` relativa se resuelve contra `<base>`. Los secretos (`*_TOKEN`, `*_KEY`) salen siempre enmascarados, también en `--json`.
+- **Configuración que leen la CLI y el gateway:** variables del proceso → `<base>/config.env` → valores por defecto, con `<base>` = `--home`, `FOGAR_GATEWAY_HOME` o `~/.fogar-gateway`. Nunca el `.env` del directorio actual. Una `DATABASE_URL` relativa se resuelve contra `<base>`. Los secretos (`*_TOKEN`, `*_KEY`) salen siempre enmascarados, también en `--json`.
 - **`--set`:** `campo=valor` manda texto (el servidor convierte números y booleanos); `campo:=json` manda JSON (listas, `null`). Un campo desconocido sale con 2 y lista los editables.
-- **`config set`:** valida el valor antes de escribir y rechaza saltos de línea. Los secretos (`*_TOKEN`, `*_KEY`) nunca van como argumento, para que no queden en el historial: se piden por prompt oculto (`jota-gw config set ADMIN_TOKEN`) o, en scripts, se leen de un fichero por stdin (`jota-gw config set ADMIN_TOKEN - < fichero`); un `echo` dejaría el secreto en el historial. Si el servicio está activo, ofrece reiniciarlo (como `jota-gw restart`: espera a `/healthz` y sale con 1 si no arranca, con el cambio ya guardado); si no, el cambio se aplica al reiniciar (`jota-gw restart`). Avisa si la variable está también en el entorno, porque esa manda sobre `config.env`.
+- **`config set`:** valida el valor antes de escribir y rechaza saltos de línea. Los secretos (`*_TOKEN`, `*_KEY`) nunca van como argumento, para que no queden en el historial: se piden por prompt oculto (`fogar-gw config set ADMIN_TOKEN`) o, en scripts, se leen de un fichero por stdin (`fogar-gw config set ADMIN_TOKEN - < fichero`); un `echo` dejaría el secreto en el historial. Si el servicio está activo, ofrece reiniciarlo (como `fogar-gw restart`: espera a `/healthz` y sale con 1 si no arranca, con el cambio ya guardado); si no, el cambio se aplica al reiniciar (`fogar-gw restart`). Avisa si la variable está también en el entorno, porque esa manda sobre `config.env`.
 - **`--import-key`** lee la clave de stdin, nunca de un argumento.
-- **En Docker:** `docker exec jota_gateway jota-gw …`. La imagen fija `JOTA_GATEWAY_HOME=/app`, así que `doctor` encuentra la BD del volumen. Sin `-t` no hay terminal: no se abre el menú y `rotate-key`/`remove` necesitan `--yes` (o usa `docker exec -it`). Con `GATEWAY_HOST` en una IP de la LAN, pasa `--url http://<esa IP>:8004`.
+- **En Docker:** `docker exec fogar_gateway fogar-gw …`. La imagen fija `FOGAR_GATEWAY_HOME=/app`, así que `doctor` encuentra la BD del volumen. Sin `-t` no hay terminal: no se abre el menú y `rotate-key`/`remove` necesitan `--yes` (o usa `docker exec -it`). Con `GATEWAY_HOST` en una IP de la LAN, pasa `--url http://<esa IP>:8004`.
 
 Auth: header `X-Admin-Token`. Sin header → 422. Token incorrecto → 401. `ADMIN_TOKEN` vacío → 503.
 
 ### OpenAI-compatible (`/v1/*`, para Home Assistant)
 
-**Autenticación** (`src/jota_gateway/core/network.py`, `resolve_ha_caller` en `src/jota_gateway/api/openai_routes.py`):
+**Autenticación** (`src/fogar_gateway/core/network.py`, `resolve_ha_caller` en `src/fogar_gateway/api/openai_routes.py`):
 
 - Origen **de confianza** (peer directo en las CIDR de `TRUSTED_NETWORKS`, peer loopback si `TRUST_LOOPBACK=true`, o un cliente avalado por un proxy de `TRUSTED_PROXIES` con `X-Real-IP` válido): no necesita credenciales. **Matiz (#216):** con `TRUSTED_PROXIES` por defecto (`127.0.0.1,::1`) un cliente directo en loopback *sin* `X-Real-IP` ya NO queda exento y debe enviar `Authorization: Bearer <client_key>`; sin proxy, vacía `TRUSTED_PROXIES=` para recuperar el comportamiento anterior (y con proxy, este debe sobrescribir `X-Real-IP`).
 
@@ -142,15 +142,15 @@ Auth: header `X-Admin-Token`. Sin header → 422. Token incorrecto → 401. `ADM
   | `TRUSTED_PROXIES=` vacío, loopback directo | 200 | 200 |
 - Cualquier otro origen debe enviar `Authorization: Bearer <client_key>`, validado contra la tabla `clients` (la misma que usa el handshake WebSocket). Sin él, o con una key inválida/inactiva → `401`.
 - Si se envía un Bearer, siempre se valida, también desde un origen de confianza.
-- Detrás de un proxy (nginx), la IP real solo se toma de `X-Real-IP` si el peer está en `TRUSTED_PROXIES`. **Falla cerrado (#216):** un peer de `TRUSTED_PROXIES` sin `X-Real-IP` válido no es origen de confianza (se exige Bearer); el proxy debe *sobrescribir* `X-Real-IP` (`proxy_set_header X-Real-IP $remote_addr;`), nunca reenviar el del cliente. `X-Forwarded-For` nunca concede confianza (`jota-gw serve` arranca uvicorn sin `proxy_headers`). Consecuencia: un cliente directo en loopback (p. ej. HA en el mismo host, sin proxy) ya no queda exento con la config por defecto; envía Bearer, o vacía `TRUSTED_PROXIES` si no hay proxy.
-- Host de escucha de `jota-gw serve` (también en Docker): `GATEWAY_HOST` (default `0.0.0.0`); detrás de un proxy en el mismo host usa `GATEWAY_HOST=127.0.0.1`.
+- Detrás de un proxy (nginx), la IP real solo se toma de `X-Real-IP` si el peer está en `TRUSTED_PROXIES`. **Falla cerrado (#216):** un peer de `TRUSTED_PROXIES` sin `X-Real-IP` válido no es origen de confianza (se exige Bearer); el proxy debe *sobrescribir* `X-Real-IP` (`proxy_set_header X-Real-IP $remote_addr;`), nunca reenviar el del cliente. `X-Forwarded-For` nunca concede confianza (`fogar-gw serve` arranca uvicorn sin `proxy_headers`). Consecuencia: un cliente directo en loopback (p. ej. HA en el mismo host, sin proxy) ya no queda exento con la config por defecto; envía Bearer, o vacía `TRUSTED_PROXIES` si no hay proxy.
+- Host de escucha de `fogar-gw serve` (también en Docker): `GATEWAY_HOST` (default `0.0.0.0`); detrás de un proxy en el mismo host usa `GATEWAY_HOST=127.0.0.1`.
 - `TRUSTED_NETWORKS` vacío = fail-closed: solo loopback puede quedar exento (sujeto al matiz de `TRUSTED_PROXIES` de arriba).
-- `HANDSHAKE_MAX_BYTES` mide **caracteres**, no bytes (con caracteres multibyte el tope real puede ser hasta 4x mayor). El tope de 1 MiB por mensaje WebSocket lo pone `jota-gw serve`: con `uvicorn` a mano rige el de uvicorn (16 MiB).
+- `HANDSHAKE_MAX_BYTES` mide **caracteres**, no bytes (con caracteres multibyte el tope real puede ser hasta 4x mayor). El tope de 1 MiB por mensaje WebSocket lo pone `fogar-gw serve`: con `uvicorn` a mano rige el de uvicorn (16 MiB).
 - Con Bearer válido, `model` selecciona el agente y se aplican `default_agent`/`allowed_agents` del cliente (violación → `403`).
 
 | Endpoint | Método | Descripción |
 |----------|--------|-------------|
-| `/v1/models` | GET | Devuelve el alias `jota-gateway` y los agentes del roster de OpenClaw (filtrados por `allowed_agents`) para un llamante con Bearer; un origen confiable sin Bearer (el chat ignora `model` y usa el agente por defecto) y un gateway sin roster, solo el alias |
+| `/v1/models` | GET | Devuelve el alias `fogar-gateway` y los agentes del roster de OpenClaw (filtrados por `allowed_agents`) para un llamante con Bearer; un origen confiable sin Bearer (el chat ignora `model` y usa el agente por defecto) y un gateway sin roster, solo el alias |
 | `/v1/chat/completions` | POST | Chat completion; soporta `stream: true/false` |
 
 ---
@@ -173,71 +173,71 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la referencia comp
 
 ## Instalación
 
-La vía recomendada es la **instalación nativa** (servicio de usuario de systemd, solo Linux). Docker queda como [alternativa](#docker-alternativa). `<base>` es `~/.jota-gateway` (o `--home` / `JOTA_GATEWAY_HOME`).
+La vía recomendada es la **instalación nativa** (servicio de usuario de systemd, solo Linux). Docker queda como [alternativa](#docker-alternativa). `<base>` es `~/.fogar-gateway` (o `--home` / `FOGAR_GATEWAY_HOME`).
 
 ### Instalación nativa
 
 **Requisitos:** Linux (x86_64 o aarch64) con systemd de usuario y un OpenClaw en este mismo equipo (o accesible por túnel SSH), 2026.6.11 o posterior. Lo demás lo comprueba el instalador. Ejecútalo con tu usuario, no como root: el servicio es de tu usuario.
 
 ```bash
-curl -fsSL https://github.com/Jota-project/jota-gateway/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/fogarhome/fogar-gateway/releases/latest/download/install.sh | sh
 ```
 
 Qué hace `install.sh`:
 
 1. Comprueba Linux, la arquitectura y `systemctl --user`. Si falta `git` (`sudo apt-get install -y git`) o linger (`sudo loginctl enable-linger $(id -un)`; sin él, el servicio se para al cerrar tu sesión), enseña el comando y pregunta «¿lo ejecuto yo? [s/N]»: nada con `sudo` sin una `s`. Sin terminal, o con otra respuesta, sale y te dice qué ejecutar.
-2. Instala [uv](https://docs.astral.sh/uv/) si falta, y `jota-gw` con `uv tool install` en la versión de la release, con su `constraints.txt` (las mismas versiones que la imagen Docker). `uv tool update-shell` deja `~/.local/bin` en el PATH de las terminales nuevas; si la tuya aún no lo tiene, el instalador acaba diciéndolo (abre otra terminal o usa `~/.local/bin/jota-gw`).
-3. La primera vez lanza el asistente, `jota-gw onboard` (abajo). Sin terminal (p. ej. `ssh host 'curl … | sh'`) se para ahí: «Instalado. Configúralo con `jota-gw onboard` o, si vienes de Docker, `jota-gw migrate --from-docker DIR` y `jota-gw install`.»
+2. Instala [uv](https://docs.astral.sh/uv/) si falta, y `fogar-gw` con `uv tool install` en la versión de la release, con su `constraints.txt` (las mismas versiones que la imagen Docker). `uv tool update-shell` deja `~/.local/bin` en el PATH de las terminales nuevas; si la tuya aún no lo tiene, el instalador acaba diciéndolo (abre otra terminal o usa `~/.local/bin/fogar-gw`).
+3. La primera vez lanza el asistente, `fogar-gw onboard` (abajo). Sin terminal (p. ej. `ssh host 'curl … | sh'`) se para ahí: «Instalado. Configúralo con `fogar-gw onboard` o, si vienes de Docker, `fogar-gw migrate --from-docker DIR` y `fogar-gw install`.»
 
-**Volver a ejecutarlo actualiza:** con el servicio ya instalado, reinstala `jota-gw`, reinicia el servicio (corta las sesiones abiertas) y pasa `jota-gw doctor`, sin preguntar nada y sin tocar `config.env`.
+**Volver a ejecutarlo actualiza:** con el servicio ya instalado, reinstala `fogar-gw`, reinicia el servicio (corta las sesiones abiertas) y pasa `fogar-gw doctor`, sin preguntar nada y sin tocar `config.env`.
 
-**Versión:** el `install.sh` de `releases/latest` instala la última release, y el de una release concreta (`…/releases/download/vX.Y.Z/install.sh`), la suya. Para elegir otra: `curl -fsSL … | JOTA_VERSION=X.Y.Z sh`. Con `sh -s -- --no-onboard` solo instala `jota-gw`, sin el asistente (es el primer paso para [pasar de Docker a nativo](#pasar-de-docker-a-nativo)); las versiones anteriores a `jota-gw onboard` (desde la v1.26.0, la primera con `constraints.txt`) solo se instalan con `--no-onboard` o sin terminal.
+**Versión:** el `install.sh` de `releases/latest` instala la última release, y el de una release concreta (`…/releases/download/vX.Y.Z/install.sh`), la suya. Para elegir otra: `curl -fsSL … | FOGAR_VERSION=X.Y.Z sh`. Con `sh -s -- --no-onboard` solo instala `fogar-gw`, sin el asistente (es el primer paso para [pasar de Docker a nativo](#pasar-de-docker-a-nativo)); las versiones anteriores a `fogar-gw onboard` (desde la v1.26.0, la primera con `constraints.txt`) solo se instalan con `--no-onboard` o sin terminal.
 
-#### El asistente: `jota-gw onboard`
+#### El asistente: `fogar-gw onboard`
 
-`jota-gw onboard` pregunta lo mínimo y **verifica cada proveedor contra el servicio real antes de guardarlo** en `config.env`:
+`fogar-gw onboard` pregunta lo mínimo y **verifica cada proveedor contra el servicio real antes de guardarlo** en `config.env`:
 
-1. Si falta `config.env` o la BD, prepara `<base>` como `jota-gw init` (no toca lo que ya exista).
+1. Si falta `config.env` o la BD, prepara `<base>` como `fogar-gw init` (no toca lo que ya exista).
 2. OpenClaw: lo busca en este equipo (si no, pregunta host y puerto) y pide su token (`openclaw config get gateway.auth.token`). Solo en loopback: para un OpenClaw de otra máquina, un túnel SSH (`ssh -L 18789:127.0.0.1:18789 …`). Sin OpenClaw verificado no sigue.
 3. STT y TTS: servicio propio (`host:puerto` y, si la usa, su clave), ElevenLabs (una sola clave para los dos) o «ahora no» (`off`: sin STT no hay transcripción y sin TTS las respuestas llegan solo en texto).
-4. Instala el servicio, o lo reinicia si ya estaba instalado (con terminal pregunta antes, porque corta las sesiones abiertas), y pasa `jota-gw doctor`.
+4. Instala el servicio, o lo reinicia si ya estaba instalado (con terminal pregunta antes, porque corta las sesiones abiertas), y pasa `fogar-gw doctor`.
 5. Si aún no hay clientes, crea el primero, enseña su clave una sola vez y la dirección `ws://<host>:8004/ws/stream` (`GATEWAY_HOST`, o la IP de la LAN si escucha en todas las interfaces).
 
-Si lo cortas a medias, `config.env` queda como estaba más lo ya verificado, y volver a ejecutarlo retoma. También sirve para cambiar de proveedores más adelante (en el menú de `jota-gw`, «Configurar proveedores»): cada paso que `config.env` ya tiene ofrece primero «Dejar como está», que ni verifica ni escribe nada. Necesita una terminal; para scripts, `jota-gw onboard --answers respuestas.json` no pregunta nada y un fallo de verificación sale con 1 y su motivo. El fichero lleva secretos: tiene que ser tuyo y con permisos 600. Créalo ya privado, para que no haya un momento en que otros puedan leerlo: `(umask 077; cat > respuestas.json)` y pega el JSON (termina con Ctrl+D), o `install -m 600 /dev/null respuestas.json` antes de editarlo. Escribirlo y después hacer `chmod` deja esa ventana abierta.
+Si lo cortas a medias, `config.env` queda como estaba más lo ya verificado, y volver a ejecutarlo retoma. También sirve para cambiar de proveedores más adelante (en el menú de `fogar-gw`, «Configurar proveedores»): cada paso que `config.env` ya tiene ofrece primero «Dejar como está», que ni verifica ni escribe nada. Necesita una terminal; para scripts, `fogar-gw onboard --answers respuestas.json` no pregunta nada y un fallo de verificación sale con 1 y su motivo. El fichero lleva secretos: tiene que ser tuyo y con permisos 600. Créalo ya privado, para que no haya un momento en que otros puedan leerlo: `(umask 077; cat > respuestas.json)` y pega el JSON (termina con Ctrl+D), o `install -m 600 /dev/null respuestas.json` antes de editarlo. Escribirlo y después hacer `chmod` deja esa ventana abierta.
 
 ```json
 {
   "openclaw_host": "127.0.0.1", "openclaw_port": 18789, "openclaw_token": "…",
   "stt": {"provider": "off"},
-  "tts": {"provider": "jota", "url": "localhost:8005", "token": "…"},
+  "tts": {"provider": "fogar", "url": "localhost:8005", "token": "…"},
   "first_client": {"name": "salón", "type": "ha"}
 }
 ```
 
-`stt` y `tts`: `{"provider": "jota", "url"?, "token"?}` (por defecto `localhost:9000` / `localhost:8005`, sin clave), `{"provider": "elevenlabs", "api_key"}` (la misma en los dos; si el TTS de `config.env` ya usa ElevenLabs con otra clave, la nueva del STT se verifica también para el TTS antes de guardarla, salvo con `"tts": {"provider": "off"}`) o `{"provider": "off"}`. `first_client`: `{"name", "type"}` (`ha`, `esp32`, `web`, `app` o `screen`) o `null`. Un campo que falte o sobre es un error.
+`stt` y `tts`: `{"provider": "fogar", "url"?, "token"?}` (por defecto `localhost:9000` / `localhost:8005`, sin clave), `{"provider": "elevenlabs", "api_key"}` (la misma en los dos; si el TTS de `config.env` ya usa ElevenLabs con otra clave, la nueva del STT se verifica también para el TTS antes de guardarla, salvo con `"tts": {"provider": "off"}`) o `{"provider": "off"}`. `first_client`: `{"name", "type"}` (`ha`, `esp32`, `web`, `app` o `screen`) o `null`. Un campo que falte o sobre es un error.
 
 #### Emparejar un cliente
 
 En vez de crear el cliente y copiar su clave a mano, el cliente puede darse de alta solo con un código:
 
 ```bash
-jota-gw pair --type screen --name tele --agent j-assistant --allowed-agent j-assistant \
+fogar-gw pair --type screen --name tele --agent j-assistant --allowed-agent j-assistant \
   --set tts_voice=ef_dora --set barge_in_enabled:=false
 ```
 
 1. Enseña un código de 6 cifras (`482 913`), el nombre del gateway y a qué hora caduca (10 minutos).
 2. Escríbelo en la pantalla de emparejamiento del cliente. El cliente encuentra el gateway solo (en el mismo equipo o en la tailnet) y llama a `POST /pair`.
-3. `jota-gw pair` espera hasta que se use: «Cliente «tele» emparejado». Ctrl+C anula el código.
+3. `fogar-gw pair` espera hasta que se use: «Cliente «tele» emparejado». Ctrl+C anula el código.
 
 Las opciones son las de `clients add` más `--set` para cualquier otro campo (voz, turno…), y deciden cómo se comporta el cliente. El cliente aporta su tipo, lo que sabe reproducir (`output_mode`) y un nombre propuesto; lo que fijes aquí manda. Con `--no-wait` (o `--json`) enseña el código y termina, para scripts.
 
-El código es de un solo uso. Si alguien escribe 5 códigos erróneos seguidos, se anulan todos los abiertos y hay que abrir otro. `jota-gw clients add` sigue siendo la vía manual.
+El código es de un solo uso. Si alguien escribe 5 códigos erróneos seguidos, se anulan todos los abiertos y hay que abrir otro. `fogar-gw clients add` sigue siendo la vía manual.
 
 #### Sin el instalador
 
-Hace falta además `git`, `curl` y [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`). `uv tool` deja `jota-gw` en `~/.local/bin`: si no está en el PATH, ejecuta `uv tool update-shell` y reabre la terminal, porque `jota-gw install` pone en la unidad el `jota-gw` que encuentre en el PATH.
+Hace falta además `git`, `curl` y [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`). `uv tool` deja `fogar-gw` en `~/.local/bin`: si no está en el PATH, ejecuta `uv tool update-shell` y reabre la terminal, porque `fogar-gw install` pone en la unidad el `fogar-gw` que encuentre en el PATH.
 
-`V` es la última versión de [las releases](https://github.com/Jota-project/jota-gateway/releases) sin la `v` (p. ej. `V=1.27.0` para la release `v1.27.0`). `constraints.txt` existe desde la v1.26.0 y `jota-gw migrate`, solo desde la versión que lo incluye.
+`V` es la última versión de [las releases](https://github.com/fogarhome/fogar-gateway/releases) sin la `v` (p. ej. `V=1.27.0` para la release `v1.27.0`). `constraints.txt` existe desde la v1.26.0 y `fogar-gw migrate`, solo desde la versión que lo incluye.
 
 Con las mismas versiones que la imagen Docker: cada release publica `constraints.txt` (exportado de `uv.lock`, sin hashes porque uv no los admite en constraints) y `-c` acepta la URL directamente.
 
@@ -245,94 +245,94 @@ Con las mismas versiones que la imagen Docker: cada release publica `constraints
 
 ```bash
 V=<versión>   # la última de las releases, sin la v
-uv tool install "jota-gateway @ git+https://github.com/Jota-project/jota-gateway@v$V" \
-  -c https://github.com/Jota-project/jota-gateway/releases/download/v$V/constraints.txt
+uv tool install "fogar-gateway @ git+https://github.com/fogarhome/fogar-gateway@v$V" \
+  -c https://github.com/fogarhome/fogar-gateway/releases/download/v$V/constraints.txt
 loginctl enable-linger $USER        # puede pedir sudo según la distro
-jota-gw onboard
+fogar-gw onboard
 ```
 
 **A mano**, paso a paso:
 
 ```bash
 V=<versión>   # la última de las releases, sin la v
-uv tool install "jota-gateway @ git+https://github.com/Jota-project/jota-gateway@v$V" \
-  -c https://github.com/Jota-project/jota-gateway/releases/download/v$V/constraints.txt
-jota-gw init               # <base>, config.env con ADMIN_TOKEN aleatorio y la BD
-jota-gw config set OPENCLAW_TOKEN   # prompt oculto; ver la nota de debajo
-jota-gw config set OPENCLAW_HOST <host>   # solo si OpenClaw no está en esta máquina (y OPENCLAW_PORT, por defecto 18789)
+uv tool install "fogar-gateway @ git+https://github.com/fogarhome/fogar-gateway@v$V" \
+  -c https://github.com/fogarhome/fogar-gateway/releases/download/v$V/constraints.txt
+fogar-gw init               # <base>, config.env con ADMIN_TOKEN aleatorio y la BD
+fogar-gw config set OPENCLAW_TOKEN   # prompt oculto; ver la nota de debajo
+fogar-gw config set OPENCLAW_HOST <host>   # solo si OpenClaw no está en esta máquina (y OPENCLAW_PORT, por defecto 18789)
 loginctl enable-linger $USER        # puede pedir sudo según la distro
-jota-gw install            # crea el servicio de usuario y lo arranca
-jota-gw doctor             # configuración, BD, permisos, servicio y gateway
-jota-gw logs -n 20         # últimas líneas del journal (-f para seguir)
+fogar-gw install            # crea el servicio de usuario y lo arranca
+fogar-gw doctor             # configuración, BD, permisos, servicio y gateway
+fogar-gw logs -n 20         # últimas líneas del journal (-f para seguir)
 ```
 
-- **`OPENCLAW_TOKEN`** es el token del gateway de OpenClaw (el de su configuración). El gateway no lo exige: `install` y `serve` arrancan igual y solo registran un WARNING («OPENCLAW_TOKEN está vacío…»), y `config validate` y `doctor` lo marcan como aviso. Pero sin un token válido OpenClaw rechazará la conexión: `/ready` da 503 y las sesiones se cierran, porque el orquestador es la única dependencia fatal. Los secretos se piden por prompt oculto, ver `config set` en [Admin](#admin-requiere-x-admin-token). `OPENCLAW_HOST` y `OPENCLAW_PORT` se cambian con `jota-gw config set <AJUSTE> <valor>` (solo los secretos se piden por prompt; sin valor, un ajuste normal sale con 2).
+- **`OPENCLAW_TOKEN`** es el token del gateway de OpenClaw (el de su configuración). El gateway no lo exige: `install` y `serve` arrancan igual y solo registran un WARNING («OPENCLAW_TOKEN está vacío…»), y `config validate` y `doctor` lo marcan como aviso. Pero sin un token válido OpenClaw rechazará la conexión: `/ready` da 503 y las sesiones se cierran, porque el orquestador es la única dependencia fatal. Los secretos se piden por prompt oculto, ver `config set` en [Admin](#admin-requiere-x-admin-token). `OPENCLAW_HOST` y `OPENCLAW_PORT` se cambian con `fogar-gw config set <AJUSTE> <valor>` (solo los secretos se piden por prompt; sin valor, un ajuste normal sale con 2).
 - **Linger y sesión:** `systemctl --user` necesita una sesión con bus de usuario: SSH normal sí; con `su` o `sudo -iu`, no (define antes `XDG_RUNTIME_DIR=/run/user/$(id -u)`).
 
 > **El gateway nunca crea una BD por su cuenta.** Si no la encuentra en `<base>/data/gateway.db`
 > (o en la `DATABASE_URL` configurada), se para y explica qué hacer: así no arranca vacío, sin
-> clientes, por haberse equivocado de directorio. La crea `jota-gw init` (o `jota-gw migrate`,
-> que la copia de Docker). La imagen Docker arranca con `jota-gw serve --create-db`, así que
+> clientes, por haberse equivocado de directorio. La crea `fogar-gw init` (o `fogar-gw migrate`,
+> que la copia de Docker). La imagen Docker arranca con `fogar-gw serve --create-db`, así que
 > `docker compose up` con un `./data` vacío funciona como siempre.
 
 ### Servicio (systemd de usuario)
 
-Solo en Linux con systemd. `jota-gw install` crea `~/.config/systemd/user/jota-gateway.service` y lo arranca. Exige una config válida, la BD ya creada (`jota-gw init` o `jota-gw migrate`; `install` nunca la crea) y el puerto 8004 libre (para el contenedor antes). Si el servicio ya es el nuestro y está activo, reinstala, y si la unidad cambia, lo reinicia. `uninstall` y sobrescribir una unidad distinta con `install` piden confirmación (para scripts, `jota-gw --yes …`).
+Solo en Linux con systemd. `fogar-gw install` crea `~/.config/systemd/user/fogar-gateway.service` y lo arranca. Exige una config válida, la BD ya creada (`fogar-gw init` o `fogar-gw migrate`; `install` nunca la crea) y el puerto 8004 libre (para el contenedor antes). Si el servicio ya es el nuestro y está activo, reinstala, y si la unidad cambia, lo reinicia. `uninstall` y sobrescribir una unidad distinta con `install` piden confirmación (para scripts, `fogar-gw --yes …`).
 
-- **Ejecutable:** usa el `jota-gw` del PATH. Rechaza uno dentro de un clon o de una instalación editable, porque la unidad se rompería al moverlo: instala con `uv tool install` o pasa `--exe RUTA`.
+- **Ejecutable:** usa el `fogar-gw` del PATH. Rechaza uno dentro de un clon o de una instalación editable, porque la unidad se rompería al moverlo: instala con `uv tool install` o pasa `--exe RUTA`.
 - **Linger:** sin `loginctl enable-linger $USER` el servicio se para al cerrar tu sesión; `install` avisa si falta.
-- **Registros:** `jota-gw logs` lee el journal. `--level` y `--session` filtran por nivel mínimo y por sesión o cliente, tanto con `LOG_FORMAT=json` como con texto.
+- **Registros:** `fogar-gw logs` lee el journal. `--level` y `--session` filtran por nivel mínimo y por sesión o cliente, tanto con `LOG_FORMAT=json` como con texto.
 
 ### Actualizar
 
-Las migraciones de la BD se aplican solas al arrancar y no hay vuelta atrás automática de versión: copia `<base>/data/gateway.db` antes. Después, vuelve a ejecutar el instalador: instala la última release encima, reinicia el servicio y pasa `jota-gw doctor`, sin preguntar (`JOTA_VERSION=X.Y.Z` para otra versión).
+Las migraciones de la BD se aplican solas al arrancar y no hay vuelta atrás automática de versión: copia `<base>/data/gateway.db` antes. Después, vuelve a ejecutar el instalador: instala la última release encima, reinicia el servicio y pasa `fogar-gw doctor`, sin preguntar (`FOGAR_VERSION=X.Y.Z` para otra versión).
 
 ```bash
-curl -fsSL https://github.com/Jota-project/jota-gateway/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/fogarhome/fogar-gateway/releases/latest/download/install.sh | sh
 ```
 
-A mano: instala la nueva versión sobre la anterior y reinicia (pregunta; en scripts, `jota-gw --yes restart`).
+A mano: instala la nueva versión sobre la anterior y reinicia (pregunta; en scripts, `fogar-gw --yes restart`).
 
 ```bash
 V=<versión>   # la nueva, sin la v
-uv tool install --reinstall "jota-gateway @ git+https://github.com/Jota-project/jota-gateway@v$V" \
-  -c https://github.com/Jota-project/jota-gateway/releases/download/v$V/constraints.txt
-jota-gw restart
-jota-gw version           # versión de la CLI y del gateway en marcha
+uv tool install --reinstall "fogar-gateway @ git+https://github.com/fogarhome/fogar-gateway@v$V" \
+  -c https://github.com/fogarhome/fogar-gateway/releases/download/v$V/constraints.txt
+fogar-gw restart
+fogar-gw version           # versión de la CLI y del gateway en marcha
 ```
 
 ### Desinstalar
 
 ```bash
-jota-gw uninstall                # quita el servicio (pregunta); no toca los datos
-uv tool uninstall jota-gateway   # quita el programa
+fogar-gw uninstall                # quita el servicio (pregunta); no toca los datos
+uv tool uninstall fogar-gateway   # quita el programa
 ```
 
 Los datos (`config.env`, `data/gateway.db`) quedan en `<base>`; bórralos a mano si ya no los quieres.
 
 ### Pasar de Docker a nativo
 
-`jota-gw migrate --from-docker <carpeta de compose>` copia `.env` y `data/gateway.db` de una instalación Docker a `<base>`. Procedimiento, con la ventana de parada y la vuelta atrás:
+`fogar-gw migrate --from-docker <carpeta de compose>` copia `.env` y `data/gateway.db` de una instalación Docker a `<base>`. Procedimiento, con la ventana de parada y la vuelta atrás:
 
 1. **Misma versión a los dos lados.** Despliega la versión vN en Docker e instala la vN nativa **sin arrancarla**, con el instalador y `--no-onboard`:
    ```bash
-   curl -fsSL https://github.com/Jota-project/jota-gateway/releases/latest/download/install.sh | JOTA_VERSION=<N> sh -s -- --no-onboard
+   curl -fsSL https://github.com/fogarhome/fogar-gateway/releases/latest/download/install.sh | FOGAR_VERSION=<N> sh -s -- --no-onboard
    ```
-   y **nada más** (ni `jota-gw init`, ni `jota-gw onboard`, ni `jota-gw install`: `migrate` se niega si `<base>` ya tiene `config.env`, BD o restos de SQLite). El instalador acaba con «Configúralo con `jota-gw onboard` o, si vienes de Docker, …»: tú sigues la vía de Docker, con `migrate` en el paso 3 e `install` en el 5. `<N>` es la versión de Docker sin la `v`: `jota-gw version` da la nativa y `docker exec jota_gateway jota-gw version` la de Docker. El instalador ya deja linger activado.
-2. **Ventana sin sesiones.** `docker exec jota_gateway jota-gw status` debe mostrar 0 sesiones.
+   y **nada más** (ni `fogar-gw init`, ni `fogar-gw onboard`, ni `fogar-gw install`: `migrate` se niega si `<base>` ya tiene `config.env`, BD o restos de SQLite). El instalador acaba con «Configúralo con `fogar-gw onboard` o, si vienes de Docker, …»: tú sigues la vía de Docker, con `migrate` en el paso 3 e `install` en el 5. `<N>` es la versión de Docker sin la `v`: `fogar-gw version` da la nativa y `docker exec fogar_gateway fogar-gw version` la de Docker. El instalador ya deja linger activado.
+2. **Ventana sin sesiones.** `docker exec fogar_gateway fogar-gw status` debe mostrar 0 sesiones.
 3. **Parar, copiar y migrar.** `docker compose stop` (sin `down`), copia de seguridad de la BD y migra (usa un usuario que pueda leer `<carpeta>/data` y su `gateway.lock`):
    ```bash
    cp -a <carpeta de compose>/data/gateway.db* <destino de la copia>/
-   jota-gw migrate --from-docker <carpeta de compose>
+   fogar-gw migrate --from-docker <carpeta de compose>
    ```
-4. **Revisar la config migrada, antes de instalar.** `jota-gw config show` y `jota-gw doctor`: los nombres que solo resuelven en la red de Docker (nombres de servicios de compose, `host.docker.internal`) hay que cambiarlos con `jota-gw config set <AJUSTE> <valor>` (p. ej. `jota-gw config set OPENCLAW_HOST <host>`).
-5. **Instalar el servicio:** `jota-gw install`, que comprueba que el 8004 está libre.
-   Si `GATEWAY_HOST` es una IP concreta de la LAN, `install` espera a `/healthz` en la URL de `--url` (por defecto `http://127.0.0.1:8004`) y daría error por tiempo: usa `jota-gw --url http://<IP>:8004 install`. La comprobación de puerto libre sí mira solo `127.0.0.1`.
-6. **Verificar.** `curl http://127.0.0.1:8004/ready`, una sesión de voz o texto, `/v1` con y sin clave, los mismos clientes (`jota-gw clients list`), `jota-gw doctor` y `jota-gw logs -n 20`.
-7. **Vuelta atrás.** `jota-gw stop` y `systemctl --user disable jota-gateway.service` (si no, tras un reinicio de la máquina arrancan los dos y se pelean por el 8004), y después `docker compose up -d`. Para volver a nativo: `docker compose stop` y `jota-gw install` (con la unidad igual no la toca: la habilita y la arranca). Los cambios de clientes hechos en un lado no están en la BD del otro.
+4. **Revisar la config migrada, antes de instalar.** `fogar-gw config show` y `fogar-gw doctor`: los nombres que solo resuelven en la red de Docker (nombres de servicios de compose, `host.docker.internal`) hay que cambiarlos con `fogar-gw config set <AJUSTE> <valor>` (p. ej. `fogar-gw config set OPENCLAW_HOST <host>`).
+5. **Instalar el servicio:** `fogar-gw install`, que comprueba que el 8004 está libre.
+   Si `GATEWAY_HOST` es una IP concreta de la LAN, `install` espera a `/healthz` en la URL de `--url` (por defecto `http://127.0.0.1:8004`) y daría error por tiempo: usa `fogar-gw --url http://<IP>:8004 install`. La comprobación de puerto libre sí mira solo `127.0.0.1`.
+6. **Verificar.** `curl http://127.0.0.1:8004/ready`, una sesión de voz o texto, `/v1` con y sin clave, los mismos clientes (`fogar-gw clients list`), `fogar-gw doctor` y `fogar-gw logs -n 20`.
+7. **Vuelta atrás.** `fogar-gw stop` y `systemctl --user disable fogar-gateway.service` (si no, tras un reinicio de la máquina arrancan los dos y se pelean por el 8004), y después `docker compose up -d`. Para volver a nativo: `docker compose stop` y `fogar-gw install` (con la unidad igual no la toca: la habilita y la arranca). Los cambios de clientes hechos en un lado no están en la BD del otro.
 8. **Retirar el contenedor**, más tarde: `docker compose down`, sin borrar la imagen ni la carpeta.
 
-Qué hace `migrate` (`src/jota_gateway/cli/migrate.py`):
+Qué hace `migrate` (`src/fogar_gateway/cli/migrate.py`):
 
 - Copia la BD con la API de backup de sqlite3, comprueba `integrity_check` y que los clientes coinciden; **nunca escribe el origen** (lo abre en solo lectura). Si algo falla, no queda nada a medias, salvo un corte brusco (SIGKILL, corte de luz) entre la copia de la BD y la de `config.env`: entonces borra a mano lo creado en `<base>` y repite.
 - Exige la misma revisión de Alembic a los dos lados; si no, se niega y dice qué desplegar.
@@ -342,16 +342,16 @@ Qué hace `migrate` (`src/jota_gateway/cli/migrate.py`):
 
 ### Desarrollo en la misma máquina que producción
 
-Usa siempre `./.dev` como base (`--home ./.dev` o `JOTA_GATEWAY_HOME=./.dev`): sin él, la CLI y el gateway comparten `~/.jota-gateway`, o sea, la BD de producción. Además, `serve` usa siempre el puerto 8004 y la CLI apunta por defecto a `http://127.0.0.1:8004`: en la misma máquina el gateway de desarrollo choca con el de producción, o `clients list` acaba hablando con producción. Por eso el ejemplo de abajo usa el puerto 8014 (el 8005 es el `TTS_WS_URL` por defecto de jota-speaker) con `uvicorn` y apunta la CLI con `JOTA_GW_URL` (o `--url`).
+Usa siempre `./.dev` como base (`--home ./.dev` o `FOGAR_GATEWAY_HOME=./.dev`): sin él, la CLI y el gateway comparten `~/.fogar-gateway`, o sea, la BD de producción. Además, `serve` usa siempre el puerto 8004 y la CLI apunta por defecto a `http://127.0.0.1:8004`: en la misma máquina el gateway de desarrollo choca con el de producción, o `clients list` acaba hablando con producción. Por eso el ejemplo de abajo usa el puerto 8014 (el 8005 es el `TTS_WS_URL` por defecto de fogar-speaker) con `uvicorn` y apunta la CLI con `FOGAR_GW_URL` (o `--url`).
 
 ```bash
-git clone https://github.com/Jota-project/jota-gateway && cd jota-gateway
+git clone https://github.com/fogarhome/fogar-gateway && cd fogar-gateway
 uv sync --extra dev   # crea .venv desde uv.lock (o `pip install -e .[dev]`, sin versiones fijadas)
-source .venv/bin/activate   # sin esto (o `uv run jota-gw …`), `jota-gw` es el de producción
-export JOTA_GATEWAY_HOME=./.dev JOTA_GW_URL=http://127.0.0.1:8014
-jota-gw init                # una vez
-uvicorn jota_gateway.main:app --port 8014 --reload   # `jota-gw serve` fija el 8004
-jota-gw clients list        # habla con el 8014
+source .venv/bin/activate   # sin esto (o `uv run fogar-gw …`), `fogar-gw` es el de producción
+export FOGAR_GATEWAY_HOME=./.dev FOGAR_GW_URL=http://127.0.0.1:8014
+fogar-gw init                # una vez
+uvicorn fogar_gateway.main:app --port 8014 --reload   # `fogar-gw serve` fija el 8004
+fogar-gw clients list        # habla con el 8014
 ```
 
 ### Docker (alternativa)
@@ -375,11 +375,11 @@ Variables de entorno o, si no, de `<base>/config.env` (instalación nativa). En 
 | Variable | Default | Descripción |
 |----------|---------|-------------|
 | `DATABASE_URL` | `sqlite:///data/gateway.db` | Base de datos SQLite local (identidad y configuración de clientes). Una ruta relativa cuelga de `<base>` |
-| `GATEWAY_HOST` | `0.0.0.0` | Host de escucha de `jota-gw serve` (`127.0.0.1` detrás de un proxy en el mismo host) |
-| `GATEWAY_NAME` | — | Nombre con el que se anuncia a los clientes (`/.well-known/jota-gateway`). Vacío = nombre del equipo; en Docker conviene fijarlo |
-| `TRANSCRIBER_WS_URL` | `localhost:9000` | jota-transcriber |
-| `TTS_WS_URL` | `localhost:8005` | jota-speaker |
-| `TTS_TOKEN` | — | Token de auth para jota-speaker; vacío si el TTS no exige clave |
+| `GATEWAY_HOST` | `0.0.0.0` | Host de escucha de `fogar-gw serve` (`127.0.0.1` detrás de un proxy en el mismo host) |
+| `GATEWAY_NAME` | — | Nombre con el que se anuncia a los clientes (`/.well-known/fogar-gateway`). Vacío = nombre del equipo; en Docker conviene fijarlo |
+| `TRANSCRIBER_WS_URL` | `localhost:9000` | fogar-transcriber |
+| `TTS_WS_URL` | `localhost:8005` | fogar-speaker |
+| `TTS_TOKEN` | — | Token de auth para fogar-speaker; vacío si el TTS no exige clave |
 | `OPENCLAW_HOST` | `127.0.0.1` | Host de OpenClaw |
 | `OPENCLAW_PORT` | `18789` | Puerto de OpenClaw |
 | `OPENCLAW_TOKEN` | — | Token de OpenClaw. Sin él el gateway arranca con un aviso, pero OpenClaw rechaza la conexión (`/ready` 503) |
@@ -397,20 +397,20 @@ Variables de entorno o, si no, de `<base>/config.env` (instalación nativa). En 
 
 ### Proveedores de voz (STT/TTS)
 
-El STT y el TTS pasan por una capa de proveedores (`src/jota_gateway/services/speech/`). Los clientes no notan la diferencia: mismos formatos de audio y mismos mensajes.
+El STT y el TTS pasan por una capa de proveedores (`src/fogar_gateway/services/speech/`). Los clientes no notan la diferencia: mismos formatos de audio y mismos mensajes.
 
 | Variable | Default | Descripción |
 |----------|---------|-------------|
-| `STT_PROVIDER` | `jota` | `jota` (jota-transcriber), `elevenlabs` (Scribe v2 Realtime) u `off` (sin transcripción: el audio de los clientes se descarta y solo entra texto) |
-| `TTS_PROVIDER` | `jota` | `jota` (jota-speaker), `elevenlabs` (stream-input, `eleven_flash_v2_5`) u `off` (sin respuestas en audio: solo en texto) |
+| `STT_PROVIDER` | `fogar` | `fogar` (fogar-transcriber), `elevenlabs` (Scribe v2 Realtime) u `off` (sin transcripción: el audio de los clientes se descarta y solo entra texto) |
+| `TTS_PROVIDER` | `fogar` | `fogar` (fogar-speaker), `elevenlabs` (stream-input, `eleven_flash_v2_5`) u `off` (sin respuestas en audio: solo en texto) |
 | `ELEVENLABS_API_KEY` | — | Obligatoria si algún proveedor es `elevenlabs` (permisos Text to Speech y Speech to Text) |
 | `ELEVENLABS_TTS_DEFAULT_VOICE` | `gc61tTk93h3LBXPxew2V` | Voz por defecto; las voces de clientes que no son de ElevenLabs (p. ej. `af_heart`) caen en ella o se traducen con `TTS_VOICE_MAP` |
-| `STT_AUDIO_GATE` | `energy` | Puerta de energía del STT de ElevenLabs (solo se envía audio mientras se habla); `off` la quita. jota no la usa |
+| `STT_AUDIO_GATE` | `energy` | Puerta de energía del STT de ElevenLabs (solo se envía audio mientras se habla); `off` la quita. fogar no la usa |
 | `STT_GATE_RMS_DBFS` | `-45` | Umbral de la puerta de energía |
 
-`ELEVENLABS_BASE_URL` y `ELEVENLABS_TTS_MODEL` están en `.env.sample`; el resto de ajustes de ElevenLabs son constantes del adaptador (`src/jota_gateway/services/speech/elevenlabs/`). El proveedor se elige con `STT_PROVIDER`/`TTS_PROVIDER` al arrancar; cambiarlo exige reiniciar. Con el plan Creator, ElevenLabs conserva el audio y las transcripciones (la retención cero es solo enterprise).
+`ELEVENLABS_BASE_URL` y `ELEVENLABS_TTS_MODEL` están en `.env.sample`; el resto de ajustes de ElevenLabs son constantes del adaptador (`src/fogar_gateway/services/speech/elevenlabs/`). El proveedor se elige con `STT_PROVIDER`/`TTS_PROVIDER` al arrancar; cambiarlo exige reiniciar. Con el plan Creator, ElevenLabs conserva el audio y las transcripciones (la retención cero es solo enterprise).
 
-`silence_timeout_s` y `max_silence_turns` (umbral del watchdog de silencio) son campos de configuración **por cliente** en la base de datos, no variables de entorno globales — ver `ClientRecord` en `src/jota_gateway/db/models.py`.
+`silence_timeout_s` y `max_silence_turns` (umbral del watchdog de silencio) son campos de configuración **por cliente** en la base de datos, no variables de entorno globales — ver `ClientRecord` en `src/fogar_gateway/db/models.py`.
 
 ---
 
@@ -490,10 +490,10 @@ real.
 
 ## Arquitectura interna
 
-El gateway instancia un `JotaBridge` por cada sesión WebSocket. Los tres servicios downstream (OpenClaw, Transcriber, TTS) tienen reconexión automática con backoff exponencial, unificada en `services/reconnection.py` (estados compartidos CONNECTED / RECONNECTING / DEGRADED). OpenClaw y los proveedores de voz son singletons de proceso; con el proveedor `jota`, cada sesión de audio abre su propio `ReconnectingTranscriberClient` y cada turno su propio `TTSClient`.
+El gateway instancia un `FogarBridge` por cada sesión WebSocket. Los tres servicios downstream (OpenClaw, Transcriber, TTS) tienen reconexión automática con backoff exponencial, unificada en `services/reconnection.py` (estados compartidos CONNECTED / RECONNECTING / DEGRADED). OpenClaw y los proveedores de voz son singletons de proceso; con el proveedor `fogar`, cada sesión de audio abre su propio `ReconnectingTranscriberClient` y cada turno su propio `TTSClient`.
 
 ```
-src/jota_gateway/
+src/fogar_gateway/
 ├── paths.py                 directorio base, config.env y ruta de la BD (compartido con la CLI)
 ├── alembic.ini, migrations/ migraciones de Alembic, dentro del paquete instalado
 ├── api/
@@ -511,20 +511,20 @@ src/jota_gateway/
 ├── db/
 │   ├── models.py            ClientRecord (SQLModel) — identidad y config por cliente
 │   └── database.py          get_engine() / run_migrations() / get_db_session()
-├── cli/                     jota-gw — init, serve, menú, doctor, config, status, version, clients, service (servicio systemd), logs, migrate y onboard (onboard.py, el asistente; verify.py, que verifica cada proveedor contra el servicio real)
+├── cli/                     fogar-gw — init, serve, menú, doctor, config, status, version, clients, service (servicio systemd), logs, migrate y onboard (onboard.py, el asistente; verify.py, que verifica cada proveedor contra el servicio real)
 └── services/
-    ├── bridge.py            JotaBridge — coordinador de sesión WS
+    ├── bridge.py            FogarBridge — coordinador de sesión WS
     ├── db_client.py         DbClient — lee ClientRecord de SQLite local (singleton, sin caché)
     ├── outbound.py          QueuedSender — salida serializada hacia cada cliente
     ├── reconnection.py      ConnectionState / ServiceStatus / to_wire_state() — compartido por los 3 wrappers
-    ├── transcriber_client.py       WebSocket → jota-transcriber, protocolo puro (sin reconexión)
+    ├── transcriber_client.py       WebSocket → fogar-transcriber, protocolo puro (sin reconexión)
     ├── transcriber_reconnecting.py ReconnectingTranscriberClient — uno por sesión de audio, backoff en background
-    ├── tts_client.py                WebSocket → jota-speaker, protocolo puro, creado por turno
+    ├── tts_client.py                WebSocket → fogar-speaker, protocolo puro, creado por turno
     ├── tts_reconnecting.py          ReconnectingTTSClient — singleton, backoff perezoso por turno
     ├── orchestration.py     call_orchestrator() — helper compartido WS+HTTP
     ├── pipeline_tracker.py  PipelineTracker — latencias por turno
     ├── session_registry.py  SessionRegistry — observabilidad de sesiones
-    ├── speech/              Proveedores STT/TTS: ports.py, factory.py, jota.py, elevenlabs/, off.py (voz desactivada)
+    ├── speech/              Proveedores STT/TTS: ports.py, factory.py, fogar.py, elevenlabs/, off.py (voz desactivada)
     └── openclaw/
         ├── client.py        OpenClawClient — WebSocket v4, multiplexado
         ├── reconnecting.py  ReconnectingOpenClawClient — backoff + DEGRADED

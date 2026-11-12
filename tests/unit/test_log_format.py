@@ -5,7 +5,7 @@ from datetime import datetime
 
 import pytest
 
-from jota_gateway.core.logging import HealthzAccessFilter, JsonFormatter, configure_logging
+from fogar_gateway.core.logging import HealthzAccessFilter, JsonFormatter, configure_logging
 
 _NAMES = ("", "uvicorn", "uvicorn.error", "uvicorn.access")
 

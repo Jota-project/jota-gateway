@@ -6,8 +6,8 @@ import time
 import pytest
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from jota_gateway.api import routes
-from jota_gateway.core.config import settings
+from fogar_gateway.api import routes
+from fogar_gateway.core.config import settings
 from tests.integration.conftest import CLIENT_ID, VALID_KEY
 
 HANDSHAKE = {
@@ -74,7 +74,7 @@ def test_slow_client_without_transport_is_closed_with_1013(client, monkeypatch):
     assert exc.value.code == 1013
     # The real session tears down after the drop (nothing hangs and
     # the bridge leaves the registry), not just the client-visible close code.
-    from jota_gateway.main import app
+    from fogar_gateway.main import app
 
     assert _wait_for(lambda: app.state.client_registry.get(CLIENT_ID) is None), (
         "el bridge sigue registrado tras cerrar al cliente lento"

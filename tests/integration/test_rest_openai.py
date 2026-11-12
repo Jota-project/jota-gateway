@@ -4,10 +4,10 @@ import logging
 
 from sqlmodel import Session
 
-from jota_gateway.core.config import settings
-from jota_gateway.db.models import ClientRecord
-from jota_gateway.main import app
-from jota_gateway.services.protocol import OrchestratorEvent
+from fogar_gateway.core.config import settings
+from fogar_gateway.db.models import ClientRecord
+from fogar_gateway.main import app
+from fogar_gateway.services.protocol import OrchestratorEvent
 from tests.integration.conftest import CLIENT_ID
 
 
@@ -16,7 +16,7 @@ def test_get_models_returns_list(client):
     assert r.status_code == 200
     body = r.json()
     assert body["object"] == "list"
-    assert body["data"][0]["id"] == "jota-gateway"
+    assert body["data"][0]["id"] == "fogar-gateway"
 
 
 def test_chat_completions_non_streaming_uses_orchestrator(client, mock_orchestrator):
@@ -38,7 +38,7 @@ def test_chat_completions_non_streaming_uses_orchestrator(client, mock_orchestra
 
 def test_chat_completions_uses_correct_session_key(client, mock_registry, mock_orchestrator):
     """session_key passed to stream_response matches agent:{default_agent}:ha."""
-    from jota_gateway.core.session_key import make_session_key
+    from fogar_gateway.core.session_key import make_session_key
 
     captured = {}
 
@@ -374,7 +374,7 @@ def test_streaming_turn_timeout_is_terminal_error(client, mock_orchestrator):
 def test_non_streaming_turn_conflict_returns_409(client, mock_orchestrator):
     """Issue #99: a rejected duplicate-session_key turn must map to HTTP 409,
     distinguishable from a generic orchestrator failure (502)."""
-    from jota_gateway.services.openclaw.registry import TURN_IN_PROGRESS_ERROR
+    from fogar_gateway.services.openclaw.registry import TURN_IN_PROGRESS_ERROR
 
     async def _conflict_stream(*args, **kwargs):
         yield OrchestratorEvent(type="error", content=TURN_IN_PROGRESS_ERROR)
@@ -399,7 +399,7 @@ def test_streaming_done_delivered_when_tracker_close_raises(client, mock_orchest
     Sin el fix (sentinel después de close), si close() lanza, el generador
     se queda bloqueado en queue.get() y [DONE] nunca llega — test colgaría.
     """
-    import jota_gateway.services.pipeline_tracker as pt_module
+    import fogar_gateway.services.pipeline_tracker as pt_module
 
     async def _raising_close(self, status="completed"):
         raise RuntimeError("tracker close failed intentionally")
@@ -510,7 +510,7 @@ def test_chat_completions_from_untrusted_origin_with_valid_key_passes(
 def test_chat_completions_with_valid_key_uses_real_client_session_key(
     client_untrusted, ha_bearer_headers, mock_registry
 ):
-    from jota_gateway.core.session_key import make_session_key
+    from fogar_gateway.core.session_key import make_session_key
 
     captured = {}
 
@@ -551,7 +551,7 @@ def test_chat_completions_with_invalid_key_returns_401_even_from_loopback(client
 def test_chat_completions_with_inactive_client_key_returns_401(client, db_engine):
     from sqlmodel import Session
 
-    from jota_gateway.db.models import ClientRecord
+    from fogar_gateway.db.models import ClientRecord
 
     with Session(db_engine) as s:
         s.add(
@@ -642,7 +642,7 @@ def test_non_streaming_orchestrator_error_records_session_as_error(client, mock_
     assert http_sessions[0].status == "error"
 
 
-# ── Alias de modelo `jota-gateway` y errores no-RuntimeError ──────────────────
+# ── Alias de modelo `fogar-gateway` y errores no-RuntimeError ──────────────────
 
 BODY = {"messages": [{"role": "user", "content": "Hola"}], "stream": False}
 
@@ -659,15 +659,15 @@ def _capture_session_key(mock_orchestrator):
     return captured
 
 
-def test_model_alias_jota_gateway_with_bearer_returns_200(
+def test_model_alias_fogar_gateway_with_bearer_returns_200(
     client_untrusted, ha_bearer_headers, mock_orchestrator
 ):
-    from jota_gateway.core.session_key import make_session_key
+    from fogar_gateway.core.session_key import make_session_key
 
     captured = _capture_session_key(mock_orchestrator)
     r = client_untrusted.post(
         "/v1/chat/completions",
-        json={**BODY, "model": "jota-gateway"},
+        json={**BODY, "model": "fogar-gateway"},
         headers=ha_bearer_headers,
     )
     assert r.status_code == 200, r.text
@@ -678,7 +678,7 @@ def test_model_alias_jota_gateway_with_bearer_returns_200(
 def test_model_alias_uses_client_default_agent_in_cascade(
     client_untrusted, ha_bearer_headers, mock_orchestrator, db_engine
 ):
-    from jota_gateway.core.session_key import make_session_key
+    from fogar_gateway.core.session_key import make_session_key
 
     with Session(db_engine) as s:
         rec = s.get(ClientRecord, CLIENT_ID)
@@ -688,7 +688,7 @@ def test_model_alias_uses_client_default_agent_in_cascade(
     captured = _capture_session_key(mock_orchestrator)
     r = client_untrusted.post(
         "/v1/chat/completions",
-        json={**BODY, "model": "jota-gateway"},
+        json={**BODY, "model": "fogar-gateway"},
         headers=ha_bearer_headers,
     )
     assert r.status_code == 200, r.text
@@ -706,7 +706,7 @@ def test_model_alias_respects_allowed_agents_of_cascade_default(
         s.commit()
     r = client_untrusted.post(
         "/v1/chat/completions",
-        json={**BODY, "model": "jota-gateway"},
+        json={**BODY, "model": "fogar-gateway"},
         headers=ha_bearer_headers,
     )
     assert r.status_code == 403
@@ -716,7 +716,7 @@ def test_model_alias_respects_allowed_agents_of_cascade_default(
 def test_real_agent_as_model_still_works_and_unknown_still_403(
     client_untrusted, ha_bearer_headers, mock_orchestrator
 ):
-    from jota_gateway.core.session_key import make_session_key
+    from fogar_gateway.core.session_key import make_session_key
 
     captured = _capture_session_key(mock_orchestrator)
     r = client_untrusted.post(
@@ -809,14 +809,14 @@ def test_models_lists_alias_and_roster_agents_for_bearer_caller(
 ):
     r = client_untrusted.get("/v1/models", headers=ha_bearer_headers)
     assert r.status_code == 200
-    assert _ids(r) == ["jota-gateway", "main", "a", "openclaw"]
+    assert _ids(r) == ["fogar-gateway", "main", "a", "openclaw"]
     assert all(m["object"] == "model" for m in r.json()["data"])
 
 
 def test_models_for_legacy_trusted_caller_lists_only_alias(client):
     """Origen confiable SIN Bearer: chat ignora body.model y usa el agente por defecto, así
     que no se anuncian agentes que no se podrían elegir."""
-    assert _ids(client.get("/v1/models")) == ["jota-gateway"]
+    assert _ids(client.get("/v1/models")) == ["fogar-gateway"]
 
 
 def _chat_session_key(c, mock_orchestrator, model, headers=None):
@@ -838,7 +838,7 @@ def test_models_chat_coherence_bearer_every_listed_model_selects_that_agent(
 ):
     for mid in _ids(client_untrusted.get("/v1/models", headers=ha_bearer_headers)):
         sk = _chat_session_key(client_untrusted, mock_orchestrator, mid, ha_bearer_headers)
-        expected = "main" if mid == "jota-gateway" else mid
+        expected = "main" if mid == "fogar-gateway" else mid
         assert sk.split(":")[1] == expected
 
 
@@ -846,7 +846,7 @@ def test_models_chat_coherence_legacy_listed_model_is_what_chat_uses(
     client, mock_orchestrator
 ):
     listed = _ids(client.get("/v1/models"))
-    assert listed == ["jota-gateway"]
+    assert listed == ["fogar-gateway"]
     # Un agente real no listado se ignora en la rama legacy: cae al agente por defecto.
     assert _chat_session_key(client, mock_orchestrator, "a").split(":")[1] == "main"
     assert _chat_session_key(client, mock_orchestrator, listed[0]).split(":")[1] == "main"
@@ -861,7 +861,7 @@ def test_models_respects_allowed_agents_of_authenticated_client(
         s.add(rec)
         s.commit()
     r = client_untrusted.get("/v1/models", headers=ha_bearer_headers)
-    assert _ids(r) == ["jota-gateway", "a"]
+    assert _ids(r) == ["fogar-gateway", "a"]
 
 
 def test_models_with_empty_allowed_agents_lists_only_alias(
@@ -873,30 +873,30 @@ def test_models_with_empty_allowed_agents_lists_only_alias(
         s.add(rec)
         s.commit()
     r = client_untrusted.get("/v1/models", headers=ha_bearer_headers)
-    assert _ids(r) == ["jota-gateway"]
+    assert _ids(r) == ["fogar-gateway"]
 
 
 def test_models_without_allowed_agents_restriction_lists_full_roster(
     client_untrusted, ha_bearer_headers
 ):
     r = client_untrusted.get("/v1/models", headers=ha_bearer_headers)
-    assert _ids(r) == ["jota-gateway", "main", "a", "openclaw"]
+    assert _ids(r) == ["fogar-gateway", "main", "a", "openclaw"]
 
 
 def test_models_without_roster_lists_only_alias(client, mock_orchestrator):
     mock_orchestrator.gateway_info = None
-    assert _ids(client.get("/v1/models")) == ["jota-gateway"]
+    assert _ids(client.get("/v1/models")) == ["fogar-gateway"]
 
 
 def test_models_with_empty_roster_lists_only_alias(client, mock_orchestrator):
     mock_orchestrator.gateway_info.agents = []
-    assert _ids(client.get("/v1/models")) == ["jota-gateway"]
+    assert _ids(client.get("/v1/models")) == ["fogar-gateway"]
 
 
 def test_models_never_duplicates_the_alias(client_untrusted, ha_bearer_headers, mock_orchestrator):
-    mock_orchestrator.gateway_info.agents.append("jota-gateway")
+    mock_orchestrator.gateway_info.agents.append("fogar-gateway")
     ids = _ids(client_untrusted.get("/v1/models", headers=ha_bearer_headers))
-    assert ids.count("jota-gateway") == 1 and len(ids) > 1
+    assert ids.count("fogar-gateway") == 1 and len(ids) > 1
 
 
 # ── #228: lo que ve un llamador de /v1 ────────────────────────────────────────
@@ -915,7 +915,7 @@ def test_orchestrator_error_event_code_reaches_v1_caller(client, mock_orchestrat
 def test_foreign_runtimeerror_text_never_reaches_v1_caller_nor_logs(
     client, mock_orchestrator, caplog
 ):
-    caplog.set_level(logging.DEBUG, logger="jota_gateway")
+    caplog.set_level(logging.DEBUG, logger="fogar_gateway")
 
     async def _stream(*a, **k):
         raise RuntimeError(MARK)
@@ -927,12 +927,12 @@ def test_foreign_runtimeerror_text_never_reaches_v1_caller_nor_logs(
     assert MARK not in r.text
     assert r.json() == {"error": "internal_error"}
     assert MARK not in "\n".join(
-        x.getMessage() for x in caplog.records if x.name.startswith("jota_gateway")
+        x.getMessage() for x in caplog.records if x.name.startswith("fogar_gateway")
     )
 
 
 def test_foreign_runtimeerror_text_never_reaches_v1_stream(client, mock_orchestrator, caplog):
-    caplog.set_level(logging.DEBUG, logger="jota_gateway")
+    caplog.set_level(logging.DEBUG, logger="fogar_gateway")
 
     async def _stream(*a, **k):
         raise RuntimeError(MARK)
@@ -947,5 +947,5 @@ def test_foreign_runtimeerror_text_never_reaches_v1_stream(client, mock_orchestr
         for p in payloads
     ), json.dumps(payloads)
     assert MARK not in "\n".join(
-        x.getMessage() for x in caplog.records if x.name.startswith("jota_gateway")
+        x.getMessage() for x in caplog.records if x.name.startswith("fogar_gateway")
     )

@@ -5,10 +5,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import jota_gateway.services.openclaw.registry as registry_mod
-from jota_gateway.core.config import settings
-from jota_gateway.services.openclaw.dispatcher import FrameDispatcher
-from jota_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
+import fogar_gateway.services.openclaw.registry as registry_mod
+from fogar_gateway.core.config import settings
+from fogar_gateway.services.openclaw.dispatcher import FrameDispatcher
+from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
 
 SK = "agent:main:client-a"
 

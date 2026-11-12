@@ -4,10 +4,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jota_gateway.models.schemas import ClientConfig
-from jota_gateway.services.openclaw.models import ToolCallEvent
-from jota_gateway.services.outbound import ClientGone
-from jota_gateway.services.protocol import OrchestratorEvent
+from fogar_gateway.models.schemas import ClientConfig
+from fogar_gateway.services.openclaw.models import ToolCallEvent
+from fogar_gateway.services.outbound import ClientGone
+from fogar_gateway.services.protocol import OrchestratorEvent
 from tests.fakes.bridge import GoneSender, sent
 
 
@@ -134,7 +134,7 @@ async def test_turn_in_progress_error_event_sends_non_fatal_turn_error_frame(bri
     handling in pipe_tokens() must already surface it to the client as a
     non-fatal TURN_ERROR frame, without closing the WS. No WS-specific
     code should be needed for this issue — this test verifies that."""
-    from jota_gateway.services.openclaw.registry import TURN_IN_PROGRESS_ERROR
+    from fogar_gateway.services.openclaw.registry import TURN_IN_PROGRESS_ERROR
 
     bridge.orchestrator.stream_response = make_stream_with_event("error", TURN_IN_PROGRESS_ERROR)
 

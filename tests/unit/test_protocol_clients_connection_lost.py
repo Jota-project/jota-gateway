@@ -11,8 +11,8 @@ import json
 import pytest
 import websockets
 
-from jota_gateway.services.transcriber_client import TranscriberClient
-from jota_gateway.services.tts_client import TTSClient
+from fogar_gateway.services.transcriber_client import TranscriberClient
+from fogar_gateway.services.tts_client import TTSClient
 
 
 def _port(server) -> int:

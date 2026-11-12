@@ -5,7 +5,7 @@ import json
 import pytest
 from sqlmodel import Session
 
-from jota_gateway.db.models import ClientRecord
+from fogar_gateway.db.models import ClientRecord
 from tests.integration.conftest import CLIENT_ID, VALID_KEY
 
 

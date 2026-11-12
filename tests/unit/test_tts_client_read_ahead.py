@@ -5,9 +5,9 @@ import logging
 
 import pytest
 
-from jota_gateway.services import tts_client
-from jota_gateway.services.tts_client import TTSClient
-from tests.fakes.jota_upstreams import FakeTts
+from fogar_gateway.services import tts_client
+from fogar_gateway.services.tts_client import TTSClient
+from tests.fakes.fogar_upstreams import FakeTts
 
 
 @pytest.fixture

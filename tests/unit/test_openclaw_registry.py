@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jota_gateway.services.openclaw.registry import (
+from fogar_gateway.services.openclaw.registry import (
     ClientRegistry,
     TurnInProgress,
     TurnRegistry,

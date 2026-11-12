@@ -1,6 +1,6 @@
 # Specs y planes: movidos a Obsidian
 
-Los **specs de diseño y los planes de implementación** de jota-gateway ya **no viven en este repositorio**. Se movieron el 2026-10-11 al vault privado de Obsidian del equipo (proyecto J), donde se mantienen a partir de ahora:
+Los **specs de diseño y los planes de implementación** de fogar-gateway ya **no viven en este repositorio**. Se movieron el 2026-10-11 al vault privado de Obsidian del equipo (proyecto J), donde se mantienen a partir de ahora:
 
 `Producto Jota/jota-gateway/Specs y planes/` — índice: `JGW Specs y planes - Índice`.
 

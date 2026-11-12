@@ -2,7 +2,7 @@
 
 El handshake se parsea (json.loads + pydantic) ANTES de autenticar, así que cualquiera puede
 pedirnos ese trabajo; un mensaje enorme cuesta ~8x su tamaño en memoria. Dos topes:
-`HANDSHAKE_MAX_BYTES` (aquí, antes de parsear) y `ws_max_size` de uvicorn (en `jota-gw serve`,
+`HANDSHAKE_MAX_BYTES` (aquí, antes de parsear) y `ws_max_size` de uvicorn (en `fogar-gw serve`,
 antes de que el mensaje llegue a la app).
 """
 
@@ -16,9 +16,9 @@ import uvicorn
 import websockets
 from fastapi import FastAPI
 
-from jota_gateway.api.routes import router as stream_router
-from jota_gateway.core.config import Settings, settings
-from jota_gateway.core.request_id import RequestIdMiddleware
+from fogar_gateway.api.routes import router as stream_router
+from fogar_gateway.core.config import Settings, settings
+from fogar_gateway.core.request_id import RequestIdMiddleware
 
 
 def _start(**uvicorn_kwargs):

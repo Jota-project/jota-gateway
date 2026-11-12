@@ -1,4 +1,4 @@
-"""Unit tests for jota_gateway.core.agent_policy.resolve_agent.
+"""Unit tests for fogar_gateway.core.agent_policy.resolve_agent.
 
 Pure helper — no DB, WS, or FastAPI. Stubs for ClientConfig and GatewayInfo
 live inline to avoid coupling to other modules' internals.
@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from jota_gateway.core.agent_policy import AgentPolicyError, resolve_agent
+from fogar_gateway.core.agent_policy import AgentPolicyError, resolve_agent
 
 # --- Stubs ----------------------------------------------------------------
 

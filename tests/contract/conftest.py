@@ -1,7 +1,7 @@
 """Fixtures de la batería de contrato de proveedores de voz.
 
 Cada adaptador aporta un arnés con la misma forma; los casos solo conocen el arnés.
-`jota` y `elevenlabs` (ambos contra upstreams falsos; en ElevenLabs la puerta de audio va en `off`).
+`fogar` y `elevenlabs` (ambos contra upstreams falsos; en ElevenLabs la puerta de audio va en `off`).
 """
 
 from __future__ import annotations
@@ -12,16 +12,16 @@ from typing import Any
 
 import pytest
 
-from jota_gateway.core.config import settings
-from jota_gateway.models.schemas import Client
-from tests.fakes.jota_upstreams import FakeTranscriber, FakeTts
+from fogar_gateway.core.config import settings
+from fogar_gateway.models.schemas import Client
+from tests.fakes.fogar_upstreams import FakeTranscriber, FakeTts
 
-ADAPTERS = ["jota", "elevenlabs"]
-STT_ADAPTERS = ["jota", "elevenlabs"]
+ADAPTERS = ["fogar", "elevenlabs"]
+STT_ADAPTERS = ["fogar", "elevenlabs"]
 
 SECRET_KEY = "client-key-SECRET-0123456789"
 SECRET_TTS_TOKEN = "tts-token-SECRET-0123456789"
-# Más de 40 caracteres: jota loguea a DEBUG un prefijo de 40 de las transcripciones
+# Más de 40 caracteres: fogar loguea a DEBUG un prefijo de 40 de las transcripciones
 # (permitido por la política de logs); el texto completo nunca debe aparecer.
 USER_TEXT = "frase privada del usuario que supera con mucho los cuarenta caracteres"
 
@@ -53,12 +53,12 @@ async def stt_harness(request, monkeypatch):
         async for h in _elevenlabs_stt_harness(monkeypatch):
             yield h
         return
-    from jota_gateway.services.speech.jota import JotaSttProvider
+    from fogar_gateway.services.speech.fogar import FogarSttProvider
 
     up = FakeTranscriber()
     await up.start()
     s = settings.model_copy(update={"TRANSCRIBER_WS_URL": f"127.0.0.1:{up.port}"})
-    provider = JotaSttProvider(s)
+    provider = FogarSttProvider(s)
     await provider.start()
     yield SttHarness(
         provider=provider,
@@ -72,8 +72,8 @@ async def stt_harness(request, monkeypatch):
 async def _elevenlabs_stt_harness(monkeypatch):
     from pydantic import SecretStr
 
-    from jota_gateway.services.speech.elevenlabs import stt as stt_mod
-    from jota_gateway.services.speech.elevenlabs.stt import ElevenLabsSttProvider
+    from fogar_gateway.services.speech.elevenlabs import stt as stt_mod
+    from fogar_gateway.services.speech.elevenlabs.stt import ElevenLabsSttProvider
     from tests.fakes.elevenlabs_stt import FakeElevenLabsStt
 
     monkeypatch.setattr(stt_mod, "DRAIN_S", 0.3)
@@ -105,11 +105,11 @@ async def tts_harness(request):
         async for h in _elevenlabs_tts_harness():
             yield h
         return
-    from jota_gateway.services.speech.jota import JotaTtsProvider
+    from fogar_gateway.services.speech.fogar import FogarTtsProvider
 
     up = FakeTts()
     await up.start()
-    mk = lambda port: JotaTtsProvider(  # noqa: E731
+    mk = lambda port: FogarTtsProvider(  # noqa: E731
         url=f"127.0.0.1:{port}",
         token=SECRET_TTS_TOKEN,
         initial_backoff=1.0,
@@ -130,7 +130,7 @@ async def tts_harness(request):
 async def _elevenlabs_tts_harness():
     from pydantic import SecretStr
 
-    from jota_gateway.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
+    from fogar_gateway.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
     from tests.fakes.elevenlabs_tts import FakeElevenLabsTts
 
     key = "el-key-SECRET-0123456789"

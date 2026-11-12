@@ -8,7 +8,7 @@ from typing import ClassVar
 
 import pytest
 
-from jota_gateway.cli import api
+from fogar_gateway.cli import api
 
 
 class _Fake:
@@ -100,7 +100,7 @@ def test_unreachable_is_exit_3_with_hint():
     with pytest.raises(api.ApiError) as e:
         api.Api("http://127.0.0.1:9", "tok").request("GET", "/admin/state")
     assert e.value.exit_code == 3
-    assert "127.0.0.1:9" in e.value.message and "jota-gw doctor" in e.value.message
+    assert "127.0.0.1:9" in e.value.message and "fogar-gw doctor" in e.value.message
 
 
 def test_timeout_is_exit_3(server):
@@ -125,11 +125,11 @@ def test_token_falls_back_to_admin_token_env(monkeypatch, tmp_path):
 
 
 def test_token_from_home_config_env(monkeypatch, tmp_path):
-    monkeypatch.delenv("JOTA_GATEWAY_HOME", raising=False)
+    monkeypatch.delenv("FOGAR_GATEWAY_HOME", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("ADMIN_TOKEN", raising=False)
-    (tmp_path / ".jota-gateway").mkdir()
-    (tmp_path / ".jota-gateway" / "config.env").write_text(
+    (tmp_path / ".fogar-gateway").mkdir()
+    (tmp_path / ".fogar-gateway" / "config.env").write_text(
         '# comentario\nOTRA=1\nADMIN_TOKEN="desde-fichero"\n'
     )
     assert api.resolve_token(None) == "desde-fichero"
@@ -263,7 +263,7 @@ def test_tls_error_is_not_unreachable(server):
 
 
 def test_unreadable_config_env_is_an_error(monkeypatch, tmp_path):
-    monkeypatch.setenv("JOTA_GATEWAY_HOME", str(tmp_path))
+    monkeypatch.setenv("FOGAR_GATEWAY_HOME", str(tmp_path))
     monkeypatch.delenv("ADMIN_TOKEN", raising=False)
     config = tmp_path / "config.env"
     config.write_text("ADMIN_TOKEN=x\n")
@@ -277,8 +277,8 @@ def test_unreadable_config_env_is_an_error(monkeypatch, tmp_path):
     assert str(config) in e.value.message
 
 
-def test_token_from_jota_gateway_home(monkeypatch, tmp_path):
-    monkeypatch.setenv("JOTA_GATEWAY_HOME", str(tmp_path))
+def test_token_from_fogar_gateway_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("FOGAR_GATEWAY_HOME", str(tmp_path))
     monkeypatch.delenv("ADMIN_TOKEN", raising=False)
     (tmp_path / "config.env").write_text("ADMIN_TOKEN=de-la-base\n")
     assert api.resolve_token(None) == "de-la-base"

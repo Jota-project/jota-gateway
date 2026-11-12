@@ -1,4 +1,4 @@
-"""`jota-gw doctor` (M14b, #294): una prueba por cada fallo que debe explicar."""
+"""`fogar-gw doctor` (M14b, #294): una prueba por cada fallo que debe explicar."""
 
 import json
 import socket
@@ -12,8 +12,8 @@ from typing import ClassVar
 import pytest
 from click.testing import CliRunner
 
-from jota_gateway.cli import doctor
-from jota_gateway.cli.app import cli
+from fogar_gateway.cli import doctor
+from fogar_gateway.cli.app import cli
 
 SECRET = "s3cr3t-admin-token-0123456789"
 ROOT = Path(__file__).resolve().parents[2]
@@ -51,10 +51,10 @@ def _make_db(path: Path, revision: str | None) -> None:
 def base(monkeypatch, tmp_path):
     home = tmp_path / "base"
     home.mkdir(mode=0o700)
-    monkeypatch.setenv("JOTA_GATEWAY_HOME", str(home))
-    for name in ("ADMIN_TOKEN", "JOTA_GW_TOKEN", "DATABASE_URL", "OPENCLAW_HOST", "OPENCLAW_PORT",
+    monkeypatch.setenv("FOGAR_GATEWAY_HOME", str(home))
+    for name in ("ADMIN_TOKEN", "FOGAR_GW_TOKEN", "DATABASE_URL", "OPENCLAW_HOST", "OPENCLAW_PORT",
                  "OPENCLAW_TOKEN", "TRANSCRIBER_WS_URL", "TTS_WS_URL", "TTS_TOKEN",
-                 "STT_PROVIDER", "TTS_PROVIDER", "JOTA_GW_URL"):
+                 "STT_PROVIDER", "TTS_PROVIDER", "FOGAR_GW_URL"):
         monkeypatch.delenv(name, raising=False)
     closed = _closed_port()
     config = home / "config.env"
@@ -116,7 +116,7 @@ def test_missing_db_is_a_failure_and_doctor_never_creates_it(base):
     assert not (base / "data").exists()
 
 
-INITIAL = "21cb0cf4f6f9"  # src/jota_gateway/migrations/versions/21cb0cf4f6f9_initial_schema.py
+INITIAL = "21cb0cf4f6f9"  # src/fogar_gateway/migrations/versions/21cb0cf4f6f9_initial_schema.py
 
 
 def test_pending_migrations_is_a_warning(base):
@@ -210,7 +210,7 @@ def gateway():
     threading.Thread(target=srv.serve_forever, args=(0.01,), daemon=True).start()
     _Gateway.routes = {
         "/healthz": (200, {"status": "ok"}),
-        "/admin/state": _state("jota", "jota"),
+        "/admin/state": _state("fogar", "fogar"),
         "/ready": (200, {"status": "ok", "services": {
             "orchestrator": "ok", "transcriber": "ok", "tts": "ok"}}),
     }
@@ -246,7 +246,7 @@ def test_orchestrator_down_through_ready_is_a_failure(base, gateway):
     assert found["TTS"]["level"] == "warn"
 
 
-VOICE_OFF = "voz desactivada: configúrala con `jota-gw onboard`"
+VOICE_OFF = "voz desactivada: configúrala con `fogar-gw onboard`"
 
 
 VOICE_OFF_READY = (200, {"status": "ok", "services": {  # `off` no cuenta para `status`
@@ -270,7 +270,7 @@ def test_voice_off_is_info_not_a_failure(base, gateway, online):
 
 @pytest.mark.parametrize("ready", ["ok", "unavailable"])
 def test_running_gateway_decides_off_not_local_config(base, gateway, ready):
-    """config.env dice `off`, pero el proceso en marcha cargó jota (no se ha reiniciado)."""
+    """config.env dice `off`, pero el proceso en marcha cargó fogar (no se ha reiniciado)."""
     with open(base / "config.env", "a") as f:
         f.write("STT_PROVIDER=off\nTTS_PROVIDER=off\n")
     _Gateway.routes["/ready"] = (200, {"status": "ok" if ready == "ok" else "degraded",
@@ -283,7 +283,7 @@ def test_running_gateway_decides_off_not_local_config(base, gateway, ready):
 
 
 def test_running_gateway_with_voice_off_is_info_whatever_the_config(base, gateway):
-    _Gateway.routes["/admin/state"] = _state("off", "jota")  # config.env: jota (por defecto)
+    _Gateway.routes["/admin/state"] = _state("off", "fogar")  # config.env: fogar (por defecto)
     _Gateway.routes["/ready"] = (200, {"status": "ok", "services": {
         "orchestrator": "ok", "transcriber": "unavailable", "tts": "ok"}})
     r = run_at(gateway, "--json", "doctor")
@@ -320,7 +320,7 @@ def test_plain_output_marks_each_level(base):
 def test_doctor_module_import_is_light():
     import subprocess
 
-    code = ("import sys, jota_gateway.cli.doctor; "
+    code = ("import sys, fogar_gateway.cli.doctor; "
             "print('HEAVY=' + ','.join(m for m in ('pydantic','sqlmodel','alembic','rich') "
             "if m in sys.modules))")
     r = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True,
@@ -340,7 +340,7 @@ def test_missing_config_env_is_said_plainly(base):
 
 
 def test_unreachable_gateway_message_does_not_recommend_doctor(base):
-    assert "jota-gw doctor" not in checks(run("--json", "doctor"))["gateway"]["detail"]
+    assert "fogar-gw doctor" not in checks(run("--json", "doctor"))["gateway"]["detail"]
 
 
 # --- revisión de 14b ---
@@ -379,7 +379,7 @@ def test_db_in_the_working_directory_is_ignored(base, monkeypatch, tmp_path):
     found = checks(run("--json", "doctor"))
     assert found["base de datos"]["level"] == "fail"
     assert str(base / "data" / "gateway.db") in found["base de datos"]["detail"]
-    assert "jota-gw init" in found["base de datos"]["detail"]
+    assert "fogar-gw init" in found["base de datos"]["detail"]
 
 
 def test_paths_not_owned_by_the_user_are_not_flagged(base, monkeypatch):
@@ -406,7 +406,7 @@ def test_missing_migrations_dir_is_not_checked(base, monkeypatch, tmp_path):
 def test_db_path_with_uri_characters(monkeypatch, tmp_path):
     home = tmp_path / "a#b?c%d"
     home.mkdir()
-    monkeypatch.setenv("JOTA_GATEWAY_HOME", str(home))
+    monkeypatch.setenv("FOGAR_GATEWAY_HOME", str(home))
     _make_db(home / "data" / "gateway.db", _head())
     check = doctor._check_db(home / "data" / "gateway.db", "sqlite:///data/gateway.db")
     assert check["level"] == "ok", check

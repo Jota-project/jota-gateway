@@ -1,15 +1,15 @@
 """TranscriberClient.ping()/TTSClient.ping() must check /ready, not /health.
 
 /health is pure liveness (always 200 if the process is up) on both
-jota-transcriber and jota-speaker. /ready reflects real capacity/readiness
+fogar-transcriber and fogar-speaker. /ready reflects real capacity/readiness
 (503 when GPU-saturated / engine not loaded) — see issue #101.
 """
 
 import httpx
 import respx
 
-from jota_gateway.services.transcriber_client import TranscriberClient
-from jota_gateway.services.tts_client import TTSClient
+from fogar_gateway.services.transcriber_client import TranscriberClient
+from fogar_gateway.services.tts_client import TTSClient
 
 
 async def test_transcriber_ping_hits_ready_endpoint():

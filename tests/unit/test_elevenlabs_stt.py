@@ -10,12 +10,12 @@ import time
 import pytest
 from pydantic import SecretStr
 
-from jota_gateway.core.config import settings
-from jota_gateway.models.schemas import Client
-from jota_gateway.services.reconnection import ConnectionState
-from jota_gateway.services.speech.elevenlabs import stt as stt_mod
-from jota_gateway.services.speech.elevenlabs.stt import ElevenLabsSttProvider
-from jota_gateway.services.speech.ports import SttCallbacks, SttParams
+from fogar_gateway.core.config import settings
+from fogar_gateway.models.schemas import Client
+from fogar_gateway.services.reconnection import ConnectionState
+from fogar_gateway.services.speech.elevenlabs import stt as stt_mod
+from fogar_gateway.services.speech.elevenlabs.stt import ElevenLabsSttProvider
+from fogar_gateway.services.speech.ports import SttCallbacks, SttParams
 from tests.fakes.bridge import wait_until
 from tests.fakes.elevenlabs_stt import FakeElevenLabsStt
 
@@ -445,7 +445,7 @@ async def test_probe_hung_handshake_is_failure_not_healthy(monkeypatch):
 
 async def test_partial_transcript_updates_last_transcript_at(env):
     fake, p, s, _r = await env()
-    from jota_gateway.services.speech.elevenlabs.stt import _Upstream
+    from fogar_gateway.services.speech.elevenlabs.stt import _Upstream
 
     up = _Upstream()
     assert s.last_transcript_at is None
@@ -459,9 +459,9 @@ async def test_bridge_watchdog_not_triggered_by_partials_without_commit(env, mon
     """Habla continua: llegan parciales pero ningún commit; el watchdog no puede dar strikes."""
     from unittest.mock import AsyncMock
 
-    import jota_gateway.services.bridge as bridge_module
-    from jota_gateway.models.schemas import ClientConfig
-    from jota_gateway.services.speech.elevenlabs.stt import _Upstream
+    import fogar_gateway.services.bridge as bridge_module
+    from fogar_gateway.models.schemas import ClientConfig
+    from fogar_gateway.services.speech.elevenlabs.stt import _Upstream
     from tests.fakes.bridge import sent
 
     monkeypatch.setattr(bridge_module, "_WATCHDOG_POLL_S", 0.05)

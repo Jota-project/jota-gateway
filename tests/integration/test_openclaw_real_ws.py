@@ -12,9 +12,9 @@ import logging
 
 import pytest
 
-from jota_gateway.services.openclaw.client import OpenClawClient
-from jota_gateway.services.openclaw.dispatcher import FrameDispatcher
-from jota_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
+from fogar_gateway.services.openclaw.client import OpenClawClient
+from fogar_gateway.services.openclaw.dispatcher import FrameDispatcher
+from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
 from tests.fakes.openclaw import MIB, FakeOpenClawServer
 
 SK_A = "agent:main:client-a"
@@ -160,7 +160,7 @@ async def test_frame_larger_than_default_follows_announced_max_payload():
 
 
 def test_frame_limit_clamps():
-    from jota_gateway.services.openclaw.client import _frame_limit
+    from fogar_gateway.services.openclaw.client import _frame_limit
 
     assert _frame_limit(25 * MIB) == 25 * MIB
     assert _frame_limit(10**12) == 64 * MIB
@@ -187,7 +187,7 @@ async def test_ok_true_res_other_than_started_does_not_end_turn(server):
 
 
 async def test_hello_ok_server_and_protocol_are_logged_once(server, caplog):
-    caplog.set_level(logging.INFO, logger="jota_gateway.services.openclaw.client")
+    caplog.set_level(logging.INFO, logger="fogar_gateway.services.openclaw.client")
     client, _ = make_client(server.port)
     await client.connect()
     try:
@@ -202,7 +202,7 @@ async def test_hello_ok_server_and_protocol_are_logged_once(server, caplog):
 
 
 async def test_1009_close_logs_code_but_no_frame_content(server, caplog):
-    caplog.set_level(logging.DEBUG, logger="jota_gateway.services.openclaw.client")
+    caplog.set_level(logging.DEBUG, logger="fogar_gateway.services.openclaw.client")
     client, _ = make_client(server.port)
     await client.connect()
     try:
@@ -215,7 +215,7 @@ async def test_1009_close_logs_code_but_no_frame_content(server, caplog):
 
 
 async def test_handler_error_logs_traceback_without_exception_message(caplog):
-    caplog.set_level(logging.DEBUG, logger="jota_gateway.services.openclaw.client")
+    caplog.set_level(logging.DEBUG, logger="fogar_gateway.services.openclaw.client")
     turns = TurnRegistry()
     client = OpenClawClient("x", 1, "t", turns, FrameDispatcher(turns, ClientRegistry()))
 
@@ -237,8 +237,8 @@ async def test_handler_error_logs_traceback_without_exception_message(caplog):
 
 
 async def test_clean_close_fires_on_disconnect_after_error_all_and_new_connection_is_clean(server):
-    from jota_gateway.services.openclaw.reconnecting import ReconnectingOpenClawClient
-    from jota_gateway.services.reconnection import ConnectionState
+    from fogar_gateway.services.openclaw.reconnecting import ReconnectingOpenClawClient
+    from fogar_gateway.services.reconnection import ConnectionState
 
     client, turns = make_client(server.port)
     order = []

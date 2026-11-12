@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jota_gateway.main import app
+from fogar_gateway.main import app
 from tests.integration.conftest import CLIENT_ID, VALID_KEY
 
 HANDSHAKE_TEXT = {

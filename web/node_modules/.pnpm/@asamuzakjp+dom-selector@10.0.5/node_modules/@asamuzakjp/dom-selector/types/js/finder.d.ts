@@ -1,0 +1,25 @@
+import { Evaluator } from './evaluator.js';
+export type StrategyOptions = {
+    complex?: boolean;
+    precede?: boolean;
+    dir?: string;
+    filterLeaves?: Array<import('css-tree').CssNode>;
+};
+export declare class Finder extends Evaluator {
+    #private;
+    documentCacheSize: number;
+    constructor(window: Window, documentCacheSize?: number);
+    get selectorAST(): import('css-tree').CssNode | null;
+    setup(selector: string, node: Document | DocumentFragment | Element, opt: import('../index.js').FindOptions): Finder;
+    find(targetType: string): Set<Element> | import('../index.js').CheckResult;
+    private #prepareCollection;
+    private #findEntryNodes;
+    private #findEntryNodesForPseudoElement;
+    private #findEntryNodesForId;
+    private #findEntryNodesForClass;
+    private #findEntryNodesForType;
+    private #findEntryNodesForOther;
+    private #processPendingItems;
+    private #filterCollection;
+    private #findNodesWithWalker;
+}

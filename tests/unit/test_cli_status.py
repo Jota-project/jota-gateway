@@ -1,12 +1,12 @@
-"""`jota-gw status` y `jota-gw version` (M14a, #293)."""
+"""`fogar-gw status` y `fogar-gw version` (M14a, #293)."""
 
 import json
 
 from click.testing import CliRunner
 
-from jota_gateway._version import __version__
-from jota_gateway.cli import api
-from jota_gateway.cli.app import cli
+from fogar_gateway._version import __version__
+from fogar_gateway.cli import api
+from fogar_gateway.cli.app import cli
 from tests.fakes.cli_api import FakeApi
 
 STATE = {
@@ -14,7 +14,7 @@ STATE = {
     "services": {
         "orchestrator": {"state": "CONNECTED", "last_error": None},
         "stt": {"provider": "elevenlabs", "state": "CONNECTED", "last_error": None},
-        "tts": {"provider": "jota", "state": "DISCONNECTED", "last_error": "ConnectError"},
+        "tts": {"provider": "fogar", "state": "DISCONNECTED", "last_error": "ConnectError"},
     },
     "totals": {"sessions_active": 2, "sessions_opened": 9},
     "sessions": [],
@@ -65,7 +65,7 @@ def test_version_without_gateway_still_exits_0(use_api):
 def test_version_without_token_still_exits_0(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("ADMIN_TOKEN", raising=False)
-    monkeypatch.delenv("JOTA_GW_TOKEN", raising=False)
+    monkeypatch.delenv("FOGAR_GW_TOKEN", raising=False)
     r = run("version")
     assert r.exit_code == 0
     assert __version__ in r.output

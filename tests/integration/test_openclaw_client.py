@@ -6,21 +6,21 @@ from unittest.mock import patch
 
 import pytest
 
-from jota_gateway.services.openclaw.client import (
+from fogar_gateway.services.openclaw.client import (
     ORCHESTRATOR_HANDSHAKE_FAILED_ERROR,
     OpenClawClient,
     OrchestratorHandshakeError,
     OrchestratorStartingError,
     _startup_retry_after_s,
 )
-from jota_gateway.services.openclaw.dispatcher import FrameDispatcher
-from jota_gateway.services.openclaw.reconnecting import ReconnectingOpenClawClient
-from jota_gateway.services.openclaw.registry import (
+from fogar_gateway.services.openclaw.dispatcher import FrameDispatcher
+from fogar_gateway.services.openclaw.reconnecting import ReconnectingOpenClawClient
+from fogar_gateway.services.openclaw.registry import (
     TURN_IN_PROGRESS_ERROR,
     ClientRegistry,
     TurnRegistry,
 )
-from jota_gateway.services.reconnection import ConnectionState
+from fogar_gateway.services.reconnection import ConnectionState
 from tests.fakes.openclaw import FakeOpenClawServer
 
 HELLO_OK_PAYLOAD = {
@@ -32,7 +32,7 @@ HELLO_OK_PAYLOAD = {
         "defaultAgentId": "main",
         "agents": [
             {"agentId": "main", "name": "Main Agent", "isDefault": True, "heartbeat": {}},
-            {"agentId": "assistant", "name": "Jota Voice", "isDefault": False, "heartbeat": {}},
+            {"agentId": "assistant", "name": "Fogar Voice", "isDefault": False, "heartbeat": {}},
         ],
         "sessionDefaults": {"defaultAgentId": "main"},
     },
@@ -62,7 +62,7 @@ AGENTS_LIST_PAYLOAD = {
     "scope": "per-sender",
     "agents": [
         {"id": "main", "name": "Main Agent"},
-        {"id": "assistant", "name": "Jota Voice"},
+        {"id": "assistant", "name": "Fogar Voice"},
         {"id": "ci-tester", "name": "CI Tester"},
     ],
 }
@@ -495,8 +495,8 @@ def test_startup_retry_after_only_for_startup_sidecars(error, wait_s):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("retry_after_ms", [50, 5000])  # 5000: la espera se recorta a lo que queda
 async def test_connect_gives_up_after_budget(monkeypatch, caplog, retry_after_ms):
-    caplog.set_level(logging.DEBUG, logger="jota_gateway")
-    monkeypatch.setattr("jota_gateway.services.openclaw.client._STARTUP_RETRY_BUDGET_S", 0.3)
+    caplog.set_level(logging.DEBUG, logger="fogar_gateway")
+    monkeypatch.setattr("fogar_gateway.services.openclaw.client._STARTUP_RETRY_BUDGET_S", 0.3)
     async with FakeOpenClawServer(startup_pending=10**6, startup_retry_after_ms=retry_after_ms) as server:
         client = real_ws_client(server.port)
         loop = asyncio.get_running_loop()
@@ -584,7 +584,7 @@ async def test_stream_response_times_out_when_no_events_arrive(monkeypatch):
     """#115: if OpenClaw acks chat.send but never sends another frame for this
     turn, queue.get() must not hang forever — TURN_TIMEOUT_S bounds it, and
     the existing chat.abort-on-anomalous-exit `finally` fires."""
-    from jota_gateway.core.config import settings
+    from fogar_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.05)
 
@@ -614,7 +614,7 @@ async def test_stream_response_overflow_errors_and_sends_chat_abort(monkeypatch)
     """#130 S3b: a consumer that falls behind the bounded turn queue gets a
     `turn_overflow` error and chat.abort is still sent (the error must not mark
     the turn as finished)."""
-    from jota_gateway.core.config import settings
+    from fogar_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "TURN_QUEUE_MAX", 2)
     fake_ws = SmartFakeWS({"agent:main:client-a": []})
@@ -658,7 +658,7 @@ async def test_stream_response_idle_reset_survives_slow_but_active_turn(monkeypa
     """A turn with gaps below TURN_TIMEOUT_S between events must complete
     normally even if its total duration exceeds TURN_TIMEOUT_S — the timeout
     resets on every event, it is not a hard ceiling from turn start."""
-    from jota_gateway.core.config import settings
+    from fogar_gateway.core.config import settings
 
     # #206: 0.05 s / 0.03 s left 20 ms of headroom per gap and failed under load. Each gap
     # is now 0.1 s against a 0.3 s timeout; 4 gaps (0.4 s) still exceed the timeout.

@@ -12,10 +12,10 @@ import uvicorn
 import websockets
 from sqlmodel import Session
 
-from jota_gateway.core.config import settings
-from jota_gateway.db.models import ClientRecord
-from jota_gateway.main import app
-from jota_gateway.services.db_client import db_client
+from fogar_gateway.core.config import settings
+from fogar_gateway.db.models import ClientRecord
+from fogar_gateway.main import app
+from fogar_gateway.services.db_client import db_client
 from tests.integration.conftest import (
     ADMIN_TOKEN,
     CLIENT_ID,
@@ -145,7 +145,7 @@ async def test_healthy_session_stays_open(server):
 
 
 def test_defaults():
-    from jota_gateway.core.config import Settings
+    from fogar_gateway.core.config import Settings
 
     assert Settings.model_fields["SESSION_REVALIDATE_INTERVAL_S"].default == 10.0
     assert "SESSION_CACHE_TTL_S" not in Settings.model_fields

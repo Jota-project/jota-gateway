@@ -1,5 +1,5 @@
 """Fixtures for tests/e2e — hits the real, already-running production
-jota-gateway + real OpenClaw. Every test here is marked e2e_real and is
+fogar-gateway + real OpenClaw. Every test here is marked e2e_real and is
 excluded by default (see pytest.ini addopts). Run explicitly with:
 
     PYTHONPATH=. pytest tests/e2e -m e2e_real -v
@@ -11,7 +11,7 @@ import secrets
 import httpx
 import pytest
 
-from jota_gateway.core.config import settings
+from fogar_gateway.core.config import settings
 
 GATEWAY_HTTP_URL = os.environ.get("E2E_GATEWAY_HTTP_URL", "http://127.0.0.1:8004")
 GATEWAY_WS_URL = os.environ.get("E2E_GATEWAY_WS_URL", "ws://127.0.0.1:8004/ws/stream")

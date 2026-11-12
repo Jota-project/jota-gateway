@@ -3,24 +3,24 @@
 import pytest
 from sqlalchemy.engine import make_url
 
-from jota_gateway import paths
+from fogar_gateway import paths
 
 
 @pytest.fixture
 def base(tmp_path, monkeypatch):
-    monkeypatch.setenv("JOTA_GATEWAY_HOME", str(tmp_path))
+    monkeypatch.setenv("FOGAR_GATEWAY_HOME", str(tmp_path))
     return tmp_path
 
 
-def test_home_defaults_to_dot_jota_gateway(monkeypatch, tmp_path):
-    monkeypatch.delenv("JOTA_GATEWAY_HOME", raising=False)
+def test_home_defaults_to_dot_fogar_gateway(monkeypatch, tmp_path):
+    monkeypatch.delenv("FOGAR_GATEWAY_HOME", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
-    assert paths.home() == tmp_path / ".jota-gateway"
+    assert paths.home() == tmp_path / ".fogar-gateway"
 
 
 def test_relative_home_is_made_absolute(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("JOTA_GATEWAY_HOME", "inst")
+    monkeypatch.setenv("FOGAR_GATEWAY_HOME", "inst")
     assert paths.home() == tmp_path / "inst"
     assert paths.config_file() == tmp_path / "inst" / "config.env"
 
@@ -54,7 +54,7 @@ def test_sqlite_file_is_none_for_memory_and_other_backends(base):
 
 def test_uri_characters_in_home_reach_sqlalchemy_intact(monkeypatch, tmp_path):
     home = tmp_path / "a#b?c%d e"
-    monkeypatch.setenv("JOTA_GATEWAY_HOME", str(home))
+    monkeypatch.setenv("FOGAR_GATEWAY_HOME", str(home))
     url = paths.absolute_database_url("sqlite:///data/gateway.db")
     assert make_url(url).database == str(home / "data" / "gateway.db")
     assert paths.sqlite_file(url) == home / "data" / "gateway.db"

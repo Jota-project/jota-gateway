@@ -1,0 +1,2 @@
+import { FilterExpression, QueryFilterObject, TopLevelFilterExpression, and, code, exactRegex, exclude, id, importerId, include, makeIdFiltersToMatchWithQuery, moduleType, not, or, prefixRegex, queries, query } from "@rolldown/pluginutils";
+export { type FilterExpression, type QueryFilterObject, type TopLevelFilterExpression, and, code, exactRegex, exclude, id, importerId, include, makeIdFiltersToMatchWithQuery, moduleType, not, or, prefixRegex, queries, query };

@@ -9,7 +9,7 @@ import json
 
 import websockets
 
-from jota_gateway.services.transcriber_client import TranscriberClient
+from fogar_gateway.services.transcriber_client import TranscriberClient
 
 
 async def test_close_closes_real_socket_and_server_sees_it():

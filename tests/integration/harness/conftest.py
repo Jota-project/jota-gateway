@@ -15,10 +15,10 @@ import pytest
 import uvicorn
 import websockets
 
-from jota_gateway.core.config import settings
-from jota_gateway.core.session_key import make_session_key
-from jota_gateway.main import app
-from tests.fakes.jota_upstreams import FakeTranscriber, FakeTts
+from fogar_gateway.core.config import settings
+from fogar_gateway.core.session_key import make_session_key
+from fogar_gateway.main import app
+from tests.fakes.fogar_upstreams import FakeTranscriber, FakeTts
 from tests.fakes.openclaw import FakeOpenClawServer
 from tests.integration.conftest import CLIENT_ID, VALID_KEY
 
@@ -153,8 +153,8 @@ async def harness(seed_client, monkeypatch):
             monkeypatch.setattr(settings, "OPENCLAW_PORT", openclaw.port)
             monkeypatch.setattr(settings, "TRANSCRIBER_WS_URL", f"127.0.0.1:{transcriber.port}")
             monkeypatch.setattr(settings, "TTS_WS_URL", f"127.0.0.1:{tts.port}")
-            monkeypatch.setattr(settings, "STT_PROVIDER", "jota")
-            monkeypatch.setattr(settings, "TTS_PROVIDER", "jota")
+            monkeypatch.setattr(settings, "STT_PROVIDER", "fogar")
+            monkeypatch.setattr(settings, "TTS_PROVIDER", "fogar")
 
             config = uvicorn.Config(
                 app, host="127.0.0.1", port=0, log_level="warning", loop="asyncio", lifespan="on"

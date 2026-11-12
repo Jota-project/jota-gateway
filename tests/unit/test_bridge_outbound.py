@@ -1,12 +1,12 @@
-"""JotaBridge sends everything through its OutboundSender (issue #130 S1)."""
+"""FogarBridge sends everything through its OutboundSender (issue #130 S1)."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jota_gateway.services.outbound import ClientGone, QueuedSender
-from jota_gateway.services.pipeline_tracker import PipelineTracker
+from fogar_gateway.services.outbound import ClientGone, QueuedSender
+from fogar_gateway.services.pipeline_tracker import PipelineTracker
 from tests.fakes.bridge import GoneSender, RecWS, tokens
 
 

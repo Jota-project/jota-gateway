@@ -1,11 +1,11 @@
-"""Tests for JotaBridge.health_check() snapshot."""
+"""Tests for FogarBridge.health_check() snapshot."""
 
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jota_gateway.services.pipeline_tracker import PipelineTracker
-from jota_gateway.services.reconnection import ConnectionState
+from fogar_gateway.services.pipeline_tracker import PipelineTracker
+from fogar_gateway.services.reconnection import ConnectionState
 from tests.fakes.bridge import sent
 
 

@@ -1,15 +1,15 @@
 #!/bin/sh
-# Instalador de jota-gateway (Linux con systemd de usuario):
-#   curl -fsSL https://github.com/Jota-project/jota-gateway/releases/latest/download/install.sh | sh
-# Instala `jota-gw` con `uv tool` y, la primera vez, lanza `jota-gw onboard`; si el servicio ya
+# Instalador de fogar-gateway (Linux con systemd de usuario):
+#   curl -fsSL https://github.com/fogarhome/fogar-gateway/releases/latest/download/install.sh | sh
+# Instala `fogar-gw` con `uv tool` y, la primera vez, lanza `fogar-gw onboard`; si el servicio ya
 # está instalado, actualiza y lo reinicia sin preguntar. `sh -s -- --no-onboard` solo instala.
-# Versión: JOTA_VERSION=X.Y.Z; si no, la sellada abajo en cada release; si no, la última.
+# Versión: FOGAR_VERSION=X.Y.Z; si no, la sellada abajo en cada release; si no, la última.
 # Todo va dentro de `main`, llamada en la última línea: una descarga cortada no ejecuta nada.
 
 # La sella el prepareCmd de .releaserc.json en el asset de la release; en el repo, vacía.
-JOTA_RELEASE=
+FOGAR_RELEASE=
 
-REPO=https://github.com/Jota-project/jota-gateway
+REPO=https://github.com/fogarhome/fogar-gateway
 
 say() { printf '%s\n' "$*"; }
 
@@ -36,9 +36,9 @@ offer() {
   "$@" || fail "«$*» ha fallado."
 }
 
-# Deja la versión X.Y.Z en `version`: JOTA_VERSION, la sellada o la última release.
+# Deja la versión X.Y.Z en `version`: FOGAR_VERSION, la sellada o la última release.
 resolve_version() {
-  version=${JOTA_VERSION:-$JOTA_RELEASE}
+  version=${FOGAR_VERSION:-$FOGAR_RELEASE}
   if [ -z "$version" ]; then
     url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$REPO/releases/latest") ||
       fail "No puedo consultar la última versión en $REPO/releases."
@@ -50,7 +50,7 @@ resolve_version() {
     '' | *[!0-9.]* | .* | *. | *..* | *.*.*.*) ;;
     *.*.*) return 0 ;;
   esac
-  fail "Versión no válida: «$version». Usa JOTA_VERSION=X.Y.Z."
+  fail "Versión no válida: «$version». Usa FOGAR_VERSION=X.Y.Z."
 }
 
 main() {
@@ -70,10 +70,10 @@ main() {
     *) fail "Arquitectura no soportada: $(uname -m). Solo x86_64 o aarch64." ;;
   esac
   [ "$(id -u)" != 0 ] ||
-    fail "No lo ejecutes como root: jota-gateway es un servicio de systemd de tu usuario. Lánzalo con tu usuario; el instalador pide sudo solo para lo que lo necesita."
+    fail "No lo ejecutes como root: fogar-gateway es un servicio de systemd de tu usuario. Lánzalo con tu usuario; el instalador pide sudo solo para lo que lo necesita."
 
   if ! systemctl --user show-environment >/dev/null 2>&1; then
-    fail "No hay systemd de usuario (\`systemctl --user\`), y jota-gateway se instala como servicio de usuario. Si has entrado con su o sudo -iu, entra por SSH o define XDG_RUNTIME_DIR=/run/user/$(id -u)."
+    fail "No hay systemd de usuario (\`systemctl --user\`), y fogar-gateway se instala como servicio de usuario. Si has entrado con su o sudo -iu, entra por SSH o define XDG_RUNTIME_DIR=/run/user/$(id -u)."
   fi
   if ! command -v git >/dev/null 2>&1; then
     command -v apt-get >/dev/null 2>&1 ||
@@ -85,7 +85,7 @@ main() {
     offer "Sin linger, el servicio se para al cerrar tu sesión" sudo loginctl enable-linger "$user"
   fi
 
-  # Una shell de ssh sin login no suele llevar ~/.local/bin, que es donde están uv y jota-gw.
+  # Una shell de ssh sin login no suele llevar ~/.local/bin, que es donde están uv y fogar-gw.
   user_path=$PATH
   PATH="$HOME/.local/bin:$PATH"
   export PATH
@@ -95,18 +95,18 @@ main() {
     command -v uv >/dev/null 2>&1 || fail "No se ha podido instalar uv."
   fi
 
-  # JOTA_SOURCE (solo tests): una ruta local, con sus versiones de uv.lock, o una especificación para uv.
-  if [ -d "${JOTA_SOURCE:-}" ]; then
-    spec=$JOTA_SOURCE
+  # FOGAR_SOURCE (solo tests): una ruta local, con sus versiones de uv.lock, o una especificación para uv.
+  if [ -d "${FOGAR_SOURCE:-}" ]; then
+    spec=$FOGAR_SOURCE
     constraints=$(mktemp)
     trap 'rm -f "$constraints"' EXIT
-    uv export --project "$JOTA_SOURCE" --frozen --no-dev --no-emit-project --no-hashes --quiet -o "$constraints"
-    say "Instalando jota-gateway desde $JOTA_SOURCE…"
+    uv export --project "$FOGAR_SOURCE" --frozen --no-dev --no-emit-project --no-hashes --quiet -o "$constraints"
+    say "Instalando fogar-gateway desde $FOGAR_SOURCE…"
   else
     resolve_version
-    spec=${JOTA_SOURCE:-"jota-gateway @ git+$REPO@v$version"}
+    spec=${FOGAR_SOURCE:-"fogar-gateway @ git+$REPO@v$version"}
     constraints=$REPO/releases/download/v$version/constraints.txt
-    say "Instalando jota-gateway v$version…"
+    say "Instalando fogar-gateway v$version…"
   fi
   uv tool install --reinstall "$spec" -c "$constraints"
   # Con el PATH del usuario: si ya lleva el directorio, update-shell no cambia nada. Si no
@@ -120,29 +120,29 @@ main() {
   path_note=
   case ":$user_path:" in
     *":$tool_bin:"*) ;;
-    *) path_note="Si esta terminal no encuentra \`jota-gw\`, abre otra nueva o usa $tool_bin/jota-gw." ;;
+    *) path_note="Si esta terminal no encuentra \`fogar-gw\`, abre otra nueva o usa $tool_bin/fogar-gw." ;;
   esac
 
-  unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/jota-gateway.service"
+  unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/fogar-gateway.service"
   if [ -e "$unit" ]; then
-    jota-gw --yes restart
-    jota-gw doctor || say "El diagnóstico marca algún fallo (arriba); la actualización está hecha."
+    fogar-gw --yes restart
+    fogar-gw doctor || say "El diagnóstico marca algún fallo (arriba); la actualización está hecha."
     [ -z "$path_note" ] || say "$path_note"
     return
   fi
   # shellcheck disable=SC2016 # las comillas invertidas son texto
-  todo='Instalado. Configúralo con `jota-gw onboard` o, si vienes de Docker, `jota-gw migrate --from-docker DIR` y `jota-gw install`.'
+  todo='Instalado. Configúralo con `fogar-gw onboard` o, si vienes de Docker, `fogar-gw migrate --from-docker DIR` y `fogar-gw install`.'
   interactive=
   if [ -z "$no_onboard" ] && [ -t 1 ] && has_tty; then
     interactive=1
   fi
-  if ! jota-gw onboard --help >/dev/null 2>&1; then  # las versiones anteriores al asistente
+  if ! fogar-gw onboard --help >/dev/null 2>&1; then  # las versiones anteriores al asistente
     [ -z "$interactive" ] ||
-      fail "Esta versión de jota-gateway no tiene \`jota-gw onboard\`: instala una más nueva o vuelve a lanzar el instalador con \`sh -s -- --no-onboard\` y configúralo a mano ($REPO#sin-el-instalador)."
-    todo="Instalado. Esta versión no tiene \`jota-gw onboard\`: configúralo a mano ($REPO#sin-el-instalador)."
+      fail "Esta versión de fogar-gateway no tiene \`fogar-gw onboard\`: instala una más nueva o vuelve a lanzar el instalador con \`sh -s -- --no-onboard\` y configúralo a mano ($REPO#sin-el-instalador)."
+    todo="Instalado. Esta versión no tiene \`fogar-gw onboard\`: configúralo a mano ($REPO#sin-el-instalador)."
   fi
   if [ -n "$interactive" ]; then
-    jota-gw onboard </dev/tty
+    fogar-gw onboard </dev/tty
   else
     say "$todo"
   fi

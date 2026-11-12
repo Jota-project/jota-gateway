@@ -8,7 +8,7 @@ import logging
 
 import pytest
 
-from jota_gateway.services.openclaw.chat_text import ChatTextTracker, missing_tail
+from fogar_gateway.services.openclaw.chat_text import ChatTextTracker, missing_tail
 
 
 def _m(text):

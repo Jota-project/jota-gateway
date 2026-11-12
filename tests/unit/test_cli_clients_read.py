@@ -5,12 +5,12 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from jota_gateway.cli import refs
-from jota_gateway.cli.api import ApiError
-from jota_gateway.cli.app import cli
+from fogar_gateway.cli import refs
+from fogar_gateway.cli.api import ApiError
+from fogar_gateway.cli.app import cli
 from tests.fakes.cli_api import FakeApi
 
-A = {"id": "aaaa1111-0000", "name": "Jota-Screen", "client_type": "web", "is_active": True,
+A = {"id": "aaaa1111-0000", "name": "Fogar TV", "client_type": "web", "is_active": True,
      "default_agent": "main", "allowed_agents": None, "key_fp": "1a2b3c4d"}
 B = {"id": "aaaa2222-0000", "name": "HA", "client_type": "ha", "is_active": False,
      "default_agent": None, "allowed_agents": ["home"], "key_fp": "5e6f7a8b"}
@@ -44,7 +44,7 @@ def test_ref_ambiguous_prefix_lists_ids():
 
 
 def test_ref_name_case_insensitive():
-    assert refs.resolve(CLIENTS, "jota-screen") is A
+    assert refs.resolve(CLIENTS, "fogar tv") is A
 
 
 def test_ref_repeated_name_is_ambiguous():
@@ -77,7 +77,7 @@ def test_list_shows_name_short_id_and_fp(use_api):
     use_api(FakeApi({("GET", "/admin/clients"): CLIENTS}))
     r = run("clients", "list")
     assert r.exit_code == 0, r.output
-    for text in ("Jota-Screen", "aaaa1111", "1a2b3c4d", "main", "sí", "no"):
+    for text in ("Fogar TV", "aaaa1111", "1a2b3c4d", "main", "sí", "no"):
         assert text in r.output
     assert "aaaa1111-0000" not in r.output
 
@@ -107,7 +107,7 @@ def test_show_by_name(use_api):
 
 def test_show_json(use_api):
     use_api(FakeApi({("GET", "/admin/clients"): CLIENTS, ("GET", f"/admin/clients/{A['id']}"): A}))
-    r = run("--json", "clients", "show", "Jota-Screen")
+    r = run("--json", "clients", "show", "Fogar TV")
     assert json.loads(r.output) == A
 
 
@@ -125,5 +125,5 @@ def test_ref_prefix_and_name_pointing_to_different_clients_is_ambiguous():
 
 
 def test_ref_is_stripped_and_prefix_ignores_case():
-    assert refs.resolve(CLIENTS, " Jota-Screen ") is A
+    assert refs.resolve(CLIENTS, " Fogar TV ") is A
     assert refs.resolve(CLIENTS, "BBBB") is C

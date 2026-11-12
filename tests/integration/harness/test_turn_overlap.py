@@ -16,7 +16,7 @@ worker FIFO, así que un push "fin" posterior llega al cliente detrás de cualqu
 
 import pytest
 
-from jota_gateway.core.config import settings
+from fogar_gateway.core.config import settings
 from tests.integration.harness.conftest import assert_turns_paired, of_type, turn_ended
 
 AUDIO_FRAME = b"\x00" * 3200  # 50 ms de PCM Float32 a 16 kHz

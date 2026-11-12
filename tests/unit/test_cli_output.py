@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from jota_gateway.cli import output
+from fogar_gateway.cli import output
 
 
 @pytest.fixture()
@@ -33,11 +33,11 @@ def test_styled_on_a_terminal(tty):
 
 def test_plain_table_is_aligned(monkeypatch, capsys):
     monkeypatch.setattr(output, "_isatty", lambda: False)
-    rows = [{"name": "Jota-Screen", "id": "ab12"}, {"name": "HA", "id": "cd34"}]
+    rows = [{"name": "Fogar-TV", "id": "ab12"}, {"name": "HA", "id": "cd34"}]
     output.Out(as_json=False).table([("NOMBRE", "name"), ("ID", "id")], rows)
     lines = capsys.readouterr().out.splitlines()
     assert lines[0].split() == ["NOMBRE", "ID"]
-    assert lines[1].split() == ["Jota-Screen", "ab12"]
+    assert lines[1].split() == ["Fogar-TV", "ab12"]
     assert lines[0].index("ID") == lines[1].index("ab12") == lines[2].index("cd34")
 
 
@@ -54,9 +54,9 @@ def test_json_is_valid_and_unstyled(capsys):
 
 
 def test_styled_table_uses_theme_colors(tty, capsys):
-    output.Out(as_json=False).table([("NOMBRE", "name")], [{"name": "Jota"}])
+    output.Out(as_json=False).table([("NOMBRE", "name")], [{"name": "Fogar"}])
     out = capsys.readouterr().out
-    assert "Jota" in out and "\x1b[" in out
+    assert "Fogar" in out and "\x1b[" in out
 
 
 def test_error_goes_to_stderr(monkeypatch, capsys):

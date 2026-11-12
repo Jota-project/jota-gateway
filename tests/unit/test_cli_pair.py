@@ -1,12 +1,12 @@
-"""`jota-gw pair` (#317): abre un código y espera a que un cliente lo use."""
+"""`fogar-gw pair` (#317): abre un código y espera a que un cliente lo use."""
 
 import json
 
 import pytest
 from click.testing import CliRunner
 
-from jota_gateway.cli import pair as pair_mod
-from jota_gateway.cli.app import cli
+from fogar_gateway.cli import pair as pair_mod
+from fogar_gateway.cli.app import cli
 from tests.fakes.cli_api import FakeApi
 
 ITEM = {"id": "p1", "code": "482913", "expires_at": "2026-11-08T17:10:00+00:00",
@@ -19,7 +19,7 @@ class PollingApi(FakeApi):
 
     def __init__(self, states, responses=None):
         super().__init__({("POST", "/admin/pairing"): ITEM,
-                          ("GET", "/.well-known/jota-gateway"): {"name": "green-house"},
+                          ("GET", "/.well-known/fogar-gateway"): {"name": "green-house"},
                           ("DELETE", "/admin/pairing/p1"): None, **(responses or {})})
         self.states = list(states)
 
@@ -69,7 +69,7 @@ def test_pair_ctrl_c_cancels_code(use_api):
 
 
 def test_pair_error_while_waiting_cancels_code(use_api):
-    from jota_gateway.cli.api import ApiError
+    from fogar_gateway.cli.api import ApiError
 
     fake = use_api(PollingApi([{}, ApiError("El gateway no responde", 3)]))
     r = run("pair")

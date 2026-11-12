@@ -5,15 +5,15 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy import create_engine, inspect
 
-from jota_gateway import paths
-from jota_gateway.core.config import Settings, settings
-from jota_gateway.db import database
+from fogar_gateway import paths
+from fogar_gateway.core.config import Settings, settings
+from fogar_gateway.db import database
 
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     base = tmp_path / "base"
-    monkeypatch.setenv("JOTA_GATEWAY_HOME", str(base))
+    monkeypatch.setenv("FOGAR_GATEWAY_HOME", str(base))
     monkeypatch.setattr(settings, "DATABASE_URL", Settings(_env_file=None).DATABASE_URL)
     monkeypatch.setattr(database, "_engine", None)
     yield base
@@ -21,7 +21,7 @@ def home(tmp_path, monkeypatch):
 
 
 def test_missing_db_is_refused_and_nothing_is_created(home):
-    with pytest.raises(database.DatabaseMissing, match="jota-gw init"):
+    with pytest.raises(database.DatabaseMissing, match="fogar-gw init"):
         database.run_migrations()
     assert not (home / "data" / "gateway.db").exists()
 
@@ -43,7 +43,7 @@ def test_existing_db_is_migrated_without_create_db(home, monkeypatch):
 
 def test_home_with_uri_characters_works_end_to_end(tmp_path, monkeypatch):
     base = tmp_path / "a#b?c%d e"
-    monkeypatch.setenv("JOTA_GATEWAY_HOME", str(base))
+    monkeypatch.setenv("FOGAR_GATEWAY_HOME", str(base))
     monkeypatch.setattr(settings, "DATABASE_URL", Settings(_env_file=None).DATABASE_URL)
     monkeypatch.setattr(database, "_engine", None)
     monkeypatch.setattr(database, "CREATE_DB", True)

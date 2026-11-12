@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jota_gateway.models.schemas import ClientConfig, Handshake
+from fogar_gateway.models.schemas import ClientConfig, Handshake
 
 _SECRET = "TOP-SECRET-PHRASE"
 

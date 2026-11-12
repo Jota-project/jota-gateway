@@ -1,4 +1,4 @@
-"""Humo contra ElevenLabs real. No corre en CI: `JGW_LIVE=1 pytest -m live tests/live`.
+"""Humo contra ElevenLabs real. No corre en CI: `FOGAR_GW_LIVE=1 pytest -m live tests/live`.
 
 Gasta unos pocos caracteres de cuota. Imprime solo números; nunca la clave.
 """
@@ -10,8 +10,8 @@ import time
 import pytest
 from pydantic import SecretStr
 
-from jota_gateway.core.config import settings
-from jota_gateway.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
+from fogar_gateway.core.config import settings
+from fogar_gateway.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
 
 pytestmark = pytest.mark.live
 
@@ -20,8 +20,8 @@ SAMPLE_RATE, SAMPLE_BYTES = 24000, 2
 
 @pytest.fixture
 def live_provider(monkeypatch):
-    if os.environ.get("JGW_LIVE") != "1":
-        pytest.skip("JGW_LIVE=1 requerido")
+    if os.environ.get("FOGAR_GW_LIVE") != "1":
+        pytest.skip("FOGAR_GW_LIVE=1 requerido")
     key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
     if not key:
         pytest.skip("ELEVENLABS_API_KEY no está definida")
@@ -29,7 +29,7 @@ def live_provider(monkeypatch):
     return ElevenLabsTtsProvider(s)
 
 
-async def test_synthesize_hola_soy_jota(live_provider):
+async def test_synthesize_hola_soy_fogar(live_provider):
     provider = live_provider
     if not await provider.probe():
         reason = "credenciales rechazadas" if provider._terminal else "servicio no disponible"
@@ -40,7 +40,7 @@ async def test_synthesize_hola_soy_jota(live_provider):
     first_at = None
     pcm = bytearray()
     try:
-        await stream.send_text_chunk("Hola, soy Jota.")
+        await stream.send_text_chunk("Hola, soy Fogar.")
         await stream.end()
 
         async def run():

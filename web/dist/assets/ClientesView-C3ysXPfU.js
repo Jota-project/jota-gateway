@@ -1,0 +1,1 @@
+import{D as e,c as t,m as n}from"./_plugin-vue_export-helper-Drb1sZC3.js";import{t as r}from"./PendingScreen-DEzaEWbl.js";var i=n({__name:`ClientesView`,setup(n){return(n,i)=>(e(),t(r,{title:`Clientes`,block:`17d`,summary:`Lista y editor de clientes: crear con la clave a la vista una sola vez, rotar, activar y borrar.`}))}});export{i as default};

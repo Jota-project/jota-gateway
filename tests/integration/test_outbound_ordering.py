@@ -55,7 +55,7 @@ def test_health_check_failure_delivers_status_then_closes_1011(client, mock_orch
 
 def test_rejected_handshake_creates_no_writer_task(client, monkeypatch):
     created = []
-    from jota_gateway.api import routes
+    from fogar_gateway.api import routes
 
     real = routes.QueuedSender
 

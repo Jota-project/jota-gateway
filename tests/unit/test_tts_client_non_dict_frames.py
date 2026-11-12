@@ -8,7 +8,7 @@ import logging
 
 import websockets
 
-from jota_gateway.services.tts_client import TTSClient
+from fogar_gateway.services.tts_client import TTSClient
 
 
 def _serve(frames_after_auth):

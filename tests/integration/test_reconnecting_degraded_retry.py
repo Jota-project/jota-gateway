@@ -7,10 +7,10 @@ la ventana completa). Ahora, además, un único reintento cada `max_backoff` s h
 import asyncio
 from unittest.mock import AsyncMock
 
-from jota_gateway.services.openclaw.client import OpenClawClient
-from jota_gateway.services.openclaw.models import GatewayInfo
-from jota_gateway.services.openclaw.reconnecting import ReconnectingOpenClawClient
-from jota_gateway.services.reconnection import ConnectionState
+from fogar_gateway.services.openclaw.client import OpenClawClient
+from fogar_gateway.services.openclaw.models import GatewayInfo
+from fogar_gateway.services.openclaw.reconnecting import ReconnectingOpenClawClient
+from fogar_gateway.services.reconnection import ConnectionState
 
 GATEWAY_INFO = GatewayInfo(
     default_agent_id="main",

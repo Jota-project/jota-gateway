@@ -1,6 +1,6 @@
-"""Humo STT contra ElevenLabs real. No corre en CI: `JGW_LIVE=1 pytest -m live tests/live`.
+"""Humo STT contra ElevenLabs real. No corre en CI: `FOGAR_GW_LIVE=1 pytest -m live tests/live`.
 
-Sintetiza "Hola, soy Jota." con el TTS de ElevenLabs y lo transcribe con el STT realtime.
+Sintetiza "Hola, soy Fogar." con el TTS de ElevenLabs y lo transcribe con el STT realtime.
 Imprime solo números y booleanos; nunca la clave ni el texto.
 """
 
@@ -12,11 +12,11 @@ from array import array
 import pytest
 from pydantic import SecretStr
 
-from jota_gateway.core.config import settings
-from jota_gateway.models.schemas import Client
-from jota_gateway.services.speech.elevenlabs.stt import ElevenLabsSttProvider
-from jota_gateway.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
-from jota_gateway.services.speech.ports import SttCallbacks, SttParams
+from fogar_gateway.core.config import settings
+from fogar_gateway.models.schemas import Client
+from fogar_gateway.services.speech.elevenlabs.stt import ElevenLabsSttProvider
+from fogar_gateway.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
+from fogar_gateway.services.speech.ports import SttCallbacks, SttParams
 
 pytestmark = pytest.mark.live
 
@@ -36,8 +36,8 @@ def s16le_24k_to_f32le_16k(pcm: bytes) -> bytes:
 
 @pytest.fixture
 def live_settings():
-    if os.environ.get("JGW_LIVE") != "1":
-        pytest.skip("JGW_LIVE=1 requerido")
+    if os.environ.get("FOGAR_GW_LIVE") != "1":
+        pytest.skip("FOGAR_GW_LIVE=1 requerido")
     key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
     if not key:
         pytest.skip("ELEVENLABS_API_KEY no está definida")
@@ -52,7 +52,7 @@ async def _synthesize(s) -> bytes:
     assert stream is not None
     pcm = bytearray()
     try:
-        await stream.send_text_chunk("Hola, soy Jota.")
+        await stream.send_text_chunk("Hola, soy Fogar.")
         await stream.end()
 
         async def run():
@@ -65,7 +65,7 @@ async def _synthesize(s) -> bytes:
     return bytes(pcm)
 
 
-async def test_transcribe_hola_soy_jota(live_settings):
+async def test_transcribe_hola_soy_fogar(live_settings):
     pcm24 = await _synthesize(live_settings)
     f32 = s16le_24k_to_f32le_16k(pcm24)
     provider = ElevenLabsSttProvider(live_settings)
@@ -103,7 +103,7 @@ async def test_transcribe_hola_soy_jota(live_settings):
     finally:
         await session.close()
         await asyncio.gather(runner, return_exceptions=True)
-    ok = any("jota" in t.lower() for t in finals)
+    ok = any("fogar" in t.lower() for t in finals)
     print(f"audio_s={len(f32) / 4 / 16000:.2f} finals={len(finals)} partials={partials} "
-          f"first_final_s={time.monotonic() - t0:.2f} contains_jota={ok}")
+          f"first_final_s={time.monotonic() - t0:.2f} contains_fogar={ok}")
     assert ok

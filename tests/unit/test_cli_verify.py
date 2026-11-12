@@ -1,4 +1,4 @@
-"""Verificadores de proveedores de `jota-gw onboard` contra los fakes reales (nunca la red)."""
+"""Verificadores de proveedores de `fogar-gw onboard` contra los fakes reales (nunca la red)."""
 
 import asyncio
 import contextlib
@@ -13,20 +13,20 @@ from pathlib import Path
 import pytest
 import websockets
 
-from jota_gateway.cli import verify
-from jota_gateway.cli.verify import (
+from fogar_gateway.cli import verify
+from fogar_gateway.cli.verify import (
     NOT_LOOPBACK_DETAIL,
     detect_openclaw,
     is_loopback,
     verify_elevenlabs,
-    verify_jota_stt,
-    verify_jota_tts,
+    verify_fogar_stt,
+    verify_fogar_tts,
     verify_openclaw,
 )
-from jota_gateway.core.config import settings
+from fogar_gateway.core.config import settings
 from tests.fakes.elevenlabs_stt import FakeElevenLabsStt
 from tests.fakes.elevenlabs_tts import FakeElevenLabsTts
-from tests.fakes.jota_upstreams import FakeTranscriber, FakeTts
+from tests.fakes.fogar_upstreams import FakeTranscriber, FakeTts
 from tests.fakes.openclaw import FakeOpenClawServer
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -118,40 +118,40 @@ async def test_verify_openclaw_remote_not_loopback_no_socket(monkeypatch):
 
 async def test_verify_openclaw_still_starting_is_timeout_not_rejected(monkeypatch):
     """OpenClaw arrancando más allá del presupuesto de reintento no es un token rechazado."""
-    monkeypatch.setattr("jota_gateway.services.openclaw.client._STARTUP_RETRY_BUDGET_S", 0.3)
+    monkeypatch.setattr("fogar_gateway.services.openclaw.client._STARTUP_RETRY_BUDGET_S", 0.3)
     async with FakeOpenClawServer(token=TOKEN, startup_pending=10**6) as server:
         v = await verify_openclaw("127.0.0.1", server.port, TOKEN)
     assert (v.ok, v.reason) == (False, "timeout")
 
 
-async def test_verify_jota_stt_ok():
+async def test_verify_fogar_stt_ok():
     fake = FakeTranscriber()
     await fake.start()
     try:
-        v = await verify_jota_stt(f"127.0.0.1:{fake.port}", "")
+        v = await verify_fogar_stt(f"127.0.0.1:{fake.port}", "")
     finally:
         await fake.stop()
     assert (v.ok, v.reason) == (True, "ok")
     assert len(fake.configs) == 1
 
 
-async def test_verify_jota_stt_rejected_without_token():
+async def test_verify_fogar_stt_rejected_without_token():
     fake = FakeTranscriber(token="stt-secret")
     await fake.start()
     try:
-        v = await verify_jota_stt(f"127.0.0.1:{fake.port}", "")
+        v = await verify_fogar_stt(f"127.0.0.1:{fake.port}", "")
     finally:
         await fake.stop()
     assert (v.ok, v.reason) == (False, "rejected")
     assert "sin clave" in v.detail
 
 
-async def test_verify_jota_stt_wrong_token_rejected():
+async def test_verify_fogar_stt_wrong_token_rejected():
     fake = FakeTranscriber(token="stt-secret")
     await fake.start()
     try:
-        bad = await verify_jota_stt(f"127.0.0.1:{fake.port}", "stt-WRONG-secret")
-        good = await verify_jota_stt(f"127.0.0.1:{fake.port}", "stt-secret")
+        bad = await verify_fogar_stt(f"127.0.0.1:{fake.port}", "stt-WRONG-secret")
+        good = await verify_fogar_stt(f"127.0.0.1:{fake.port}", "stt-secret")
     finally:
         await fake.stop()
     assert (bad.ok, bad.reason) == (False, "rejected")
@@ -167,7 +167,7 @@ def _openclaw(port):
 
 
 def _stt(port):
-    return verify_jota_stt(f"127.0.0.1:{port}", "")
+    return verify_fogar_stt(f"127.0.0.1:{port}", "")
 
 
 @pytest.mark.parametrize(
@@ -182,7 +182,7 @@ def _stt(port):
         ((json.dumps({"type": 5}),), _stt),
         ((json.dumps({"foo": 1}),), _stt),
         (("[]",), _stt),
-        (("esto no es json",), lambda port: verify_jota_tts(f"127.0.0.1:{port}", "")),
+        (("esto no es json",), lambda port: verify_fogar_tts(f"127.0.0.1:{port}", "")),
     ],
     ids=[
         "openclaw-malformed",
@@ -205,24 +205,24 @@ async def test_unexpected_answer_is_invalid_not_rejected(frames, verify_call):
     assert "respuesta inesperada" in v.detail
 
 
-async def test_verify_jota_stt_bad_port_is_unreachable_not_unexpected():
+async def test_verify_fogar_stt_bad_port_is_unreachable_not_unexpected():
     """websockets.connect lanza un ValueError a secas: no es una respuesta inesperada."""
-    v = await verify_jota_stt("127.0.0.1:99999", "")
+    v = await verify_fogar_stt("127.0.0.1:99999", "")
     assert (v.ok, v.reason) == (False, "unreachable")
 
 
-async def test_verify_jota_stt_unreachable():
+async def test_verify_fogar_stt_unreachable():
     port = closed_port()
-    v = await verify_jota_stt(f"127.0.0.1:{port}", "tok")
+    v = await verify_fogar_stt(f"127.0.0.1:{port}", "tok")
     assert (v.ok, v.reason) == (False, "unreachable")
     assert f"127.0.0.1:{port}" in v.detail
 
 
-async def test_verify_jota_tts_rejected_without_token():
+async def test_verify_fogar_tts_rejected_without_token():
     fake = FakeTts(token="tts-secret")
     await fake.start()
     try:
-        v = await verify_jota_tts(f"127.0.0.1:{fake.port}", "")
+        v = await verify_fogar_tts(f"127.0.0.1:{fake.port}", "")
     finally:
         await fake.stop()
     assert (v.ok, v.reason) == (False, "rejected")
@@ -230,12 +230,12 @@ async def test_verify_jota_tts_rejected_without_token():
     assert "rechazó la conexión sin clave: este servicio exige clave" in v.detail
 
 
-async def test_verify_jota_tts_wrong_token_rejected():
+async def test_verify_fogar_tts_wrong_token_rejected():
     fake = FakeTts(token="tts-secret")
     await fake.start()
     try:
-        bad = await verify_jota_tts(f"127.0.0.1:{fake.port}", "tts-WRONG-secret")
-        good = await verify_jota_tts(f"127.0.0.1:{fake.port}", "tts-secret")
+        bad = await verify_fogar_tts(f"127.0.0.1:{fake.port}", "tts-WRONG-secret")
+        good = await verify_fogar_tts(f"127.0.0.1:{fake.port}", "tts-secret")
     finally:
         await fake.stop()
     assert (bad.ok, bad.reason) == (False, "rejected")
@@ -252,7 +252,7 @@ async def test_verify_timeout_uses_module_deadline(monkeypatch):
     try:
         loop = asyncio.get_running_loop()
         started = loop.time()
-        v = await verify_jota_stt(f"127.0.0.1:{port}", "")
+        v = await verify_fogar_stt(f"127.0.0.1:{port}", "")
         assert loop.time() - started < 2.0
     finally:
         for w in held:
@@ -290,8 +290,8 @@ async def test_verify_elevenlabs_unreachable_is_not_rejected(monkeypatch):
     [
         lambda: verify_openclaw("127.0.0.1", 0, TOKEN),
         lambda: verify_openclaw("127.0.0.1", 70000, TOKEN),
-        lambda: verify_jota_stt("ws://localhost:9000", ""),
-        lambda: verify_jota_tts("", ""),
+        lambda: verify_fogar_stt("ws://localhost:9000", ""),
+        lambda: verify_fogar_tts("", ""),
         lambda: verify_elevenlabs("stt", "  "),
     ],
 )
@@ -306,7 +306,7 @@ async def test_invalid_input_is_invalid_without_socket(monkeypatch, call):
 
 def test_openclaw_deadline_covers_startup_retry_budget():
     """Ruling 1: el plazo de verify_openclaw cubre el reintento de OpenClaw arrancando."""
-    from jota_gateway.services.openclaw.client import _STARTUP_RETRY_BUDGET_S
+    from fogar_gateway.services.openclaw.client import _STARTUP_RETRY_BUDGET_S
 
     assert verify.OPENCLAW_VERIFY_TIMEOUT_S > _STARTUP_RETRY_BUDGET_S
 
@@ -315,13 +315,13 @@ def test_openclaw_deadline_covers_startup_retry_budget():
 # argv[1]: un puerto cerrado, nunca el 18789 de un OpenClaw real del equipo.
 _INVALID_CONFIG_PROBE = """
 import asyncio, json, sys
-from jota_gateway.cli.verify import verify_elevenlabs, verify_jota_stt, verify_jota_tts, verify_openclaw
+from fogar_gateway.cli.verify import verify_elevenlabs, verify_fogar_stt, verify_fogar_tts, verify_openclaw
 
 async def main():
     for call in (
         verify_openclaw("127.0.0.1", int(sys.argv[1]), "t"),
-        verify_jota_stt("127.0.0.1:9", ""),
-        verify_jota_tts("127.0.0.1:9", ""),
+        verify_fogar_stt("127.0.0.1:9", ""),
+        verify_fogar_tts("127.0.0.1:9", ""),
         verify_elevenlabs("tts", "k"),
     ):
         v = await call

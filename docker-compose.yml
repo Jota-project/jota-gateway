@@ -10,11 +10,11 @@
 #   (UID/GID de la shell no se exportan, por eso variables propias). Si ./data ya existía
 #   de un despliegue anterior como root:  sudo chown -R "$(id -u):$(id -g)" data
 services:
-  jota-gateway:
+  fogar-gateway:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: jota_gateway
+    container_name: fogar_gateway
     network_mode: "host"
     user: "${GATEWAY_UID:-1000}:${GATEWAY_GID:-1000}"
     env_file:

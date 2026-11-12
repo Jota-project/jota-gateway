@@ -40,33 +40,33 @@ jobs:
       - name: Typecheck (mypy)
         run: uv run --no-sync mypy
 
-      # La unidad de systemd que genera `jota-gw install`, verificada por systemd de verdad
-      # (comprueba la sintaxis y que ExecStart exista: se usa el jota-gw del .venv del runner).
+      # La unidad de systemd que genera `fogar-gw install`, verificada por systemd de verdad
+      # (comprueba la sintaxis y que ExecStart exista: se usa el fogar-gw del .venv del runner).
       - name: Unidad de systemd (systemd-analyze verify)
         run: |
           mkdir -p "$RUNNER_TEMP/unit"
           uv run --no-sync python -c "
           import sys
           from pathlib import Path
-          from jota_gateway.cli.service import render_unit
-          exe = Path('.venv/bin/jota-gw').resolve()
-          Path(sys.argv[1], 'jota-gateway.service').write_text(render_unit(exe, Path.home() / '.jota-gateway'))
+          from fogar_gateway.cli.service import render_unit
+          exe = Path('.venv/bin/fogar-gw').resolve()
+          Path(sys.argv[1], 'fogar-gateway.service').write_text(render_unit(exe, Path.home() / '.fogar-gateway'))
           " "$RUNNER_TEMP/unit"
-          cat "$RUNNER_TEMP/unit/jota-gateway.service"
-          systemd-analyze --user verify "$RUNNER_TEMP/unit/jota-gateway.service"
+          cat "$RUNNER_TEMP/unit/fogar-gateway.service"
+          systemd-analyze --user verify "$RUNNER_TEMP/unit/fogar-gateway.service"
 
       - name: Unit tests
-        run: uv run --no-sync pytest tests/unit/ -v --cov=jota_gateway --cov-report=
+        run: uv run --no-sync pytest tests/unit/ -v --cov=fogar_gateway --cov-report=
         env:
           PYTHONPATH: .
 
       - name: Contract tests (proveedores de voz)
-        run: uv run --no-sync pytest tests/contract/ -v --cov=jota_gateway --cov-append --cov-report=
+        run: uv run --no-sync pytest tests/contract/ -v --cov=fogar_gateway --cov-append --cov-report=
         env:
           PYTHONPATH: .
 
       - name: Integration tests
-        run: uv run --no-sync pytest tests/integration/ -v --cov=jota_gateway --cov-append --cov-report=term-missing
+        run: uv run --no-sync pytest tests/integration/ -v --cov=fogar_gateway --cov-append --cov-report=term-missing
         env:
           PYTHONPATH: .
 
@@ -105,8 +105,8 @@ jobs:
         run: |
           uv build --wheel -o dist
           unzip -l dist/*.whl > contents.txt
-          for f in "jota_gateway/alembic.ini" "jota_gateway/migrations/env.py" \
-                   "jota_gateway/migrations/script.py.mako" "jota_gateway/migrations/versions/[0-9a-f]\{12\}_.*\.py"; do
+          for f in "fogar_gateway/alembic.ini" "fogar_gateway/migrations/env.py" \
+                   "fogar_gateway/migrations/script.py.mako" "fogar_gateway/migrations/versions/[0-9a-f]\{12\}_.*\.py"; do
             grep -q "$f" contents.txt || { echo "Falta $f en el wheel"; exit 1; }
           done
 
@@ -117,13 +117,13 @@ jobs:
           export PATH=/tmp/venv/bin:$PATH
           cd /tmp
           empty=$(mktemp -d)
-          rc=0; JOTA_GATEWAY_HOME=$empty timeout 60 jota-gw serve || rc=$?
+          rc=0; FOGAR_GATEWAY_HOME=$empty timeout 60 fogar-gw serve || rc=$?
           echo "serve sin BD: rc=$rc"
           [ "$rc" = 3 ]
           [ ! -e "$empty/data" ]  # ni BD, ni data/, ni candado
           base=$(mktemp -d)/gw
-          JOTA_GATEWAY_HOME=$base jota-gw init
-          JOTA_GATEWAY_HOME=$base jota-gw serve & pid=$!
+          FOGAR_GATEWAY_HOME=$base fogar-gw init
+          FOGAR_GATEWAY_HOME=$base fogar-gw serve & pid=$!
           for i in $(seq 1 30); do curl -fs http://127.0.0.1:8004/healthz && break; sleep 1; done
           curl -fs http://127.0.0.1:8004/healthz
           kill $pid
@@ -142,13 +142,13 @@ jobs:
           context: .
           push: false
           load: true
-          tags: jota-gateway:ci
+          tags: fogar-gateway:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Smoke - starts as non-root and HEALTHCHECK turns healthy
         run: |
-          docker run -d --name gw -e ADMIN_TOKEN=ci -e OPENCLAW_TOKEN=ci jota-gateway:ci
+          docker run -d --name gw -e ADMIN_TOKEN=ci -e OPENCLAW_TOKEN=ci fogar-gateway:ci
           for i in $(seq 1 40); do
             status=$(docker inspect --format '{{.State.Health.Status}}' gw)
             [ "$status" = "healthy" ] && break
@@ -165,7 +165,7 @@ jobs:
         run: |
           mkdir data
           docker run -d --name gw2 --user "$(id -u):$(id -g)" -v "$PWD/data:/app/data" \
-            -e ADMIN_TOKEN=ci -e OPENCLAW_TOKEN=ci jota-gateway:ci
+            -e ADMIN_TOKEN=ci -e OPENCLAW_TOKEN=ci fogar-gateway:ci
           for i in $(seq 1 40); do
             status=$(docker inspect --format '{{.State.Health.Status}}' gw2)
             [ "$status" = "healthy" ] && break
@@ -184,7 +184,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      # journalctl sin TTY ya no pagina; esto lo garantiza para `jota-gw logs` (execvp).
+      # journalctl sin TTY ya no pagina; esto lo garantiza para `fogar-gw logs` (execvp).
       SYSTEMD_PAGER: ""
     steps:
       - uses: actions/checkout@v7
@@ -195,15 +195,15 @@ jobs:
           version: "0.13.7"
 
       # Como la instalación oficial: no editable y fuera del checkout (pick_exe rechaza lo contrario).
-      - name: Instalar jota-gw como uv tool
+      - name: Instalar fogar-gw como uv tool
         run: |
           uv export --frozen --no-dev --no-emit-project --no-hashes -o /tmp/c.txt
           uv tool install . -c /tmp/c.txt
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
-          which jota-gw
-          [ "$(which jota-gw)" = "$HOME/.local/bin/jota-gw" ]
-          jota-gw version || true
+          which fogar-gw
+          [ "$(which fogar-gw)" = "$HOME/.local/bin/fogar-gw" ]
+          fogar-gw version || true
 
       - name: Preparar systemd de usuario (linger y bus)
         run: |
@@ -234,17 +234,17 @@ jobs:
           wait_bus
 
       # init no necesita tokens: crea config.env con un ADMIN_TOKEN aleatorio y la BD.
-      - name: jota-gw init
+      - name: fogar-gw init
         run: |
-          jota-gw init
-          ls -l ~/.jota-gateway ~/.jota-gateway/data
+          fogar-gw init
+          ls -l ~/.fogar-gateway ~/.fogar-gateway/data
 
-      - name: jota-gw install y healthz
+      - name: fogar-gw install y healthz
         run: |
           . "$RUNNER_TEMP/h.sh"
-          jota-gw --yes install
+          fogar-gw --yes install
           curl -fs --max-time 2 http://127.0.0.1:8004/healthz; echo
-          [ "$(systemctl --user is-enabled jota-gateway.service)" = enabled ]
+          [ "$(systemctl --user is-enabled fogar-gateway.service)" = enabled ]
 
       # Reinicia la sesión de usuario: para el servicio y lo vuelve a arrancar por default.target + linger.
       # Límite: no es un reboot real del kernel; lo más cercano posible en un runner.
@@ -252,39 +252,39 @@ jobs:
         run: |
           . "$RUNNER_TEMP/h.sh"
           [ "$(loginctl show-user "$USER" -p Linger --value)" = yes ]
-          old_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
-          old_pid=$(systemctl --user show -p MainPID --value jota-gateway.service)
+          old_inv=$(systemctl --user show -p InvocationID --value fogar-gateway.service)
+          old_pid=$(systemctl --user show -p MainPID --value fogar-gateway.service)
           echo "antes: InvocationID=$old_inv MainPID=$old_pid"
           [ -n "$old_inv" ]
           [ "$old_pid" -gt 0 ]
           sudo systemctl restart "user@$(id -u).service"
           wait_bus
           wait_health 60
-          new_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
+          new_inv=$(systemctl --user show -p InvocationID --value fogar-gateway.service)
           echo "después: InvocationID=$new_inv"
           [ -n "$new_inv" ]
           [ "$new_inv" != "$old_inv" ]
           if kill -0 "$old_pid" 2>/dev/null; then echo "el PID viejo $old_pid sigue vivo"; exit 1; fi
-          [ "$(systemctl --user is-active jota-gateway.service)" = active ]
+          [ "$(systemctl --user is-active fogar-gateway.service)" = active ]
 
-      - name: jota-gw logs
+      - name: fogar-gw logs
         run: |
-          jota-gw logs -n 20 --level WARNING  # puede no imprimir nada
-          jota-gw logs -n 5 > "$RUNNER_TEMP/logs.txt"
+          fogar-gw logs -n 20 --level WARNING  # puede no imprimir nada
+          fogar-gw logs -n 5 > "$RUNNER_TEMP/logs.txt"
           cat "$RUNNER_TEMP/logs.txt"
           [ -s "$RUNNER_TEMP/logs.txt" ]
 
       - name: config set LOG_FORMAT json (reinicia el servicio)
         run: |
           . "$RUNNER_TEMP/h.sh"
-          old_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
-          jota-gw --yes config set LOG_FORMAT json
+          old_inv=$(systemctl --user show -p InvocationID --value fogar-gateway.service)
+          fogar-gw --yes config set LOG_FORMAT json
           wait_health 60
-          new_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
+          new_inv=$(systemctl --user show -p InvocationID --value fogar-gateway.service)
           [ -n "$old_inv" ]
           [ -n "$new_inv" ]
           [ "$new_inv" != "$old_inv" ]  # hubo restart
-          jota-gw logs -n 20 > "$RUNNER_TEMP/logs.txt"
+          fogar-gw logs -n 20 > "$RUNNER_TEMP/logs.txt"
           cat "$RUNNER_TEMP/logs.txt"
           python3 -c "
           import json, sys
@@ -297,12 +297,12 @@ jobs:
           sys.exit('ninguna línea de log es JSON')
           " "$RUNNER_TEMP/logs.txt"
 
-      - name: jota-gw uninstall (los datos se quedan)
+      - name: fogar-gw uninstall (los datos se quedan)
         run: |
-          jota-gw --yes uninstall
-          [ ! -e ~/.config/systemd/user/jota-gateway.service ]
-          [ -f ~/.jota-gateway/config.env ]
-          [ -f ~/.jota-gateway/data/gateway.db ]
+          fogar-gw --yes uninstall
+          [ ! -e ~/.config/systemd/user/fogar-gateway.service ]
+          [ -f ~/.fogar-gateway/config.env ]
+          [ -f ~/.fogar-gateway/data/gateway.db ]
           if curl -fs --max-time 3 http://127.0.0.1:8004/healthz; then echo "el servicio sigue respondiendo"; exit 1; fi
 
       # Docker falso: el directorio que dejaría compose (.env + data/gateway.db). La BD sale de
@@ -314,13 +314,13 @@ jobs:
           D="$RUNNER_TEMP/docker-fake"
           echo "DOCKER_DIR=$D" >> "$GITHUB_ENV"
           echo "NATIVE_HOME=$RUNNER_TEMP/native" >> "$GITHUB_ENV"
-          jota-gw --home "$D" init
-          jota-gw --home "$D" serve > "$RUNNER_TEMP/docker-serve.log" 2>&1 &
+          fogar-gw --home "$D" init
+          fogar-gw --home "$D" serve > "$RUNNER_TEMP/docker-serve.log" 2>&1 &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
           wait_health 60
-          jota-gw --home "$D" --json clients add --name smoke-docker > /dev/null  # sin mostrar la clave
-          jota-gw --home "$D" --json clients list > "$RUNNER_TEMP/src-clients.json"
+          fogar-gw --home "$D" --json clients add --name smoke-docker > /dev/null  # sin mostrar la clave
+          fogar-gw --home "$D" --json clients list > "$RUNNER_TEMP/src-clients.json"
           grep -q smoke-docker "$RUNNER_TEMP/src-clients.json"
           kill "$pid"
           wait "$pid" || true  # SIGTERM: salida 0 o 143
@@ -354,7 +354,7 @@ jobs:
           done
           if flock -n -s "$lock" true; then echo "el candado no se ha tomado"; exit 1; fi
           rc=0
-          jota-gw --home "$NATIVE_HOME" migrate --from-docker "$DOCKER_DIR" > "$RUNNER_TEMP/mig.txt" 2>&1 || rc=$?
+          fogar-gw --home "$NATIVE_HOME" migrate --from-docker "$DOCKER_DIR" > "$RUNNER_TEMP/mig.txt" 2>&1 || rc=$?
           cat "$RUNNER_TEMP/mig.txt"
           [ "$rc" -ne 0 ]
           grep -q "sigue en marcha" "$RUNNER_TEMP/mig.txt"  # falla por el candado y no por otra cosa
@@ -363,9 +363,9 @@ jobs:
           kill "$holder"
           wait "$holder" || true
 
-      - name: jota-gw migrate --from-docker
+      - name: fogar-gw migrate --from-docker
         run: |
-          jota-gw --home "$NATIVE_HOME" migrate --from-docker "$DOCKER_DIR"
+          fogar-gw --home "$NATIVE_HOME" migrate --from-docker "$DOCKER_DIR"
           ls -l "$NATIVE_HOME" "$NATIVE_HOME/data"
           [ "$(stat -c %a "$NATIVE_HOME/config.env")" = 600 ]
           [ "$(stat -c %a "$NATIVE_HOME/data/gateway.db")" = 600 ]
@@ -381,12 +381,12 @@ jobs:
       - name: install nativo tras migrate y el cliente sigue
         run: |
           . "$RUNNER_TEMP/h.sh"
-          jota-gw --home "$NATIVE_HOME" --yes install
+          fogar-gw --home "$NATIVE_HOME" --yes install
           wait_health 60
           curl -fs --max-time 2 http://127.0.0.1:8004/healthz; echo
-          [ "$(systemctl --user is-active jota-gateway.service)" = active ]
+          [ "$(systemctl --user is-active fogar-gateway.service)" = active ]
           # El token sale del config.env migrado: si no se hubiera copiado, /admin daría 401.
-          jota-gw --home "$NATIVE_HOME" --json clients list > "$RUNNER_TEMP/clients.json"
+          fogar-gw --home "$NATIVE_HOME" --json clients list > "$RUNNER_TEMP/clients.json"
           python3 -c "
           import json, sys
           rows = json.load(open(sys.argv[1]))
@@ -398,23 +398,23 @@ jobs:
       - name: Actualizar (uv tool install --reinstall y restart)
         run: |
           . "$RUNNER_TEMP/h.sh"
-          old_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
+          old_inv=$(systemctl --user show -p InvocationID --value fogar-gateway.service)
           [ -n "$old_inv" ]
           uv tool install --reinstall . -c /tmp/c.txt
-          [ "$(which jota-gw)" = "$HOME/.local/bin/jota-gw" ]
-          jota-gw --home "$NATIVE_HOME" --yes restart
+          [ "$(which fogar-gw)" = "$HOME/.local/bin/fogar-gw" ]
+          fogar-gw --home "$NATIVE_HOME" --yes restart
           wait_health 60
-          new_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
+          new_inv=$(systemctl --user show -p InvocationID --value fogar-gateway.service)
           [ -n "$new_inv" ]
           [ "$new_inv" != "$old_inv" ]  # hubo restart
-          [ "$(systemctl --user is-active jota-gateway.service)" = active ]
-          jota-gw --home "$NATIVE_HOME" --json clients list > "$RUNNER_TEMP/clients.json"
+          [ "$(systemctl --user is-active fogar-gateway.service)" = active ]
+          fogar-gw --home "$NATIVE_HOME" --json clients list > "$RUNNER_TEMP/clients.json"
           grep -q smoke-docker "$RUNNER_TEMP/clients.json"  # los datos sobreviven a la actualización
 
       - name: uninstall final (los datos migrados se quedan)
         run: |
-          jota-gw --home "$NATIVE_HOME" --yes uninstall
-          [ ! -e ~/.config/systemd/user/jota-gateway.service ]
+          fogar-gw --home "$NATIVE_HOME" --yes uninstall
+          [ ! -e ~/.config/systemd/user/fogar-gateway.service ]
           [ -f "$NATIVE_HOME/config.env" ]
           [ -f "$NATIVE_HOME/data/gateway.db" ]
           if curl -fs --max-time 3 http://127.0.0.1:8004/healthz; then echo "el servicio sigue respondiendo"; exit 1; fi
@@ -422,12 +422,12 @@ jobs:
       - name: Diagnóstico del servicio
         if: failure()
         run: |
-          journalctl --user -u jota-gateway.service -n 200 --no-pager || true
-          systemctl --user status jota-gateway.service --no-pager || true
+          journalctl --user -u fogar-gateway.service -n 200 --no-pager || true
+          systemctl --user status fogar-gateway.service --no-pager || true
           loginctl show-user "$USER" || true
-          systemctl --user show -p InvocationID,MainPID,ActiveEnterTimestamp jota-gateway.service || true
+          systemctl --user show -p InvocationID,MainPID,ActiveEnterTimestamp fogar-gateway.service || true
 
-  # install.sh de punta a punta en el runner: lo que hace `curl … | sh`, con JOTA_SOURCE apuntando
+  # install.sh de punta a punta en el runner: lo que hace `curl … | sh`, con FOGAR_SOURCE apuntando
   # al checkout (sin GitHub de por medio). OpenClaw y TTS falsos que exigen token, en segundo plano
   # durante todo el job. Todas las esperas tienen tiempo límite.
   installer-smoke:
@@ -438,7 +438,7 @@ jobs:
       FAKE_OPENCLAW_TOKEN: ci-openclaw-token
       FAKE_TTS_TOKEN: ci-tts-token
       # La última línea de install.sh sin asistente, tal cual (no la de una versión sin onboard).
-      INSTALLED_MSG: "Instalado. Configúralo con `jota-gw onboard` o, si vienes de Docker, `jota-gw migrate --from-docker DIR` y `jota-gw install`."
+      INSTALLED_MSG: "Instalado. Configúralo con `fogar-gw onboard` o, si vienes de Docker, `fogar-gw migrate --from-docker DIR` y `fogar-gw install`."
     steps:
       - uses: actions/checkout@v7
 
@@ -462,9 +462,9 @@ jobs:
                          cwd=sys.argv[1], check=True)
           EOF
           sh -n "$RUNNER_TEMP/rel/install.sh"
-          grep -x 'JOTA_RELEASE=1.2.3' "$RUNNER_TEMP/rel/install.sh"
-          [ "$(grep -c '^JOTA_RELEASE=' "$RUNNER_TEMP/rel/install.sh")" = 1 ]
-          grep -x 'JOTA_RELEASE=' install.sh  # el del repo sigue sin sellar
+          grep -x 'FOGAR_RELEASE=1.2.3' "$RUNNER_TEMP/rel/install.sh"
+          [ "$(grep -c '^FOGAR_RELEASE=' "$RUNNER_TEMP/rel/install.sh")" = 1 ]
+          grep -x 'FOGAR_RELEASE=' install.sh  # el del repo sigue sin sellar
 
       - name: Preparar systemd de usuario (linger y bus)
         run: |
@@ -509,7 +509,7 @@ jobs:
           nohup uv run --no-sync python -u -c "
           import asyncio, os, sys
           from pathlib import Path
-          from tests.fakes.jota_upstreams import FakeTts
+          from tests.fakes.fogar_upstreams import FakeTts
           from tests.fakes.openclaw import FakeOpenClawServer
 
           async def main():
@@ -532,33 +532,33 @@ jobs:
           cat "$RUNNER_TEMP/fakes.log"
 
       # Bajo un pty (script de util-linux): con terminal, solo --no-onboard impide el asistente.
-      - name: install.sh --no-onboard con terminal (jota-gw instalado; ni unidad ni base)
+      - name: install.sh --no-onboard con terminal (fogar-gw instalado; ni unidad ni base)
         run: |
           command -v script >/dev/null || { echo "falta script (util-linux)"; exit 1; }
           # Control positivo: si el pty no diera terminal, el paso pasaría sin probar el flag.
           timeout 30 script -qec 'test -t 1 && : </dev/tty' /dev/null </dev/null || { echo "script no da un TTY"; exit 1; }
           rc=0
-          timeout 180 script -qec "JOTA_SOURCE=$GITHUB_WORKSPACE sh install.sh --no-onboard" /dev/null \
+          timeout 180 script -qec "FOGAR_SOURCE=$GITHUB_WORKSPACE sh install.sh --no-onboard" /dev/null \
             < /dev/null > "$RUNNER_TEMP/pty.txt" 2>&1 || rc=$?
           cat "$RUNNER_TEMP/pty.txt"
           [ "$rc" = 0 ]
           grep -qF "$INSTALLED_MSG" "$RUNNER_TEMP/pty.txt"  # sin -x: el pty acaba las líneas en \r\n
-          [ -x "$HOME/.local/bin/jota-gw" ]
-          [ ! -e "$HOME/.config/systemd/user/jota-gateway.service" ]
-          [ ! -e "$HOME/.jota-gateway" ]  # lo que necesita `migrate --from-docker` después
+          [ -x "$HOME/.local/bin/fogar-gw" ]
+          [ ! -e "$HOME/.config/systemd/user/fogar-gateway.service" ]
+          [ ! -e "$HOME/.fogar-gateway" ]  # lo que necesita `migrate --from-docker` después
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: test_install_without_tty_skips_onboard
         run: |
           rc=0
-          JOTA_SOURCE="$GITHUB_WORKSPACE" sh install.sh < /dev/null > "$RUNNER_TEMP/notty.txt" 2>&1 || rc=$?
+          FOGAR_SOURCE="$GITHUB_WORKSPACE" sh install.sh < /dev/null > "$RUNNER_TEMP/notty.txt" 2>&1 || rc=$?
           cat "$RUNNER_TEMP/notty.txt"
           [ "$rc" = 0 ]
           grep -qxF "$INSTALLED_MSG" "$RUNNER_TEMP/notty.txt"
-          [ ! -e "$HOME/.config/systemd/user/jota-gateway.service" ]
-          [ ! -e "$HOME/.jota-gateway" ]
+          [ ! -e "$HOME/.config/systemd/user/fogar-gateway.service" ]
+          [ ! -e "$HOME/.fogar-gateway" ]
 
-      - name: jota-gw onboard --answers (OpenClaw y TTS falsos, STT off, cliente smoke)
+      - name: fogar-gw onboard --answers (OpenClaw y TTS falsos, STT off, cliente smoke)
         run: |
           . "$RUNNER_TEMP/h.sh"
           port=$(cat "$RUNNER_TEMP/tts.port")
@@ -566,20 +566,20 @@ jobs:
           cat > "$RUNNER_TEMP/answers.json" <<EOF
           {"openclaw_host": "127.0.0.1", "openclaw_port": 18789, "openclaw_token": "$FAKE_OPENCLAW_TOKEN",
            "stt": {"provider": "off"},
-           "tts": {"provider": "jota", "url": "127.0.0.1:$port", "token": "$FAKE_TTS_TOKEN"},
+           "tts": {"provider": "fogar", "url": "127.0.0.1:$port", "token": "$FAKE_TTS_TOKEN"},
            "first_client": {"name": "smoke", "type": "web"}}
           EOF
           [ "$(stat -c %a "$RUNNER_TEMP/answers.json")" = 600 ]
           # La salida lleva la clave del cliente: solo se enseña si falla.
-          if ! jota-gw onboard --answers "$RUNNER_TEMP/answers.json" > "$RUNNER_TEMP/onboard.txt" 2>&1; then
+          if ! fogar-gw onboard --answers "$RUNNER_TEMP/answers.json" > "$RUNNER_TEMP/onboard.txt" 2>&1; then
             cat "$RUNNER_TEMP/onboard.txt"; exit 1
           fi
-          [ "$(systemctl --user is-active jota-gateway.service)" = active ]
+          [ "$(systemctl --user is-active fogar-gateway.service)" = active ]
           curl -fs --max-time 2 http://127.0.0.1:8004/healthz; echo
           wait_ready 60
           # «doctor sale limpio»: ningún fallo, y el STT off como información, no como caída.
           rc=0
-          jota-gw --json doctor > "$RUNNER_TEMP/doctor.json" || rc=$?
+          fogar-gw --json doctor > "$RUNNER_TEMP/doctor.json" || rc=$?
           cat "$RUNNER_TEMP/doctor.json"
           python3 - "$RUNNER_TEMP/doctor.json" <<'EOF'
           import json, sys
@@ -592,40 +592,40 @@ jobs:
               sys.exit(f"el STT off no sale como información: {stt}")
           EOF
           [ "$rc" = 0 ]
-          jota-gw --json clients list > "$RUNNER_TEMP/clients.json"
+          fogar-gw --json clients list > "$RUNNER_TEMP/clients.json"
           python3 -c "
           import json, sys
           rows = json.load(open(sys.argv[1]))
           sys.exit(0 if any(r['name'] == 'smoke' for r in rows) else 'falta el cliente smoke')
           " "$RUNNER_TEMP/clients.json"
-          [ "$(grep -c '^TTS_TOKEN=' ~/.jota-gateway/config.env)" = 1 ]
-          cp ~/.jota-gateway/config.env "$RUNNER_TEMP/config.env.before"
+          [ "$(grep -c '^TTS_TOKEN=' ~/.fogar-gateway/config.env)" = 1 ]
+          cp ~/.fogar-gateway/config.env "$RUNNER_TEMP/config.env.before"
 
       - name: reejecutar install.sh actualiza (reinicia, no pregunta, config.env igual)
         run: |
           . "$RUNNER_TEMP/h.sh"
-          old_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
+          old_inv=$(systemctl --user show -p InvocationID --value fogar-gateway.service)
           [ -n "$old_inv" ]
           rc=0
-          JOTA_SOURCE="$GITHUB_WORKSPACE" sh install.sh < /dev/null > "$RUNNER_TEMP/rerun.txt" 2>&1 || rc=$?
+          FOGAR_SOURCE="$GITHUB_WORKSPACE" sh install.sh < /dev/null > "$RUNNER_TEMP/rerun.txt" 2>&1 || rc=$?
           cat "$RUNNER_TEMP/rerun.txt"
           [ "$rc" = 0 ]  # no ha preguntado: sin TTY, una pregunta sale con 1 (o con 2, restart sin --yes)
-          new_inv=$(systemctl --user show -p InvocationID --value jota-gateway.service)
+          new_inv=$(systemctl --user show -p InvocationID --value fogar-gateway.service)
           echo "InvocationID: $old_inv -> $new_inv"
           [ -n "$new_inv" ]
           [ "$new_inv" != "$old_inv" ]  # hubo restart
-          [ "$(systemctl --user is-active jota-gateway.service)" = active ]
-          cmp "$RUNNER_TEMP/config.env.before" ~/.jota-gateway/config.env
+          [ "$(systemctl --user is-active fogar-gateway.service)" = active ]
+          cmp "$RUNNER_TEMP/config.env.before" ~/.fogar-gateway/config.env
           wait_ready 60
-          jota-gw --json clients list > "$RUNNER_TEMP/clients.json"
+          fogar-gw --json clients list > "$RUNNER_TEMP/clients.json"
           grep -q '"smoke"' "$RUNNER_TEMP/clients.json"
 
       # #317: el alta por código de punta a punta, y ni el código ni la clave en el journal.
-      - name: emparejar un cliente (jota-gw pair, POST /pair y la clave abre sesión)
+      - name: emparejar un cliente (fogar-gw pair, POST /pair y la clave abre sesión)
         run: |
-          curl -fs --max-time 5 http://127.0.0.1:8004/.well-known/jota-gateway \
-            | python3 -c "import json, sys; sys.exit(json.load(sys.stdin)['service'] != 'jota-gateway')"
-          jota-gw --json pair --no-wait --type screen --name smoke-tele > "$RUNNER_TEMP/pair.json"
+          curl -fs --max-time 5 http://127.0.0.1:8004/.well-known/fogar-gateway \
+            | python3 -c "import json, sys; sys.exit(json.load(sys.stdin)['service'] != 'fogar-gateway')"
+          fogar-gw --json pair --no-wait --type screen --name smoke-tele > "$RUNNER_TEMP/pair.json"
           code=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1]))['code'])" "$RUNNER_TEMP/pair.json")
           wrong=$(python3 -c "import sys; print(f'{(int(sys.argv[1]) + 1) % 10**6:06d}')" "$code")
           post() { curl -s --max-time 5 -o "$RUNNER_TEMP/paired.json" -w '%{http_code}' -X POST \
@@ -652,7 +652,7 @@ jobs:
 
           asyncio.run(main())
           EOF
-          journalctl --user -u jota-gateway.service --no-pager > "$RUNNER_TEMP/journal.txt"
+          journalctl --user -u fogar-gateway.service --no-pager > "$RUNNER_TEMP/journal.txt"
           grep -q "Emparejamiento: cliente" "$RUNNER_TEMP/journal.txt"
           # `|| exit 1`: bash -e no corta en un `!` negado.
           ! grep -qF "$PAIRED_KEY" "$RUNNER_TEMP/journal.txt" || { echo "la clave está en el journal"; exit 1; }
@@ -665,7 +665,7 @@ jobs:
           echo "fakes (PID $(cat "$RUNNER_TEMP/fakes.pid" 2>/dev/null)):"
           ps -p "$(cat "$RUNNER_TEMP/fakes.pid" 2>/dev/null || echo 0)" -o pid,stat,cmd || echo "los fakes no siguen vivos"
           cat "$RUNNER_TEMP/fakes.log" || true
-          journalctl --user -u jota-gateway.service -n 200 --no-pager || true
-          systemctl --user status jota-gateway.service --no-pager || true
+          journalctl --user -u fogar-gateway.service -n 200 --no-pager || true
+          systemctl --user status fogar-gateway.service --no-pager || true
           loginctl show-user "$USER" || true
-          ls -la ~/.local/bin ~/.config/systemd/user ~/.jota-gateway || true
+          ls -la ~/.local/bin ~/.config/systemd/user ~/.fogar-gateway || true

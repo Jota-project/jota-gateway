@@ -1,4 +1,4 @@
-"""Turn lifecycle in JotaBridge (#215, #201).
+"""Turn lifecycle in FogarBridge (#215, #201).
 
 G-08 (#201) cancel race, G-09 turn created during close_all, G-10 one turn_end per
 turn on every path, G-11 turn_seq wraparound, G-18 gone client cancels its turn.
@@ -11,9 +11,9 @@ import json
 import time
 from unittest.mock import AsyncMock
 
-from jota_gateway.core.config import settings
-from jota_gateway.services.outbound import QueuedSender
-from jota_gateway.services.protocol import OrchestratorEvent
+from fogar_gateway.core.config import settings
+from fogar_gateway.services.outbound import QueuedSender
+from fogar_gateway.services.protocol import OrchestratorEvent
 from tests.fakes.bridge import blocking, sent, tokens, wait_until
 
 # ── G-08 (#201) ──────────────────────────────────────────────────────────────

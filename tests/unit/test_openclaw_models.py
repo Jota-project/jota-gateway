@@ -1,4 +1,4 @@
-from jota_gateway.services.openclaw.models import GatewayInfo, ToolCallEvent
+from fogar_gateway.services.openclaw.models import GatewayInfo, ToolCallEvent
 
 # Real shape since server 2026.6.11: the roster is NOT in hello-ok, only the default agent.
 HELLO_OK_PAYLOAD = {
@@ -35,7 +35,7 @@ def test_update_agents_from_list():
             "defaultId": "assistant",
             "agents": [
                 {"id": "main", "name": "Main Agent"},
-                {"id": "assistant", "name": "Jota Voice"},
+                {"id": "assistant", "name": "Fogar Voice"},
             ],
         }
     )

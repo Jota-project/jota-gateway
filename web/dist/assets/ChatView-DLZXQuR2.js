@@ -1,0 +1,1 @@
+import{D as e,c as t,m as n}from"./_plugin-vue_export-helper-Drb1sZC3.js";import{t as r}from"./PendingScreen-DEzaEWbl.js";var i=n({__name:`ChatView`,setup(n){return(n,i)=>(e(),t(r,{title:`Hablando con Jota`,block:`17e (texto) y 17f (voz)`,summary:`Chat por /ws/stream: respuesta en streaming, parar, mensajes de Jota, herramientas y, con HTTPS, voz.`}))}});export{i as default};

@@ -1,4 +1,4 @@
-"""`jota-gw onboard`: asistente de instalación (instalador mínimo, Task 5).
+"""`fogar-gw onboard`: asistente de instalación (instalador mínimo, Task 5).
 
 Nunca toca la red, systemd ni el ~/.config real: `verify.*`, `service.*`, `init`,
 `doctor.run_checks` y la API de /admin van parcheados; la base y XDG_CONFIG_HOME son temporales.
@@ -15,10 +15,10 @@ import questionary
 from click.testing import CliRunner
 from dotenv import dotenv_values
 
-from jota_gateway.cli import app, doctor, menu, output, service, verify
-from jota_gateway.cli import init as init_mod
-from jota_gateway.cli import onboard as onboard_mod
-from jota_gateway.cli.verify import Verdict
+from fogar_gateway.cli import app, doctor, menu, output, service, verify
+from fogar_gateway.cli import init as init_mod
+from fogar_gateway.cli import onboard as onboard_mod
+from fogar_gateway.cli.verify import Verdict
 from tests.fakes.cli_api import FakeApi
 
 ADMIN = "admin-token-largo-0123456789"
@@ -29,10 +29,10 @@ EL_KEY = "el-clave-secreta-xyz"
 CLIENT_KEY = "k" * 43
 CLIENT = {"id": "aaaa1111-0000", "name": "smoke", "key_fp": "1a2b3c4d"}
 SECRETS = (OC_TOKEN, STT_TOKEN, TTS_TOKEN, EL_KEY)
-NO_OPENCLAW = "Sin OpenClaw no se instala el servicio. Vuelve a ejecutar `jota-gw onboard`."
+NO_OPENCLAW = "Sin OpenClaw no se instala el servicio. Vuelve a ejecutar `fogar-gw onboard`."
 ENV = ("ADMIN_TOKEN", "OPENCLAW_HOST", "OPENCLAW_PORT", "OPENCLAW_TOKEN", "STT_PROVIDER",
        "TTS_PROVIDER", "TRANSCRIBER_WS_URL", "TRANSCRIBER_TOKEN", "TTS_WS_URL", "TTS_TOKEN",
-       "ELEVENLABS_API_KEY", "GATEWAY_HOST", "JOTA_GW_TOKEN", "JOTA_GW_URL")
+       "ELEVENLABS_API_KEY", "GATEWAY_HOST", "FOGAR_GW_TOKEN", "FOGAR_GW_URL")
 REAL_INIT = init_mod.init
 LAN_IP = "192.0.2.10"
 DEFAULT = object()  # en la cola de `tty`: acepta el valor por defecto de la pregunta
@@ -43,7 +43,7 @@ def gw(monkeypatch, tmp_path, use_api):
     """Base sin config.env (con la BD), unidad en un XDG temporal y todo lo externo parcheado."""
     base = tmp_path / "base"
     base.mkdir()
-    monkeypatch.setenv("JOTA_GATEWAY_HOME", str(base))
+    monkeypatch.setenv("FOGAR_GATEWAY_HOME", str(base))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     for name in ENV:
         monkeypatch.delenv(name, raising=False)
@@ -59,7 +59,7 @@ def gw(monkeypatch, tmp_path, use_api):
         st.db.touch()
 
     def fake_install():
-        from jota_gateway.cli.api import ApiError
+        from fogar_gateway.cli.api import ApiError
 
         st.calls.append("install")
         if not st.db.exists():  # como el real: sin BD no instala
@@ -91,7 +91,7 @@ def gw(monkeypatch, tmp_path, use_api):
     monkeypatch.setattr(onboard_mod, "_lan_ip", lambda: LAN_IP)  # sin socket real
     monkeypatch.setattr(doctor, "run_checks", lambda url, token: [
         {"level": "fail", "check": "orquestador", "detail": "aviso del doctor"}])
-    for name in ("verify_openclaw", "verify_jota_stt", "verify_jota_tts", "verify_elevenlabs"):
+    for name in ("verify_openclaw", "verify_fogar_stt", "verify_fogar_tts", "verify_elevenlabs"):
         monkeypatch.setattr(verify, name, verifier(name))
     monkeypatch.setattr(verify, "detect_openclaw", detect)
     st.api = use_api(FakeApi({("GET", "/admin/clients"): [],
@@ -131,7 +131,7 @@ def tty(monkeypatch):
 def write_answers(tmp_path, mode=0o600, **over):
     data = {"openclaw_host": "127.0.0.1", "openclaw_port": 18789, "openclaw_token": OC_TOKEN,
             "stt": {"provider": "off"},
-            "tts": {"provider": "jota", "url": "localhost:8005", "token": TTS_TOKEN},
+            "tts": {"provider": "fogar", "url": "localhost:8005", "token": TTS_TOKEN},
             "first_client": {"name": "smoke", "type": "web"}, **over}
     path = tmp_path / "answers.json"
     path.write_text(json.dumps(data))
@@ -170,20 +170,20 @@ def assert_cancelled(r):
 
 
 def test_onboard_happy_path_answers_file(gw, tmp_path):
-    path = write_answers(tmp_path, stt={"provider": "jota", "url": "localhost:9000"},
+    path = write_answers(tmp_path, stt={"provider": "fogar", "url": "localhost:9000"},
                          tts={"provider": "elevenlabs", "api_key": EL_KEY})
     r = onboard(path)
     assert r.exit_code == 0, r.output
     assert dotenv_values(gw.env) == {
         "ADMIN_TOKEN": ADMIN,
         "OPENCLAW_TOKEN": OC_TOKEN, "OPENCLAW_HOST": "127.0.0.1", "OPENCLAW_PORT": "18789",
-        "TRANSCRIBER_WS_URL": "localhost:9000", "TRANSCRIBER_TOKEN": "", "STT_PROVIDER": "jota",
+        "TRANSCRIBER_WS_URL": "localhost:9000", "TRANSCRIBER_TOKEN": "", "STT_PROVIDER": "fogar",
         "ELEVENLABS_API_KEY": EL_KEY, "TTS_PROVIDER": "elevenlabs",
     }
     assert gw.calls == [
         "init",
         ("verify_openclaw", "127.0.0.1", 18789, OC_TOKEN),
-        ("verify_jota_stt", "localhost:9000", ""),
+        ("verify_fogar_stt", "localhost:9000", ""),
         ("verify_elevenlabs", "tts", EL_KEY),
         "install",
     ]
@@ -239,9 +239,9 @@ def test_onboard_skips_first_client_when_clients_exist(gw, tmp_path, why):
 
 
 def test_onboard_interrupted_then_resumed(gw, tmp_path):
-    path = write_answers(tmp_path, stt={"provider": "jota", "url": "localhost:9000",
+    path = write_answers(tmp_path, stt={"provider": "fogar", "url": "localhost:9000",
                                         "token": STT_TOKEN})
-    gw.verdicts["verify_jota_stt"] = KeyboardInterrupt()
+    gw.verdicts["verify_fogar_stt"] = KeyboardInterrupt()
     r = onboard(path)
     assert_cancelled(r)
     env = dotenv_values(gw.env)
@@ -249,11 +249,11 @@ def test_onboard_interrupted_then_resumed(gw, tmp_path):
     assert "STT_PROVIDER" not in env and "TRANSCRIBER_TOKEN" not in env
     assert not service.unit_path().exists() and installs(gw) == []
 
-    del gw.verdicts["verify_jota_stt"]
+    del gw.verdicts["verify_fogar_stt"]
     r = onboard(path)
     assert r.exit_code == 0, r.output
     env = dotenv_values(gw.env)
-    assert env["STT_PROVIDER"] == "jota" and env["TRANSCRIBER_TOKEN"] == STT_TOKEN
+    assert env["STT_PROVIDER"] == "fogar" and env["TRANSCRIBER_TOKEN"] == STT_TOKEN
     assert env["TTS_TOKEN"] == TTS_TOKEN
     assert gw.calls.count("init") == 1 and installs(gw) == ["install"]
     assert service.unit_path().exists()
@@ -272,7 +272,7 @@ def test_answers_file_stricter_than_0600_is_accepted(gw, tmp_path):
 
 
 def test_answers_file_of_another_user_is_rejected(gw, tmp_path, monkeypatch):
-    from jota_gateway.cli import onboard as onboard_mod
+    from fogar_gateway.cli import onboard as onboard_mod
 
     path = write_answers(tmp_path)
     monkeypatch.setattr(onboard_mod.os, "getuid", lambda: path.stat().st_uid + 1)
@@ -283,7 +283,7 @@ def test_answers_file_of_another_user_is_rejected(gw, tmp_path, monkeypatch):
 
 def test_no_secret_in_output(gw, tmp_path):
     # Por fichero, con un fallo de verificación y con un fichero mal formado.
-    path = write_answers(tmp_path, stt={"provider": "jota", "url": "localhost:9000",
+    path = write_answers(tmp_path, stt={"provider": "fogar", "url": "localhost:9000",
                                         "token": STT_TOKEN},
                          tts={"provider": "elevenlabs", "api_key": EL_KEY})
     outputs = [onboard(path).output]
@@ -307,7 +307,7 @@ def test_no_secret_in_output(gw, tmp_path):
     ({"openclaw_port": True}, "openclaw_port"),
     ({"stt": {"provider": "elevenlabs"}}, "api_key"),
     ({"stt": {"provider": "off", "url": "x:1"}}, "stt"),
-    ({"tts": {"provider": "jota", "api_key": EL_KEY}}, "tts"),
+    ({"tts": {"provider": "fogar", "api_key": EL_KEY}}, "tts"),
     ({"first_client": {"name": "a", "type": "tele"}}, "first_client"),
 ])
 def test_answers_file_unknown_missing_or_bad_keys(gw, tmp_path, over, where):
@@ -360,7 +360,7 @@ def test_invalid_config_exits_before_asking(gw, tmp_path):
 
 
 def test_real_init_from_onboard_without_its_next_step_hint(gw, tmp_path, monkeypatch):
-    from jota_gateway.db import database
+    from fogar_gateway.db import database
 
     monkeypatch.setattr(init_mod, "init", REAL_INIT)
     monkeypatch.setattr(database, "CREATE_DB", False)  # init lo deja en True: se restaura
@@ -378,7 +378,7 @@ def test_real_init_from_onboard_without_its_next_step_hint(gw, tmp_path, monkeyp
 
 
 def test_answers_voice_failure_exits_1_with_detail(gw, tmp_path):
-    gw.verdicts["verify_jota_tts"] = Verdict(False, "unreachable", "El servicio de TTS no responde.")
+    gw.verdicts["verify_fogar_tts"] = Verdict(False, "unreachable", "El servicio de TTS no responde.")
     r = onboard(write_answers(tmp_path))
     assert r.exit_code == 1
     assert "El servicio de TTS no responde." in r.output
@@ -388,11 +388,11 @@ def test_answers_voice_failure_exits_1_with_detail(gw, tmp_path):
 
 def test_library_warnings_do_not_reach_the_terminal(gw, tmp_path, monkeypatch):
     async def noisy(*args):
-        logging.getLogger("jota_gateway.services.tts_client").warning("TTS handshake: OSError")
+        logging.getLogger("fogar_gateway.services.tts_client").warning("TTS handshake: OSError")
         logging.getLogger("websockets.client").warning("ConnectionClosedError")
         return Verdict(False, "unreachable", "El servicio de TTS no responde.")
 
-    monkeypatch.setattr(verify, "verify_jota_tts", noisy)
+    monkeypatch.setattr(verify, "verify_fogar_tts", noisy)
     # Sin handlers en el root (como la CLI fuera de pytest), logging.lastResort los pintaría.
     # La misma lista, vaciada y restaurada: pytest quita después sus propios handlers de ella.
     root = logging.getLogger()
@@ -412,14 +412,14 @@ def test_library_warnings_do_not_reach_the_terminal(gw, tmp_path, monkeypatch):
 
 def test_interactive_full_flow(gw, tty):
     gw.detected = ""  # OpenClaw 2026.11.1 contesta sin versión
-    gw.verdicts["verify_jota_stt"] = Verdict(False, "unreachable", "El servicio de STT no responde.")
+    gw.verdicts["verify_fogar_stt"] = Verdict(False, "unreachable", "El servicio de STT no responde.")
     gw.verdicts["verify_elevenlabs"] = [
         Verdict(True, "ok", "ElevenLabs acepta la clave."),
         Verdict(False, "rejected", "ElevenLabs rechazó la clave."),
     ]
     tty.queue.extend([
         OC_TOKEN,                                   # token (OpenClaw detectado: sin dirección)
-        "jota", "localhost:9000", False,            # STT propio, sin clave → falla
+        "fogar", "localhost:9000", False,            # STT propio, sin clave → falla
         "change", "elevenlabs", EL_KEY,             # cambiar respuestas → ElevenLabs
         "elevenlabs",                               # TTS: misma clave, ya verificada → falla
         "off",                                      # «ahora no»
@@ -501,8 +501,8 @@ def test_interactive_defaults_and_labels(gw, tty):
     gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\n")
     tty.queue.extend([
         DEFAULT, DEFAULT, OC_TOKEN,                 # OpenClaw no detectado: host y puerto
-        "jota", DEFAULT, DEFAULT,                   # STT propio, dirección y «¿usa clave?»
-        "jota", DEFAULT, DEFAULT,                   # TTS igual
+        "fogar", DEFAULT, DEFAULT,                   # STT propio, dirección y «¿usa clave?»
+        "fogar", DEFAULT, DEFAULT,                   # TTS igual
         "Tele", "web",
     ])
     r = run("onboard")
@@ -514,16 +514,16 @@ def test_interactive_defaults_and_labels(gw, tty):
     for kw in asked(tty, "select", "¿qué servicio?"):
         assert titles(kw) == ["servicio propio", "elevenlabs", "ahora no"]
     assert ("verify_openclaw", "127.0.0.1", 18789, OC_TOKEN) in gw.calls
-    assert ("verify_jota_stt", "localhost:9000", "") in gw.calls
-    assert ("verify_jota_tts", "localhost:8005", "") in gw.calls
+    assert ("verify_fogar_stt", "localhost:9000", "") in gw.calls
+    assert ("verify_fogar_tts", "localhost:8005", "") in gw.calls
     env = dotenv_values(gw.env)
     assert env["TRANSCRIBER_WS_URL"] == "localhost:9000" and env["TTS_WS_URL"] == "localhost:8005"
     assert r.output.count("Recomendado: deja este servicio accesible solo desde el gateway.") == 2
     assert sorted(titles(asked(tty, "select", "Tipo")[0])) == ["app", "esp32", "ha", "screen", "web"]
 
 
-def test_answers_jota_without_url_writes_the_default(gw, tmp_path):
-    r = onboard(write_answers(tmp_path, stt={"provider": "jota"}, tts={"provider": "jota"}))
+def test_answers_fogar_without_url_writes_the_default(gw, tmp_path):
+    r = onboard(write_answers(tmp_path, stt={"provider": "fogar"}, tts={"provider": "fogar"}))
     assert r.exit_code == 0, r.output
     env = dotenv_values(gw.env)
     assert env["TRANSCRIBER_WS_URL"] == "localhost:9000" and env["TTS_WS_URL"] == "localhost:8005"
@@ -573,8 +573,8 @@ def test_new_stt_key_is_verified_for_an_elevenlabs_tts_answers(gw, tmp_path):
     assert installs(gw) == []
 
 
-def test_new_stt_key_is_verified_for_tts_even_if_answers_move_tts_to_jota(gw, tmp_path):
-    # El TTS de jota puede fallar después: config.env se quedaría con el TTS en ElevenLabs y B.
+def test_new_stt_key_is_verified_for_tts_even_if_answers_move_tts_to_fogar(gw, tmp_path):
+    # El TTS de fogar puede fallar después: config.env se quedaría con el TTS en ElevenLabs y B.
     _tts_already_on_elevenlabs(gw)
     gw.verdicts["verify_elevenlabs"] = [
         Verdict(True, "ok", "ElevenLabs acepta la clave."),
@@ -584,12 +584,12 @@ def test_new_stt_key_is_verified_for_tts_even_if_answers_move_tts_to_jota(gw, tm
     assert r.exit_code == 1 and "El TTS ya usa ElevenLabs" in r.output
     env = dotenv_values(gw.env)
     assert env["ELEVENLABS_API_KEY"] == OLD_KEY and "STT_PROVIDER" not in env
-    assert not any(c[0] == "verify_jota_tts" for c in gw.calls if isinstance(c, tuple))
+    assert not any(c[0] == "verify_fogar_tts" for c in gw.calls if isinstance(c, tuple))
 
 
-def test_tts_check_passes_then_jota_tts_fails_leaves_a_verified_key(gw, tmp_path):
+def test_tts_check_passes_then_fogar_tts_fails_leaves_a_verified_key(gw, tmp_path):
     _tts_already_on_elevenlabs(gw)
-    gw.verdicts["verify_jota_tts"] = Verdict(False, "unreachable", "El servicio de TTS no responde.")
+    gw.verdicts["verify_fogar_tts"] = Verdict(False, "unreachable", "El servicio de TTS no responde.")
     r = onboard(write_answers(tmp_path, stt={"provider": "elevenlabs", "api_key": NEW_KEY}))
     assert r.exit_code == 1 and "El servicio de TTS no responde." in r.output
     assert [c for c in gw.calls if c[0] == "verify_elevenlabs"] == [
@@ -629,7 +629,7 @@ def test_interactive_rerun_asks_before_restarting(gw, tty, yes):
     assert kw["default"] is True
     assert installs(gw) == (["restart"] if yes else [])
     if not yes:
-        assert "jota-gw restart" in r.output
+        assert "fogar-gw restart" in r.output
 
 
 def test_answers_rerun_restarts_without_asking(gw, tty, tmp_path):
@@ -642,7 +642,7 @@ def test_answers_rerun_restarts_without_asking(gw, tty, tmp_path):
 
 
 def test_without_systemd_fails_before_creating_or_asking(gw, tty, monkeypatch):
-    from jota_gateway.cli.api import ApiError
+    from fogar_gateway.cli.api import ApiError
 
     def no_systemd():
         raise ApiError("Este comando necesita Linux con systemd.", 1)
@@ -719,7 +719,7 @@ def test_onboard_with_config_and_db_does_not_run_init(gw, tmp_path):
 
 CONFIGURED = (f"ADMIN_TOKEN={ADMIN}\nOPENCLAW_TOKEN={OC_TOKEN}\nOPENCLAW_HOST=127.0.0.1\n"
               "OPENCLAW_PORT=18789\nTRANSCRIBER_WS_URL=stt.lan:9000\nTRANSCRIBER_TOKEN=\n"
-              "STT_PROVIDER=jota\nTTS_PROVIDER=off\n")
+              "STT_PROVIDER=fogar\nTTS_PROVIDER=off\n")
 
 
 def _configured_rerun(gw, env=CONFIGURED):
@@ -783,9 +783,9 @@ def test_answers_rerun_never_keeps(gw, tmp_path):
     r = onboard(write_answers(tmp_path))
     assert r.exit_code == 0, r.output
     assert [c[0] for c in gw.calls if isinstance(c, tuple)] == ["verify_openclaw",
-                                                                "verify_jota_tts"]
+                                                                "verify_fogar_tts"]
     env = dotenv_values(gw.env)
-    assert env["STT_PROVIDER"] == "off" and env["TTS_PROVIDER"] == "jota"
+    assert env["STT_PROVIDER"] == "off" and env["TTS_PROVIDER"] == "fogar"
 
 
 def test_new_tts_key_is_verified_for_a_kept_elevenlabs_stt(gw, tty):

@@ -5,9 +5,9 @@ import time
 
 import pytest
 
-from jota_gateway.db.models import ClientRecord
-from jota_gateway.services import pairing
-from jota_gateway.services.pairing import InvalidCode, PairingFull, PairingStore
+from fogar_gateway.db.models import ClientRecord
+from fogar_gateway.services import pairing
+from fogar_gateway.services.pairing import InvalidCode, PairingFull, PairingStore
 
 
 class Clock:

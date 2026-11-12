@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jota_gateway.core.config import settings
+from fogar_gateway.core.config import settings
 from tests.fakes.bridge import sent
 
 
@@ -230,8 +230,8 @@ async def test_no_push_tts_event_without_tts(make_push_bridge):
 
 
 async def test_turn_counters(make_push_bridge, monkeypatch):
-    from jota_gateway.services import orchestration
-    from jota_gateway.services.stats import gateway_stats
+    from fogar_gateway.services import orchestration
+    from fogar_gateway.services.stats import gateway_stats
 
     bridge = make_push_bridge(output_mode=("text",))
     bridge.tracker.start_turn = lambda: None
@@ -249,8 +249,8 @@ async def test_turn_counters(make_push_bridge, monkeypatch):
 
 
 async def test_plain_runtime_error_counts_as_internal_error(make_push_bridge, monkeypatch):
-    from jota_gateway.services import orchestration
-    from jota_gateway.services.stats import gateway_stats
+    from fogar_gateway.services import orchestration
+    from fogar_gateway.services.stats import gateway_stats
 
     bridge = make_push_bridge(output_mode=("text",))
     bridge.tracker.start_turn = lambda: None
@@ -265,8 +265,8 @@ async def test_plain_runtime_error_counts_as_internal_error(make_push_bridge, mo
 
 
 async def test_unexpected_exception_counts_as_internal_error(make_push_bridge, monkeypatch):
-    from jota_gateway.services import orchestration
-    from jota_gateway.services.stats import gateway_stats
+    from fogar_gateway.services import orchestration
+    from fogar_gateway.services.stats import gateway_stats
 
     bridge = make_push_bridge(output_mode=("text",))
     bridge.tracker.start_turn = lambda: None
