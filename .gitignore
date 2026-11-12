@@ -20,3 +20,6 @@ build/
 
 # asset de cada release: lo genera semantic-release (.releaserc.json), no se versiona
 constraints.txt
+
+# web compilada dentro del paquete: la genera scripts/build-web.sh, no se versiona
+src/fogar_gateway/web/

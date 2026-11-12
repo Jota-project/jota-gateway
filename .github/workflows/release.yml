@@ -33,6 +33,12 @@ jobs:
         with:
           node-version: 'lts/*'
 
+      # La web se compila en el prepareCmd (scripts/build-web.sh) para meterla en el wheel.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+
       # constraints.txt (prepareCmd de .releaserc.json) se exporta de uv.lock.
       - name: Set up uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3

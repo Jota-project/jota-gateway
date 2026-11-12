@@ -104,7 +104,8 @@ main() {
     say "Instalando fogar-gateway desde $FOGAR_SOURCE…"
   else
     resolve_version
-    spec=${FOGAR_SOURCE:-"fogar-gateway @ git+$REPO@v$version"}
+    # El wheel de la release lleva la web compilada (M18): sin él no habría panel en /.
+    spec=${FOGAR_SOURCE:-"fogar-gateway @ $REPO/releases/download/v$version/fogar_gateway-$version-py3-none-any.whl"}
     constraints=$REPO/releases/download/v$version/constraints.txt
     say "Instalando fogar-gateway v$version…"
   fi

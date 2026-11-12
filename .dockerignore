@@ -19,3 +19,6 @@ data
 !.env.sample
 *.md
 !README.md
+web/node_modules
+web/dist
+src/fogar_gateway/web

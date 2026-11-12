@@ -26,5 +26,9 @@
     "vite": "^8.3.5",
     "vitest": "^5.0.5",
     "vue-tsc": "^3.3.14"
+  },
+  "packageManager": "pnpm@10.28.2",
+  "engines": {
+    "node": ">=22.12"
   }
 }

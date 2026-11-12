@@ -40,9 +40,13 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# Alembic va dentro del paquete: sin esto, el wheel no lleva su ini ni la plantilla.
+# Alembic va dentro del paquete: sin esto, el wheel no lleva su ini ni la plantilla. La web
+# compilada (scripts/build-web.sh) también; un nivel por glob, sin `**`.
 [tool.setuptools.package-data]
-fogar_gateway = ["alembic.ini", "migrations/script.py.mako"]
+fogar_gateway = [
+    "alembic.ini", "migrations/script.py.mako",
+    "web/*", "web/assets/*", "web/fonts/*",
+]
 
 # La versión real es el tag de semantic-release, que la escribe en _version.py (.releaserc.json).
 [tool.setuptools.dynamic]

@@ -1,3 +1,12 @@
+# La web se compila en una etapa propia: la imagen final no lleva Node (M18).
+FROM node:22-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS web
+WORKDIR /web
+RUN corepack enable
+COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY web/ ./
+RUN pnpm build
+
 # Python minor + digest fijados (el digest lo mantiene Dependabot, ecosistema "docker").
 FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
 
@@ -17,6 +26,7 @@ RUN uv export --frozen --no-dev --no-emit-project -o /tmp/req.txt \
 # fogar-gw. Se construye en /tmp para que /app solo tenga los datos. README.md lo pide pyproject.
 COPY pyproject.toml README.md /tmp/pkg/
 COPY src/ /tmp/pkg/src/
+COPY --from=web /web/dist /tmp/pkg/src/fogar_gateway/web
 RUN pip install --no-cache-dir --no-deps /tmp/pkg && rm -rf /tmp/pkg
 
 # Usuario no-root. /app/data queda en su propiedad para que la imagen funcione

@@ -76,13 +76,34 @@ jobs:
   # Docker build succeeded. Add new required jobs to `needs`, not to the ruleset.
   test:
     runs-on: ubuntu-latest
-    needs: [tests, docker-build, package, service-smoke, installer-smoke]
+    needs: [tests, web, docker-build, package, service-smoke, installer-smoke]
     if: always()
     steps:
       - name: Require all jobs to succeed
         run: |
-          echo "tests=${{ needs.tests.result }} docker-build=${{ needs.docker-build.result }} package=${{ needs.package.result }} service-smoke=${{ needs.service-smoke.result }} installer-smoke=${{ needs.installer-smoke.result }}"
-          [ "${{ needs.tests.result }}" = "success" ] && [ "${{ needs.docker-build.result }}" = "success" ] && [ "${{ needs.package.result }}" = "success" ] && [ "${{ needs.service-smoke.result }}" = "success" ] && [ "${{ needs.installer-smoke.result }}" = "success" ]
+          echo "tests=${{ needs.tests.result }} web=${{ needs.web.result }} docker-build=${{ needs.docker-build.result }} package=${{ needs.package.result }} service-smoke=${{ needs.service-smoke.result }} installer-smoke=${{ needs.installer-smoke.result }}"
+          [ "${{ needs.tests.result }}" = "success" ] && [ "${{ needs.web.result }}" = "success" ] && [ "${{ needs.docker-build.result }}" = "success" ] && [ "${{ needs.package.result }}" = "success" ] && [ "${{ needs.service-smoke.result }}" = "success" ] && [ "${{ needs.installer-smoke.result }}" = "success" ]
+
+  # La web (M18): tipos, pruebas y build con el lockfile de pnpm.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
 
   # La instalación nativa (M14c): el wheel lleva Alembic y sus migraciones, y el programa
   # instalado funciona desde cualquier directorio, sin el checkout.
@@ -100,12 +121,21 @@ jobs:
         with:
           version: "0.13.7"
 
+      # La web compilada va dentro del wheel (M18), como en la release.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
       # El venv limpio de abajo instala el wheel sin lock, como un usuario de pip.
-      - name: Build the wheel and check it carries Alembic
+      - name: Build the wheel and check it carries Alembic and the web
         run: |
+          sh scripts/build-web.sh
           uv build --wheel -o dist
           unzip -l dist/*.whl > contents.txt
-          for f in "fogar_gateway/alembic.ini" "fogar_gateway/migrations/env.py" \
+          for f in "fogar_gateway/web/index.html" "fogar_gateway/web/assets/index-.*\.js" "fogar_gateway/alembic.ini" "fogar_gateway/migrations/env.py" \
                    "fogar_gateway/migrations/script.py.mako" "fogar_gateway/migrations/versions/[0-9a-f]\{12\}_.*\.py"; do
             grep -q "$f" contents.txt || { echo "Falta $f en el wheel"; exit 1; }
           done
@@ -126,6 +156,8 @@ jobs:
           FOGAR_GATEWAY_HOME=$base fogar-gw serve & pid=$!
           for i in $(seq 1 30); do curl -fs http://127.0.0.1:8004/healthz && break; sleep 1; done
           curl -fs http://127.0.0.1:8004/healthz
+          # El panel sale del paquete instalado, no del checkout (estamos en /tmp).
+          curl -fsI http://127.0.0.1:8004/ | grep -qi '^content-security-policy:'
           kill $pid
           python -c "import sqlite3, sys; print(sqlite3.connect(sys.argv[1]).execute('SELECT version_num FROM alembic_version').fetchone()[0])" "$base/data/gateway.db"
 
@@ -159,6 +191,8 @@ jobs:
           uid=$(docker exec gw id -u)
           echo "uid=$uid"
           [ "$uid" != "0" ]
+          # La imagen lleva el panel compilado en su etapa de Node (M18).
+          docker exec gw python -c "from fogar_gateway.api.web_routes import web_available; assert web_available()"
           docker rm -f gw
 
       - name: Smoke - writes gateway.db to a bind mount owned by an arbitrary host UID
