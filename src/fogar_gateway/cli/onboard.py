@@ -3,8 +3,10 @@ onboard.py
 ~~~~~~~~~~
 `fogar-gw onboard`: el asistente de instalación. Pregunta lo mínimo, verifica cada proveedor
 contra el servicio real (`cli/verify.py`) antes de guardarlo con `cli/config.py::_apply`,
-instala o reinicia el servicio y crea el primer cliente. Con `--answers FICHERO` (JSON 600)
-no pregunta nada: es el modo de `install.sh` y del CI. Cortarlo a medias deja config.env
+instala o reinicia el servicio y termina en el dashboard: su URL desde otro aparato, el token
+(solo en una terminal), dónde está y cómo verlo, y con terminal espera a que entres. El primer
+cliente se empareja desde el dashboard. Con `--answers FICHERO` (JSON 600) no pregunta ni espera
+nada, ni enseña el token: es el modo del CI (y su `first_client`, opcional, crea un cliente). Cortarlo a medias deja config.env
 como estaba más lo ya verificado; volver a ejecutarlo retoma, y con terminal ofrece primero
 «Dejar como está» en cada paso que config.env ya tiene (ni verifica ni escribe).
 
@@ -24,7 +26,7 @@ import click
 from fogar_gateway import paths
 from fogar_gateway.cli import api
 from fogar_gateway.cli import config as cfg
-from fogar_gateway.cli.output import MUTED, Out
+from fogar_gateway.cli.output import ACCENT, MUTED, Out
 
 NO_OPENCLAW = "Sin OpenClaw no se instala el servicio. Vuelve a ejecutar `fogar-gw onboard`."
 TOKEN_HINT = "Ejecuta `openclaw config get gateway.auth.token` y pega el resultado."
@@ -35,6 +37,7 @@ VOICE = {
     "stt": ("STT", "TRANSCRIBER_WS_URL", "TRANSCRIBER_TOKEN", "STT_PROVIDER", "localhost:9000"),
     "tts": ("TTS", "TTS_WS_URL", "TTS_TOKEN", "TTS_PROVIDER", "localhost:8005"),
 }
+DASHBOARD_POLL_S = 1.0
 KEEP = {"fogar": "servicio propio", "elevenlabs": "ElevenLabs", "off": "desactivado"}
 
 
@@ -215,8 +218,9 @@ def _voice_step(out: Out, kind: Literal["stt", "tts"], answer: Any,
     verified.update((k, v) for k, v in values.items() if k == ELEVENLABS_KEY)
 
 
-def _lan_ip() -> str:
-    """La IP de la LAN: la de la ruta hacia 8.8.8.8. `connect` en UDP no envía nada."""
+def _lan_ip() -> str | None:
+    """La IP de la LAN: la de la ruta hacia 8.8.8.8 (`connect` en UDP no envía nada); None si
+    no hay ruta (una LAN sin salida): mejor decirlo que dar 127.0.0.1."""
     import socket
 
     try:
@@ -225,42 +229,97 @@ def _lan_ip() -> str:
             ip: str = s.getsockname()[0]
             return ip
     except OSError:
-        return "127.0.0.1"
+        return None
 
 
-def _client_name(value: str) -> bool | str:
-    """Las mismas reglas que aplica el servidor al nombre (`admin_schemas._Name`)."""
-    from pydantic import TypeAdapter, ValidationError
-
-    from fogar_gateway.models.admin_schemas import _Name
+def _is_loopback(host: str) -> bool:
+    import ipaddress
 
     try:
-        TypeAdapter(_Name).validate_python(value)
-    except ValidationError:
-        return "Entre 1 y 200 caracteres."
-    return True
+        return host == "localhost" or ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:  # un nombre: se da tal cual
+        return False
 
 
-def _first_client(ctx: click.Context, out: Out, answers: Any, gateway_host: str) -> None:
-    from typing import get_args
+def _first_client(ctx: click.Context, out: Out, answers: Any) -> None:
+    """Solo con --answers: el CI crea su cliente. Con terminal, se empareja desde el dashboard."""
+    from fogar_gateway.cli import clients
 
-    from fogar_gateway.cli import clients, serve
-    from fogar_gateway.models.admin_schemas import ClientType
-
+    if not (answers and answers.first_client):
+        return
     client = api.from_context(ctx)
     if not client.request("GET", "/admin/clients"):
-        if answers:
-            first = answers.first_client and (answers.first_client.name, answers.first_client.type)
+        body = {"name": answers.first_client.name, "client_type": answers.first_client.type}
+        clients._show_key(out, client.request("POST", "/admin/clients", body))
+
+
+def _enter_pressed(timeout: float) -> bool:
+    """¿Ha pulsado Enter en `timeout` s? Lee la línea para que no quede en la terminal."""
+    import select
+    import sys
+
+    ready, _, _ = select.select([sys.stdin], [], [], timeout)
+    if ready:
+        sys.stdin.readline()
+    return bool(ready)
+
+
+def _wait_dashboard(ctx: click.Context, out: Out, url: str | None) -> None:
+    """Espera a que la pantalla Estado del dashboard abra su flujo (`gateway.dashboards`).
+    Enter o Ctrl+C dejan de esperar sin error; un gateway que aún arranca, se reintenta."""
+    client = api.from_context(ctx)
+    out.message("Abre el dashboard en otro aparato y pega el token. Te espero… "
+                "(Enter para seguir sin esperar)", MUTED)
+    try:
+        while True:
+            try:
+                state = client.request("GET", "/admin/state")
+            except api.ApiError:
+                state = {}
+            if state.get("gateway", {}).get("dashboards"):
+                out.message("Conectado: ya puedes seguir en el dashboard.")
+                return
+            if _enter_pressed(DASHBOARD_POLL_S):
+                break
+    except KeyboardInterrupt:
+        pass
+    out.message(f"Sin esperar: entra cuando quieras{f' en {url}' if url else ''}.", MUTED)
+
+
+def _dashboard(ctx: click.Context, out: Out, answers: Any, settings: Any) -> None:
+    """El final: cómo llegar al dashboard desde otro aparato y con qué token."""
+    from fogar_gateway.cli import output, serve
+    from fogar_gateway.cli.token import WARNING
+
+    port = serve.PORT
+    bind = settings.GATEWAY_HOST
+    url = host = None
+    if _is_loopback(bind):
+        out.message(f"El gateway solo escucha en este equipo (GATEWAY_HOST={bind}): desde otro "
+                    f"aparato no se llega. Entra con un túnel SSH (`ssh -L {port}:127.0.0.1:{port}"
+                    f" <este servidor>` y abre http://localhost:{port}/) o ábrelo a la LAN con "
+                    "`fogar-gw config set GATEWAY_HOST 0.0.0.0` y `fogar-gw restart`.")
+    else:
+        # Solo con el gateway escuchando en todas las interfaces se adivina la IP de la LAN.
+        host = _lan_ip() if bind in ("", "0.0.0.0", "::") else bind
+        if host:
+            host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+            url = f"http://{host}:{port}/"
+            out.message(f"Tu dashboard: {url} (desde cualquier aparato de tu red)")
         else:
-            first = (_ask("text", "Nombre del primer cliente", validate=_client_name).strip(),
-                     _choose("Tipo", [(t, t) for t in get_args(ClientType)]))
-        if first:
-            body = {"name": first[0], "client_type": first[1]}
-            clients._show_key(out, client.request("POST", "/admin/clients", body))
-    # Solo con el gateway escuchando en todas las interfaces se adivina la IP de la LAN.
-    host = _lan_ip() if gateway_host in ("", "0.0.0.0", "::") else gateway_host
-    host = f"[{host}]" if ":" in host and not host.startswith("[") else host
-    out.message(f"Los clientes se conectan a ws://{host}:{serve.PORT}/ws/stream")
+            out.message(f"Tu dashboard: http://<IP de este equipo>:{port}/ (no encuentro la IP "
+                        "de la LAN: mírala con `hostname -I`)")
+    out.message("Para entrar, pega en él el token de administración.")
+    if answers is None and not out.as_json and output._isatty():
+        out.message(f"Token: {settings.ADMIN_TOKEN}", ACCENT)
+    out.message(f"Está en {paths.config_file()} (ADMIN_TOKEN). Para verlo otra vez: "
+                "`fogar-gw token`.")
+    out.message(WARNING, MUTED)
+    out.message("Empareja tu primer aparato desde Clientes, en el dashboard.")
+    if host:
+        out.message(f"Los clientes se conectan a ws://{host}:{port}/ws/stream", MUTED)
+    if answers is None:
+        _wait_dashboard(ctx, out, url)
 
 
 def _read_answers(path: Path) -> Any:
@@ -308,7 +367,7 @@ def _read_answers(path: Path) -> Any:
         openclaw_token: str
         stt: Annotated[Fogar | ElevenLabs | Off, Field(discriminator="provider")]
         tts: Annotated[Fogar | ElevenLabs | Off, Field(discriminator="provider")]
-        first_client: FirstClient | None
+        first_client: FirstClient | None = None  # el CI; con terminal, desde el dashboard
 
     try:
         answers = Answers.model_validate_json(raw)
@@ -353,7 +412,8 @@ def _run(ctx: click.Context, out: Out, answers: Any) -> None:
         ctx.invoke(doctor.doctor)
     except click.exceptions.Exit:
         out.message("El diagnóstico marca algún fallo (arriba); el asistente sigue.", MUTED)
-    _first_client(ctx, out, answers, settings.GATEWAY_HOST)
+    _first_client(ctx, out, answers)
+    _dashboard(ctx, out, answers, settings)
 
 
 @click.command()
@@ -361,7 +421,7 @@ def _run(ctx: click.Context, out: Out, answers: Any) -> None:
               metavar="FICHERO", help="Respuestas en JSON (permisos 600): no pregunta nada.")
 @click.pass_context
 def onboard(ctx: click.Context, answers_path: Path | None) -> None:
-    """Asistente: OpenClaw, voz, servicio y primer cliente."""
+    """Asistente: OpenClaw, voz, servicio y dashboard."""
     from fogar_gateway.cli import output
 
     out = Out(ctx.find_root().obj["json"])
