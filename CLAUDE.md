@@ -54,6 +54,7 @@ A BFF: the single entry point for Fogar TV, jota-voice (Mac and Android/Termux),
 
 | Path | Role |
 |---|---|
+| `access.py` | Stdlib only at top level (imported by `core/config.py`, so never import `core.config` here): `parse_public_urls()` validates/normalizes `PUBLIC_URLS` |
 | `paths.py` | Stdlib only, shared by gateway and CLI: `home()` (`FOGAR_GATEWAY_HOME`/`--home` or `~/.fogar-gateway`), `config_file()`, `absolute_database_url()`/`sqlite_file()` (a relative SQLite path hangs from the base, URL-encoded), `LOCK_FILENAME` |
 | `main.py` | App + lifespan: logs the resolved paths, lock and startup checks, migrations, builds OpenClaw and speech providers into `app.state`, wires state-change broadcasts, ordered shutdown under `Teardown` (unhook broadcasts → close speech providers → OpenClaw → dispose DB engine; uvicorn has already closed every session with 1012) |
 | `api/routes.py` | `/ws/stream`: handshake (size, timeout, auth, agent policy) → `QueuedSender` → `PipelineTracker` → `FogarBridge` → health check → `ready` → `bridge.run()` |
@@ -87,7 +88,7 @@ Speech providers are chosen at startup with `STT_PROVIDER`/`TTS_PROVIDER` (`foga
 
 Breaking any of these is a bug, whatever the change is for.
 
-- **Service addresses are `host:port` without protocol** in every `Settings` field; each client adds `ws://`/`http://` itself. Never store full URLs in settings.
+- **Service addresses are `host:port` without protocol** in every `Settings` field; each client adds `ws://`/`http://` itself. Never store full URLs in settings. Sole exception: `PUBLIC_URLS` (the user's own `https://` URLs, validated by `access.parse_public_urls`).
 - **`client_key` is a credential.** `/admin` returns it only on create and rotate (`ClientWithKey`); reads carry `key_fp`. Never log it, in full or as a prefix; correlate with `fingerprint_key(value)` logged as `fp=<8 hex>`, and with `client.id` after auth. Pydantic validation errors must be logged as field + error type only (`input_value` would carry the key).
 - **No user text in logs at INFO or above, nor in tracker `meta`** (it is logged at INFO and persisted in `SessionRecord`, visible in `/admin/sessions`): record lengths (`text_len=len(text)`). DEBUG transcripts are truncated (finals: 40 chars).
 - **Stable errors toward clients.** A client or a log never sees exception text or OpenClaw's raw error: turn errors use the fixed codes listed in `docs/client-protocol.md` §9 (`orchestrator_*`, `turn_timeout`, `turn_overflow`, `turn_in_progress`, `internal_error`); logs carry the exception type (`describe_error`, `traceback_no_message`) and `last_error` holds a code or a type name.

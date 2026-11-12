@@ -389,6 +389,7 @@ Variables de entorno o, si no, de `<base>/config.env` (instalación nativa). En 
 | `DATABASE_URL` | `sqlite:///data/gateway.db` | Base de datos SQLite local (identidad y configuración de clientes). Una ruta relativa cuelga de `<base>` |
 | `GATEWAY_HOST` | `0.0.0.0` | Host de escucha de `fogar-gw serve` (`127.0.0.1` detrás de un proxy en el mismo host) |
 | `GATEWAY_NAME` | — | Nombre con el que se anuncia a los clientes (`/.well-known/fogar-gateway`). Vacío = nombre del equipo; en Docker conviene fijarlo |
+| `PUBLIC_URLS` | — | URLs `https://` propias por las que se llega al gateway (CSV, sin ruta, parámetros ni usuario), p. ej. `https://fogar.example.com`. Vacío = ninguna |
 | `TRANSCRIBER_WS_URL` | `localhost:9000` | fogar-transcriber |
 | `TTS_WS_URL` | `localhost:8005` | fogar-speaker |
 | `TTS_TOKEN` | — | Token de auth para fogar-speaker; vacío si el TTS no exige clave |
