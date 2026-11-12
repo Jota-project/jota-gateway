@@ -1,1 +1,0 @@
-import{D as e,c as t,m as n}from"./_plugin-vue_export-helper-Drb1sZC3.js";import{t as r}from"./PendingScreen-DEzaEWbl.js";var i=n({__name:`SesionesView`,setup(n){return(n,i)=>(e(),t(r,{title:`Sesiones`,block:`17c`,summary:`Las últimas 100 conexiones en memoria, con filtro por estado y el último turno etapa a etapa.`}))}});export{i as default};
