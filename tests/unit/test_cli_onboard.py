@@ -94,8 +94,11 @@ def gw(monkeypatch, tmp_path, use_api):
     for name in ("verify_openclaw", "verify_fogar_stt", "verify_fogar_tts", "verify_elevenlabs"):
         monkeypatch.setattr(verify, name, verifier(name))
     monkeypatch.setattr(verify, "detect_openclaw", detect)
+    # Con terminal, el asistente acaba esperando al dashboard: aquí ya hay uno conectado.
     st.api = use_api(FakeApi({("GET", "/admin/clients"): [],
-                              ("POST", "/admin/clients"): {**CLIENT, "client_key": CLIENT_KEY}}))
+                              ("POST", "/admin/clients"): {**CLIENT, "client_key": CLIENT_KEY},
+                              ("GET", "/admin/state"): {"gateway": {"dashboards": 1}}}))
+    monkeypatch.setattr(onboard_mod, "_enter_pressed", lambda timeout: True)  # nunca espera
     return st
 
 
@@ -321,10 +324,20 @@ def test_answers_file_unknown_missing_or_bad_keys(gw, tmp_path, over, where):
 def test_answers_file_missing_key(gw, tmp_path):
     path = write_answers(tmp_path)
     data = json.loads(path.read_text())
+    del data["openclaw_token"]
+    path.write_text(json.dumps(data))
+    r = onboard(path)
+    assert r.exit_code == 2 and "openclaw_token" in r.output
+
+
+def test_answers_file_without_first_client_creates_none(gw, tmp_path):
+    path = write_answers(tmp_path)
+    data = json.loads(path.read_text())
     del data["first_client"]
     path.write_text(json.dumps(data))
     r = onboard(path)
-    assert r.exit_code == 2 and "first_client" in r.output
+    assert r.exit_code == 0, r.output
+    assert [c for c in gw.api.calls if c[0] == "POST"] == []
 
 
 def test_answers_file_not_json(gw, tmp_path):
@@ -423,7 +436,6 @@ def test_interactive_full_flow(gw, tty):
         "change", "elevenlabs", EL_KEY,             # cambiar respuestas → ElevenLabs
         "elevenlabs",                               # TTS: misma clave, ya verificada → falla
         "off",                                      # «ahora no»
-        "Tele", "app",                              # primer cliente
     ])
     r = run("onboard")
     assert r.exit_code == 0, r.output
@@ -438,7 +450,8 @@ def test_interactive_full_flow(gw, tty):
     }
     assert ("verify_elevenlabs", "tts", EL_KEY) in gw.calls
     assert [k for k, _, _ in tty.asked].count("password") == 2  # la clave de ElevenLabs, una vez
-    assert ("POST", "/admin/clients", {"name": "Tele", "client_type": "app"}) in gw.api.calls
+    assert [c for c in gw.api.calls if c[0] == "POST"] == []  # el primer cliente, en la web
+    assert "Conectado: ya puedes seguir en el dashboard." in r.output
     assert installs(gw) == ["install"]
     for secret in SECRETS:
         assert secret not in r.output
@@ -503,7 +516,6 @@ def test_interactive_defaults_and_labels(gw, tty):
         DEFAULT, DEFAULT, OC_TOKEN,                 # OpenClaw no detectado: host y puerto
         "fogar", DEFAULT, DEFAULT,                   # STT propio, dirección y «¿usa clave?»
         "fogar", DEFAULT, DEFAULT,                   # TTS igual
-        "Tele", "web",
     ])
     r = run("onboard")
     assert r.exit_code == 0, r.output
@@ -519,7 +531,6 @@ def test_interactive_defaults_and_labels(gw, tty):
     env = dotenv_values(gw.env)
     assert env["TRANSCRIBER_WS_URL"] == "localhost:9000" and env["TTS_WS_URL"] == "localhost:8005"
     assert r.output.count("Recomendado: deja este servicio accesible solo desde el gateway.") == 2
-    assert sorted(titles(asked(tty, "select", "Tipo")[0])) == ["app", "esp32", "ha", "screen", "web"]
 
 
 def test_answers_fogar_without_url_writes_the_default(gw, tmp_path):
@@ -660,23 +671,110 @@ def test_answers_first_client_name_follows_server_rules(gw, tmp_path, name):
     assert gw.calls == []  # antes de instalar nada
 
 
-def test_interactive_first_client_name_follows_server_rules(gw, tty):
-    gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\n")
-    tty.queue.extend(["127.0.0.1", "18789", OC_TOKEN, "off", "off", "Tele", "ha"])
-    assert run("onboard").exit_code == 0
-    (kw,) = asked(tty, "text", "primer cliente")
-    assert kw["validate"]("Tele") is True
-    assert kw["validate"]("   ") is not True and kw["validate"]("x" * 201) is not True
+def test_interactive_does_not_ask_for_a_first_client(gw, tty):
+    tty.queue.extend(["127.0.0.1", "18789", OC_TOKEN, "off", "off"])
+    r = run("onboard")
+    assert r.exit_code == 0, r.output
+    assert asked(tty, "text", "cliente") == [] and tty.queue == []
+    assert [c for c in gw.api.calls if c[0] == "POST"] == []
+    assert "Empareja tu primer aparato desde Clientes, en el dashboard." in r.output
 
 
 @pytest.mark.parametrize(("host", "shown"), [
-    ("0.0.0.0", LAN_IP), ("::", LAN_IP), ("192.168.1.19", "192.168.1.19"), ("::1", "[::1]"),
+    ("0.0.0.0", LAN_IP), ("::", LAN_IP), ("", LAN_IP), ("192.168.1.19", "192.168.1.19"),
+    ("fd00::19", "[fd00::19]"), ("greenhouse.lan", "greenhouse.lan"),
 ])
-def test_client_address_follows_gateway_host(gw, tmp_path, host, shown):
+def test_dashboard_and_client_address_follow_gateway_host(gw, tmp_path, host, shown):
     gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\nGATEWAY_HOST={host}\n")
     r = onboard(write_answers(tmp_path))
     assert r.exit_code == 0, r.output
+    assert f"Tu dashboard: http://{shown}:8004/" in r.output
     assert f"ws://{shown}:8004/ws/stream" in r.output
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "127.0.1.1", "::1", "localhost"])
+def test_loopback_gateway_gives_no_lan_url(gw, tmp_path, host):
+    gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\nGATEWAY_HOST={host}\n")
+    r = onboard(write_answers(tmp_path))
+    assert r.exit_code == 0, r.output
+    assert "solo escucha en este equipo" in r.output and "ssh -L 8004:127.0.0.1:8004" in r.output
+    assert "Tu dashboard:" not in r.output and "ws://" not in r.output
+
+
+def test_without_lan_ip_never_prints_loopback(gw, tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard_mod, "_lan_ip", lambda: None)
+    r = onboard(write_answers(tmp_path))
+    assert r.exit_code == 0, r.output
+    assert "http://<IP de este equipo>:8004/" in r.output and "hostname -I" in r.output
+    assert "127.0.0.1:8004" not in r.output
+
+
+def test_answers_never_show_the_admin_token(gw, tmp_path, monkeypatch):
+    monkeypatch.setattr(output, "_isatty", lambda: True)  # ni siquiera en una terminal
+    monkeypatch.setenv("NO_COLOR", "1")
+    r = onboard(write_answers(tmp_path))
+    assert r.exit_code == 0, r.output
+    assert ADMIN not in r.output
+    assert f"{gw.env} (ADMIN_TOKEN)" in r.output and "`fogar-gw token`" in r.output
+    assert "No lo compartas" in r.output
+    assert ("GET", "/admin/state", None) not in gw.api.calls  # sin terminal no espera
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_interactive_shows_the_token_only_on_a_terminal(gw, tty, monkeypatch, terminal):
+    if terminal:  # el stdout de CliRunner no es una terminal
+        monkeypatch.setattr(output, "_isatty", lambda: True)
+        monkeypatch.setenv("NO_COLOR", "1")  # texto plano: la salida de rich no la captura CliRunner
+    tty.queue.extend(["127.0.0.1", "18789", OC_TOKEN, "off", "off"])
+    r = run("onboard")
+    assert r.exit_code == 0, r.output
+    assert (f"Token: {ADMIN}" in r.output) is terminal
+    assert (ADMIN in r.output) is terminal
+    assert f"Tu dashboard: http://{LAN_IP}:8004/" in r.output and "`fogar-gw token`" in r.output
+
+
+@pytest.mark.parametrize("how", ["enter", "ctrl_c"])
+def test_interactive_wait_for_the_dashboard_can_be_skipped(gw, tty, monkeypatch, how):
+    gw.api.responses[("GET", "/admin/state")] = {"gateway": {"dashboards": 0}}
+    polls = []
+
+    def pressed(timeout):
+        polls.append(timeout)
+        if how == "ctrl_c":
+            raise KeyboardInterrupt
+        return len(polls) == 3  # Enter a la tercera vuelta
+
+    monkeypatch.setattr(onboard_mod, "_enter_pressed", pressed)
+    tty.queue.extend(["127.0.0.1", "18789", OC_TOKEN, "off", "off"])
+    r = run("onboard")
+    assert r.exit_code == 0, r.output
+    assert "Conectado" not in r.output
+    assert f"Sin esperar: entra cuando quieras en http://{LAN_IP}:8004/." in r.output
+    assert len(polls) == (3 if how == "enter" else 1)
+
+
+def test_interactive_waits_until_a_dashboard_connects(gw, tty, monkeypatch):
+    states = [None, {"gateway": {"dashboards": 0}}, {"gateway": {"dashboards": 1}}]
+
+    class Api:
+        calls = gw.api.calls
+
+        def request(self, method, path, body=None):
+            if path != "/admin/state":
+                return gw.api.request(method, path, body)
+            state = states.pop(0)
+            if state is None:
+                from fogar_gateway.cli.api import ApiError
+                raise ApiError("El gateway no responde.", 1)  # aún arrancando: se reintenta
+            return state
+
+    from fogar_gateway.cli import api
+    monkeypatch.setattr(api, "from_context", lambda ctx: Api())
+    monkeypatch.setattr(onboard_mod, "_enter_pressed", lambda timeout: False)
+    tty.queue.extend(["127.0.0.1", "18789", OC_TOKEN, "off", "off"])
+    r = run("onboard")
+    assert r.exit_code == 0, r.output
+    assert states == [] and "Conectado: ya puedes seguir en el dashboard." in r.output
 
 
 def test_lan_ip_falls_back_to_loopback(monkeypatch):
@@ -696,7 +794,7 @@ def test_lan_ip_falls_back_to_loopback(monkeypatch):
             raise OSError("Network is unreachable")
 
     monkeypatch.setattr(socket, "socket", NoRoute)  # sin `gw`: `_lan_ip` sin parchear
-    assert onboard_mod._lan_ip() == "127.0.0.1"
+    assert onboard_mod._lan_ip() is None
 
 
 # --- ola final: init sin BD y «Dejar como está» -------------------------------------------
@@ -771,7 +869,7 @@ def test_interactive_rerun_can_change_openclaw(gw, tty):
 
 def test_no_keep_option_on_a_first_run(gw, tty):
     gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\n")
-    tty.queue.extend(["127.0.0.1", "18789", OC_TOKEN, "off", "off", "Tele", "web"])
+    tty.queue.extend(["127.0.0.1", "18789", OC_TOKEN, "off", "off"])
     assert run("onboard").exit_code == 0
     assert asked(tty, "select", "OpenClaw") == []
     for kw in asked(tty, "select", "¿qué servicio?"):

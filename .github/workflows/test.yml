@@ -619,6 +619,17 @@ jobs:
             cat "$RUNNER_TEMP/onboard.txt"; exit 1
           fi
           [ "$(systemctl --user is-active fogar-gateway.service)" = active ]
+          # El final lleva al dashboard: URL, dónde está el token y cómo verlo, nunca su valor.
+          admin=$(sed -n 's/^ADMIN_TOKEN=//p' ~/.fogar-gateway/config.env)
+          [ -n "$admin" ]
+          grep -q 'Tu dashboard: http://.*:8004/' "$RUNNER_TEMP/onboard.txt"
+          grep -qF "$HOME/.fogar-gateway/config.env (ADMIN_TOKEN)" "$RUNNER_TEMP/onboard.txt"
+          ! grep -qF "$admin" "$RUNNER_TEMP/onboard.txt"
+          # `fogar-gw token` sin terminal se niega y no escribe el token.
+          rc=0
+          fogar-gw token > "$RUNNER_TEMP/token.txt" 2>&1 || rc=$?
+          [ "$rc" = 1 ]
+          ! grep -qF "$admin" "$RUNNER_TEMP/token.txt"
           curl -fs --max-time 2 http://127.0.0.1:8004/healthz; echo
           wait_ready 60
           # «doctor sale limpio»: ningún fallo, y el STT off como información, no como caída.

@@ -56,7 +56,8 @@ def test_state_shape_with_active_session(client, admin_headers):
     assert r.status_code == 200
     body = r.json()
     assert set(body) == {"gateway", "services", "totals", "sessions"}
-    assert set(body["gateway"]) == {"started_at", "uptime_s", "version"}
+    assert set(body["gateway"]) == {"started_at", "uptime_s", "version", "dashboards"}
+    assert body["gateway"]["dashboards"] == 0
     from fogar_gateway._version import __version__
 
     assert body["gateway"]["version"] == __version__
@@ -108,6 +109,23 @@ async def test_state_stream_emits_and_stops_when_request_reports_disconnect(clie
         and ("state_stream" in t.get_name() or "state_stream" in repr(t.get_coro()))
     ]
     assert leftovers == []
+
+
+async def test_state_counts_open_streams_for_the_onboard(client, monkeypatch):
+    """`gateway.dashboards`: flujos abiertos ahora (el onboard espera a que haya uno)."""
+    import fogar_gateway.api.admin_routes as admin_routes
+    from fogar_gateway.main import app
+
+    monkeypatch.setattr(admin_routes, "STATE_STREAM_INTERVAL_S", 0.01)
+    request = SimpleNamespace(app=app, is_disconnected=AsyncMock(side_effect=[False, False, True]))
+    stream = (await admin_routes.get_state_stream(request)).body_iterator
+
+    first = await anext(stream)
+    text = first if isinstance(first, str) else first.decode()
+    assert json.loads(text[len("data: ") :])["gateway"]["dashboards"] == 1
+    assert admin_routes._build_state(app)["gateway"]["dashboards"] == 1
+    _ = [c async for c in stream]  # el cliente se va: el contador vuelve a 0
+    assert admin_routes._build_state(app)["gateway"]["dashboards"] == 0
 
 
 async def test_state_stream_ends_by_itself_after_max_lifetime(client, monkeypatch):

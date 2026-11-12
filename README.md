@@ -89,7 +89,7 @@ Los dos son públicos: detrás de un proxy o un túnel también llegan desde int
 | `/admin/pairing` | GET | Códigos abiertos (sin el código) |
 | `/admin/pairing/{id}` | GET | Estado de un código: `open`, `used` (con `client_id` y `client_name`), `expired` o `cancelled` |
 | `/admin/pairing/{id}` | DELETE | Anular un código abierto |
-| `/admin/state` | GET | Instantánea viva: versión, uptime, estado de servicios, contadores y una fila por sesión |
+| `/admin/state` | GET | Instantánea viva: versión, uptime, flujos `/admin/state/stream` abiertos (`gateway.dashboards`), estado de servicios, contadores y una fila por sesión |
 | `/admin/state/stream` | GET | La misma instantánea por SSE cada segundo; cada stream termina solo a los 25 s, el cliente debe reconectar (`EventSource` lo hace solo) |
 
 Los tres endpoints `*/status` comparten la forma `{"name", "state", "connected_at", "reconnect_attempts", "last_error"}`; los de transcriber y TTS añaden `provider` y, con ElevenLabs, `counters`.
@@ -99,7 +99,8 @@ Los campos de un cliente (`POST`/`PATCH /admin/clients`) están en `src/fogar_ga
 ```bash
 fogar-gw                        # en una terminal: menú interactivo; en un script: la ayuda
 fogar-gw init                   # instalación nueva: <base>, config.env con ADMIN_TOKEN aleatorio y la BD
-fogar-gw onboard [--answers FICHERO]   # asistente: OpenClaw, voz, servicio y primer cliente
+fogar-gw onboard [--answers FICHERO]   # asistente: OpenClaw, voz, servicio y dashboard
+fogar-gw token                  # el token del dashboard (ADMIN_TOKEN), solo en una terminal
 fogar-gw serve [--create-db]    # arranca el gateway (puerto 8004, host GATEWAY_HOST)
 fogar-gw doctor                 # diagnóstico: configuración, BD, permisos, candado, gateway y servicios
 fogar-gw config show            # ajustes efectivos y su origen (entorno, config.env o por defecto)
@@ -205,7 +206,14 @@ Qué hace `install.sh`:
 2. OpenClaw: lo busca en este equipo (si no, pregunta host y puerto) y pide su token (`openclaw config get gateway.auth.token`). Solo en loopback: para un OpenClaw de otra máquina, un túnel SSH (`ssh -L 18789:127.0.0.1:18789 …`). Sin OpenClaw verificado no sigue.
 3. STT y TTS: servicio propio (`host:puerto` y, si la usa, su clave), ElevenLabs (una sola clave para los dos) o «ahora no» (`off`: sin STT no hay transcripción y sin TTS las respuestas llegan solo en texto).
 4. Instala el servicio, o lo reinicia si ya estaba instalado (con terminal pregunta antes, porque corta las sesiones abiertas), y pasa `fogar-gw doctor`.
-5. Si aún no hay clientes, crea el primero, enseña su clave una sola vez y la dirección `ws://<host>:8004/ws/stream` (`GATEWAY_HOST`, o la IP de la LAN si escucha en todas las interfaces).
+5. Termina en el dashboard:
+   - su URL desde otro aparato de tu red, `http://<IP de la LAN>:8004/` (o la de `GATEWAY_HOST` si escucha en una dirección concreta; si solo escucha en loopback, te dice cómo entrar con un túnel SSH);
+   - el token de administración que se pega en él (solo en una terminal), dónde está (`<base>/config.env`, `ADMIN_TOKEN`) y cómo verlo otra vez: `fogar-gw token`;
+   - el recordatorio de no compartirlo: quien lo tenga controla el gateway.
+
+   Después te espera hasta que abres el dashboard y pegas el token («Conectado»); Enter sigue sin esperar. El primer cliente se empareja desde Clientes, en el dashboard. También da la dirección `ws://<host>:8004/ws/stream` para quien configure un cliente a mano.
+
+**El token del dashboard:** `fogar-gw token` lo escribe solo en una terminal; en una tubería, un fichero o con `--json` se niega, para que no acabe en un log. No lo pegues en chats ni en capturas. Sin la CLI, está en `config.env` (`ADMIN_TOKEN`), legible solo por tu usuario.
 
 Si lo cortas a medias, `config.env` queda como estaba más lo ya verificado, y volver a ejecutarlo retoma. También sirve para cambiar de proveedores más adelante (en el menú de `fogar-gw`, «Configurar proveedores»): cada paso que `config.env` ya tiene ofrece primero «Dejar como está», que ni verifica ni escribe nada. Necesita una terminal; para scripts, `fogar-gw onboard --answers respuestas.json` no pregunta nada y un fallo de verificación sale con 1 y su motivo. El fichero lleva secretos: tiene que ser tuyo y con permisos 600. Créalo ya privado, para que no haya un momento en que otros puedan leerlo: `(umask 077; cat > respuestas.json)` y pega el JSON (termina con Ctrl+D), o `install -m 600 /dev/null respuestas.json` antes de editarlo. Escribirlo y después hacer `chmod` deja esa ventana abierta.
 
@@ -218,7 +226,7 @@ Si lo cortas a medias, `config.env` queda como estaba más lo ya verificado, y v
 }
 ```
 
-`stt` y `tts`: `{"provider": "fogar", "url"?, "token"?}` (por defecto `localhost:9000` / `localhost:8005`, sin clave), `{"provider": "elevenlabs", "api_key"}` (la misma en los dos; si el TTS de `config.env` ya usa ElevenLabs con otra clave, la nueva del STT se verifica también para el TTS antes de guardarla, salvo con `"tts": {"provider": "off"}`) o `{"provider": "off"}`. `first_client`: `{"name", "type"}` (`ha`, `esp32`, `web`, `app` o `screen`) o `null`. Un campo que falte o sobre es un error.
+`stt` y `tts`: `{"provider": "fogar", "url"?, "token"?}` (por defecto `localhost:9000` / `localhost:8005`, sin clave), `{"provider": "elevenlabs", "api_key"}` (la misma en los dos; si el TTS de `config.env` ya usa ElevenLabs con otra clave, la nueva del STT se verifica también para el TTS antes de guardarla, salvo con `"tts": {"provider": "off"}`) o `{"provider": "off"}`. `first_client` (opcional): `{"name", "type"}` (`ha`, `esp32`, `web`, `app` o `screen`) crea ese cliente si aún no hay ninguno; sin él o con `null`, no crea ninguno. Con `--answers` no espera al dashboard ni escribe el token. Un campo que sobre, u otro que falte, es un error.
 
 #### Emparejar un cliente
 

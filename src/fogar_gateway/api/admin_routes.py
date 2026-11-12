@@ -20,7 +20,7 @@ Observabilidad:
   POST   /admin/orchestrators/{name}/reconnect  (202)
   GET    /admin/transcriber/status
   GET    /admin/tts/status
-  GET    /admin/state                — instantánea viva (gateway, servicios, totales, sesiones)
+  GET    /admin/state                — instantánea viva (gateway con `dashboards`, servicios, totales, sesiones)
   GET    /admin/state/stream         — la misma instantánea por SSE cada STATE_STREAM_INTERVAL_S
 """
 
@@ -55,6 +55,9 @@ STATE_STREAM_INTERVAL_S = 1.0
 # Vida máxima de cada stream: por debajo del --timeout-graceful-shutdown (35 s) de la
 # imagen, para que un panel abierto no bloquee el apagado; el panel reconecta.
 STATE_STREAM_MAX_S = 25.0
+# Flujos /admin/state/stream abiertos ahora: el dashboard abre uno al entrar en Estado, y
+# `fogar-gw onboard` lo usa para confirmar que te has conectado. La CLI nunca abre ninguno.
+_open_streams = 0
 
 logger = logging.getLogger(__name__)
 
@@ -414,6 +417,7 @@ def _build_state(app: FastAPI) -> dict[str, Any]:
             "started_at": gateway_stats.started_at.isoformat(),
             "uptime_s": round(time.monotonic() - gateway_stats.started_monotonic, 3),
             "version": __version__,
+            "dashboards": _open_streams,
         },
         "services": {
             "orchestrator": _service_state(app.state.openclaw.status()),
@@ -433,9 +437,14 @@ async def get_state(request: Request) -> dict:
 @router.get("/state/stream")
 async def get_state_stream(request: Request) -> StreamingResponse:
     async def state_stream():
-        deadline = time.monotonic() + STATE_STREAM_MAX_S
-        while time.monotonic() < deadline and not await request.is_disconnected():
-            yield f"data: {json.dumps(_build_state(request.app))}\n\n"
-            await asyncio.sleep(STATE_STREAM_INTERVAL_S)
+        global _open_streams
+        _open_streams += 1
+        try:
+            deadline = time.monotonic() + STATE_STREAM_MAX_S
+            while time.monotonic() < deadline and not await request.is_disconnected():
+                yield f"data: {json.dumps(_build_state(request.app))}\n\n"
+                await asyncio.sleep(STATE_STREAM_INTERVAL_S)
+        finally:
+            _open_streams -= 1
 
     return StreamingResponse(state_stream(), media_type="text/event-stream")
