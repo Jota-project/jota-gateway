@@ -31,6 +31,13 @@ def test_root_serves_index_without_cache(client, web_dir):
     _is_web(r)
 
 
+def test_head_works_like_get(client, web_dir):
+    r = client.head("/")
+    assert r.status_code == 200
+    assert r.headers["cache-control"] == "no-cache"
+    _is_web(r)
+
+
 @pytest.mark.parametrize("path", ["/clientes", "/clientes/42", "/sesiones/abc"])
 def test_vue_routes_fall_back_to_index(client, web_dir, path):
     r = client.get(path)

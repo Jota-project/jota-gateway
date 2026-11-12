@@ -484,6 +484,14 @@ jobs:
       - name: shellcheck install.sh
         run: uvx --from shellcheck-py==0.11.0.1 shellcheck install.sh
 
+      # El prepareCmd compila la web y construye el wheel de la release (M18).
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
       # El prepareCmd de .releaserc.json tal cual (con su escapado JSON), sobre una copia.
       - name: test_release_stamp
         run: |
@@ -499,6 +507,8 @@ jobs:
           grep -x 'FOGAR_RELEASE=1.2.3' "$RUNNER_TEMP/rel/install.sh"
           [ "$(grep -c '^FOGAR_RELEASE=' "$RUNNER_TEMP/rel/install.sh")" = 1 ]
           grep -x 'FOGAR_RELEASE=' install.sh  # el del repo sigue sin sellar
+          # El asset que instala install.sh: el wheel con su versión y la web dentro.
+          unzip -l "$RUNNER_TEMP/rel/dist/fogar_gateway-1.2.3-py3-none-any.whl" | grep -q 'fogar_gateway/web/index.html'
 
       - name: Preparar systemd de usuario (linger y bus)
         run: |

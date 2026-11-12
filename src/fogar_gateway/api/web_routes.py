@@ -49,7 +49,7 @@ def _file(path: Path, cache: str) -> FileResponse:
     return FileResponse(path, headers={**SECURITY_HEADERS, "Cache-Control": cache})
 
 
-@router.get("/{path:path}", include_in_schema=False)
+@router.api_route("/{path:path}", methods=["GET", "HEAD"], include_in_schema=False)
 def web(path: str) -> FileResponse:
     if path.split("/", 1)[0] in API_PREFIXES or not web_available():
         raise HTTPException(status_code=404)
