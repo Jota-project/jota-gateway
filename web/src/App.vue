@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import AmbientLights from './components/AmbientLights.vue'
-import AppRail from './components/AppRail.vue'
-import UiToaster from './components/ui/UiToaster.vue'
+import BarraLateral from './components/BarraLateral.vue'
+import FgAvisos from './components/FgAvisos.vue'
+import { useClientsStore } from './stores/clients'
 import { useLiveStore } from './stores/live'
 import { useSessionStore } from './stores/session'
 
@@ -11,56 +11,67 @@ const route = useRoute()
 const router = useRouter()
 const session = useSessionStore()
 const live = useLiveStore()
+const clients = useClientsStore()
 
 const isPublic = computed(() => Boolean(route.meta.public))
+const nombre = ref<string>()
 
 // El estado vivo arranca en cuanto hay token y se para al salir.
 watch(
   () => session.token,
   (token) => {
-    if (token) live.start(() => void router.replace('/conectar'))
-    else live.halt()
+    if (token) {
+      live.start(() => void router.replace('/conectar'))
+      void clients.refresh()
+    } else live.halt()
   },
   { immediate: true },
 )
 
-const warn = computed(() => live.connection === 'offline' || !live.allHealthy)
+// Nombre del gateway (público, sin token): para saber en qué casa estás.
+onMounted(async () => {
+  try {
+    const r = await fetch('/.well-known/fogar-gateway')
+    if (r.ok) nombre.value = ((await r.json()) as { name?: string }).name
+  } catch {
+    // sin nombre: la barra no lo enseña
+  }
+})
 </script>
 
 <template>
-  <AmbientLights :warn="warn" />
-  <!-- Entrar y salir de la app (Conectar ↔ resto) funde; cambiar de sección no espera a nada. -->
-  <Transition name="j-page" mode="out-in">
-    <RouterView v-if="isPublic" />
-    <div v-else class="shell">
-      <AppRail />
-      <main class="content">
-        <RouterView />
-      </main>
-    </div>
-  </Transition>
-  <UiToaster />
+  <RouterView v-if="isPublic" />
+  <div v-else class="armazon">
+    <BarraLateral :nombre="nombre" :version="live.state?.gateway.version" />
+    <main class="contenido">
+      <RouterView />
+    </main>
+  </div>
+  <FgAvisos />
 </template>
 
 <style scoped>
-.shell {
-  position: relative;
+.armazon {
   min-height: 100vh;
   display: flex;
   flex-wrap: wrap;
+  align-items: flex-start;
 }
-
-.content {
-  position: relative;
-  z-index: 1;
-  flex: 999 1 560px;
+.contenido {
+  flex: 1 1 560px;
   min-width: 0;
-  padding: 36px 48px 56px;
+  max-width: 1240px;
+  padding: 36px 40px 64px;
 }
-
 @media (max-width: 760px) {
-  .content {
-    padding: 16px;
+  .armazon {
+    flex-direction: column;
+    flex-wrap: nowrap;
+  }
+  .contenido {
+    flex: 1 1 auto;
+    width: 100%;
+    padding: 20px 16px 96px;
   }
 }
 </style>

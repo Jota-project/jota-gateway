@@ -1,555 +1,336 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import {
-  getOrchestratorStatus,
-  getReady,
-  getTranscriberStatus,
-  getTtsStatus,
-  reconnectOrchestrator,
-} from '@/api/admin'
-import type { ReadyResponse, ServiceDetail } from '@/api/types'
-import UiButton from '@/components/ui/UiButton.vue'
-import UiOdometer from '@/components/ui/UiOdometer.vue'
-import UiStatus from '@/components/ui/UiStatus.vue'
-import { formatDateTime, formatDuration } from '@/lib/format'
-import { headline, serviceTone } from '@/lib/health'
-import {
-  CLOSE_REASON,
-  HANDSHAKE_REJECTED,
-  label,
-  MODE,
-  PROVIDER,
-  SERVICE_NAME,
-  SERVICE_STATE,
-  TURN_ERROR,
-  TURN_KIND,
-} from '@/lib/labels'
+import { getOrchestratorStatus, getReady, getTranscriberStatus, getTtsStatus, reconnectOrchestrator } from '@/api/admin'
+import type { ServiceDetail } from '@/api/types'
+import FgBoton from '@/components/FgBoton.vue'
+import FgEstado from '@/components/FgEstado.vue'
+import LienzoServicios from '@/components/LienzoServicios.vue'
+import { formatDuration, formatModes, formatSeconds } from '@/lib/format'
+import { finding, headline, serviceTone } from '@/lib/health'
+import { CLOSE_REASON, HANDSHAKE_REJECTED, label, PROVIDER, TURN_ERROR } from '@/lib/labels'
 import { toast } from '@/lib/toasts'
 import { useLiveStore } from '@/stores/live'
 
+// ¿Fogar responde ahora? El titular lo contesta; el lienzo enseña quién habla con quién.
 const live = useLiveStore()
-
 type Key = 'orchestrator' | 'stt' | 'tts'
-const READY_KEY = { orchestrator: 'orchestrator', stt: 'transcriber', tts: 'tts' } as const
+const KEYS: Key[] = ['orchestrator', 'stt', 'tts']
 
-const title = computed(() => headline(live.state, live.connection))
-const words = computed(() => title.value.split(' '))
-
-const meta = computed(() => {
-  const g = live.state?.gateway
-  if (!g) return ''
-  const on = `ncendido el ${formatDateTime(g.started_at)}, hace ${formatDuration(g.uptime_s)}`
-  return g.version ? `Versión ${g.version} · e${on}` : `E${on}`
-})
-
-// Detalle de cada servicio (conectado desde, reintentos). El estado manda el flujo vivo; esto lo completa.
-const details = shallowRef<Partial<Record<Key, ServiceDetail>>>({})
+// Detalle de cada servicio (reintentos, conectado desde). El estado lo manda el flujo vivo.
+const detalles = shallowRef<Partial<Record<Key, ServiceDetail>>>({})
 const FETCH: Record<Key, () => Promise<ServiceDetail>> = {
   orchestrator: getOrchestratorStatus,
   stt: getTranscriberStatus,
   tts: getTtsStatus,
 }
-
-async function loadDetail(key: Key): Promise<void> {
+async function cargar(key: Key): Promise<void> {
   try {
-    const detail = await FETCH[key]() // antes de copiar: las tres llegan a la vez
-    details.value = { ...details.value, [key]: detail }
+    const d = await FETCH[key]()
+    detalles.value = { ...detalles.value, [key]: d }
   } catch {
-    // Sin detalle se ve lo del flujo vivo; un 401 ya lo gestiona el flujo.
+    // sin detalle se ve lo del flujo vivo
   }
 }
-
-// El transcriptor hace un sondeo real en cada consulta: solo al entrar y al comprobar.
+// El transcriptor sondea de verdad en cada consulta: solo al entrar y al comprobar.
 let timer: ReturnType<typeof setInterval> | undefined
 onMounted(() => {
-  for (const key of ['orchestrator', 'stt', 'tts'] as const) void loadDetail(key)
+  KEYS.forEach((k) => void cargar(k))
   timer = setInterval(() => {
     if (document.visibilityState !== 'visible') return
-    void loadDetail('orchestrator')
-    void loadDetail('tts')
+    void cargar('orchestrator')
+    void cargar('tts')
   }, 30_000)
 })
 onBeforeUnmount(() => clearInterval(timer))
-
-// Cuando un servicio cambia de estado, su detalle (conectado desde, reintentos) también.
-for (const key of ['orchestrator', 'stt', 'tts'] as const) {
+for (const key of KEYS) {
   watch(
     () => live.state?.services[key].state,
     (now, before) => {
-      if (before && now !== before) void loadDetail(key)
+      if (before && now !== before) void cargar(key)
     },
   )
 }
 
-const ready = ref<ReadyResponse | null>(null)
-const checking = ref(false)
-async function check(): Promise<void> {
-  if (checking.value) return
-  checking.value = true
+const intentos = computed(() =>
+  Object.fromEntries(KEYS.map((k) => [k, detalles.value[k]?.reconnect_attempts ?? 0])) as Record<Key, number>,
+)
+const titulo = computed(() => headline(live.state, live.connection))
+const hallazgo = computed(() => finding(live.state, live.connection, intentos.value))
+const frescura = computed(() => {
+  if (live.connection === 'offline') return 'Sin conexión con el gateway'
+  const g = live.state?.gateway
+  if (!g) return 'Conectando…'
+  return `En vivo · encendido hace ${formatDuration(g.uptime_s)}`
+})
+const caidoOpenclaw = computed(() => !!live.state && serviceTone(live.state.services.orchestrator) !== 'ok')
+
+const comprobando = ref(false)
+async function comprobar(): Promise<void> {
+  if (comprobando.value) return
+  comprobando.value = true
   try {
-    ready.value = await getReady()
-    void loadDetail('stt')
+    const r = await getReady()
+    void cargar('stt')
+    const malos = Object.entries(r.services).filter(([, v]) => v !== 'ok').length
+    toast(malos ? 'warn' : 'ok', malos ? `${malos} ${malos === 1 ? 'servicio no responde' : 'servicios no responden'}` : 'Los tres servicios responden')
   } catch {
     toast('bad', 'No se pudieron comprobar los servicios', 'El gateway no respondió a tiempo. Prueba otra vez.')
   } finally {
-    checking.value = false
+    comprobando.value = false
   }
 }
-
-const reconnecting = ref(false)
-async function reconnect(): Promise<void> {
-  if (reconnecting.value) return
-  reconnecting.value = true
+const reconectando = ref(false)
+async function reconectar(): Promise<void> {
+  if (reconectando.value) return
+  reconectando.value = true
   try {
     await reconnectOrchestrator()
     toast('ok', 'Reconectando OpenClaw', 'Su estado cambia aquí en cuanto vuelva.')
   } catch {
     toast('bad', 'No se pudo pedir la reconexión', 'Prueba otra vez en unos segundos.')
   } finally {
-    reconnecting.value = false
+    reconectando.value = false
   }
 }
 
-const services = computed(() => {
+// El servicio peor, para «Qué le pasa a…»: solo si algo falla de verdad (`off` no es un fallo).
+const peor = computed(() => {
   const s = live.state?.services
-  if (!s) return []
-  return (['orchestrator', 'stt', 'tts'] as const).map((key) => {
-    const snapshot = s[key]
-    const tone = serviceTone(snapshot)
-    const detail = details.value[key]
-    const probe = ready.value?.services[READY_KEY[key]]
-    return {
-      key,
-      name: SERVICE_NAME[key],
-      provider: 'provider' in snapshot ? label(PROVIDER, snapshot.provider) : 'Orquestador',
-      tone,
-      state: tone === 'off' ? 'Desactivado' : SERVICE_STATE[snapshot.state],
-      since: tone === 'ok' && detail?.connected_at ? formatDateTime(detail.connected_at) : null,
-      attempts: tone !== 'off' && detail?.reconnect_attempts ? detail.reconnect_attempts : null,
-      error: tone === 'off' ? null : snapshot.last_error,
-      probe: tone === 'off' || !probe ? null : probe === 'ok' ? 'Responde' : 'No responde',
-    }
-  })
+  if (!s) return null
+  const key = KEYS.find((k) => ['bad', 'warn'].includes(serviceTone(s[k])))
+  if (!key) return null
+  const snap = s[key]
+  const tono = serviceTone(snap)
+  const proveedor = 'provider' in snap ? label(PROVIDER, snap.provider) : 'OpenClaw'
+  const nombre = { orchestrator: 'OpenClaw', stt: 'la transcripción', tts: 'la voz' }[key]
+  const efecto = {
+    orchestrator: 'Nadie recibe respuesta hasta que vuelva.',
+    stt: 'Los aparatos no pueden hablarle por voz; por texto, sí.',
+    tts: 'Las respuestas salen en texto hasta que vuelva.',
+  }[key]
+  return {
+    key,
+    nombre,
+    tono: tono === 'warn' ? ('warn' as const) : ('bad' as const),
+    resumen: `${tono === 'warn' ? 'Reconectando con' : 'No responde'} ${proveedor}`,
+    efecto,
+    error: snap.last_error,
+    intentos: intentos.value[key],
+  }
 })
 
-const sessions = computed(() =>
+const conectados = computed(() =>
   (live.state?.sessions ?? []).map((row) => ({
     id: row.session_id,
-    name: row.client_name,
-    input: label(MODE, row.input_mode),
-    output: row.output_mode.map((mode) => label(MODE, mode)).join(', '),
-    turn:
-      row.turn.kind === 'idle' || row.turn.since_s == null
-        ? label(TURN_KIND, row.turn.kind)
-        : `${label(TURN_KIND, row.turn.kind)} · ${formatDuration(row.turn.since_s)}`,
-    busy: row.turn.kind !== 'idle',
-    turns: row.turn_count,
-    age: formatDuration(row.age_s),
-    latency: row.last_latencies?.turn_e2e_ms != null ? `${Math.round(row.last_latencies.turn_e2e_ms)} ms` : '—',
+    nombre: row.client_name,
+    modo: formatModes(row.input_mode, row.output_mode),
+    ahora:
+      row.turn.kind === 'idle'
+        ? 'En espera'
+        : `${row.turn.kind === 'push' ? 'Fogar habla' : 'Turno abierto'}${row.turn.since_s != null ? ` · ${formatDuration(row.turn.since_s)}` : ''}`,
+    viva: row.turn.kind !== 'idle',
+    turnos: row.turn_count,
+    ultimo: formatSeconds(row.last_latencies?.turn_e2e_ms),
+    edad: formatDuration(row.age_s),
   })),
 )
 
-function counts(values: Record<string, number>, texts: Record<string, string>) {
-  return Object.entries(values)
+function principal(values: Record<string, number>, texts: Record<string, string>): string | null {
+  const top = Object.entries(values)
     .filter(([, n]) => n > 0)
-    .sort((a, b) => b[1] - a[1])
-    .map(([key, n]) => ({ key, text: label(texts, key), n }))
+    .sort((a, b) => b[1] - a[1])[0]
+  return top ? label(texts, top[0]).toLowerCase() : null
 }
-
-const totals = computed(() => {
+const totales = computed(() => {
   const t = live.state?.totals
   if (!t) return null
-  return {
-    opened: t.sessions_opened,
-    closed: counts(t.sessions_closed, CLOSE_REASON),
-    normal: t.turns.normal,
-    push: t.turns.push,
-    rejected: counts(t.handshake_rejected, HANDSHAKE_REJECTED),
-    errors: counts(t.turn_errors, TURN_ERROR),
-  }
+  const suma = (v: Record<string, number>) => Object.values(v).reduce((a, b) => a + b, 0)
+  const cerradas = suma(t.sessions_closed)
+  const rechazadas = suma(t.handshake_rejected)
+  const errores = suma(t.turn_errors)
+  const num = (n: number) => n.toLocaleString('es-ES')
+  return [
+    { cifra: num(t.sessions_opened), texto: `sesiones, ${num(cerradas)} cerradas${principal(t.sessions_closed, CLOSE_REASON) ? ` (sobre todo: ${principal(t.sessions_closed, CLOSE_REASON)})` : ''}` },
+    { cifra: num(t.turns.normal + t.turns.push), texto: `turnos, ${num(t.turns.push)} de Fogar sin preguntar` },
+    { cifra: num(rechazadas), texto: rechazadas ? `conexiones rechazadas: ${principal(t.handshake_rejected, HANDSHAKE_REJECTED)}` : 'conexiones rechazadas' },
+    { cifra: num(errores), texto: errores ? `turnos con error: ${principal(t.turn_errors, TURN_ERROR)}` : 'turnos con error' },
+  ]
 })
 </script>
 
 <template>
-  <div class="estado">
-    <header>
-      <h1 class="display" aria-live="polite">
-        <Transition name="headline" mode="out-in">
-          <span :key="title" class="words">
-            <span v-for="(word, i) in words" :key="i" class="word" :style="{ animationDelay: `${i * 45}ms` }">{{
-              word
-            }}</span>
-          </span>
-        </Transition>
-      </h1>
-      <p v-if="meta" class="meta tab">{{ meta }}</p>
+  <div class="pantalla">
+    <header class="titulo">
+      <div class="texto">
+        <h1 class="fg-h1" aria-live="polite">{{ titulo }}</h1>
+        <p v-if="hallazgo" class="fg-sub">{{ hallazgo }}</p>
+        <p class="fg-meta">{{ frescura }}</p>
+      </div>
+      <FgBoton v-if="caidoOpenclaw" variante="principal" :ocupado="reconectando" @click="reconectar">Reconectar OpenClaw</FgBoton>
+      <FgBoton :ocupado="comprobando" @click="comprobar">Comprobar servicios</FgBoton>
     </header>
 
-    <section aria-labelledby="h-servicios">
-      <div class="section-head">
-        <h2 id="h-servicios">Servicios</h2>
-        <div class="actions">
-          <UiButton
-            size="sm"
-            variant="ghost"
-            icon="estado"
-            :busy="checking"
-            :state-key="checking ? 1 : 0"
-            :disabled="!live.state"
-            @click="check"
-          >
-            {{ checking ? 'Comprobando…' : 'Comprobar servicios' }}
-          </UiButton>
-          <UiButton size="sm" :busy="reconnecting" :state-key="reconnecting ? 1 : 0" :disabled="!live.state" @click="reconnect">
-            Reconectar OpenClaw
-          </UiButton>
-        </div>
-      </div>
-
-      <div v-if="services.length" class="services">
-        <article v-for="service in services" :key="service.key" class="service" :class="service.tone">
-          <h3>
-            {{ service.name }} <span class="sub">{{ service.provider }}</span>
-          </h3>
-          <UiStatus :tone="service.tone" :label="service.state" />
-          <dl class="tab">
-            <template v-if="service.since">
-              <dt>Conectado desde</dt>
-              <dd>{{ service.since }}</dd>
-            </template>
-            <template v-if="service.attempts">
-              <dt>Reintentos</dt>
-              <dd>{{ service.attempts }}</dd>
-            </template>
-            <template v-if="service.error">
-              <dt>Último error</dt>
-              <dd>{{ service.error }}</dd>
-            </template>
-            <template v-if="service.probe">
-              <dt>Comprobación</dt>
-              <dd :class="{ fail: service.probe === 'No responde' }">{{ service.probe }}</dd>
-            </template>
-          </dl>
-        </article>
-      </div>
-      <p v-else class="soft">Esperando el estado del gateway…</p>
+    <section aria-labelledby="h-casa" class="bloque">
+      <h2 id="h-casa" class="fg-h2">Quién habla con quién</h2>
+      <LienzoServicios v-if="live.state" :state="live.state" :detalles="detalles" />
+      <p v-else class="fg-meta">Esperando al gateway…</p>
+      <p class="fg-meta nota">El hilo encendido es un turno que está pasando ahora. La línea punteada es un servicio que no responde; se reintenta solo.</p>
     </section>
 
-    <section aria-labelledby="h-conectados">
-      <div class="section-head">
-        <h2 id="h-conectados">Conectados ahora</h2>
-        <span v-if="live.state" class="count tab"><UiOdometer :value="sessions.length" /></span>
-      </div>
-      <div v-if="sessions.length" class="table-wrap">
-        <table class="tab">
-          <thead>
-            <tr>
-              <th scope="col">Cliente</th>
-              <th scope="col">Entrada</th>
-              <th scope="col">Salida</th>
-              <th scope="col">Ahora</th>
-              <th scope="col" class="num">Turnos</th>
-              <th scope="col" class="num">Abierta hace</th>
-              <th scope="col" class="num">Última respuesta</th>
-            </tr>
-          </thead>
-          <TransitionGroup tag="tbody" name="row">
-            <tr v-for="row in sessions" :key="row.id">
-              <th scope="row">{{ row.name }}</th>
-              <td>{{ row.input }}</td>
-              <td>{{ row.output }}</td>
-              <td :class="{ busy: row.busy }">{{ row.turn }}</td>
-              <td class="num">{{ row.turns }}</td>
-              <td class="num">{{ row.age }}</td>
-              <td class="num">{{ row.latency }}</td>
-            </tr>
-          </TransitionGroup>
-        </table>
-      </div>
-      <p v-else-if="live.state" class="soft">
-        Nadie conectado. Aquí aparecerán la tele, los altavoces y el resto de clientes mientras tengan una sesión abierta.
-      </p>
-    </section>
+    <div class="fila">
+      <section aria-labelledby="h-ahora" class="bloque ancho">
+        <h2 id="h-ahora" class="fg-h2">Conectados ahora <small>· {{ conectados.length }}</small></h2>
+        <div v-if="conectados.length" class="fg-scroll">
+          <table class="fg-tabla tabla-ahora">
+            <thead>
+              <tr>
+                <th>Aparato</th>
+                <th>Modo</th>
+                <th>Ahora</th>
+                <th class="num">Turnos</th>
+                <th class="num">Último turno</th>
+                <th class="num">Conectado</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in conectados" :key="c.id" :class="{ viva: c.viva }">
+                <td><RouterLink :to="`/sesiones/${encodeURIComponent(c.id)}`">{{ c.nombre }}</RouterLink></td>
+                <td class="fg-tenue">{{ c.modo }}</td>
+                <td :class="{ 'fg-tenue': !c.viva }">{{ c.ahora }}</td>
+                <td class="num">{{ c.turnos }}</td>
+                <td class="num">{{ c.ultimo }}</td>
+                <td class="num fg-tenue">{{ c.edad }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p v-else class="fg-meta">Nadie conectado. Aquí aparecen la tele, los altavoces y el resto de aparatos mientras tengan una sesión abierta.</p>
+      </section>
 
-    <section v-if="totals" aria-labelledby="h-totales">
-      <h2 id="h-totales">Desde que se encendió</h2>
-      <div class="totals">
-        <div class="group">
-          <h3>Sesiones</h3>
-          <p class="figure"><UiOdometer :value="totals.opened" /> <span>{{ totals.opened === 1 ? 'abierta' : 'abiertas' }}</span></p>
-          <ul v-if="totals.closed.length">
-            <li v-for="item in totals.closed" :key="item.key">
-              <span>{{ item.text }}</span><span class="tab">{{ item.n }}</span>
-            </li>
-          </ul>
-          <p v-else class="none">Ninguna cerrada</p>
+      <section v-if="peor" aria-labelledby="h-peor" class="bloque estrecho">
+        <h2 id="h-peor" class="fg-h2">Qué le pasa a {{ peor.nombre }}</h2>
+        <div class="peor">
+          <FgEstado :tono="peor.tono" :texto="peor.resumen" class="peor-titulo" />
+          <p class="fg-suave">{{ peor.efecto }} El gateway reintenta solo, cada vez más espaciado<template v-if="peor.intentos"> (lleva {{ peor.intentos }})</template>.</p>
+          <p v-if="peor.error" class="fg-meta">Último error: <code>{{ peor.error }}</code></p>
+          <p class="fg-meta">Si no vuelve en unos minutos, revisa su configuración con <code>fogar-gw doctor</code>.</p>
         </div>
-        <div class="group">
-          <h3>Turnos</h3>
-          <p class="figure"><UiOdometer :value="totals.normal" /> <span>{{ totals.normal === 1 ? 'respuesta' : 'respuestas' }}</span></p>
-          <p class="figure"><UiOdometer :value="totals.push" /> <span>de Fogar sin preguntar</span></p>
-        </div>
-        <div class="group">
-          <h3>Conexiones rechazadas</h3>
-          <ul v-if="totals.rejected.length">
-            <li v-for="item in totals.rejected" :key="item.key">
-              <span>{{ item.text }}</span><span class="tab">{{ item.n }}</span>
-            </li>
-          </ul>
-          <p v-else class="none">Ninguna</p>
-        </div>
-        <div class="group">
-          <h3>Errores de turno</h3>
-          <ul v-if="totals.errors.length">
-            <li v-for="item in totals.errors" :key="item.key">
-              <span>{{ item.text }}</span><span class="tab">{{ item.n }}</span>
-            </li>
-          </ul>
-          <p v-else class="none">Ninguno</p>
-        </div>
+      </section>
+    </div>
+
+    <section v-if="totales" aria-labelledby="h-desde" class="bloque">
+      <h2 id="h-desde" class="fg-h2">Desde que se encendió</h2>
+      <div class="franja">
+        <p v-for="(t, i) in totales" :key="i"><span class="cifra">{{ t.cifra }}</span>{{ t.texto }}</p>
       </div>
     </section>
   </div>
 </template>
 
 <style scoped>
-.estado {
+.pantalla {
   display: flex;
   flex-direction: column;
-  gap: 56px;
-  max-width: 1080px;
+  gap: 40px;
 }
-
-header {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-h1 {
-  margin: 0;
-  line-height: 1.08;
-  text-wrap: balance;
-}
-
-.words {
-  display: inline;
-}
-
-.word {
-  display: inline-block;
-  margin-right: 0.24em;
-  animation: j-blur-in var(--t-scene) var(--ease-out) both;
-}
-
-.headline-leave-active {
-  transition: opacity var(--t-press) ease;
-}
-
-.headline-leave-to {
-  opacity: 0;
-}
-
-.meta {
-  margin: 0;
-  font-size: 15.5px;
-  color: var(--text-soft);
-}
-
-section {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.section-head {
+.titulo {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
+  align-items: flex-start;
   gap: 12px 16px;
 }
-
-h2 {
-  margin: 0;
-  font-family: var(--serif);
-  font-size: 24px;
-  font-weight: 400;
-  font-variation-settings: 'opsz' 36; /* < 60 px: opsz 36 (base.css) */
-  letter-spacing: -0.01em;
-}
-
-h3 {
-  margin: 0;
-  font-size: 17px;
-  font-weight: 600;
-}
-
-.actions {
+.titulo .texto {
+  flex: 1 1 420px;
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 8px;
 }
-
-.count {
-  margin-right: auto;
-  font-size: 15px;
-  color: var(--text-faint);
-}
-
-.services {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 32px 40px;
-}
-
-.service {
+.bloque {
   display: flex;
   flex-direction: column;
   gap: 12px;
-}
-
-.sub {
-  margin-left: 6px;
-  font-size: 13px;
-  font-weight: 400;
-  color: var(--text-faint);
-}
-
-dl {
-  margin: 0;
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 6px 16px;
-  font-size: 14px;
-}
-
-dt {
-  color: var(--text-faint);
-}
-
-dd {
-  margin: 0;
   min-width: 0;
-  color: var(--text-soft);
-  overflow-wrap: anywhere;
 }
-
-dd.fail {
-  color: var(--bad);
+.nota {
+  max-width: 70ch;
 }
-
-.soft {
-  margin: 0;
-  max-width: 62ch;
-  color: var(--text-soft);
+.fila {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 40px;
 }
-
-.table-wrap {
-  overflow-x: auto;
-  margin: 0 -12px;
+.ancho {
+  flex: 2 1 520px;
 }
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 14px;
-  white-space: nowrap;
+.estrecho {
+  flex: 1 1 280px;
 }
-
-th,
-td {
-  padding: 11px 12px;
-  text-align: left;
+.tabla-ahora {
+  min-width: 600px;
 }
-
-thead th {
-  font-size: 12.5px;
-  font-weight: 550;
-  color: var(--text-faint);
-}
-
-tbody th {
-  font-weight: 550;
-}
-
-tbody td {
-  color: var(--text-soft);
-}
-
-tbody tr {
-  box-shadow: inset 0 1px 0 var(--line);
-  transition: background-color 1.2s var(--ease-out);
-}
-
-.num {
-  text-align: right;
-}
-
-td.busy {
-  color: var(--accent-text);
-}
-
-/* La fila que llega se ilumina y se apaga despacio; la que se va desaparece rápido. */
-.row-enter-from {
-  background-color: var(--accent-tint);
-}
-
-.row-leave-active {
-  transition: opacity var(--t-quick) ease;
-}
-
-.row-leave-to {
-  opacity: 0;
-}
-
-.totals {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 32px 40px;
-}
-
-.group {
+.peor {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-}
-
-.figure {
-  margin: 0;
-  display: flex;
-  align-items: baseline;
   gap: 10px;
-  color: var(--text-soft);
+  padding: 18px;
+  border-radius: var(--radio-bloque);
+  background: var(--piedra);
 }
-
-.figure :deep(.odo) {
-  font-family: var(--serif);
-  font-size: 24px;
-  color: var(--text);
-}
-
-ul {
+.peor p {
   margin: 0;
-  padding: 0;
-  list-style: none;
+}
+.peor-titulo {
+  font-weight: 600;
+}
+.peor code {
+  color: var(--hueso);
+}
+.franja {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-radius: var(--radio-bloque);
+  background: var(--piedra);
+}
+.franja p {
+  margin: 0;
+  padding: 16px 18px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   font-size: 14px;
-  color: var(--text-soft);
+  color: var(--hueso-tenue);
 }
-
-li {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
+.franja p + p {
+  border-left: 1px solid var(--veta);
 }
-
-.none {
-  margin: 0;
-  font-size: 14px;
-  color: var(--text-faint);
+.cifra {
+  font-size: 32px;
+  font-weight: 500;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  color: var(--hueso);
 }
-
+@media (max-width: 760px) {
+  .pantalla {
+    gap: 28px;
+  }
+  .titulo :deep(.boton) {
+    flex: 1 1 100%;
+  }
+  .titulo .texto {
+    flex-basis: 100%;
+  }
+  .titulo h1 {
+    font-size: 24px;
+  }
+  .franja {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .franja p:nth-child(3) {
+    border-left: 0;
+  }
+  .franja p:nth-child(n + 3) {
+    border-top: 1px solid var(--veta);
+  }
+}
 </style>

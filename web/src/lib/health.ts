@@ -41,3 +41,30 @@ export function headline(state: GatewayState | null, connection: StreamConnectio
   const [only] = failing
   return only ? sentence(SUBJECT[only[0]], only[1]) : 'Todo funciona'
 }
+
+/**
+ * La línea de debajo del titular: el hallazgo y qué pasa mientras tanto. Habla del peor servicio; si
+ * todo va bien, de lo que pasa ahora. `intentos` sale del detalle del servicio (puede no haber llegado).
+ */
+export function finding(
+  state: GatewayState | null,
+  connection: StreamConnection,
+  intentos: Partial<Record<'orchestrator' | 'stt' | 'tts', number>> = {},
+): string {
+  if (connection === 'offline') return 'Lo vuelvo a intentar solo. Si no vuelve, comprueba que el gateway está encendido.'
+  if (!state) return ''
+  const n = (key: 'orchestrator' | 'stt' | 'tts') => (intentos[key] ? ` Lleva ${intentos[key]} intentos.` : '')
+  if (serviceTone(state.services.orchestrator) !== 'ok')
+    return `Fogar no puede contestar a nadie hasta que vuelva. Se reintenta solo.${n('orchestrator')}`
+  const tts = serviceTone(state.services.tts)
+  const stt = serviceTone(state.services.stt)
+  if (tts === 'warn' || tts === 'bad') return `Mientras tanto, Fogar contesta por texto.${n('tts')}`
+  if (stt === 'warn' || stt === 'bad') return `Mientras tanto, nadie puede hablarle por voz; por texto sí.${n('stt')}`
+  const conectados = state.sessions.length
+  const abiertos = state.sessions.filter((s) => s.turn.kind !== 'idle').length
+  const apagada = tts === 'off' || stt === 'off' ? ' La voz está apagada en la configuración.' : ''
+  if (!conectados) return `Ningún aparato conectado ahora.${apagada}`
+  const aparatos = `${conectados} ${conectados === 1 ? 'aparato conectado' : 'aparatos conectados'}`
+  const turnos = abiertos ? `, ${abiertos} ${abiertos === 1 ? 'turno abierto' : 'turnos abiertos'}` : ''
+  return `${aparatos}${turnos}.${apagada}`
+}

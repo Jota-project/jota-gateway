@@ -88,3 +88,28 @@ export const TURN_KIND: Record<string, string> = {
   normal: 'Respondiendo',
   push: 'Fogar habla',
 }
+
+/** Etapas de un turno (src/services/pipeline_tracker.py). */
+export const STAGE: Record<string, string> = {
+  transcription_partial: 'Transcripción parcial',
+  transcription_final: 'Transcripción final',
+  transcription_incomplete: 'Transcripción incompleta',
+  llm_start: 'Pregunta a OpenClaw',
+  llm_first_token: 'Primer token',
+  llm_done: 'Respuesta completa',
+  tts_start: 'Empieza la voz',
+  tts_first_chunk: 'Primer audio',
+  tts_done: 'Voz terminada',
+  barge_in: 'Interrupción',
+  client_slow: 'Cliente lento',
+  session_revoked: 'Acceso retirado',
+  session_end: 'Fin de la sesión',
+}
+
+/** Estado de una sesión guardada (`/admin/sessions`). */
+export const SESSION_STATUS: Record<string, string> = {
+  active: 'Abierta',
+  completed: 'Cerrada',
+  error: 'Con error',
+  revoked: 'Acceso retirado',
+}

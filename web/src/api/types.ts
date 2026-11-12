@@ -125,3 +125,41 @@ export interface ReadyResponse {
   status: 'ok' | 'degraded' | 'unavailable'
   services: Record<'orchestrator' | 'transcriber' | 'tts', 'ok' | 'unavailable'>
 }
+
+/** `POST /admin/clients` (sin clave: la genera el gateway) y `PATCH` (solo lo que cambia). */
+export type ClientInput = Partial<Omit<ClientResponse, 'id' | 'key_fp' | 'created_at'>>
+
+// Sesiones en memoria: src/api/admin_routes.py (_session_summary, _session_detail).
+export type SessionStatus = 'active' | 'completed' | 'error' | 'revoked'
+
+export interface SessionSummary {
+  session_id: string
+  client_id: string
+  status: SessionStatus
+  input_mode: 'audio' | 'text'
+  output_mode: OutputMode[]
+  started_at: string
+  ended_at: string | null
+  turn_count: number
+  last_latencies: { llm_first_token_ms: number | null; tts_first_chunk_ms: number | null; turn_e2e_ms: number | null }
+}
+
+export interface PipelineEventRecord {
+  stage: string
+  ts_ms: number
+  /** Desde el evento anterior de la sesión. */
+  elapsed_ms: number
+  turn: number
+  meta: Record<string, unknown>
+}
+
+export interface SessionDetail extends SessionSummary {
+  summary: { turn_count: number; duration_s: number | null; avg_llm_first_token_ms: number | null; avg_turn_e2e_ms: number | null }
+  events: PipelineEventRecord[]
+}
+
+export interface SessionList {
+  active: number
+  total: number
+  sessions: SessionSummary[]
+}

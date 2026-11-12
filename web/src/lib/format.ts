@@ -26,3 +26,17 @@ const dateTime = new Intl.DateTimeFormat('es-ES', {
 export function formatDateTime(iso: string): string {
   return dateTime.format(new Date(iso))
 }
+
+const MODO: Record<string, string> = { audio: 'voz', text: 'texto', status: 'avisos' }
+
+/** «voz → voz y texto»: cómo entra y cómo sale una sesión. */
+export function formatModes(input: string, outputs: string[] | null): string {
+  const salida = (outputs ?? []).map((m) => MODO[m] ?? m)
+  const lista = salida.length > 1 ? `${salida.slice(0, -1).join(', ')} y ${salida.at(-1)}` : (salida[0] ?? '—')
+  return `${MODO[input] ?? input} → ${lista}`
+}
+
+/** Segundos con una cifra decimal y coma: 3,2 s. `null` → raya. */
+export function formatSeconds(ms: number | null | undefined): string {
+  return ms == null ? '—' : `${(ms / 1000).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} s`
+}

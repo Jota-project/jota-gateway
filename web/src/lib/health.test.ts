@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { GatewayState, ServiceState } from '@/api/types'
-import { headline, isHealthy, serviceTone } from './health'
+import { finding, headline, isHealthy, serviceTone } from './health'
 
 function state(orch: ServiceState, stt: ServiceState, tts: ServiceState, sttProvider = 'fogar', ttsProvider = 'fogar'): GatewayState {
   return {
@@ -60,5 +60,24 @@ describe('headline', () => {
   })
   it('sin conexión manda aunque quede la última instantánea', () => {
     expect(headline(state('CONNECTED', 'CONNECTED', 'CONNECTED'), 'offline')).toBe('No llego al gateway')
+  })
+})
+
+describe('finding', () => {
+  it('cuenta los aparatos cuando todo va bien', () => {
+    expect(finding(state('CONNECTED', 'CONNECTED', 'CONNECTED'), 'live')).toBe('Ningún aparato conectado ahora.')
+  })
+  it('explica qué pasa mientras la voz se reconecta, con sus intentos', () => {
+    expect(finding(state('CONNECTED', 'CONNECTED', 'RECONNECTING'), 'live', { tts: 5 })).toBe(
+      'Mientras tanto, Fogar contesta por texto. Lleva 5 intentos.',
+    )
+  })
+  it('con OpenClaw caído no habla de la voz', () => {
+    expect(finding(state('DEGRADED', 'RECONNECTING', 'CONNECTED'), 'live')).toMatch(/^Fogar no puede contestar/)
+  })
+  it('la voz apagada a propósito se dice, no se alarma', () => {
+    expect(finding(state('CONNECTED', 'DEGRADED', 'DEGRADED', 'off', 'off'), 'live')).toBe(
+      'Ningún aparato conectado ahora. La voz está apagada en la configuración.',
+    )
   })
 })
