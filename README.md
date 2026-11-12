@@ -28,6 +28,10 @@ No hay dependencia de `jota-db` — la identidad y configuración de clientes vi
 
 ## Endpoints
 
+### Web
+
+`http://<host>:8004/` es el panel de Fogar: se entra con el token de administrador (`ADMIN_TOKEN`) y desde ahí se ve el estado en vivo y las sesiones, y se emparejan, crean, editan, rotan y borran clientes. Lo sirve el propio gateway desde su paquete, sin Node en la máquina; las rutas de la API de abajo tienen siempre prioridad. Si el paquete no lleva la web compilada (un clon sin build), `/` da 404, el gateway funciona igual y lo avisa una vez en el log. Para desarrollarla, [`web/README.md`](web/README.md).
+
 ### WebSocket
 
 | Endpoint | Auth | Descripción |
