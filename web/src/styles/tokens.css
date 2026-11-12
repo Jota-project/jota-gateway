@@ -1,0 +1,56 @@
+/* Jota Dusk en oscuro, el mismo lenguaje que JScreen (tv-canvas: remote/public/shared/tokens-mando.css).
+   Contraste medido allí contra el peor punto de las luces: texto 8,3:1, soft 5,4:1, accent-text 5,8:1.
+   La web es oscura por defecto (decisión 2026-11-08); el tema claro, si llega, en el bloque 17g de M17. */
+:root,
+:root[data-theme='oscuro'] {
+  --bg: #211b2a;
+  --orb: 0.24;
+  --pad: rgba(246, 243, 240, 0.045);
+  --hl: rgba(246, 243, 240, 0.06);
+  --text: #f6f3f0;
+  --text-soft: #d6d0de;
+  --text-faint: #a39bb0;
+  --accent: #7c6aae;
+  --accent-press: #6c5b9d;
+  --accent-hover: #7564a8; /* más oscuro, no más claro: el blanco encima sigue por encima de 4,5:1 */
+  --accent-text: #d2c9ee;
+  --accent-tint: #3e3554;
+  --on-accent: #fff;
+  --status: #8fa8d8;
+  --warn: #e8b26a;
+  --bad: #ef8a7c;
+  --panel: #272030;
+  --surface: #2d2637;
+  --surface-3: #3a3247;
+  --line: #3d3449;
+  --switch-off: #7f7590;
+  --shadow: rgba(10, 8, 14, 0.5);
+  color-scheme: dark;
+}
+
+:root {
+  --serif: 'Fraunces Variable', Georgia, serif;
+  --sans: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --r-s: 12px;
+  --r-m: 16px;
+  --r-l: 24px;
+  --r-xl: 28px;
+  --malva: #7c6aae;
+  --cielo: #6e8cc4;
+
+  /* Movimiento (JGW Spec 2026-11-08). Nada de la interfaz pasa de 300 ms salvo lo que entra en escena;
+     solo el orbe y las luces laten. Salir siempre va más rápido que entrar. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1); /* entrar y responder a un gesto */
+  --ease: cubic-bezier(0.32, 0.72, 0, 1); /* ease-salon de JScreen: abrir alturas, hojas, paneles */
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1); /* mover algo que ya está en pantalla */
+  /* Muelle con un 4 % de rebote: solo para lo que sigue a un gesto (interruptor, píldoras, tu mensaje). */
+  --spring: linear(
+    0, 0.0228, 0.0816, 0.1643, 0.2608, 0.3631, 0.4654, 0.5631, 0.6534, 0.7342, 0.8047, 0.8646, 0.9141, 0.954,
+    0.9851, 1.0084, 1.0251, 1.0362, 1.0427, 1.0456, 1.0458, 1.0439, 1.0406, 1.0365, 1.0319, 1.0272, 1.0225,
+    1.0182, 1.0142, 1.0107, 1.0077, 1.0051, 1.0031, 1.0014, 1.0002, 0.9992, 0.9986, 0.9982, 0.998, 0.9979, 1
+  );
+  --t-press: 120ms; /* hundirse al pulsar */
+  --t-quick: 180ms; /* color, hover, iconos */
+  --t-base: 240ms; /* foco, errores, checks */
+  --t-scene: 420ms; /* lo que entra en escena: filas, muelles, avisos */
+}

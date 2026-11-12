@@ -1,0 +1,127 @@
+// Espejo de lo que devuelve el gateway. Fuente: src/api/admin_routes.py (_build_state),
+// src/services/stats.py y src/services/bridge.py (snapshot). Si el gateway cambia, cambia aquí.
+
+/** Estado interno de un servicio (src/services/reconnection.py, ConnectionState). */
+export type ServiceState = 'CONNECTED' | 'RECONNECTING' | 'DEGRADED'
+
+export interface ServiceSnapshot {
+  state: ServiceState
+  last_error: string | null
+}
+
+export interface SpeechServiceSnapshot extends ServiceSnapshot {
+  provider: string // 'fogar' | 'elevenlabs' | 'off'
+}
+
+export type OutputMode = 'audio' | 'text' | 'status'
+
+export interface LiveSession {
+  session_id: string
+  client_id: string
+  client_name: string
+  input_mode: 'audio' | 'text'
+  output_mode: OutputMode[]
+  started_at: string | null
+  age_s: number
+  turn: { kind: 'idle' | 'normal' | 'push'; since_s: number | null }
+  turn_count: number
+  sender: { pending_msgs: number; pending_bytes: number; peak_msgs: number; peak_bytes: number }
+  turn_queue: { depth: number; peak: number }
+  push_backlog: { pending: number; peak: number }
+  last_activity_s: number | null
+  stt_state: ServiceState | null
+  last_latencies: {
+    llm_first_token_ms: number | null
+    tts_first_chunk_ms: number | null
+    turn_e2e_ms: number | null
+  } | null
+}
+
+export interface GatewayState {
+  gateway: { started_at: string; uptime_s: number; version?: string } // version desde v1.29.0
+  services: {
+    orchestrator: ServiceSnapshot
+    stt: SpeechServiceSnapshot
+    tts: SpeechServiceSnapshot
+  }
+  totals: {
+    sessions_opened: number
+    sessions_closed: Record<string, number>
+    handshake_rejected: Record<string, number>
+    turns: { normal: number; push: number }
+    turn_errors: Record<string, number>
+    sessions_active: number
+  }
+  sessions: LiveSession[]
+}
+
+// Clientes: src/models/admin_schemas.py. `client_type` se valida solo al escribir (ClientType);
+// al leer es texto libre por filas antiguas.
+export type ClientType = 'ha' | 'esp32' | 'web' | 'app' | 'screen'
+
+/** Lectura de un cliente: nunca lleva la clave, solo su huella `key_fp` (8 hex). */
+export interface ClientResponse {
+  id: string
+  name: string
+  key_fp: string
+  is_active: boolean
+  client_type: string | null
+  default_agent: string | null
+  allowed_agents: string[] | null // null = sin límite, [] = ninguno
+  created_at: string
+  stt_language: string
+  stt_vad_thold: number
+  tts_voice: string
+  tts_speed: number
+  barge_in_enabled: boolean
+  barge_in_min_chars: number
+  output_mode: OutputMode[] | null
+  silence_timeout_s: number
+  max_silence_turns: number
+  push_enabled: boolean
+  tool_calls_enabled: boolean
+}
+
+/** Crear y rotar: la única vez que llega la clave. Nunca se guarda en un store de admin ni se loguea. */
+export interface ClientWithKey extends ClientResponse {
+  client_key: string
+}
+
+// Emparejamiento: src/api/pairing_routes.py. Códigos de 6 cifras, 10 min, hasta 5 abiertos.
+export type PairingState = 'open' | 'used' | 'expired' | 'cancelled'
+
+/** Plantilla de `POST /admin/pairing`: los campos de crear un cliente, todos opcionales y sin clave. */
+export type PairingTemplate = Partial<Omit<ClientResponse, 'id' | 'key_fp' | 'is_active' | 'created_at' | 'client_type'>> & {
+  client_type?: ClientType | null
+}
+
+/** `GET /admin/pairing` y `/{id}`: nunca lleva el código. */
+export interface PairingSummary {
+  id: string
+  state: PairingState
+  expires_at: string
+  client_id: string | null
+  client_name: string | null
+  template: PairingTemplate
+}
+
+/** `POST /admin/pairing`: el código solo llega aquí. */
+export interface PairingOpened extends PairingSummary {
+  code: string
+}
+
+/** `/admin/orchestrators/openclaw/status`, `/admin/transcriber/status`, `/admin/tts/status`. */
+export interface ServiceDetail {
+  name: string
+  provider?: string
+  state: ServiceState
+  connected_at: string | null
+  reconnect_attempts: number
+  last_error: string | null
+}
+
+/** `/ready`: sondea de verdad cada servicio. 503 (con este cuerpo) si cae OpenClaw. */
+export interface ReadyResponse {
+  status: 'ok' | 'degraded' | 'unavailable'
+  services: Record<'orchestrator' | 'transcriber' | 'tts', 'ok' | 'unavailable'>
+}

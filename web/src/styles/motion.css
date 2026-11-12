@@ -1,0 +1,140 @@
+/* Movimiento de Jota Dusk (JGW Spec 2026-11-08 - Movimiento y componentes de la web).
+   Las curvas y tiempos viven en tokens.css; aquí, las animaciones que comparten varios componentes.
+   «Movimiento reducido» lo resuelve base.css para toda la web. */
+
+@keyframes j-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* El «no» corto de un campo o una opción que no se puede quitar. */
+@keyframes j-nudge {
+  20% {
+    transform: translateX(-5px);
+  }
+  45% {
+    transform: translateX(4px);
+  }
+  70% {
+    transform: translateX(-2px);
+  }
+  100% {
+    transform: none;
+  }
+}
+
+/* Lo conectado respira: un halo que se abre y se apaga. */
+@keyframes j-breath {
+  0% {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+  70%,
+  100% {
+    transform: scale(2.8);
+    opacity: 0;
+  }
+}
+
+/* Texto que cambia: entra enfocándose. */
+@keyframes j-blur-in {
+  from {
+    opacity: 0;
+    filter: blur(5px);
+    transform: translateY(4px);
+  }
+}
+
+@keyframes j-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes j-flash-warn {
+  0%,
+  40% {
+    color: var(--warn);
+  }
+}
+
+.j-nudge {
+  animation: j-nudge 360ms var(--ease-out);
+}
+
+.j-flash {
+  animation: j-flash-warn 900ms var(--ease-out);
+}
+
+.j-spinner {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  opacity: 0.9;
+  animation: j-spin 0.7s linear infinite;
+}
+
+/* <Transition name="j-swap">: un contenido sustituye a otro con un fundido desenfocado.
+   El que sale se queda encima, fuera del flujo, para que el que entra marque el tamaño desde el principio.
+   Necesita un contenedor con position: relative (lo tienen UiButton y UiStatus). */
+.j-swap-enter-active,
+.j-swap-leave-active {
+  transition:
+    opacity var(--t-quick) ease,
+    filter var(--t-quick) ease,
+    transform var(--t-quick) var(--ease-out);
+}
+.j-swap-leave-active {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.j-swap-enter-from {
+  opacity: 0;
+  filter: blur(4px);
+  transform: translateY(3px);
+}
+.j-swap-leave-to {
+  opacity: 0;
+  filter: blur(4px);
+  transform: translateY(-3px);
+}
+
+/* El núcleo del orbe de Jota: lo usan UiOrb y la marca de Conectar. Late 3,4 s (1 → 1,05). */
+.j-orb {
+  border-radius: 50%;
+  background: radial-gradient(circle at 34% 28%, #ebe4fb, var(--malva) 50%, var(--cielo) 100%);
+  box-shadow:
+    0 0 26px rgb(124 106 174 / 0.55),
+    inset 0 -6px 14px rgb(40 30 80 / 0.35);
+  animation: j-beat 3.4s var(--ease-in-out) infinite;
+}
+
+@keyframes j-beat {
+  50% {
+    transform: scale(1.05);
+  }
+}
+
+/* <Transition name="j-page">: cambio de escena. Sale rápido; entra enfocándose. */
+.j-page-leave-active {
+  transition: opacity var(--t-press) ease;
+}
+.j-page-enter-active {
+  transition:
+    opacity var(--t-base) var(--ease-out),
+    filter var(--t-base) var(--ease-out);
+}
+.j-page-enter-from {
+  opacity: 0;
+  filter: blur(6px);
+}
+.j-page-leave-to {
+  opacity: 0;
+}
