@@ -38,7 +38,7 @@ const filas = computed(() => {
       id: c.id,
       nombre: c.name,
       tipo: c.client_type ? label(CLIENT_TYPE, c.client_type) : 'Sin tipo',
-      responde: c.output_mode?.length ? c.output_mode.map((m) => RESPONDE[m] ?? m).join(' y ') : 'por defecto',
+      responde: c.output_mode?.length ? c.output_mode.map((m) => RESPONDE[m] ?? m).join(' y ') : '—',
       conectado: conSesion.value.has(c.id),
       huella: `${c.key_fp.slice(0, 4)} ${c.key_fp.slice(4)}`,
     }))
@@ -121,22 +121,22 @@ function emparejado(clientId: string, nombre: string | null) {
             <thead>
               <tr>
                 <th>Aparato</th>
-                <th>Tipo</th>
-                <th>Responde con</th>
+                <th class="opcional">Tipo</th>
+                <th class="opcional">Reproduce</th>
                 <th>Ahora</th>
-                <th class="num">Huella</th>
+                <th class="num opcional">Huella</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="f in filas" :key="f.id">
                 <td><RouterLink :to="`/clientes/${encodeURIComponent(f.id)}`" class="nombre">{{ f.nombre }}</RouterLink></td>
-                <td class="fg-tenue">{{ f.tipo }}</td>
-                <td class="fg-tenue">{{ f.responde }}</td>
+                <td class="fg-tenue opcional">{{ f.tipo }}</td>
+                <td class="fg-tenue opcional">{{ f.responde }}</td>
                 <td>
                   <FgEstado v-if="f.conectado" tono="ok" texto="Conectado" />
                   <span v-else class="fg-tenue">Sin sesión</span>
                 </td>
-                <td class="num fg-tenue">{{ f.huella }}</td>
+                <td class="num fg-tenue opcional">{{ f.huella }}</td>
               </tr>
             </tbody>
           </table>

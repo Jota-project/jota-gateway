@@ -178,13 +178,13 @@ onBeforeRouteLeave(() => {
             <FgCampo v-model="form.tts_voice" etiqueta="Voz" pista="El nombre de la voz en el proveedor de voz." :error="err('tts_voice')" />
           </div>
           <fieldset class="salidas">
-            <legend>Responde con</legend>
+            <legend>Sabe reproducir</legend>
             <div class="opciones">
               <label v-for="s in SALIDAS" :key="s.valor" class="opcion">
                 <input v-model="form.output_mode" type="checkbox" :value="s.valor" />{{ s.texto }}
               </label>
             </div>
-            <p v-if="err('output_mode')" class="fg-meta" role="alert">{{ err('output_mode') }}</p>
+            <p class="fg-meta">Lo dice el aparato al emparejarse. En cada sesión manda lo que pida al conectarse.</p>
           </fieldset>
           <details class="mas">
             <summary>Conversación y voz: idioma, interrupciones, silencio, mensajes de Fogar y herramientas</summary>

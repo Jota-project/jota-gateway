@@ -56,7 +56,6 @@ export function validate(f: ClientForm): Partial<Record<keyof ClientForm, string
   if (!f.name.trim() || f.name.trim().length > 200) e.name = 'Entre 1 y 200 caracteres.'
   if (!f.tts_voice.trim()) e.tts_voice = 'Pon el nombre de una voz.'
   if (!f.stt_language.trim()) e.stt_language = 'Pon un idioma, por ejemplo «es».'
-  if (!f.output_mode.length) e.output_mode = 'Elige al menos una.'
   rango('stt_vad_thold', 0, 1, false)
   rango('tts_speed', 0, 10, false, true)
   rango('barge_in_min_chars', 1, 10_000, true)

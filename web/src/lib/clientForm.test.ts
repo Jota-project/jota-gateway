@@ -34,7 +34,10 @@ describe('clientForm', () => {
   })
   it('valida como el gateway', () => {
     const f = { ...toForm(cliente), name: '', output_mode: [], tts_speed: '0', barge_in_min_chars: '2,5' }
-    expect(Object.keys(validate(f)).sort()).toEqual(['barge_in_min_chars', 'name', 'output_mode', 'tts_speed'])
+    expect(Object.keys(validate(f)).sort()).toEqual(['barge_in_min_chars', 'name', 'tts_speed'])
+  })
+  it('sin formatos marcados manda null (los dice el aparato)', () => {
+    expect(diff(cliente, { ...toForm(cliente), output_mode: [] })).toEqual({ output_mode: null })
   })
   it('el agente por defecto tiene que estar entre los permitidos', () => {
     const f = { ...toForm(cliente), default_agent: 'casa', allowed_agents: 'main, otro' }

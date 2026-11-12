@@ -185,21 +185,21 @@ const totales = computed(() => {
             <thead>
               <tr>
                 <th>Aparato</th>
-                <th>Modo</th>
+                <th class="opcional">Modo</th>
                 <th>Ahora</th>
                 <th class="num">Turnos</th>
                 <th class="num">Último turno</th>
-                <th class="num">Conectado</th>
+                <th class="num opcional">Conectado</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="c in conectados" :key="c.id" :class="{ viva: c.viva }">
                 <td><RouterLink :to="`/sesiones/${encodeURIComponent(c.id)}`">{{ c.nombre }}</RouterLink></td>
-                <td class="fg-tenue">{{ c.modo }}</td>
+                <td class="fg-tenue opcional">{{ c.modo }}</td>
                 <td :class="{ 'fg-tenue': !c.viva }">{{ c.ahora }}</td>
                 <td class="num">{{ c.turnos }}</td>
                 <td class="num">{{ c.ultimo }}</td>
-                <td class="num fg-tenue">{{ c.edad }}</td>
+                <td class="num fg-tenue opcional">{{ c.edad }}</td>
               </tr>
             </tbody>
           </table>
@@ -266,7 +266,7 @@ const totales = computed(() => {
   flex: 1 1 280px;
 }
 .tabla-ahora {
-  min-width: 600px;
+  min-width: 340px;
 }
 .peor {
   display: flex;
@@ -319,9 +319,6 @@ const totales = computed(() => {
   }
   .titulo .texto {
     flex-basis: 100%;
-  }
-  .titulo h1 {
-    font-size: 24px;
   }
   .franja {
     grid-template-columns: repeat(2, minmax(0, 1fr));

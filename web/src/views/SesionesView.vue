@@ -167,7 +167,7 @@ const media = computed(() => {
             <thead>
               <tr>
                 <th>Aparato</th>
-                <th>Modo</th>
+                <th class="opcional">Modo</th>
                 <th>Empezó</th>
                 <th class="num">Turnos</th>
                 <th class="num">Último turno</th>
@@ -179,7 +179,7 @@ const media = computed(() => {
                   <RouterLink :to="`/sesiones/${encodeURIComponent(f.id)}`" :aria-current="f.id === seleccion ? 'true' : undefined" class="nombre">{{ f.nombre }}</RouterLink>
                   <span v-if="filtroActivo === 'todas'" class="fg-meta"> · {{ f.estado }}</span>
                 </td>
-                <td class="fg-tenue">{{ f.modo }}</td>
+                <td class="fg-tenue opcional">{{ f.modo }}</td>
                 <td class="fg-tenue">{{ f.empezo }}</td>
                 <td class="num">{{ f.turnos }}</td>
                 <td class="num">{{ f.ultimo }}</td>
@@ -193,13 +193,13 @@ const media = computed(() => {
       <section v-if="seleccion" aria-labelledby="h-turno" class="detalle">
         <template v-if="detalle && turno">
           <div class="cab">
-            <h2 id="h-turno" class="fg-h2">{{ nombre(detalle.client_id) }} · turno {{ turno.numero }} <small>de {{ listaTurnos.length }}</small></h2>
+            <h2 id="h-turno" class="fg-h2">{{ nombre(detalle.client_id) }} · turno {{ indice + 1 }} <small>de {{ listaTurnos.length }}</small></h2>
             <div class="pasos">
               <FgBoton tam="sm" solo-icono icono="izquierda" aria-label="Turno anterior" :disabled="indice <= 0" @click="mover(-1)" />
               <FgBoton tam="sm" solo-icono icono="derecha" aria-label="Turno siguiente" :disabled="indice >= listaTurnos.length - 1" @click="mover(1)" />
             </div>
           </div>
-          <ol class="etapas" :aria-label="`Etapas del turno ${turno.numero}`">
+          <ol class="etapas" :aria-label="`Etapas del turno ${indice + 1}`">
             <li v-for="(b, i) in barras" :key="i" :class="{ clave: b.clave }">
               <span class="etiqueta">{{ b.texto }}</span>
               <span class="pista" aria-hidden="true"><span class="barra" :style="{ marginLeft: b.izquierda, width: b.ancho }" /></span>

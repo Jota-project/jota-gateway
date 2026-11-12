@@ -18,6 +18,11 @@ body {
   color-scheme: dark;
 }
 
+/* El humo del fondo vivo se sale de sus bloques a propósito; nunca de la pantalla. */
+body {
+  overflow-x: clip;
+}
+
 * {
   scrollbar-color: var(--veta) transparent;
 }
@@ -159,6 +164,15 @@ code {
   font-size: 13px;
   color: var(--hueso-tenue);
   margin-left: 4px;
+}
+
+@media (max-width: 760px) {
+  .fg-h1 {
+    font-size: 24px;
+  }
+  .fg-tabla .opcional {
+    display: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

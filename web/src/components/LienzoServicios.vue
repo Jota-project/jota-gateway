@@ -180,9 +180,10 @@ const vivaServicio = (key: string) => key === 'orchestrator' && algunaViva.value
   padding: 32px 0;
 }
 .lienzo :deep(.fondo) {
-  inset: -60px -40px;
+  /* Sin subir por encima del bloque: taparía el título de la sección. */
+  inset: 0 -40px -60px;
   width: calc(100% + 80px);
-  height: calc(100% + 120px);
+  height: calc(100% + 60px);
 }
 .hilos {
   position: absolute;

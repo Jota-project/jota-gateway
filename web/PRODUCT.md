@@ -28,7 +28,7 @@ Es la cara de un asistente propio en casa: enseña el estado real del gateway, e
 
 ## Brand Commitments
 - Nombre: Fogar. Textos solo en español, tono cercano y directo («Hola. Conectemos con tu gateway.»).
-- Sistema de diseño Fogar Dusk, variante oscura de JScreen; el modo oscuro es el único en la v1.
+- Sistema de diseño de fogar-brand (paleta «Lousa con humo de monte», Unbounded + Figtree, línea viva), alineado con Fogar TV; el modo oscuro es el único en la v1.
 
 ## Evidence on Hand
 Ninguna: no hay testimonios, cifras ni capturas de usuarios. No inventarlos.
