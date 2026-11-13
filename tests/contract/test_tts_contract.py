@@ -43,7 +43,7 @@ async def test_close_midway_returns_quickly(tts_harness):
 
 async def _failed_attempt(provider, client_id):
     """Un intento contra un backend caído no da audio. Un adaptador puede devolver `None` ya
-    (jota, que espera a la red) o un stream sin audio (los que conectan en segundo plano)."""
+    (fogar, que espera a la red) o un stream sin audio (los que conectan en segundo plano)."""
     stream = await provider.connect(None, None, client_id)
     if stream is not None:
         await stream.send_text_chunk("hola.")

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from jota_gateway.core.config import settings
+from fogar_gateway.core.config import settings
 
 
 def test_healthz_always_200(client):

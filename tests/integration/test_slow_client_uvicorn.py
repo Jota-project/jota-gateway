@@ -1,6 +1,6 @@
 """Integration: slow client against a REAL uvicorn server (issue #130 S2).
 
-The mini app is a FastAPI app with the SAME middlewares, in the SAME order, as src/jota_gateway/main.py
+The mini app is a FastAPI app with the SAME middlewares, in the SAME order, as src/fogar_gateway/main.py
 (RequestIdMiddleware, then TransportCaptureMiddleware) — a plain Starlette app would not
 prove the middleware sees uvicorn's raw `send` in the real stack. The endpoint mirrors
 what routes.py does: a QueuedSender whose on_slow calls drop_slow_client. The client is a
@@ -15,11 +15,11 @@ import pytest
 import uvicorn
 from fastapi import FastAPI, WebSocket
 
-from jota_gateway.core import transport as transport_mod
-from jota_gateway.core.config import settings
-from jota_gateway.core.request_id import RequestIdMiddleware
-from jota_gateway.core.transport import TransportCaptureMiddleware, drop_slow_client
-from jota_gateway.services.outbound import QueuedSender
+from fogar_gateway.core import transport as transport_mod
+from fogar_gateway.core.config import settings
+from fogar_gateway.core.request_id import RequestIdMiddleware
+from fogar_gateway.core.transport import TransportCaptureMiddleware, drop_slow_client
+from fogar_gateway.services.outbound import QueuedSender
 
 CHUNK = b"\x00" * (256 * 1024)
 CHUNKS = 128  # 32 MiB: far more than socket buffers can absorb
@@ -40,7 +40,7 @@ class Probe:
 
 def _make_app(probe: Probe) -> FastAPI:
     app = FastAPI()
-    # Same registration order as src/jota_gateway/main.py.
+    # Same registration order as src/fogar_gateway/main.py.
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(TransportCaptureMiddleware)
 

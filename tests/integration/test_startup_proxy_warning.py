@@ -8,8 +8,8 @@ import logging
 
 import pytest
 
-from jota_gateway.core.config import settings
-from jota_gateway.core.network import warn_if_open_proxy_config
+from fogar_gateway.core.config import settings
+from fogar_gateway.core.network import warn_if_open_proxy_config
 
 
 @pytest.fixture
@@ -53,7 +53,7 @@ def startup_records(empty_proxies):
             records.append(record)
 
     handler = _H(level=logging.WARNING)
-    log = logging.getLogger("jota_gateway.core.network")
+    log = logging.getLogger("fogar_gateway.core.network")
     log.addHandler(handler)
     yield records
     log.removeHandler(handler)

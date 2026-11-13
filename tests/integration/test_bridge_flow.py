@@ -1,4 +1,4 @@
-"""Tests para el flujo de texto en JotaBridge.
+"""Tests para el flujo de texto en FogarBridge.
 
 input_mode=text: sin transcriber. El cliente manda texto plano,
 recibe tokens del orchestrator.
@@ -6,8 +6,8 @@ recibe tokens del orchestrator.
 
 import pytest
 
-from jota_gateway.core.config import settings
-from jota_gateway.services.protocol import OrchestratorEvent
+from fogar_gateway.core.config import settings
+from fogar_gateway.services.protocol import OrchestratorEvent
 from tests.integration.conftest import CLIENT_ID, VALID_KEY
 
 HANDSHAKE_TEXT = {

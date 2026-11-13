@@ -1,7 +1,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from jota_gateway.services.pipeline_tracker import PipelineTracker
+from fogar_gateway.services.pipeline_tracker import PipelineTracker
 from tests.fakes.bridge import DirectSender
 
 
@@ -168,7 +168,7 @@ async def test_close_with_error_status():
 
 async def test_record_logs_structured_fields(caplog):
     tracker, _, _ = _make_tracker()
-    with caplog.at_level("INFO", logger="jota_gateway.services.pipeline_tracker"):
+    with caplog.at_level("INFO", logger="fogar_gateway.services.pipeline_tracker"):
         await tracker.record("llm_done", token_count=2)
     rec = next(r for r in caplog.records if getattr(r, "stage", None) == "llm_done")
     assert rec.session_id == "test:123"
@@ -191,12 +191,12 @@ async def test_json_log_line_has_no_user_text():
     import io
     import logging
 
-    from jota_gateway.core.logging import JsonFormatter
+    from fogar_gateway.core.logging import JsonFormatter
 
     buf = io.StringIO()
     handler = logging.StreamHandler(buf)
     handler.setFormatter(JsonFormatter())
-    lg = logging.getLogger("jota_gateway.services.pipeline_tracker")
+    lg = logging.getLogger("fogar_gateway.services.pipeline_tracker")
     lg.addHandler(handler)
     old = lg.level
     lg.setLevel(logging.INFO)

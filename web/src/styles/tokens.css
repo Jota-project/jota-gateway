@@ -1,0 +1,66 @@
+/* Tokens de Fogar: copia de fogar-brand/sistema/project/tokens.css (9ffe6c5, generado con tools/sistema.mjs).
+   No se editan aquí: si cambian en la marca, se vuelve a copiar el bloque :root. Debajo, los de la web. */
+:root {
+  --noche: #0b1012;
+  --piedra: #12191b;
+  --piedra-alta: #1a2325;
+  --veta: #252f32;
+  --hueso: #ece6dc;
+  --hueso-suave: #b8bec2;
+  --hueso-tenue: #8b969f;
+  --accion: #ece6dc;
+  --sobre-accion: #0b1012;
+  --humo: #13201b;
+  --niebla: #20332a;
+  --rescoldo: #5a1a10;
+  --ascua: #b8361a;
+  --llama: #ee6a2c;
+  --chispa: #ffe1b8;
+  --contra: #7cc792;
+  --correcto: #78b8f0;
+  --degradado: #e6df7a;
+  --no-disponible: #8f99a1;
+  --error: #ff8db4;
+  --vidrio: rgba(11,16,18,0.7);
+  --vidrio-reflejo: rgba(236,230,220,0.16);
+  --vidrio-borde: rgba(236,230,220,0.08);
+  --sombra-vidrio: inset 0 1px 0 rgba(236, 230, 220, 0.16), inset 0 0 0 1px rgba(236, 230, 220, 0.08), 0 24px 48px -24px rgba(0, 0, 0, 0.6);
+  color-scheme: dark;
+}
+:root {
+  --espacio-1: 4px;
+  --espacio-2: 8px;
+  --espacio-3: 12px;
+  --espacio-4: 16px;
+  --espacio-5: 20px;
+  --espacio-6: 24px;
+  --espacio-8: 32px;
+  --espacio-12: 48px;
+  --radio-chip: 10px;
+  --radio-nodo: 12px;
+  --radio-bloque: 14px;
+  --radio-vidrio: 18px;
+  --radio-pildora: 999px;
+  --brasa-tope-vidrio: 0.42;
+  --brasa-panel: 3%;
+  --brasa-landing: 10%;
+  --font-titular: "Unbounded", system-ui, sans-serif;
+  --font-texto: "Figtree", system-ui, sans-serif;
+}
+
+/* Lo propio del panel (M18). `vidrio-fino`: desviación de `vidrio` (70 %) para que el fondo vivo se vea
+   a través; pendiente de subir a fogar-brand (spec «Dashboard de Fogar» del 2026-11-12). */
+:root {
+  --vidrio-fino: rgb(18 25 27 / 0.42);
+  --vidrio-fino-borde: inset 0 1px 0 rgb(236 230 220 / 0.1), inset 0 0 0 1px rgb(236 230 220 / 0.07);
+  --velo: rgb(236 230 220 / 0.08);
+  --velo-alto: rgb(236 230 220 / 0.12);
+  --hilo: #2c3739;
+  --hilo-caido: #3a4549;
+
+  --titular: 400 32px/1.08 var(--font-titular);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --t-pulsar: 120ms;
+  --t-rapido: 160ms;
+  --t-base: 240ms;
+}

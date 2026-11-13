@@ -1,12 +1,12 @@
-"""JotaBridge consume los puertos de voz (spec 2026-10-20, fase 1)."""
+"""FogarBridge consume los puertos de voz (spec 2026-10-20, fase 1)."""
 
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jota_gateway.models.schemas import ClientConfig
-from jota_gateway.services.reconnection import ConnectionState
-from jota_gateway.services.speech.ports import SttCapabilities
+from fogar_gateway.models.schemas import ClientConfig
+from fogar_gateway.services.reconnection import ConnectionState
+from fogar_gateway.services.speech.ports import SttCapabilities
 from tests.fakes.bridge import sent
 
 

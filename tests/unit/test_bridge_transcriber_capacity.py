@@ -1,4 +1,4 @@
-"""Transcriber capacity-status handling in JotaBridge (issue #143)."""
+"""Transcriber capacity-status handling in FogarBridge (issue #143)."""
 
 import asyncio
 import time
@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from jota_gateway.models.schemas import ClientConfig
-from jota_gateway.services.reconnection import ConnectionState
+from fogar_gateway.models.schemas import ClientConfig
+from fogar_gateway.services.reconnection import ConnectionState
 from tests.fakes.bridge import sent
 
 
@@ -100,7 +100,7 @@ async def test_watchdog_does_not_count_silence_while_transcriber_busy(bridge):
             bridge.transcriber.state = ConnectionState.DEGRADED  # stop the loop
 
     bridge.close_all = AsyncMock()
-    with patch("jota_gateway.services.bridge._sleep", new=_sleep):
+    with patch("fogar_gateway.services.bridge._sleep", new=_sleep):
         await asyncio.wait_for(bridge._transcription_watchdog(), timeout=2.0)
 
     bridge.close_all.assert_not_awaited()
@@ -122,7 +122,7 @@ async def test_watchdog_grants_fresh_baseline_after_busy_clears(bridge):
             bridge.transcriber.state = ConnectionState.DEGRADED  # stop the loop
 
     bridge.close_all = AsyncMock()
-    with patch("jota_gateway.services.bridge._sleep", new=_sleep):
+    with patch("fogar_gateway.services.bridge._sleep", new=_sleep):
         await asyncio.wait_for(bridge._transcription_watchdog(), timeout=2.0)
 
     bridge.close_all.assert_not_awaited()

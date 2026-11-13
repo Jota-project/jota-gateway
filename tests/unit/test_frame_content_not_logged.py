@@ -7,8 +7,8 @@ import logging
 import pytest
 import websockets
 
-from jota_gateway.services.transcriber_client import TranscriberClient
-from jota_gateway.services.tts_client import TTSClient
+from fogar_gateway.services.transcriber_client import TranscriberClient
+from fogar_gateway.services.tts_client import TTSClient
 
 SECRET = "TRANSCRIPCION-PRIVADA-hola-que-tal"
 

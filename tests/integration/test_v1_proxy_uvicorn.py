@@ -14,9 +14,9 @@ import pytest
 import uvicorn
 from fastapi import FastAPI
 
-from jota_gateway.api.openai_routes import router as openai_router
-from jota_gateway.core.config import settings
-from jota_gateway.core.request_id import RequestIdMiddleware
+from fogar_gateway.api.openai_routes import router as openai_router
+from fogar_gateway.core.config import settings
+from fogar_gateway.core.request_id import RequestIdMiddleware
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -79,13 +79,19 @@ def test_x_forwarded_for_alone_never_grants_trust(live_url):
         assert _get(live_url, {"X-Forwarded-For": xff}).status_code == 401
 
 
+def test_tailscale_serve_headers_never_grant_trust(live_url):
+    h = {"X-Forwarded-For": "100.64.0.7", "Tailscale-User-Login": "a@b.c",
+         "Tailscale-User-Name": "A", "X-Forwarded-Proto": "https"}
+    assert _get(live_url, h).status_code == 401
+
+
 def test_proxy_vouching_for_loopback_client_is_trusted(live_url):
     assert _get(live_url, {"X-Real-IP": "127.0.0.1"}).status_code == 200
 
 
 def test_x_forwarded_for_spoof_of_trusted_network_fails_closed(monkeypatch):
     """Con `--proxy-headers` (default de uvicorn) un proxy que reenvía el XFF del cliente
-    deja que el cliente elija el peer; `jota-gw serve` arranca con `proxy_headers=False`."""
+    deja que el cliente elija el peer; `fogar-gw serve` arranca con `proxy_headers=False`."""
     monkeypatch.setattr(settings, "TRUSTED_NETWORKS", "192.168.1.0/24")
     monkeypatch.setattr(settings, "TRUSTED_PROXIES", "127.0.0.1,::1")
     server, thread = _start(proxy_headers=False)

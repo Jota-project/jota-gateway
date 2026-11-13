@@ -1,4 +1,4 @@
-"""Tests for JotaBridge._transcription_watchdog."""
+"""Tests for FogarBridge._transcription_watchdog."""
 
 import asyncio
 import time
@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import jota_gateway.services.bridge as bridge_module
-from jota_gateway.models.schemas import ClientConfig
-from jota_gateway.services.pipeline_tracker import PipelineTracker
-from jota_gateway.services.reconnection import ConnectionState
+import fogar_gateway.services.bridge as bridge_module
+from fogar_gateway.models.schemas import ClientConfig
+from fogar_gateway.services.pipeline_tracker import PipelineTracker
+from fogar_gateway.services.reconnection import ConnectionState
 from tests.fakes.bridge import sent
 
 _CONFIG = ClientConfig(silence_timeout_s=1, max_silence_turns=3)
@@ -51,7 +51,7 @@ async def test_watchdog_notifies_client_after_silence_timeout(make_wd_bridge):
     transcriber.last_transcript_at = None
     bridge.close_all = AsyncMock()
 
-    with patch("jota_gateway.services.bridge._sleep", new=AsyncMock(return_value=None)):
+    with patch("fogar_gateway.services.bridge._sleep", new=AsyncMock(return_value=None)):
         await asyncio.wait_for(bridge._transcription_watchdog(), timeout=3.0)
 
     msgs = await sent(bridge)
@@ -69,7 +69,7 @@ async def test_watchdog_exits_if_transcriber_disconnects(make_wd_bridge):
     bridge._last_audio_at = bridge._audio_burst_start = time.monotonic()
     transcriber.state = ConnectionState.DEGRADED
 
-    with patch("jota_gateway.services.bridge._sleep", new=AsyncMock(return_value=None)):
+    with patch("fogar_gateway.services.bridge._sleep", new=AsyncMock(return_value=None)):
         await asyncio.wait_for(bridge._transcription_watchdog(), timeout=2.0)
 
 
@@ -89,7 +89,7 @@ async def test_watchdog_closes_session_after_max_silence_turns(make_wd_bridge):
 
     bridge.close_all = _fake_close
 
-    with patch("jota_gateway.services.bridge._sleep", new=AsyncMock(return_value=None)):
+    with patch("fogar_gateway.services.bridge._sleep", new=AsyncMock(return_value=None)):
         await asyncio.wait_for(bridge._transcription_watchdog(), timeout=3.0)
 
     assert close_called, "close_all debería haberse llamado tras max_silence_turns"
@@ -122,7 +122,7 @@ async def test_watchdog_resets_count_when_transcription_arrives(make_wd_bridge):
         elif ticks["n"] == 4:
             transcriber.state = ConnectionState.DEGRADED  # stop the loop cleanly
 
-    with patch("jota_gateway.services.bridge._sleep", new=_controlled_sleep):
+    with patch("fogar_gateway.services.bridge._sleep", new=_controlled_sleep):
         # NOTE: must directly `await` the watchdog coroutine, not wrap it in
         # `asyncio.create_task` + an outer polling loop — a non-suspending
         # `_sleep` never yields control back to the scheduler, so a separately-created task
@@ -163,7 +163,7 @@ async def test_watchdog_pauses_but_does_not_exit_when_reconnecting(make_wd_bridg
 
     bridge.close_all = _fake_close
 
-    with patch("jota_gateway.services.bridge._sleep", new=_controlled_sleep):
+    with patch("fogar_gateway.services.bridge._sleep", new=_controlled_sleep):
         # See NOTE above test_watchdog_resets_count_when_transcription_arrives —
         # direct await, not create_task + outer polling loop.
         await asyncio.wait_for(bridge._transcription_watchdog(), timeout=2.0)
@@ -207,7 +207,7 @@ async def test_watchdog_does_not_close_immediately_after_reconnect_with_stale_ti
 
     bridge.close_all = _fake_close
 
-    with patch("jota_gateway.services.bridge._sleep", new=_controlled_sleep):
+    with patch("fogar_gateway.services.bridge._sleep", new=_controlled_sleep):
         # See NOTE above test_watchdog_resets_count_when_transcription_arrives —
         # direct await, not create_task + outer polling loop.
         await asyncio.wait_for(bridge._transcription_watchdog(), timeout=2.0)
@@ -222,7 +222,7 @@ async def test_watchdog_does_not_close_immediately_after_reconnect_with_stale_ti
 async def test_idle_watchdog_closes_session_when_no_activity(make_wd_bridge, monkeypatch):
     """#115: sin ningún mensaje del cliente durante IDLE_TIMEOUT_S, la
     sesión se cierra."""
-    from jota_gateway.core.config import settings
+    from fogar_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
     bridge, ws, _ = make_wd_bridge()
@@ -244,7 +244,7 @@ async def test_idle_watchdog_closes_session_when_no_activity(make_wd_bridge, mon
 async def test_idle_watchdog_does_not_close_while_activity_is_recent(make_wd_bridge, monkeypatch):
     """Caso de control: con IDLE_TIMEOUT_S holgado y actividad reciente, el
     watchdog sigue durmiendo — no cierra la sesión."""
-    from jota_gateway.core.config import settings
+    from fogar_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 5)
     bridge, ws, _ = make_wd_bridge()
@@ -276,7 +276,7 @@ async def test_idle_watchdog_does_not_close_during_active_turn(make_wd_bridge, m
     because IDLE_TIMEOUT_S has elapsed since the client's last inbound
     message — `_last_client_activity` only reflects the client's last
     *message*, not whether the server is still actively responding."""
-    from jota_gateway.core.config import settings
+    from fogar_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
     bridge, ws, _ = make_wd_bridge()
@@ -300,7 +300,7 @@ async def test_idle_watchdog_does_not_close_during_active_turn(make_wd_bridge, m
         if ticks["n"] >= 3:
             raise RuntimeError("stop-test")  # bounded termination, see below
 
-    with patch("jota_gateway.services.bridge._sleep", new=_controlled_sleep):
+    with patch("fogar_gateway.services.bridge._sleep", new=_controlled_sleep):
         with pytest.raises(RuntimeError, match="stop-test"):
             await asyncio.wait_for(bridge._idle_watchdog(), timeout=2.0)
 
@@ -317,7 +317,7 @@ async def test_idle_watchdog_closes_once_active_turn_finishes_and_idle_elapses(m
     still close the session on its next re-check — the active-turn gate only
     defers the close while something is in flight, it doesn't disable idle
     timeout permanently."""
-    from jota_gateway.core.config import settings
+    from fogar_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
     bridge, ws, _ = make_wd_bridge()
@@ -342,7 +342,7 @@ async def test_idle_watchdog_closes_once_active_turn_finishes_and_idle_elapses(m
             assert not close_called, "must not close on the first tick — turn still active"
             active_turn.done.return_value = True  # turn finishes between checks
 
-    with patch("jota_gateway.services.bridge._sleep", new=_controlled_sleep):
+    with patch("fogar_gateway.services.bridge._sleep", new=_controlled_sleep):
         await asyncio.wait_for(bridge._idle_watchdog(), timeout=2.0)
 
     assert close_called, "watchdog must close once the turn finished and idle time elapsed"
@@ -353,7 +353,7 @@ async def test_idle_watchdog_does_not_close_while_push_within_grace_period(make_
     """An orphaned push (agent-start with no matching agent-end, e.g. OpenClaw
     crashed mid-push) must still defer the idle close while it's within its
     own TURN_TIMEOUT_S grace period — same behavior as an active turn."""
-    from jota_gateway.core.config import settings
+    from fogar_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
     monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 5)
@@ -389,7 +389,7 @@ async def test_idle_watchdog_closes_when_push_exceeds_grace_period(make_wd_bridg
     longer block the idle watchdog from calling close_all() — without the
     fix, `_push_turn_open` alone gates the close forever and this test
     fails because close_all() is never called."""
-    from jota_gateway.core.config import settings
+    from fogar_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
     monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.05)
@@ -414,7 +414,7 @@ async def test_idle_watchdog_closes_when_push_exceeds_grace_period(make_wd_bridg
 @pytest.mark.asyncio
 async def test_idle_watchdog_does_not_close_while_push_backlog_within_grace(make_wd_bridge, monkeypatch):
     """#130 S3a: a push event queued but not yet processed is activity in flight."""
-    from jota_gateway.core.config import settings
+    from fogar_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
     monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 5)
@@ -447,7 +447,7 @@ async def test_idle_watchdog_does_not_close_while_push_backlog_within_grace(make
 async def test_idle_watchdog_closes_when_push_backlog_exceeds_grace(make_wd_bridge, monkeypatch):
     """Review focus 5: a wedged push worker + silent client must not leak the
     session — the backlog only defers the idle close for TURN_TIMEOUT_S."""
-    from jota_gateway.core.config import settings
+    from fogar_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
     monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.05)
@@ -495,7 +495,7 @@ async def test_run_launches_idle_watchdog_that_closes_the_session(
     """
     import time as time_module
 
-    from jota_gateway.core.config import settings
+    from fogar_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
 
@@ -547,7 +547,7 @@ async def test_watchdog_counts_one_strike_per_poll_tick_not_per_timeout_window(m
 async def test_watchdog_extends_first_window_after_burst_by_stt_warmup(make_wd_bridge, monkeypatch):
     """Un STT con arranque lento (warmup_s) no recibe strikes en la primera ventana tras abrir
     ráfaga: solo se cuenta silencio pasado silence_timeout_s + warmup_s. Tiempo real."""
-    from jota_gateway.services.speech.ports import SttCapabilities
+    from fogar_gateway.services.speech.ports import SttCapabilities
 
     monkeypatch.setattr(bridge_module, "_WATCHDOG_POLL_S", 0.05)
     config = ClientConfig(silence_timeout_s=0.05, max_silence_turns=1)
@@ -642,7 +642,7 @@ async def _until(pred):
 async def test_push_with_audio_playing_counts_as_in_flight(make_wd_bridge, monkeypatch):
     """Con pacing el audio de un push suena más allá de TURN_TIMEOUT_S: mientras su
     tarea de audio viva, el push cuenta como turno en curso."""
-    from jota_gateway.core.config import settings
+    from fogar_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.1)
     bridge, _, _ = make_wd_bridge()
@@ -666,7 +666,7 @@ async def test_push_with_audio_playing_counts_as_in_flight(make_wd_bridge, monke
 @pytest.mark.asyncio
 async def test_idle_watchdog_does_not_close_while_push_audio_progresses(make_wd_bridge, monkeypatch):
     """7e: a paced push sounds past TURN_TIMEOUT_S; while its audio progresses it is in flight."""
-    from jota_gateway.core.config import settings
+    from fogar_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
     monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.05)
@@ -693,7 +693,7 @@ async def test_idle_watchdog_does_not_close_while_push_audio_progresses(make_wd_
             raise RuntimeError("stop-test")
 
     try:
-        with patch("jota_gateway.services.bridge._sleep", new=_controlled_sleep):
+        with patch("fogar_gateway.services.bridge._sleep", new=_controlled_sleep):
             with pytest.raises(RuntimeError, match="stop-test"):
                 await asyncio.wait_for(bridge._idle_watchdog(), timeout=2.0)
     finally:

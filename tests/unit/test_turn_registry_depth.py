@@ -1,6 +1,6 @@
 """#219: profundidad y máximo de la cola de un turno."""
 
-from jota_gateway.services.openclaw.registry import TurnRegistry
+from fogar_gateway.services.openclaw.registry import TurnRegistry
 
 
 def test_turn_registry_depth_and_peak():

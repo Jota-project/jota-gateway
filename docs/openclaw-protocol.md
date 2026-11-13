@@ -1,16 +1,16 @@
-# OpenClaw wire protocol — living reference for jota-gateway
+# OpenClaw wire protocol — living reference for fogar-gateway
 
 OpenClaw is beta software; its WebSocket API drifts between minor server versions with **no
-changelog surfaced anywhere jota-gateway can see**. This file is the project's own,
+changelog surfaced anywhere fogar-gateway can see**. This file is the project's own,
 continuously-updated technical record of what the protocol actually does, as observed against
 the real running instance — not what any general OpenClaw documentation says it should do.
 
 **Update this file whenever you discover a protocol change, inconsistency, or undocumented
-event shape while working on jota-gateway** — dated, with the server version if known. This is
+event shape while working on fogar-gateway** — dated, with the server version if known. This is
 separate from the general-purpose `openclaw` skill (`~/.claude/skills/openclaw/`), which
 explains what OpenClaw is and how to use it across any project; this file tracks *our specific,
 current, hyper-detailed understanding* of its API as it affects this codebase. The code that
-responds to what's documented here lives in `src/jota_gateway/services/openclaw/`.
+responds to what's documented here lives in `src/fogar_gateway/services/openclaw/`.
 
 **Minimum supported OpenClaw server: 2026.6.11** (since 2026-10-28, issue #262). The gateway no
 longer understands the older protocol shapes described below as "gone".
@@ -26,11 +26,11 @@ working:
 1. **`hello-ok`'s `snapshot` no longer embeds the agent roster.** A captured real `hello-ok`
    payload's `snapshot` only contains `presence`, `health`, `stateVersion`, `uptimeMs`,
    `sessionDefaults` — no `agents` key at all. See "Discovering Available Agents" below.
-   `GatewayInfo.has_agent()` (`src/jota_gateway/services/openclaw/models.py`) silently rejected every
+   `GatewayInfo.has_agent()` (`src/fogar_gateway/services/openclaw/models.py`) silently rejected every
    agent name until fixed.
 2. **`chat.send` never gets a second `res`.** The completion signal is a `chat` event with
    `payload.state == "final"` — not a matching `res` frame. `stream_response()`
-   (`src/jota_gateway/services/openclaw/client.py`) hung indefinitely after the first token until fixed.
+   (`src/fogar_gateway/services/openclaw/client.py`) hung indefinitely after the first token until fixed.
 
 **If turns silently hang after the first token, or agent-name validation always rejects
 everything that used to work** — check `hello-ok.server.version` against what's assumed here
@@ -89,7 +89,7 @@ Call `agents.list` right after `hello-ok` (`OpenClawClient.connect()` does this)
       {
         "id": "main",
         "name": "Main Agent",
-        "identity": {"name": "Jota", "theme": "...", "emoji": "🦞"},
+        "identity": {"name": "Fogar", "theme": "...", "emoji": "🦞"},
         "workspace": "/home/user/.openclaw/workspace",
         "agentRuntime": {"id": "auto", "source": "implicit"},
         "thinkingLevels": [{"id": "off", "label": "off"}, "..."],
@@ -105,11 +105,11 @@ Call `agents.list` right after `hello-ok` (`OpenClawClient.connect()` does this)
 Note the field is `id`, not `agentId` (the older `hello-ok.snapshot.agents[]` shape — now gone
 — used `agentId` + per-item `isDefault`; `agents.list`'s shape uses `id` + a top-level
 `defaultId` to compare against instead). `GatewayInfo.update_agents_from_list()`
-(`src/jota_gateway/services/openclaw/models.py`) parses this.
+(`src/fogar_gateway/services/openclaw/models.py`) parses this.
 
 **No per-agent `tools` field is included.** There is currently no known API method that
 returns an agent's *resolved* tool list. `config.get` with no params returns the entire raw
-`openclaw.json` (requires `operator.admin` scope, which jota-gateway's token does not
+`openclaw.json` (requires `operator.admin` scope, which fogar-gateway's token does not
 currently request), including `agents.list[].tools.allow`/`.deny` — but that's the config-level
 allow/deny, not the resolved set after profile expansion. The only reliable way found so far:
 ask the agent to do something and watch for `session.tool` events (below).
@@ -208,7 +208,7 @@ package (read on the server by the maintainer; summarized here):
   2_000`, `src/gateway/server-broadcast-narration.ts`) applies **only** to `session.narration`
   snapshots for subscriptions declared with `mode:"narration"`, not to `chat` deltas. The
   gateway does not use narration mode: it only sends `sessions.subscribe`
-  (`src/jota_gateway/services/openclaw/frames.py:28-29`).
+  (`src/fogar_gateway/services/openclaw/frames.py:28-29`).
 - `final`, `aborted` and `error` keep full-message semantics.
 
 **Deliberate gateway decision:** the gateway emits a text tail only for `final`. On
@@ -216,8 +216,8 @@ package (read on the server by the maintainer; summarized here):
 client has already cut the reply (barge-in or cancel), and speaking more text after the user
 interrupted would be wrong; an `error` may omit `message` on purpose. Pinned by a test.
 
-How the gateway responds (`src/jota_gateway/services/openclaw/chat_text.py`, used by
-`OpenClawClient.stream_response()` and `JotaBridge.deliver_push()`): `ChatTextTracker` keeps
+How the gateway responds (`src/fogar_gateway/services/openclaw/chat_text.py`, used by
+`OpenClawClient.stream_response()` and `FogarBridge.deliver_push()`): `ChatTextTracker` keeps
 `current` (the message text per OpenClaw) and `emitted` (already delivered). `replace:true` →
 `current = deltaText`; `message` present → `current` = its text (no re-adding `deltaText`);
 otherwise `current += deltaText`; `final` → `current` = text of the final `message`. After
@@ -281,7 +281,7 @@ documented anywhere upstream as of 2026-07-03.
 | `name` | both | Tool name (e.g. `read`, `exec`) |
 | `toolCallId` | both | Correlates a `"start"` with its `"result"` — format `call_function_<random>_<n>`, treat as opaque |
 | `args` | `"start"` | Arguments passed to the tool |
-| `result` | `"result"` | `{"content": [{"type": "text", "text": "..."}, ...]}` — a list of typed content blocks, not a bare string. `ToolCallEvent.from_session_tool_payload()` (`src/jota_gateway/services/openclaw/models.py`) flattens the `text`-type blocks and joins with `\n` |
+| `result` | `"result"` | `{"content": [{"type": "text", "text": "..."}, ...]}` — a list of typed content blocks, not a bare string. `ToolCallEvent.from_session_tool_payload()` (`src/fogar_gateway/services/openclaw/models.py`) flattens the `text`-type blocks and joins with `\n` |
 | `isError` | `"result"` | Whether the tool call failed |
 
 Routed by `FrameDispatcher._handle_session_tool()` to the active turn's queue, or to
@@ -299,7 +299,7 @@ exact `start` → `result` sequence above, with the file's real content in `resu
 
 **Confirmed live 2026-07-03**, discovered while stabilizing `tests/e2e/` (`send_turn()` was
 truncating responses intermittently before this was understood): a single `chat.send` can
-produce **more than one** `turn_start`/`turn_end` pair on jota-gateway's client-facing WS, not
+produce **more than one** `turn_start`/`turn_end` pair on fogar-gateway's client-facing WS, not
 exactly one.
 
 Observed directly: sending one message to an agent that uses a tool produced *three* distinct
@@ -311,7 +311,7 @@ agent-initiated pushes — see `docs/client-protocol.md` §10), firing **while t
 original `chat.send`-triggered turn is still active**, not only as a fully separate later
 event.
 
-**jota-gateway mitigation (since fix for issue #84, 2026-07-10)**: `JotaBridge` collapses
+**fogar-gateway mitigation (since fix for issue #84, 2026-07-10)**: `FogarBridge` collapses
 multiple agent start/end pairs into a single client-facing turn. The first `agent` start opens
 the logical turn (increments `_turn_seq` once, emits `turn_start`); subsequent `agent` starts
 received while a push turn is already open are dropped silently. The first `agent` end closes
@@ -321,7 +321,7 @@ multiple pairs now sees exactly **one** `turn_start`/`turn_end` pair per user me
 the agent does tool-use or multi-step reasoning. The trade-off: the client cannot distinguish
 intermediate reasoning steps from a single response (which it never needed to anyway).
 
-**jota-gateway mitigation extended (fix for issue #112, 2026-08-04)**: the #84 mitigation above
+**fogar-gateway mitigation extended (fix for issue #112, 2026-08-04)**: the #84 mitigation above
 only collapsed *nested* agent pairs into one push turn — it never asked whether a **normal**
 `chat.send` turn was already active for that `session_key`. `FrameDispatcher._handle_agent_lifecycle`
 was the one event handler (of three: `_handle_chat`, `_handle_session_tool`,
@@ -335,7 +335,7 @@ guard the other two handlers already had: while a normal turn's queue is registe
 that turn's `chat`/`session.tool` content keeps reaching the client normally, only the
 duplicate lifecycle framing is suppressed.
 
-**Consequence for any code that consumes jota-gateway's client WS protocol** (and for anything
+**Consequence for any code that consumes fogar-gateway's client WS protocol** (and for anything
 reading OpenClaw's own frames directly): do not assume "one message in → one turn out." Track
 frames by `turn_id`/`sessionKey`, not by "the next `turn_end` I see." `tests/e2e/ws_helpers.py`'s
 `send_turn()` was fixed to track only the first `turn_id` observed and ignore frames from other
@@ -379,34 +379,34 @@ subagentRole, subagentControlScope, label, thinkingLevel, fastMode, verboseLevel
 reasoningLevel, responseUsage, elevatedLevel, execHost, execSecurity, execAsk, execNode, model,
 sendPolicy, groupActivation`.
 
-**The only real system-prompt mechanisms in OpenClaw, and why neither fits jota-gateway's
+**The only real system-prompt mechanisms in OpenClaw, and why neither fits fogar-gateway's
 per-client model:**
 
 1. `agents.defaults.systemPromptOverride` / `agents.list[].systemPromptOverride` — static,
    per-**agent** config (settable via `agents.update`), documented in OpenClaw's own changelog
    as being for "controlled prompt experiments." Every session sharing that `agent` — i.e.
-   every jota-gateway client using the same `agent` name — would get the same override. Wrong
-   granularity: jota-gateway's `system_prompt_extra` is per-**client**, not per-agent.
+   every fogar-gateway client using the same `agent` name — would get the same override. Wrong
+   granularity: fogar-gateway's `system_prompt_extra` is per-**client**, not per-agent.
 2. The `before_prompt_build` plugin hook (`docs/concepts/agent-loop.md` in the OpenClaw
    package) can inject `systemPrompt`/`prependSystemContext`/`appendSystemContext` dynamically
    per turn — but only from **inside an OpenClaw plugin running on the OpenClaw server itself**.
-   Not reachable from a remote WS "backend" client like jota-gateway. Building this would mean
+   Not reachable from a remote WS "backend" client like fogar-gateway. Building this would mean
    writing and installing a custom OpenClaw plugin with its own way of learning each
-   jota-gateway client's `system_prompt_extra` — a separate, cross-repo project, not a
+   fogar-gateway client's `system_prompt_extra` — a separate, cross-repo project, not a
    same-scope fix.
 
 **Conclusion applied in issue #100:** with no wire-level hook available today, the field was
-removed from jota-gateway entirely (schema, DB, admin API, CLI) rather than faked via
+removed from fogar-gateway entirely (schema, DB, admin API, CLI) rather than faked via
 message-concatenation. Revisit if OpenClaw ever adds a `chat.send` field for this, or if a
 dedicated OpenClaw plugin becomes worth building.
 
 ---
 
-## Session key carries the per-client identity (jota-gateway convention)
+## Session key carries the per-client identity (fogar-gateway convention)
 
-Every turn jota-gateway sends over `chat.send` uses `sessionKey = "agent:{agent}:{client.id}"`,
+Every turn fogar-gateway sends over `chat.send` uses `sessionKey = "agent:{agent}:{client.id}"`,
 where `client.id` is the `ClientRecord` UUID of the authenticated caller (WS handshake or REST
-`/v1/*` with a Bearer key), not a shared global key. This is a jota-gateway convention layered on
+`/v1/*` with a Bearer key), not a shared global key. This is a fogar-gateway convention layered on
 OpenClaw's opaque `sessionKey` string, not something the OpenClaw server enforces or validates.
 Consequences observable on the wire:
 
@@ -417,7 +417,7 @@ Consequences observable on the wire:
 - Since server 2026.11.1, `chat.send` rejects session keys that do not identify an agent; ours
   always do (see "Connect deadline and `chat.send` session keys" below).
 
-How the `agent` segment is resolved and validated lives in `src/jota_gateway/core/agent_policy.py`
+How the `agent` segment is resolved and validated lives in `src/fogar_gateway/core/agent_policy.py`
 (summarised for clients in `docs/client-protocol.md` §1, "Selección de agente").
 
 ---
@@ -483,7 +483,7 @@ loggers; keep those at their default level in production.
 ## `runId`, `chat.abort` and a concurrent `chat.send` (2026-10-22/23, server 2026.10.5, issue #219)
 
 Observed live on green-house with throwaway session keys; structure only (no text recorded).
-Full notes in the vault (`JGW Observaciones 2026-10 - OpenClaw y cliente lento en Linux`).
+Full notes in the team's Obsidian vault (observations of 2026-10 on OpenClaw and the slow client on Linux).
 
 - **Every `chat` and `agent` event carries `runId`** (and `seq`), including `chat` `aborted`.
   The `chat.send` ack arrives in 30–60 ms as `res ok` with `payload {runId, status}`, so the
@@ -506,7 +506,7 @@ Full notes in the vault (`JGW Observaciones 2026-10 - OpenClaw y cliente lento e
 - Events the gateway ignores today: `agent` streams `run_status`, `assistant`, `thinking`,
   `usage`; `sessions.changed`, `session.message`.
 
-**Breaking for jota-gateway as of v1.21.0:** `stream_response()` ends a turn on the first
+**Breaking for fogar-gateway as of v1.21.0:** `stream_response()` ends a turn on the first
 `chat` `final` of its `sessionKey` and its queue receives every `chat` event of that key,
 regardless of `runId`. With a push in flight, a user `send` therefore receives the push's
 deltas and is closed by whichever `final` comes first, and the rest of the other run is
@@ -551,17 +551,17 @@ How the gateway reacts (`OpenClawClient._do_connect`): on exactly that error it 
 than what is left of a 30 s budget counted from the first attempt) and repeats the whole
 handshake on a new socket. Once the budget is spent no new attempt starts: it raises
 `OrchestratorStartingError`, a subclass of `OrchestratorHandshakeError` with the same stable code
-(`orchestrator_handshake_failed`), and the reconnect loop takes over (`jota-gw onboard` uses the
+(`orchestrator_handshake_failed`), and the reconnect loop takes over (`fogar-gw onboard` uses the
 subclass to say "not answering in time" instead of "token rejected"). Any other `UNAVAILABLE`
 (e.g. `details.reason: "authenticated-profile-unavailable"`) fails the handshake at once, as
 before. Only the fixed text
 and the computed wait are logged (the first retry of a `connect()` at INFO, the rest at DEBUG),
 never `message` or `details`. Side effect: the lifespan's first `connect()` can hold the
 gateway's startup (port 8004 still closed) for up to those 30 s while OpenClaw boots; that is why
-`jota-gw install|start|restart`, and `jota-gw config set` when it restarts the service, wait up
+`fogar-gw install|start|restart`, and `fogar-gw config set` when it restarts the service, wait up
 to 45 s for `/healthz` (`HEALTH_TIMEOUT_S`).
 
-The `connect` frame also carries `client.displayName: "jota-gateway"` since this date. The
+The `connect` frame also carries `client.displayName: "fogar-gateway"` since this date. The
 `client` object is closed (`additionalProperties: false`), but `displayName` is an optional
 non-empty string in `ConnectParamsSchema` both in 2026.11.1 (`dist/sessions-CVESrViJ.mjs:1936`)
 and in 2026.4.12 (`dist/protocol-9t-_D3R4.js`), so every supported server (≥ 2026.6.11) accepts it.
@@ -584,7 +584,7 @@ raises `OrchestratorRejectedError`, a subclass of `OrchestratorHandshakeError` w
 code. Anything else in its place (an event such as `tick`, a `res` whose `ok` is missing, `null`
 or another falsy value other than `false`, a malformed or non-object frame) raises the plain
 `OrchestratorHandshakeError`.
-`jota-gw onboard` (`cli/verify.py`) reports only the subclass as "OpenClaw rejected the token",
+`fogar-gw onboard` (`cli/verify.py`) reports only the subclass as "OpenClaw rejected the token",
 and the plain error as an unexpected answer.
 
 `GET /healthz` (and `/health`) answers 200 `{"ok":true,"status":"live"}` as soon as the HTTP
@@ -620,7 +620,7 @@ Read in the package source of 2026.11.1 and compared with 2026.10.5, not observe
   `ok:false` answer to `connect` raises `OrchestratorRejectedError` (both keep the stable code).
 - **2026-11-06**: added "OpenClaw still starting: `UNAVAILABLE` / `startup-sidecars`" (server
   2026.11.1): `connect()` retries that rejection on a new socket for up to 30 s; the `connect`
-  frame carries `client.displayName: "jota-gateway"`.
+  frame carries `client.displayName: "fogar-gateway"`.
 - **2026-11-01**: added "Agent failure after the turn was accepted" (issue #300): `chat`
   `state: "error"` and `agent` `phase: "error"` are terminal.
 - **2026-10-28**: minimum supported server is now **2026.6.11** (issue #262). Removed the
@@ -644,9 +644,9 @@ Read in the package source of 2026.11.1 and compared with 2026.10.5, not observe
   while resolving issue #100. Confirmed against OpenClaw's own source (`chat.send`'s strict
   TypeBox schema, `chat.inject`'s assistant-role transcript-write behavior, `sessions.patch`'s
   full field list) that there is no wire-level way to set a per-client system prompt today.
-- **2026-07-10**: added the issue #84 mitigation note — `JotaBridge` now collapses multiple
+- **2026-07-10**: added the issue #84 mitigation note — `FogarBridge` now collapses multiple
   OpenClaw agent start/end pairs into a single client-facing turn_start/turn_end. Previously
-  the bridge was emitting one pair per agent event, causing jota-voice (and any other client)
+  the bridge was emitting one pair per agent event, causing the voice client (and any other client)
   to log 2–4 duplicate `turn_start`/`turn_end` frames per user message during tool use.
 - **2026-07-03**: created. Documents the v2026.6.11 breaking changes (agents.list, chat
   completion signal), the `session.tool` event shape, and the multi-turn-per-message nuance —

@@ -1,7 +1,7 @@
 """
 Fixtures de integración.
 
-BD: SQLite en memoria inyectada por monkeypatch (reemplaza respx/jota-db).
+BD: SQLite en memoria inyectada por monkeypatch (sin servicio de BD externo).
 WebSocket: fake servers TTS/transcriber en hilos de background (sin cambios).
 Orchestrator: MockOrchestrator inyectado via monkeypatch (sin cambios).
 """
@@ -15,13 +15,13 @@ import respx
 from sqlmodel import Session, SQLModel, create_engine
 from starlette.testclient import TestClient
 
-from jota_gateway.core.config import settings
-from jota_gateway.db.models import ClientRecord
-from jota_gateway.main import app
-from jota_gateway.services.openclaw.models import GatewayInfo
-from jota_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
-from jota_gateway.services.protocol import OrchestratorEvent, OrchestratorProtocol
-from jota_gateway.services.reconnection import ConnectionState, ServiceStatus
+from fogar_gateway.core.config import settings
+from fogar_gateway.db.models import ClientRecord
+from fogar_gateway.main import app
+from fogar_gateway.services.openclaw.models import GatewayInfo
+from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
+from fogar_gateway.services.protocol import OrchestratorEvent, OrchestratorProtocol
+from fogar_gateway.services.reconnection import ConnectionState, ServiceStatus
 
 # ---------------------------------------------------------------------------
 # Datos de test estándar
@@ -46,7 +46,7 @@ def db_engine(monkeypatch, tmp_path):
     deshaga el commit de otro, y se pierden borrados. Como en producción, una conexión
     por hilo.
     """
-    from jota_gateway import db
+    from fogar_gateway import db
 
     engine = create_engine(
         f"sqlite:///{tmp_path / 'gateway.db'}",
@@ -78,7 +78,7 @@ def _skip_lifespan_migrations(monkeypatch):
     stamp» (#265) el `upgrade head` del lifespan fallaría con «table clients already
     exists». Las migraciones se prueban aparte (tests/unit/test_migrations.py)."""
     calls: list[None] = []
-    monkeypatch.setattr("jota_gateway.main.run_migrations", lambda: calls.append(None))
+    monkeypatch.setattr("fogar_gateway.main.run_migrations", lambda: calls.append(None))
     return calls
 
 
@@ -96,7 +96,7 @@ def _noop_dispose_engine(monkeypatch):
     """Neutralizes the real dispose_engine() call that now runs on every
     TestClient(app) shutdown (issue #110) — without this, every integration
     test's teardown disposes the db_engine fixture's in-memory engine and
-    resets jota_gateway.db.database._engine to None, so any code that resolves the
+    resets fogar_gateway.db.database._engine to None, so any code that resolves the
     engine lazily after a test's TestClient exits would silently fall back
     to the real on-disk DATABASE_URL instead of failing loudly. Tests that
     specifically want to assert dispose_engine was called
@@ -104,7 +104,7 @@ def _noop_dispose_engine(monkeypatch):
     monkeypatch.setattr call, which wins since it's applied later in the
     same test.
     """
-    monkeypatch.setattr("jota_gateway.main.dispose_engine", lambda: None)
+    monkeypatch.setattr("fogar_gateway.main.dispose_engine", lambda: None)
 
 
 @pytest.fixture
@@ -166,7 +166,7 @@ def make_mock_registry(orchestrator=None):
 
 
 # ---------------------------------------------------------------------------
-# Health-check HTTP mocks (transcriber + TTS — sin jota-db)
+# Health-check HTTP mocks (transcriber + TTS)
 # ---------------------------------------------------------------------------
 
 
@@ -192,11 +192,11 @@ def mock_registry(mock_orchestrator):
 
 
 def _configure_app_mocks(mock_registry, monkeypatch):
-    monkeypatch.setattr("jota_gateway.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_registry)
-    monkeypatch.setattr("jota_gateway.main.OpenClawClient", lambda *a, **kw: MagicMock())
-    monkeypatch.setattr("jota_gateway.main.FrameDispatcher", lambda *a, **kw: MagicMock())
-    monkeypatch.setattr("jota_gateway.main.TurnRegistry", lambda: TurnRegistry())
-    monkeypatch.setattr("jota_gateway.main.ClientRegistry", lambda: ClientRegistry())
+    monkeypatch.setattr("fogar_gateway.main.ReconnectingOpenClawClient", lambda *a, **kw: mock_registry)
+    monkeypatch.setattr("fogar_gateway.main.OpenClawClient", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("fogar_gateway.main.FrameDispatcher", lambda *a, **kw: MagicMock())
+    monkeypatch.setattr("fogar_gateway.main.TurnRegistry", lambda: TurnRegistry())
+    monkeypatch.setattr("fogar_gateway.main.ClientRegistry", lambda: ClientRegistry())
     mock_registry.connect = AsyncMock()
     mock_registry.close = AsyncMock()
 
@@ -207,7 +207,7 @@ def client(mock_services, mock_registry, seed_client, monkeypatch):
 
     client=("127.0.0.1", 50000) + X-Real-IP: 127.0.0.1: peer loopback (un proxy de
     TRUSTED_PROXIES) que avala a un cliente loopback, para que /v1/* (ver
-    src/jota_gateway/core/network.py) no exija Authorization en cada test existente. Desde
+    src/fogar_gateway/core/network.py) no exija Authorization en cada test existente. Desde
     G-31 (#216) un peer proxy SIN X-Real-IP válido ya no es confiable.
     """
     _configure_app_mocks(mock_registry, monkeypatch)

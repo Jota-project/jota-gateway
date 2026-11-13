@@ -6,9 +6,9 @@ import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, create_engine
 
-from jota_gateway.db import database as db_database
-from jota_gateway.db.models import ClientRecord
-from jota_gateway.services.db_client import db_client
+from fogar_gateway.db import database as db_database
+from fogar_gateway.db.models import ClientRecord
+from fogar_gateway.services.db_client import db_client
 
 
 @pytest.fixture(autouse=True)

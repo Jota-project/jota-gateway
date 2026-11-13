@@ -4,11 +4,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jota_gateway.services.openclaw.client import OpenClawClient
-from jota_gateway.services.openclaw.models import GatewayInfo
-from jota_gateway.services.openclaw.reconnecting import ReconnectingOpenClawClient
-from jota_gateway.services.protocol import OrchestratorEvent
-from jota_gateway.services.reconnection import ConnectionState
+from fogar_gateway.services.openclaw.client import OpenClawClient
+from fogar_gateway.services.openclaw.models import GatewayInfo
+from fogar_gateway.services.openclaw.reconnecting import ReconnectingOpenClawClient
+from fogar_gateway.services.protocol import OrchestratorEvent
+from fogar_gateway.services.reconnection import ConnectionState
 
 
 def make_mock_client(gateway_info=None):
@@ -241,7 +241,7 @@ async def test_trigger_reconnect_coalesces_with_in_flight_reconnect():
 
 @pytest.mark.asyncio
 async def test_stream_response_closes_inner_generator_on_early_exit():
-    """Issue #150: in production, `call_orchestrator()` (src/jota_gateway/services/orchestration.py)
+    """Issue #150: in production, `call_orchestrator()` (src/fogar_gateway/services/orchestration.py)
     wraps `ReconnectingOpenClawClient.stream_response()` in `contextlib.aclosing()`
     and raises on an `error` event, closing the OUTER generator early. The INNER
     generator — the real `OpenClawClient.stream_response()`, which holds
@@ -298,8 +298,8 @@ async def test_close_does_not_hang_when_cancel_lands_inside_connect(monkeypatch)
     """G-52 (#221): si la cancelación de close() cae dentro del connect() de la reconexión
     (mientras desmonta el listener anterior), no se pierde. Antes el listener se tragaba
     su cancelación, el bucle seguía reintentando y close() esperaba hasta max_duration."""
-    from jota_gateway.services.openclaw.dispatcher import FrameDispatcher
-    from jota_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
+    from fogar_gateway.services.openclaw.dispatcher import FrameDispatcher
+    from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
 
     turns = TurnRegistry()
     inner = OpenClawClient("127.0.0.1", 1, "t", turns, FrameDispatcher(turns, ClientRegistry()))

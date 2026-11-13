@@ -3,16 +3,16 @@
 import httpx
 import pytest
 
-from jota_gateway.core.config import settings
-from jota_gateway.services.reconnection import ConnectionState
-from jota_gateway.services.speech.elevenlabs.stt import ElevenLabsSttProvider
-from jota_gateway.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
-from jota_gateway.services.speech.registry import SpeechProviders
+from fogar_gateway.core.config import settings
+from fogar_gateway.services.reconnection import ConnectionState
+from fogar_gateway.services.speech.elevenlabs.stt import ElevenLabsSttProvider
+from fogar_gateway.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
+from fogar_gateway.services.speech.registry import SpeechProviders
 
 
 def test_app_state_has_stt_and_tts_providers(client):
     state = client.app.state.speech
-    assert (state.stt.name, state.tts.name) == ("jota", "jota")
+    assert (state.stt.name, state.tts.name) == ("fogar", "fogar")
 
 
 def test_ready_degraded_not_503_when_stt_and_tts_down(client, mock_services):
@@ -51,12 +51,12 @@ def test_provider_state_change_broadcasts_status(client, kind, service):
 
 @pytest.fixture
 def failing_stt_start(monkeypatch):
-    from jota_gateway.services.speech.jota import JotaSttProvider
+    from fogar_gateway.services.speech.fogar import FogarSttProvider
 
     async def boom(self):
         raise RuntimeError("secret-provider-detail")
 
-    monkeypatch.setattr(JotaSttProvider, "start", boom)
+    monkeypatch.setattr(FogarSttProvider, "start", boom)
 
 
 def test_provider_start_failure_does_not_abort_startup(failing_stt_start, client, caplog):
@@ -67,8 +67,8 @@ def test_provider_start_failure_does_not_abort_startup(failing_stt_start, client
 
 def test_admin_status_includes_provider(client):
     h = {"X-Admin-Token": "test-admin-token"}
-    assert client.get("/admin/transcriber/status", headers=h).json()["provider"] == "jota"
-    assert client.get("/admin/tts/status", headers=h).json()["provider"] == "jota"
+    assert client.get("/admin/transcriber/status", headers=h).json()["provider"] == "fogar"
+    assert client.get("/admin/tts/status", headers=h).json()["provider"] == "fogar"
 
 
 def test_admin_speech_requires_token(client):
@@ -81,7 +81,7 @@ def test_admin_speech_get_is_read_only(client):
     """#269: el proveedor se elige al arrancar; no hay cambio en caliente."""
     h = {"X-Admin-Token": "test-admin-token"}
     body = client.get("/admin/speech", headers=h).json()
-    assert body["stt"]["provider"] == "jota" and body["tts"]["provider"] == "jota"
+    assert body["stt"]["provider"] == "fogar" and body["tts"]["provider"] == "fogar"
     assert body["audio_gate"] == "off"
     assert client.put("/admin/speech", json={}, headers=h).status_code == 405
 

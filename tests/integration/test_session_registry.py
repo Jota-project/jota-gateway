@@ -1,7 +1,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
-from jota_gateway.services.pipeline_tracker import PipelineTracker
-from jota_gateway.services.session_registry import SessionRegistry
+from fogar_gateway.services.pipeline_tracker import PipelineTracker
+from fogar_gateway.services.session_registry import SessionRegistry
 from tests.fakes.bridge import DirectSender
 
 

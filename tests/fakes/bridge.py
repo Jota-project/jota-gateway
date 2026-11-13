@@ -1,4 +1,4 @@
-"""One way to build a JotaBridge in tests (#270).
+"""One way to build a FogarBridge in tests (#270).
 
 The bridge sends through a real `QueuedSender`, the production path: what a
 test reads from `RecWS.sent` is what a client would have received. Writes
@@ -10,11 +10,11 @@ import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock
 
-from jota_gateway.models.schemas import Client, ClientConfig, Handshake
-from jota_gateway.services.bridge import JotaBridge
-from jota_gateway.services.openclaw.registry import ClientRegistry
-from jota_gateway.services.outbound import ClientGone, QueuedSender
-from jota_gateway.services.protocol import OrchestratorEvent
+from fogar_gateway.models.schemas import Client, ClientConfig, Handshake
+from fogar_gateway.services.bridge import FogarBridge
+from fogar_gateway.services.openclaw.registry import ClientRegistry
+from fogar_gateway.services.outbound import ClientGone, QueuedSender
+from fogar_gateway.services.protocol import OrchestratorEvent
 from tests.fakes.speech import speech_providers
 
 
@@ -60,7 +60,7 @@ def make_bridge(
     register=False,
     **overrides,
 ):
-    """Return `(bridge, ws)`. Any `JotaBridge` argument can be overridden by name.
+    """Return `(bridge, ws)`. Any `FogarBridge` argument can be overridden by name.
 
     Must run inside the event loop (the `QueuedSender` starts its writer task).
     `register=True` adds the bridge to its `client_registry`, as `routes.py` does.
@@ -80,7 +80,7 @@ def make_bridge(
     kwargs.update(overrides)
     if "sender" not in kwargs:  # not setdefault: it would start a writer task nobody closes
         kwargs["sender"] = QueuedSender(ws)
-    bridge = JotaBridge(**kwargs)
+    bridge = FogarBridge(**kwargs)
     bridge.transcriber = transcriber
     if register:
         kwargs["client_registry"].register(bridge.client_id, bridge)

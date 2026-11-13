@@ -1,4 +1,4 @@
-"""`jota-gw logs`: filtrado de líneas del journal y llamada a journalctl (M14d, #296)."""
+"""`fogar-gw logs`: filtrado de líneas del journal y llamada a journalctl (M14d, #296)."""
 
 import io
 import json
@@ -7,10 +7,10 @@ from types import SimpleNamespace
 import pytest
 from click.testing import CliRunner
 
-from jota_gateway.cli import logs, service
-from jota_gateway.cli.app import cli
+from fogar_gateway.cli import logs, service
+from fogar_gateway.cli.app import cli
 
-TEXT = "2026-11-03 10:00:00,123 | jota_gateway.core | {} | sesión abierta sid-1"
+TEXT = "2026-11-03 10:00:00,123 | fogar_gateway.core | {} | sesión abierta sid-1"
 
 
 def _json(level, **extra):
@@ -63,7 +63,7 @@ def test_no_filters_execs_journalctl(env, monkeypatch):
     monkeypatch.setattr("os.execvp", lambda f, a: got.append((f, a)))
     r = CliRunner().invoke(cli, ["logs", "-f", "-n", "5"])
     assert r.exit_code == 0, r.output
-    assert got == [("journalctl", ["journalctl", "--user", "-u", "jota-gateway.service",
+    assert got == [("journalctl", ["journalctl", "--user", "-u", "fogar-gateway.service",
                                    "-o", "cat", "-n", "5", "-f"])]
     got.clear()
     CliRunner().invoke(cli, ["logs"])
@@ -84,7 +84,7 @@ def test_filters_use_popen_and_filter_lines(env, monkeypatch, capsys):
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     r = CliRunner().invoke(cli, ["logs", "--level", "warning"])
     assert r.exit_code == 0, r.output
-    assert seen[0][:7] == ["journalctl", "--user", "-u", "jota-gateway.service", "-o", "cat", "-n"]
+    assert seen[0][:7] == ["journalctl", "--user", "-u", "fogar-gateway.service", "-o", "cat", "-n"]
     assert "ERROR" in r.output and "INFO" not in r.output
 
 

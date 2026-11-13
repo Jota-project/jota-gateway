@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jota_gateway.models.schemas import ClientConfig
-from jota_gateway.services.openclaw.registry import ClientRegistry
+from fogar_gateway.models.schemas import ClientConfig
+from fogar_gateway.services.openclaw.registry import ClientRegistry
 from tests.fakes.bridge import sent, wait_until
 
 
@@ -199,7 +199,7 @@ async def test_deliver_push_tool_call_malformed_payload_ignored(make_push_bridge
 
 
 async def test_multiple_push_starts_and_ends_collapse_to_single_pair(make_push_bridge):
-    """Reproduces issue #84 verbatim from the jota-voice client log:
+    """Reproduces issue #84 verbatim from the voice client log:
 
     ```
     turn_start t-1 (seq=1)
@@ -322,7 +322,7 @@ async def test_on_push_turn_end_bounds_audio_drain(make_push_bridge, monkeypatch
     """#130 S3a: la espera de la síntesis TTS está acotada por
     PUSH_TTS_DRAIN_TIMEOUT_S. Al vencer se cancela el audio, se cierra el TTS y
     el turn_end se envía igualmente."""
-    from jota_gateway.core.config import settings
+    from fogar_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 0.05)
     bridge, ws = make_push_bridge(output_mode=("audio", "text"))
@@ -380,7 +380,7 @@ async def test_push_final_retracted_to_prefix_emits_nothing(make_push_bridge, ca
     assert "SECRETO" not in caplog.text
 
 
-# ── 7e: hablar a Jota corta un push que está sonando ──
+# ── 7e: hablar a Fogar corta un push que está sonando ──
 
 
 async def _hang():

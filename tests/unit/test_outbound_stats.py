@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from jota_gateway.services.outbound import QueuedSender
+from fogar_gateway.services.outbound import QueuedSender
 
 
 class BlockingWS:

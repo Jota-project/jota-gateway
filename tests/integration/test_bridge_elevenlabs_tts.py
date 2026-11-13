@@ -2,9 +2,9 @@
 
 from pydantic import SecretStr
 
-from jota_gateway.core.config import settings
-from jota_gateway.models.schemas import ClientConfig
-from jota_gateway.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
+from fogar_gateway.core.config import settings
+from fogar_gateway.models.schemas import ClientConfig
+from fogar_gateway.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
 from tests.fakes.bridge import make_bridge, sent, tokens
 from tests.fakes.elevenlabs_tts import FakeElevenLabsTts
 

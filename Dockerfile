@@ -1,3 +1,12 @@
+# La web se compila en una etapa propia: la imagen final no lleva Node (M18).
+FROM node:22-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS web
+WORKDIR /web
+RUN corepack enable
+COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY web/ ./
+RUN pnpm build
+
 # Python minor + digest fijados (el digest lo mantiene Dependabot, ecosistema "docker").
 FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
 
@@ -14,9 +23,10 @@ RUN uv export --frozen --no-dev --no-emit-project -o /tmp/req.txt \
     && rm /tmp/req.txt
 
 # El paquete, igual que en la instalación nativa: trae Alembic y sus migraciones y el ejecutable
-# jota-gw. Se construye en /tmp para que /app solo tenga los datos. README.md lo pide pyproject.
+# fogar-gw. Se construye en /tmp para que /app solo tenga los datos. README.md lo pide pyproject.
 COPY pyproject.toml README.md /tmp/pkg/
 COPY src/ /tmp/pkg/src/
+COPY --from=web /web/dist /tmp/pkg/src/fogar_gateway/web
 RUN pip install --no-cache-dir --no-deps /tmp/pkg && rm -rf /tmp/pkg
 
 # Usuario no-root. /app/data queda en su propiedad para que la imagen funcione
@@ -28,9 +38,9 @@ RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin app 
 USER app
 
 ENV LOG_FORMAT=json
-# Directorio base del gateway y de jota-gw: la BD relativa de DATABASE_URL queda en /app/data,
+# Directorio base del gateway y de fogar-gw: la BD relativa de DATABASE_URL queda en /app/data,
 # la del volumen. Aquí no hay config.env: la configuración llega como variables (env_file).
-ENV JOTA_GATEWAY_HOME=/app
+ENV FOGAR_GATEWAY_HOME=/app
 
 EXPOSE 8004
 
@@ -40,6 +50,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 # Host por GATEWAY_HOST (default 0.0.0.0). Detrás de un reverse proxy en el mismo host conviene
 # GATEWAY_HOST=127.0.0.1 (el HEALTHCHECK de arriba usa 127.0.0.1, así que no sirve con una IP de
-# LAN concreta). Los demás ajustes de uvicorn están en src/jota_gateway/cli/serve.py.
+# LAN concreta). Los demás ajustes de uvicorn están en src/fogar_gateway/cli/serve.py.
 # --create-db: con un ./data vacío, `docker compose up` crea la BD como siempre (decisión 5 de M14c).
-CMD ["jota-gw", "serve", "--create-db"]
+CMD ["fogar-gw", "serve", "--create-db"]

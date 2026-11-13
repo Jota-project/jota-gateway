@@ -88,7 +88,7 @@ def test_llm_start_and_first_token_events_present(client):
 
 def test_session_registered_in_registry_after_connect(client):
     """After a WS session, the session should appear in app.state.session_registry."""
-    from jota_gateway.main import app
+    from fogar_gateway.main import app
 
     with client.websocket_connect("/ws/stream") as ws:
         ws.send_json(HANDSHAKE_WITH_STATUS)

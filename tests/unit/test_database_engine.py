@@ -1,7 +1,7 @@
 import pytest
 
-from jota_gateway.core.config import settings
-from jota_gateway.db import database
+from fogar_gateway.core.config import settings
+from fogar_gateway.db import database
 
 
 @pytest.fixture

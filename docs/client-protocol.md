@@ -1,6 +1,6 @@
-# Protocolo de cliente — jota-gateway
+# Protocolo de cliente — fogar-gateway
 
-Guía completa para implementar clientes que se conecten a jota-gateway. Cubre el ciclo de vida de la sesión WebSocket, todos los mensajes posibles en ambas direcciones y el formato de audio binario.
+Guía completa para implementar clientes que se conecten a fogar-gateway. Cubre el ciclo de vida de la sesión WebSocket, todos los mensajes posibles en ambas direcciones y el formato de audio binario.
 
 > **¿Integras Home Assistant u otro cliente OpenAI-compatible?** Eso va por REST (`/v1/*`), no por este protocolo WebSocket. Su modelo de autenticación (origen de confianza o `Authorization: Bearer <client_key>`) está en el [README](../README.md#openai-compatible-v1-para-home-assistant).
 
@@ -27,21 +27,21 @@ Guía completa para implementar clientes que se conecten a jota-gateway. Cubre e
 
 ## 0. Descubrir el gateway y emparejarse
 
-Antes de la sesión, tu cliente necesita dos cosas: **dónde está el gateway** y **su `client_key`**. Las dos pueden venir de la configuración (un administrador creó el cliente con `jota-gw clients add` y te pasó la clave), pero lo cómodo es que el cliente las consiga solo. Esta sección es lo que tiene que implementar.
+Antes de la sesión, tu cliente necesita dos cosas: **dónde está el gateway** y **su `client_key`**. Las dos pueden venir de la configuración (un administrador creó el cliente con `fogar-gw clients add` y te pasó la clave), pero lo cómodo es que el cliente las consiga solo. Esta sección es lo que tiene que implementar.
 
 ### Encontrar el gateway
 
 Un gateway se identifica en un endpoint público, sin autenticación:
 
 ```http
-GET http://<host>:8004/.well-known/jota-gateway
+GET http://<host>:8004/.well-known/fogar-gateway
 ```
 
 ```json
-{"service": "jota-gateway", "version": "1.29.0", "name": "green-house"}
+{"service": "fogar-gateway", "version": "1.29.0", "name": "green-house", "instance_id": "3f9a1c2e7b5d4a60"}
 ```
 
-Es un Jota si responde 200 con `"service": "jota-gateway"`. No basta con `/healthz`: su `{"status": "ok"}` lo devolvería cualquier servicio. `name` es el nombre que enseñar al usuario (`GATEWAY_NAME`, o el del equipo).
+Es un Fogar si responde 200 con `"service": "fogar-gateway"`. No basta con `/healthz`: su `{"status": "ok"}` lo devolvería cualquier servicio. `name` es el nombre que enseñar al usuario (`GATEWAY_NAME`, o el del equipo). `instance_id` cambia en cada arranque del proceso y sirve para comprobar que una dirección llega a este gateway; no es un secreto.
 
 Una dirección es `host` o `host:puerto` (puerto 8004 por defecto), sin protocolo. En la LAN y en la tailnet se habla en claro (`http://`, `ws://`); detrás de un proxy con TLS, `https://` y `wss://`.
 
@@ -50,13 +50,13 @@ Si ya estás emparejado, usa la dirección que guardaste junto a la clave: la cl
 1. **La dirección configurada**, si el usuario puso una.
 2. **El mismo equipo:** `127.0.0.1:8004`. Vale igual para el gateway nativo y para Docker con el puerto publicado. Si tu cliente admite otro puerto por configuración, úsalo; no barras puertos. Un gateway que escucha solo en una IP de la LAN (`GATEWAY_HOST`) no responde aquí: ese caso cae en el paso 4.
 3. **La tailnet, si hay Tailscale:** `tailscale status --json` lista los equipos (`Peer[*]`, con `Online`, `DNSName` y `TailscaleIPs`). Pregunta en `:8004` a cada equipo en línea, por su `DNSName` sin el punto final, en paralelo y con un plazo total de unos 3 s. Si `tailscale` no está o no tiene sesión, salta este paso. Si responde más de uno, deja elegir al usuario por `name`.
-4. **Si no aparece ninguno,** pide la dirección a mano y compruébala igual, con `/.well-known/jota-gateway`.
+4. **Si no aparece ninguno,** pide la dirección a mano y compruébala igual, con `/.well-known/fogar-gateway`.
 
 No escanees redes ni rangos de IP.
 
 ### Emparejarse
 
-El administrador abre un código en el gateway con `jota-gw pair` (ver el [README](../README.md#emparejar-un-cliente)). El gateway lo enseña: 6 cifras, de un solo uso y válido 10 minutos. En la configuración del código el administrador ya ha fijado cómo se comportará tu cliente: agente, voz, barge-in…
+El administrador abre un código en el gateway con `fogar-gw pair` (ver el [README](../README.md#emparejar-un-cliente)). El gateway lo enseña: 6 cifras, de un solo uso y válido 10 minutos. En la configuración del código el administrador ya ha fijado cómo se comportará tu cliente: agente, voz, barge-in…
 
 Tu cliente necesita **una pantalla de emparejamiento donde la persona solo escribe el código**. Todo lo demás lo pone el cliente:
 
@@ -117,7 +117,7 @@ El **primer mensaje** que envíes DEBE ser el handshake. Es el único mensaje si
 
 ### Selección de agente
 
-El agente efectivo de la sesión no es simplemente "el que pediste o el global": el gateway resuelve una cascada server-side (`agent` del handshake si no está vacío → `default_agent` configurado por el admin para tu `client_key` → default global de OpenClaw → `"main"`) y aplica dos comprobaciones de política antes de aceptar la conexión: si tu cliente tiene una lista `allowed_agents`, el agente resultante debe estar en ella (una lista vacía lo deniega todo); y si pediste el agente explícitamente, debe existir en el roster de OpenClaw (`src/jota_gateway/core/agent_policy.py`). Como cliente solo necesitas saber dos cosas:
+El agente efectivo de la sesión no es simplemente "el que pediste o el global": el gateway resuelve una cascada server-side (`agent` del handshake si no está vacío → `default_agent` configurado por el admin para tu `client_key` → default global de OpenClaw → `"main"`) y aplica dos comprobaciones de política antes de aceptar la conexión: si tu cliente tiene una lista `allowed_agents`, el agente resultante debe estar en ella (una lista vacía lo deniega todo); y si pediste el agente explícitamente, debe existir en el roster de OpenClaw (`src/fogar_gateway/core/agent_policy.py`). Como cliente solo necesitas saber dos cosas:
 
 1. Si omites `agent` en el handshake, el que acabes usando puede venir de una configuración por-cliente que un admin te haya asignado (no siempre el default global) — comprueba siempre `ready.agent`, no asumas cuál será.
 2. Pedir explícitamente un `agent` puede fallar de dos formas distintas (ver tabla siguiente): que ese agente no esté permitido para tu cliente, o que no exista en OpenClaw.
@@ -483,7 +483,7 @@ Por servicio:
 | `service` | Comportamiento e impacto en la sesión |
 |-----------|-----------------------------------------|
 | `orchestrator` | Reintenta en segundo plano con backoff mientras la sesión está activa. Si cae **antes o durante el handshake** (health check inicial), es el único caso fatal: el gateway cierra el WebSocket con 1011 y nunca llega a enviar `ready` (ver §1). Si cae **durante una sesión ya establecida**, el WebSocket **no se cierra** — solo falla el turno en curso (`error` con `code: "TURN_ERROR"`, `fatal: false`) y **todas** las sesiones conectadas reciben proactivamente `status: {orchestrator, unavailable→reconnecting→restored}`, incluso si están inactivas en ese momento (no hace falta intentar un turno para enterarte). |
-| `transcriber` | Una sesión STT por sesión de audio (con el proveedor `jota`, una conexión a jota-transcriber); reconecta en segundo plano. `unavailable` significa que no hay transcripción automática — puedes seguir enviando texto con `send`. Puede llegar desde el arranque mismo de la sesión (ver nota en §1) o en cualquier punto intermedio. Nunca cierra la sesión. |
+| `transcriber` | Una sesión STT por sesión de audio (con el proveedor `fogar`, una conexión a fogar-transcriber); reconecta en segundo plano. `unavailable` significa que no hay transcripción automática — puedes seguir enviando texto con `send`. Puede llegar desde el arranque mismo de la sesión (ver nota en §1) o en cualquier punto intermedio. Nunca cierra la sesión. |
 | `tts` | Sin conexión persistente — TTS se reconstruye en cada turno por diseño. `reconnecting`/`unavailable` aquí significa "el último intento falló y el siguiente turno con audio puede fallar también hasta que pase el backoff" — no hay un reintento en segundo plano independiente del propio turno. Los `token` de texto siguen llegando igual; solo falta el audio. |
 
 Los mensajes de estado también pueden incluir `code` y `message` con detalles adicionales:
@@ -604,7 +604,7 @@ El cliente no necesita distinguirlos de los turnos normales — el `turn_id` y `
 { "type": "turn_end", "turn_id": "t-1" }
 ```
 
-### Asistente de voz completo (jota-voice, app móvil; ESP32 planificado)
+### Asistente de voz completo (cliente de voz de Mac y Android, app móvil; ESP32 planificado)
 
 ```json
 // Handshake

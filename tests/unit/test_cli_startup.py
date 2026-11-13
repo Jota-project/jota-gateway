@@ -1,4 +1,4 @@
-"""Guardas de eficiencia de `jota-gw` (M14a, #293): `--help` < 150 ms y sin imports pesados."""
+"""Guardas de eficiencia de `fogar-gw` (M14a, #293): `--help` < 150 ms y sin imports pesados."""
 
 import statistics
 import subprocess
@@ -12,11 +12,11 @@ HEAVY = ("pydantic", "httpx", "sqlmodel", "fastapi", "rich", "questionary", "pro
 # En un proceso nuevo: dentro de pytest el conftest ya ha cargado fastapi y pydantic.
 _PROBE = f"""
 import sys
-from jota_gateway.cli.app import cli
-import jota_gateway.cli.clients, jota_gateway.cli.status, jota_gateway.cli.version
-import jota_gateway.cli.config, jota_gateway.cli.doctor, jota_gateway.cli.menu
-import jota_gateway.cli.init, jota_gateway.cli.serve, jota_gateway.cli.service, jota_gateway.cli.logs, jota_gateway.cli.migrate
-import jota_gateway.cli.onboard, jota_gateway.cli.pair
+from fogar_gateway.cli.app import cli
+import fogar_gateway.cli.clients, fogar_gateway.cli.status, fogar_gateway.cli.version
+import fogar_gateway.cli.config, fogar_gateway.cli.doctor, fogar_gateway.cli.menu
+import fogar_gateway.cli.init, fogar_gateway.cli.serve, fogar_gateway.cli.service, fogar_gateway.cli.logs, fogar_gateway.cli.migrate
+import fogar_gateway.cli.onboard, fogar_gateway.cli.pair
 try:
     cli(["--help"], standalone_mode=False)
 except SystemExit:
@@ -36,7 +36,7 @@ def test_help_starts_under_150_ms():
     def once() -> float:
         start = time.perf_counter()
         subprocess.run(
-            [sys.executable, "-m", "jota_gateway.cli", "--help"], cwd=ROOT, capture_output=True, check=True
+            [sys.executable, "-m", "fogar_gateway.cli", "--help"], cwd=ROOT, capture_output=True, check=True
         )
         return time.perf_counter() - start
 

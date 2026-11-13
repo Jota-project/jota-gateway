@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
-from jota_gateway.api import routes
-from jota_gateway.core.config import settings
-from jota_gateway.main import app
-from jota_gateway.services.stats import gateway_stats
+from fogar_gateway.api import routes
+from fogar_gateway.core.config import settings
+from fogar_gateway.main import app
+from fogar_gateway.services.stats import gateway_stats
 from tests.integration.conftest import VALID_KEY
 
 HANDSHAKE = {"client_key": VALID_KEY, "input_mode": "text", "output_mode": ["text"]}

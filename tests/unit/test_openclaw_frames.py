@@ -1,4 +1,4 @@
-from jota_gateway.services.openclaw import frames
+from fogar_gateway.services.openclaw import frames
 
 # ── Shape ─────────────────────────────────────────────────────────
 
@@ -46,7 +46,7 @@ def test_connect_frame_has_display_name():
     client = frames.connect_backend("r1", "tok")["params"]["client"]
     assert client["id"] == "gateway-client"
     assert client["mode"] == "backend"
-    assert client["displayName"] == "jota-gateway"
+    assert client["displayName"] == "fogar-gateway"
 
 
 def test_connect_backend_operator_role():

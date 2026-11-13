@@ -1,4 +1,4 @@
-"""`jota-gw config show | get | validate` (M14b, #294)."""
+"""`fogar-gw config show | get | validate` (M14b, #294)."""
 
 import json
 import os
@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from jota_gateway.cli.app import cli
+from fogar_gateway.cli.app import cli
 
 ROOT = Path(__file__).resolve().parents[2]
 SECRET = "s3cr3t-admin-token-0123456789"
@@ -19,7 +19,7 @@ SECRET = "s3cr3t-admin-token-0123456789"
 def home(monkeypatch, tmp_path):
     base = tmp_path / "base"
     base.mkdir()
-    monkeypatch.setenv("JOTA_GATEWAY_HOME", str(base))
+    monkeypatch.setenv("FOGAR_GATEWAY_HOME", str(base))
     for name in ("ADMIN_TOKEN", "OPENCLAW_TOKEN", "TTS_WS_URL", "STT_PROVIDER", "LOG_FORMAT"):
         monkeypatch.delenv(name, raising=False)
     (base / "config.env").write_text(
@@ -102,11 +102,11 @@ def test_cwd_dotenv_is_never_read_even_if_broken(tmp_path):
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     (cwd / ".env").write_text("ADMIN_TOKEN=del-cwd\nSTT_PROVIDER=roto\n")
-    env = {**os.environ, "PYTHONPATH": str(ROOT), "JOTA_GATEWAY_HOME": str(tmp_path / "vacia")}
+    env = {**os.environ, "PYTHONPATH": str(ROOT), "FOGAR_GATEWAY_HOME": str(tmp_path / "vacia")}
     env.pop("ADMIN_TOKEN", None)
     env.pop("STT_PROVIDER", None)
     r = subprocess.run(
-        [sys.executable, "-m", "jota_gateway.cli", "--json", "config", "get", "ADMIN_TOKEN"],
+        [sys.executable, "-m", "fogar_gateway.cli", "--json", "config", "get", "ADMIN_TOKEN"],
         cwd=cwd, env=env, capture_output=True, text=True,
     )
     assert r.returncode == 0, r.stderr
@@ -140,7 +140,7 @@ def _env(home):
 def test_set_roundtrips_special_values(home, value):
     from dotenv import dotenv_values
 
-    from jota_gateway.cli import config as cfg
+    from fogar_gateway.cli import config as cfg
 
     r = run("config", "set", "TTS_WS_URL", value)
     assert r.exit_code == 0, r.output
@@ -218,7 +218,7 @@ def test_set_unknown_name_suggests(home):
 def test_set_without_config_env_suggests_init(home):
     _env(home).unlink()
     r = run("config", "set", "LOG_FORMAT", "json")
-    assert r.exit_code == 1 and "jota-gw init" in r.output
+    assert r.exit_code == 1 and "fogar-gw init" in r.output
     assert not _env(home).exists()
 
 
@@ -232,7 +232,7 @@ def test_set_warns_when_environment_wins(home, monkeypatch):
 def systemd(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
-    from jota_gateway.cli import output, service
+    from fogar_gateway.cli import output, service
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     unit = service.unit_path()
@@ -258,35 +258,35 @@ def systemd(monkeypatch, tmp_path):
 
 def test_set_offers_restart_when_active(home, systemd):
     r = run("config", "set", "LOG_FORMAT", "text")
-    assert r.exit_code == 0 and "jota-gw restart" in r.output
-    assert ("restart", "jota-gateway.service") not in systemd.calls
+    assert r.exit_code == 0 and "fogar-gw restart" in r.output
+    assert ("restart", "fogar-gateway.service") not in systemd.calls
     systemd.calls.clear()
     r = run("--yes", "config", "set", "LOG_FORMAT", "json")
-    assert ("restart", "jota-gateway.service") in systemd.calls
+    assert ("restart", "fogar-gateway.service") in systemd.calls
     systemd.calls.clear()
     systemd.tty = True
     r = run("config", "set", "LOG_FORMAT", "text", input="n\n")  # decir que no no aborta
-    assert r.exit_code == 0 and ("restart", "jota-gateway.service") not in systemd.calls
+    assert r.exit_code == 0 and ("restart", "fogar-gateway.service") not in systemd.calls
     r = run("config", "set", "LOG_FORMAT", "json", input="y\n")
-    assert ("restart", "jota-gateway.service") in systemd.calls
+    assert ("restart", "fogar-gateway.service") in systemd.calls
 
 
 def test_set_no_restart_when_inactive_or_no_unit(home, systemd):
     systemd.active = False
     run("--yes", "config", "set", "LOG_FORMAT", "text")
-    assert ("restart", "jota-gateway.service") not in systemd.calls
+    assert ("restart", "fogar-gateway.service") not in systemd.calls
 
 
 # --- ronda de arreglo 1 ----------------------------------------------------------------------
 
 
 def test_set_validates_without_environment_of_name(home, monkeypatch):
-    monkeypatch.setenv("STT_PROVIDER", "jota")
+    monkeypatch.setenv("STT_PROVIDER", "fogar")
     before = _env(home).read_bytes()
     r = run("config", "set", "STT_PROVIDER", "nope")
     assert r.exit_code == 1
     assert _env(home).read_bytes() == before
-    assert os.environ["STT_PROVIDER"] == "jota"  # restaurada
+    assert os.environ["STT_PROVIDER"] == "fogar"  # restaurada
 
 
 @pytest.mark.parametrize("value", ["a\nb", "a\rb"])
@@ -308,7 +308,7 @@ def test_set_json_yes_is_valid_json(home, systemd):
     assert r.exit_code == 0, r.output
     assert json.loads(r.output) == {"name": "LOG_FORMAT", "value": "text", "changed": True,
                                     "restarted": True}
-    assert ("restart", "jota-gateway.service") in systemd.calls
+    assert ("restart", "fogar-gateway.service") in systemd.calls
 
 
 def test_set_report_masks_secret_and_ignores_environment(home, monkeypatch):
@@ -340,13 +340,13 @@ def test_set_restart_failure_exits_1_with_hint(home, systemd):
     r = run("--yes", "config", "set", "LOG_FORMAT", "text")
     assert r.exit_code == 1 and not isinstance(r.exception, subprocess.CalledProcessError)
     assert "LOG_FORMAT=text" in _env(home).read_text()  # guardado
-    assert "guardado" in r.output and "jota-gw logs -n 50" in r.output
+    assert "guardado" in r.output and "fogar-gw logs -n 50" in r.output
 
 
 def test_set_restart_not_healthy_exits_1(home, systemd):
     systemd.healthy = False
     r = run("--yes", "config", "set", "LOG_FORMAT", "text")
-    assert r.exit_code == 1 and "jota-gw logs -n 50" in r.output
+    assert r.exit_code == 1 and "fogar-gw logs -n 50" in r.output
     assert "guardado" in r.output
 
 
@@ -367,7 +367,7 @@ def test_set_restart_waits_for_healthz(home, systemd, monkeypatch):
 
 
 def service_mod():
-    from jota_gateway.cli import service
+    from fogar_gateway.cli import service
 
     return service
 

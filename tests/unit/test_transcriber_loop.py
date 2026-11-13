@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from jota_gateway.services.transcriber_client import TranscriberClient
+from fogar_gateway.services.transcriber_client import TranscriberClient
 
 
 @pytest.fixture

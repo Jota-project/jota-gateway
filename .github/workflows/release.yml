@@ -15,7 +15,7 @@ jobs:
       pull-requests: write
 
     steps:
-      - name: Generate Token from Jota-App
+      - name: Generate token from the release GitHub App
         id: generate_token
         uses: tibdex/github-app-token@v2
         with:
@@ -32,6 +32,12 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: 'lts/*'
+
+      # La web se compila en el prepareCmd (scripts/build-web.sh) para meterla en el wheel.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
 
       # constraints.txt (prepareCmd de .releaserc.json) se exporta de uv.lock.
       - name: Set up uv

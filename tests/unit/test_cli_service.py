@@ -6,18 +6,18 @@ from pathlib import Path
 
 import pytest
 
-from jota_gateway.cli import api, service
-from jota_gateway.cli import serve as serve_mod
+from fogar_gateway.cli import api, service
+from fogar_gateway.cli import serve as serve_mod
 
 UNIT = """[Unit]
-Description=Jota gateway
+Description=Fogar gateway
 StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
 Type=exec
-ExecStart=/home/u/.local/bin/jota-gw serve
-Environment=JOTA_GATEWAY_HOME=/home/u/.jota-gateway
+ExecStart=/home/u/.local/bin/fogar-gw serve
+Environment=FOGAR_GATEWAY_HOME=/home/u/.fogar-gateway
 Restart=on-failure
 RestartSec=5
 RestartPreventExitStatus=3
@@ -30,7 +30,7 @@ WantedBy=default.target
 
 
 def test_unit_text_exact():
-    text = service.render_unit(Path("/home/u/.local/bin/jota-gw"), Path("/home/u/.jota-gateway"))
+    text = service.render_unit(Path("/home/u/.local/bin/fogar-gw"), Path("/home/u/.fogar-gateway"))
     assert text == UNIT
     assert "--create-db" not in text and "LOG_FORMAT" not in text
 
@@ -45,19 +45,19 @@ def test_stop_timeout_matches_compose_and_exceeds_graceful_shutdown():
 
 def test_unit_path_respects_xdg(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    assert service.unit_path() == tmp_path / "systemd/user/jota-gateway.service"
+    assert service.unit_path() == tmp_path / "systemd/user/fogar-gateway.service"
     monkeypatch.delenv("XDG_CONFIG_HOME")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    assert service.unit_path() == tmp_path / ".config/systemd/user/jota-gateway.service"
+    assert service.unit_path() == tmp_path / ".config/systemd/user/fogar-gateway.service"
 
 
 def _tool_env(base: Path, *, editable: bool | None = None) -> Path:
-    """Crea `<base>/bin/jota-gw` con su site-packages; devuelve el ejecutable."""
-    exe = base / "bin" / "jota-gw"
+    """Crea `<base>/bin/fogar-gw` con su site-packages; devuelve el ejecutable."""
+    exe = base / "bin" / "fogar-gw"
     exe.parent.mkdir(parents=True)
     exe.write_text("#!/bin/sh\n")
     if editable is not None:
-        dist = base / "lib/python3.12/site-packages/jota_gateway-0.1.dist-info"
+        dist = base / "lib/python3.12/site-packages/fogar_gateway-0.1.dist-info"
         dist.mkdir(parents=True)
         (dist / "direct_url.json").write_text(
             json.dumps({"url": "file:///x", "dir_info": {"editable": editable}})
@@ -66,8 +66,8 @@ def _tool_env(base: Path, *, editable: bool | None = None) -> Path:
 
 
 def test_pick_exe_accepts_uv_tool_and_keeps_symlink(monkeypatch, tmp_path):
-    real = _tool_env(tmp_path / "tools/jota-gateway", editable=False)
-    link = tmp_path / "local/bin/jota-gw"
+    real = _tool_env(tmp_path / "tools/fogar-gateway", editable=False)
+    link = tmp_path / "local/bin/fogar-gw"
     link.parent.mkdir(parents=True)
     link.symlink_to(real)
     monkeypatch.setattr(service.shutil, "which", lambda name: str(link))
@@ -89,7 +89,7 @@ def test_exe_inside_checkout_is_rejected(monkeypatch, tmp_path, kind):
     assert service.pick_exe(exe) == exe  # explícito: se acepta
 
 
-def test_pick_exe_without_jota_gw_fails(monkeypatch):
+def test_pick_exe_without_fogar_gw_fails(monkeypatch):
     monkeypatch.setattr(service.shutil, "which", lambda name: None)
     with pytest.raises(api.ApiError, match="--exe") as e:
         service.pick_exe(None)
@@ -122,15 +122,15 @@ def test_systemctl_runs_user_instance(monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    service.systemctl("start", "jota-gateway.service", check=False)
+    service.systemctl("start", "fogar-gateway.service", check=False)
     cmd, kw = calls[0]
-    assert cmd == ["systemctl", "--user", "start", "jota-gateway.service"]
+    assert cmd == ["systemctl", "--user", "start", "fogar-gateway.service"]
     assert kw["check"] is False and kw["text"] is True and kw["capture_output"] is True
 
 
 def test_pick_exe_ignores_distant_pyproject(monkeypatch, tmp_path):
     (tmp_path / "pyproject.toml").write_text("")  # suelto en un ancestro lejano (~)
-    exe = _tool_env(tmp_path / ".local/share/uv/tools/jota-gateway", editable=False)
+    exe = _tool_env(tmp_path / ".local/share/uv/tools/fogar-gateway", editable=False)
     monkeypatch.setattr(service.shutil, "which", lambda name: str(exe))
     assert service.pick_exe(None) == exe
 
@@ -138,7 +138,7 @@ def test_pick_exe_ignores_distant_pyproject(monkeypatch, tmp_path):
 def test_importing_service_does_not_load_subprocess():
     import subprocess
 
-    code = "import sys; import jota_gateway.cli.service; print('subprocess' in sys.modules)"
+    code = "import sys; import fogar_gateway.cli.service; print('subprocess' in sys.modules)"
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert r.stdout.strip() == "False"
 
@@ -151,11 +151,11 @@ from types import SimpleNamespace  # noqa: E402
 
 from click.testing import CliRunner  # noqa: E402
 
-from jota_gateway.cli import config as cfg  # noqa: E402
-from jota_gateway.cli import output  # noqa: E402
-from jota_gateway.cli.app import cli  # noqa: E402
+from fogar_gateway.cli import config as cfg  # noqa: E402
+from fogar_gateway.cli import output  # noqa: E402
+from fogar_gateway.cli.app import cli  # noqa: E402
 
-EXE = "/home/u/.local/bin/jota-gw"
+EXE = "/home/u/.local/bin/fogar-gw"
 REAL_PORT_FREE = getattr(service, "port_free", None)  # antes de que la fixture lo mockee
 
 
@@ -166,7 +166,7 @@ def svc(monkeypatch, tmp_path):
     (home / "data").mkdir(parents=True)
     (home / "data" / "gateway.db").write_text("db")
     (home / "config.env").write_text("ADMIN_TOKEN=x\n")
-    monkeypatch.setenv("JOTA_GATEWAY_HOME", str(home))
+    monkeypatch.setenv("FOGAR_GATEWAY_HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setattr(cfg, "load", lambda: (SimpleNamespace(
         DATABASE_URL=f"sqlite:///{home / 'data' / 'gateway.db'}"), [], {}))
@@ -203,7 +203,7 @@ def test_install_refuses_without_db(svc):
     (svc.home / "data" / "gateway.db").unlink()
     r = run("install", "--exe", EXE)
     assert r.exit_code == 1
-    assert "No hay BD en" in r.output and "jota-gw init" in r.output
+    assert "No hay BD en" in r.output and "fogar-gw init" in r.output
     assert "migrate --from-docker" in r.output
     assert not svc.unit.exists() and svc.calls == []
 
@@ -242,7 +242,7 @@ def test_install_active_service_same_unit_skips_port_check(svc, monkeypatch):
     r = run("--json", "install", "--exe", EXE)
     assert r.exit_code == 0, r.output
     assert svc.unit.stat().st_mtime_ns == before
-    assert svc.calls == [("enable", "--now", "jota-gateway.service")]
+    assert svc.calls == [("enable", "--now", "fogar-gateway.service")]
 
 
 def test_install_active_service_new_unit_restarts(svc, monkeypatch):
@@ -253,8 +253,8 @@ def test_install_active_service_new_unit_restarts(svc, monkeypatch):
     r = run("--yes", "install", "--exe", EXE)
     assert r.exit_code == 0, r.output
     assert svc.unit.read_text() == _unit_text(svc)
-    assert svc.calls == [("daemon-reload",), ("enable", "--now", "jota-gateway.service"),
-                         ("restart", "jota-gateway.service")]
+    assert svc.calls == [("daemon-reload",), ("enable", "--now", "fogar-gateway.service"),
+                         ("restart", "fogar-gateway.service")]
 
 
 def test_install_inactive_existing_unit_and_port_busy_refuses(svc, monkeypatch):
@@ -279,7 +279,7 @@ def test_install_writes_unit_and_enables(svc):
     r = run("--json", "install", "--exe", EXE)
     assert r.exit_code == 0, r.output
     assert svc.unit.read_text() == _unit_text(svc)
-    assert svc.calls == [("daemon-reload",), ("enable", "--now", "jota-gateway.service")]
+    assert svc.calls == [("daemon-reload",), ("enable", "--now", "fogar-gateway.service")]
     assert json.loads(r.stdout) == {"unit": str(svc.unit), "exe": EXE, "home": str(svc.home),
                                     "state": "instalado"}
     assert not list(svc.unit.parent.glob("*.tmp*"))  # escritura atómica sin restos
@@ -292,7 +292,7 @@ def test_install_same_unit_is_noop(svc):
     r = run("--json", "install", "--exe", EXE)
     assert r.exit_code == 0, r.output
     assert svc.unit.stat().st_mtime_ns == before
-    assert svc.calls == [("enable", "--now", "jota-gateway.service")]
+    assert svc.calls == [("enable", "--now", "fogar-gateway.service")]
     assert json.loads(r.stdout)["state"] == "sin cambios"
 
 
@@ -320,12 +320,12 @@ def test_install_fails_with_hint_when_not_healthy(svc, monkeypatch):
     monkeypatch.setattr(service, "HEALTH_TIMEOUT_S", 0.05)
     monkeypatch.setattr(service.time, "sleep", lambda s: None)
     r = run("install", "--exe", EXE)
-    assert r.exit_code == 1 and "jota-gw logs -n 50" in r.output
+    assert r.exit_code == 1 and "fogar-gw logs -n 50" in r.output
 
 
 def test_health_wait_outlasts_openclaw_startup_retry():
     # El lifespan espera el primer connect (que reintenta mientras OpenClaw arranca) antes de abrir el 8004.
-    from jota_gateway.services.openclaw.client import _STARTUP_RETRY_BUDGET_S
+    from fogar_gateway.services.openclaw.client import _STARTUP_RETRY_BUDGET_S
 
     assert service.HEALTH_TIMEOUT_S > _STARTUP_RETRY_BUDGET_S
 
@@ -343,7 +343,7 @@ def test_uninstall_keeps_home(svc):
     r = run("--yes", "--json", "uninstall")
     assert r.exit_code == 0, r.output
     assert not svc.unit.exists()
-    assert svc.calls == [("disable", "--now", "jota-gateway.service"), ("daemon-reload",)]
+    assert svc.calls == [("disable", "--now", "fogar-gateway.service"), ("daemon-reload",)]
     assert (svc.home / "data" / "gateway.db").read_text() == "db"
     assert (svc.home / "config.env").read_text() == "ADMIN_TOKEN=x\n"
     assert json.loads(r.stdout) == {"unit": str(svc.unit), "exe": None, "home": str(svc.home),
@@ -380,8 +380,8 @@ def test_start_stop_restart_call_systemctl(installed, monkeypatch):
     assert run("start").exit_code == 0
     assert run("stop").exit_code == 0
     assert run("--yes", "--json", "restart").exit_code == 0
-    assert installed.calls == [("start", "jota-gateway.service"), ("stop", "jota-gateway.service"),
-                               ("restart", "jota-gateway.service")]
+    assert installed.calls == [("start", "fogar-gateway.service"), ("stop", "fogar-gateway.service"),
+                               ("restart", "fogar-gateway.service")]
     assert waits == ["http://127.0.0.1:8004", "http://127.0.0.1:8004"]  # start y restart, no stop
 
 

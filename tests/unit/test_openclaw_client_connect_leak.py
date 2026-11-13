@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from websockets.exceptions import ConnectionClosed
 
-from jota_gateway.services.openclaw.client import OpenClawClient
-from jota_gateway.services.openclaw.dispatcher import FrameDispatcher
-from jota_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
+from fogar_gateway.services.openclaw.client import OpenClawClient
+from fogar_gateway.services.openclaw.dispatcher import FrameDispatcher
+from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
 
 
 class FakeOCSocket:

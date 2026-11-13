@@ -1,4 +1,4 @@
-"""`jota-gw migrate --from-docker` (M14e, #297)."""
+"""`fogar-gw migrate --from-docker` (M14e, #297)."""
 
 import hashlib
 import json
@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from jota_gateway.cli import migrate
-from jota_gateway.cli.app import cli
+from fogar_gateway.cli import migrate
+from fogar_gateway.cli.app import cli
 
 ROOT = Path(__file__).resolve().parents[2]
 ENV = (
@@ -34,14 +34,14 @@ def template(tmp_path_factory):
     """Un directorio Docker falso: BD hecha con `init` en otra base y un `.env` a mano."""
     base = tmp_path_factory.mktemp("docker-template")
     env = {k: v for k, v in os.environ.items() if k not in ("ADMIN_TOKEN", "DATABASE_URL")}
-    r = subprocess.run([sys.executable, "-m", "jota_gateway.cli", "--home", str(base), "init"],
+    r = subprocess.run([sys.executable, "-m", "fogar_gateway.cli", "--home", str(base), "init"],
                        cwd=ROOT, env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     (base / "config.env").unlink()
     (base / ".env").write_text(ENV)
     from sqlmodel import Session, create_engine
 
-    from jota_gateway.db.models import ClientRecord
+    from fogar_gateway.db.models import ClientRecord
 
     engine = create_engine(f"sqlite:///{base / 'data' / 'gateway.db'}")
     with Session(engine) as session:
@@ -57,7 +57,7 @@ def env(template, tmp_path, monkeypatch):
     shutil.copytree(template, docker)
     (docker / "data" / "gateway.db.bak-pre-0001").write_text("copia")
     native = tmp_path / "native"
-    monkeypatch.setenv("JOTA_GATEWAY_HOME", str(native))
+    monkeypatch.setenv("FOGAR_GATEWAY_HOME", str(native))
     for k in ("HANDSHAKE_MAX_BYTES", "ADMIN_TOKEN", "DATABASE_URL", "LOG_FORMAT"):
         monkeypatch.delenv(k, raising=False)
     return docker, native

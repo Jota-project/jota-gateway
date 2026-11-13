@@ -1,7 +1,7 @@
 [project]
-name = "jota-gateway"
+name = "fogar-gateway"
 dynamic = ["version"]
-description = "BFF gateway for jota voice/text clients"
+description = "Fogar Gateway: the home entry point that pairs Fogar devices and connects them to OpenClaw and voice (STT/TTS)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.scripts]
-jota-gw = "jota_gateway.cli.__main__:main"
+fogar-gw = "fogar_gateway.cli.__main__:main"
 
 [project.optional-dependencies]
 dev = [
@@ -40,13 +40,17 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# Alembic va dentro del paquete: sin esto, el wheel no lleva su ini ni la plantilla.
+# Alembic va dentro del paquete: sin esto, el wheel no lleva su ini ni la plantilla. La web
+# compilada (scripts/build-web.sh) también; un nivel por glob, sin `**`.
 [tool.setuptools.package-data]
-jota_gateway = ["alembic.ini", "migrations/script.py.mako"]
+fogar_gateway = [
+    "alembic.ini", "migrations/script.py.mako",
+    "web/*", "web/assets/*", "web/fonts/*",
+]
 
 # La versión real es el tag de semantic-release, que la escribe en _version.py (.releaserc.json).
 [tool.setuptools.dynamic]
-version = {attr = "jota_gateway._version.__version__"}
+version = {attr = "fogar_gateway._version.__version__"}
 
 
 
@@ -54,11 +58,11 @@ version = {attr = "jota_gateway._version.__version__"}
 line-length = 100
 target-version = "py312"
 # Migraciones generadas por Alembic: históricas, no se reescriben por estilo.
-extend-exclude = ["src/jota_gateway/migrations/versions"]
+extend-exclude = ["src/fogar_gateway/migrations/versions"]
 
 [tool.ruff.lint]
 # BLE001/S110/S112/B904/RUF006/ASYNC/TID251: política de errores y cancelación (#221,
-# vault «JGW Decisión - Política de errores y cancelación»). TRY400 queda fuera a
+# decisión «Política de errores y cancelación» del vault). TRY400 queda fuera a
 # propósito: logger.exception volcaría el texto de la excepción.
 select = [
     "E", "F", "W", "I", "UP", "B", "SIM", "RUF",
@@ -92,5 +96,5 @@ ignore = [
 [tool.mypy]
 python_version = "3.12"
 files = ["src"]
-exclude = ["src/jota_gateway/migrations/versions/"]  # generadas por Alembic, como en ruff
+exclude = ["src/fogar_gateway/migrations/versions/"]  # generadas por Alembic, como en ruff
 ignore_missing_imports = true

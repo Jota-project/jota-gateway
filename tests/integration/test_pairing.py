@@ -1,16 +1,17 @@
-"""Descubrimiento y emparejamiento (#317): /.well-known/jota-gateway, POST /pair y /admin/pairing."""
+"""Descubrimiento y emparejamiento (#317): /.well-known/fogar-gateway, POST /pair y /admin/pairing."""
 
 import json
 import logging
+import re
 
 import pytest
 from sqlmodel import Session, select
 from starlette.testclient import TestClient
 
-from jota_gateway.core.config import settings
-from jota_gateway.db.models import ClientRecord
-from jota_gateway.main import app
-from jota_gateway.services import pairing
+from fogar_gateway.core.config import settings
+from fogar_gateway.db.models import ClientRecord
+from fogar_gateway.main import app
+from fogar_gateway.services import pairing
 from tests.integration.conftest import ADMIN_TOKEN, _configure_app_mocks
 
 ADMIN = {"x-admin-token": ADMIN_TOKEN}
@@ -57,17 +58,23 @@ def _rows(db_engine) -> list[ClientRecord]:
 
 
 def test_well_known_shape(http):
-    r = http.get("/.well-known/jota-gateway")
+    r = http.get("/.well-known/fogar-gateway")
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"service", "version", "name"}
-    assert body["service"] == "jota-gateway"
+    assert set(body) == {"service", "version", "name", "instance_id"}
+    assert body["service"] == "fogar-gateway"
     assert body["name"]  # nombre del equipo por defecto
+
+
+def test_well_known_instance_id_stable_per_process(http):
+    a = http.get("/.well-known/fogar-gateway").json()["instance_id"]
+    b = http.get("/.well-known/fogar-gateway").json()["instance_id"]
+    assert a == b and re.fullmatch(r"[0-9a-f]{16}", a)
 
 
 def test_well_known_uses_gateway_name(http, monkeypatch):
     monkeypatch.setattr(settings, "GATEWAY_NAME", "green-house")
-    assert http.get("/.well-known/jota-gateway").json()["name"] == "green-house"
+    assert http.get("/.well-known/fogar-gateway").json()["name"] == "green-house"
 
 
 # --- /admin/pairing ---
@@ -228,7 +235,7 @@ def test_create_failure_keeps_code_open(http, monkeypatch, db_engine):
         calls.append(body)
         raise HTTPException(status_code=409, detail="client_key already exists")
 
-    monkeypatch.setattr("jota_gateway.api.pairing_routes.create_client_record", boom)
+    monkeypatch.setattr("fogar_gateway.api.pairing_routes.create_client_record", boom)
     for _ in range(pairing.MAX_FAILED):
         assert http.post("/pair", json={"code": item["code"]}).status_code == 409
     monkeypatch.undo()

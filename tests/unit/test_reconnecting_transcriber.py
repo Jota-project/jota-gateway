@@ -3,9 +3,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from jota_gateway.services.reconnection import ConnectionState
-from jota_gateway.services.speech.ports import SttCallbacks, SttParams
-from jota_gateway.services.transcriber_reconnecting import ReconnectingTranscriberClient
+from fogar_gateway.services.reconnection import ConnectionState
+from fogar_gateway.services.speech.ports import SttCallbacks, SttParams
+from fogar_gateway.services.transcriber_reconnecting import ReconnectingTranscriberClient
 
 
 def _cbs(**kw) -> SttCallbacks:

@@ -1,4 +1,4 @@
-"""`jota-gw` de extremo a extremo (M14a, #293): la CLI en otro proceso contra un uvicorn real
+"""`fogar-gw` de extremo a extremo (M14a, #293): la CLI en otro proceso contra un uvicorn real
 con la app entera. Solo habla por /admin, y ninguna salida salvo `add` y `rotate-key` lleva
 la clave."""
 
@@ -14,8 +14,8 @@ import pytest
 import uvicorn
 import websockets
 
-from jota_gateway.core.config import settings
-from jota_gateway.main import app
+from fogar_gateway.core.config import settings
+from fogar_gateway.main import app
 from tests.integration.conftest import ADMIN_TOKEN, _configure_app_mocks
 from tests.integration.test_session_revocation import _expect_revoked
 
@@ -43,7 +43,7 @@ def server(mock_registry, monkeypatch):
 
 
 def _cli(port, *args, json_out=False):
-    base = [sys.executable, "-m", "jota_gateway.cli", "--url", f"http://127.0.0.1:{port}",
+    base = [sys.executable, "-m", "fogar_gateway.cli", "--url", f"http://127.0.0.1:{port}",
             "--token", ADMIN_TOKEN]
     r = subprocess.run(
         [*base, *(["--json"] if json_out else []), *args],
@@ -95,7 +95,7 @@ async def test_full_client_lifecycle_through_the_cli(server):
 
 
 async def test_pairing_through_the_cli_opens_a_session(server):
-    """#317: `jota-gw pair` abre el código, el cliente lo canjea en /pair y su clave abre sesión."""
+    """#317: `fogar-gw pair` abre el código, el cliente lo canjea en /pair y su clave abre sesión."""
     import urllib.request
 
     port = server

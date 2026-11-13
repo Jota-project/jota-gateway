@@ -1,13 +1,13 @@
 """`.env.sample` debe reflejar `Settings` exactamente (issue #118).
 
 Cada campo de Settings aparece (activo o comentado si es opcional) y no queda
-ninguna variable que Settings ya no conozca (p. ej. las de la era jota-db).
+ninguna variable que Settings ya no conozca (p. ej. las de la antigua BD externa de clientes).
 """
 
 import re
 from pathlib import Path
 
-from jota_gateway.core.config import Settings
+from fogar_gateway.core.config import Settings
 
 ENV_SAMPLE = Path(__file__).resolve().parents[2] / ".env.sample"
 _VAR = re.compile(r"^\s*#?\s*([A-Z][A-Z0-9_]*)=")

@@ -5,7 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from jota_gateway.db.models import ClientRecord
+from fogar_gateway.db.models import ClientRecord
 
 
 def _mem_engine():

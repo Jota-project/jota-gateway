@@ -15,10 +15,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jota_gateway.api import routes
-from jota_gateway.models.schemas import Client, ClientConfig
-from jota_gateway.services.openclaw.registry import ClientRegistry
-from jota_gateway.services.session_registry import SessionRegistry
+from fogar_gateway.api import routes
+from fogar_gateway.models.schemas import Client, ClientConfig
+from fogar_gateway.services.openclaw.registry import ClientRegistry
+from fogar_gateway.services.session_registry import SessionRegistry
 
 CLIENT_KEY = "test-key"
 CLIENT_ID = "hab_sito"
@@ -105,10 +105,10 @@ async def test_connect_internal_services_failure_leaves_no_zombie_session(monkey
     """connect_internal_services() raising is near-unreachable in practice
     (ReconnectingTranscriberClient.connect() never raises — see CLAUDE.md),
     but the try/finally must still cover it defensively per the AC."""
-    from jota_gateway.services.bridge import JotaBridge
+    from fogar_gateway.services.bridge import FogarBridge
 
     monkeypatch.setattr(
-        JotaBridge,
+        FogarBridge,
         "connect_internal_services",
         AsyncMock(side_effect=RuntimeError("boom")),
     )
@@ -153,7 +153,7 @@ async def test_session_end_reaches_client_before_socket_close():
 
 
 @pytest.mark.parametrize(
-    ("failing", "registered"), [("PipelineTracker", False), ("JotaBridge", True)]
+    ("failing", "registered"), [("PipelineTracker", False), ("FogarBridge", True)]
 )
 async def test_session_construction_failure_closes_writer_and_session(
     monkeypatch, caplog, failing, registered

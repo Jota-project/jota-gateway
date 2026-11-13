@@ -15,14 +15,14 @@ SECRET_KEY = "dup-secret-key-0123456789abcdef-0123"
 
 @pytest.fixture(autouse=True)
 def override_admin_token(monkeypatch):
-    from jota_gateway.core import config
+    from fogar_gateway.core import config
 
     monkeypatch.setattr(config.settings, "ADMIN_TOKEN", ADMIN_TOKEN)
 
 
 @pytest.fixture(autouse=True)
 def db_engine(monkeypatch):
-    from jota_gateway import db
+    from fogar_gateway import db
 
     engine = create_engine(
         "sqlite:///:memory:",
@@ -38,7 +38,7 @@ def db_engine(monkeypatch):
 def http(db_engine):
     from starlette.testclient import TestClient
 
-    from jota_gateway.main import app
+    from fogar_gateway.main import app
 
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c

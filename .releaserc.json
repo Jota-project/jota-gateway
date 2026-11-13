@@ -5,11 +5,16 @@
   "plugins": [
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
-    "@semantic-release/changelog",
+    [
+      "@semantic-release/changelog",
+      {
+        "changelogTitle": "# Changelog"
+      }
+    ],
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "printf '# Lo reescribe semantic-release en cada release (.releaserc, @semantic-release/exec).\\n__version__ = \"${nextRelease.version}\"\\n' > src/jota_gateway/_version.py && uv export --frozen --no-dev --no-emit-project --no-hashes -o constraints.txt && sed -i \"s/^JOTA_RELEASE=.*/JOTA_RELEASE=${nextRelease.version}/\" install.sh"
+        "prepareCmd": "printf '# Lo reescribe semantic-release en cada release (.releaserc, @semantic-release/exec).\\n__version__ = \"${nextRelease.version}\"\\n' > src/fogar_gateway/_version.py && uv export --frozen --no-dev --no-emit-project --no-hashes -o constraints.txt && sed -i \"s/^FOGAR_RELEASE=.*/FOGAR_RELEASE=${nextRelease.version}/\" install.sh && sh scripts/build-web.sh && uv build --wheel -o dist"
       }
     ],
     [
@@ -17,7 +22,7 @@
       {
         "assets": [
           "CHANGELOG.md",
-          "src/jota_gateway/_version.py"
+          "src/fogar_gateway/_version.py"
         ],
         "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
       }
@@ -26,6 +31,10 @@
       "@semantic-release/github",
       {
         "assets": [
+          {
+            "path": "dist/fogar_gateway-*.whl",
+            "label": "Paquete con la web (lo instala install.sh)"
+          },
           {
             "path": "constraints.txt",
             "label": "Versiones fijadas (uv tool install -c)"

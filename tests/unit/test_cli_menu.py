@@ -1,14 +1,14 @@
-"""Menú interactivo de `jota-gw` sin argumentos (M14b, #294)."""
+"""Menú interactivo de `fogar-gw` sin argumentos (M14b, #294)."""
 
 import pytest
 import questionary
 from click.testing import CliRunner
 
-from jota_gateway.cli import app, menu
-from jota_gateway.cli.api import ApiError
+from fogar_gateway.cli import app, menu
+from fogar_gateway.cli.api import ApiError
 from tests.fakes.cli_api import FakeApi
 
-A = {"id": "aaaa1111-0000", "name": "Jota-Screen", "is_active": True, "key_fp": "1a2b3c4d",
+A = {"id": "aaaa1111-0000", "name": "Fogar TV", "is_active": True, "key_fp": "1a2b3c4d",
      "tts_speed": 1.0, "created_at": "2026-11-02"}
 STATE = {"gateway": {"version": "1.23.0", "uptime_s": 10}, "services": {}, "totals": {}}
 
@@ -103,7 +103,7 @@ def test_menu_module_import_is_light():
     import sys
     from pathlib import Path
 
-    code = ("import sys, jota_gateway.cli.menu, jota_gateway.cli.app; "
+    code = ("import sys, fogar_gateway.cli.menu, fogar_gateway.cli.app; "
             "print('HEAVY=' + ','.join(m for m in ('questionary','prompt_toolkit','rich') "
             "if m in sys.modules))")
     r = subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).resolve().parents[2],
@@ -115,6 +115,6 @@ def test_menu_client_types_match_client_type():
     # El menú repite la lista para no importar pydantic al arrancar; no puede quedarse atrás.
     from typing import get_args
 
-    from jota_gateway.models.admin_schemas import ClientType
+    from fogar_gateway.models.admin_schemas import ClientType
 
     assert list(get_args(ClientType)) == menu.CLIENT_TYPES

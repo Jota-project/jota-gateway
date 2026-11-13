@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock
 import pytest
 import websockets
 
-from jota_gateway.core.config import settings
-from jota_gateway.services.protocol import OrchestratorEvent
-from jota_gateway.services.tts_client import TTSClient
+from fogar_gateway.core.config import settings
+from fogar_gateway.services.protocol import OrchestratorEvent
+from fogar_gateway.services.tts_client import TTSClient
 from tests.fakes.bridge import sent, tokens
 
 

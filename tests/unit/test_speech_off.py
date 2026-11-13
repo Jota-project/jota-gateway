@@ -2,13 +2,13 @@
 
 from unittest.mock import AsyncMock
 
-from jota_gateway.core.config import Settings
-from jota_gateway.core.startup_checks import check_speech_settings
-from jota_gateway.models.schemas import Client
-from jota_gateway.services.reconnection import ConnectionState, ServiceStatus
-from jota_gateway.services.speech.factory import build_stt_provider, build_tts_provider
-from jota_gateway.services.speech.off import OffSttProvider, OffTtsProvider
-from jota_gateway.services.speech.ports import SttCallbacks, SttParams
+from fogar_gateway.core.config import Settings
+from fogar_gateway.core.startup_checks import check_speech_settings
+from fogar_gateway.models.schemas import Client
+from fogar_gateway.services.reconnection import ConnectionState, ServiceStatus
+from fogar_gateway.services.speech.factory import build_stt_provider, build_tts_provider
+from fogar_gateway.services.speech.off import OffSttProvider, OffTtsProvider
+from fogar_gateway.services.speech.ports import SttCallbacks, SttParams
 
 
 def _disabled(name: str) -> ServiceStatus:

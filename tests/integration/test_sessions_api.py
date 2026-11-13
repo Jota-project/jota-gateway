@@ -1,6 +1,6 @@
 from unittest.mock import AsyncMock, MagicMock
 
-from jota_gateway.services.pipeline_tracker import PipelineTracker
+from fogar_gateway.services.pipeline_tracker import PipelineTracker
 from tests.fakes.bridge import DirectSender
 
 
@@ -34,7 +34,7 @@ def test_list_sessions_requires_admin_token(client):
 
 
 def test_list_sessions_shows_active_session(client, admin_headers):
-    from jota_gateway.main import app
+    from fogar_gateway.main import app
 
     _make_live_tracker(app, "sess:active")
     try:
@@ -51,7 +51,7 @@ def test_list_sessions_shows_active_session(client, admin_headers):
 
 
 def test_list_sessions_includes_completed(client, admin_headers):
-    from jota_gateway.main import app
+    from fogar_gateway.main import app
 
     _make_live_tracker(app, "sess:done")
     app.state.session_registry.close("sess:done", "completed")
@@ -67,7 +67,7 @@ def test_get_session_not_found(client, admin_headers):
 
 
 def test_get_session_returns_required_fields(client, admin_headers):
-    from jota_gateway.main import app
+    from fogar_gateway.main import app
 
     _make_live_tracker(app, "sess:fields")
     r = client.get("/admin/sessions/sess:fields", headers=admin_headers)
@@ -83,7 +83,7 @@ def test_get_session_returns_required_fields(client, admin_headers):
 
 
 def test_get_session_last_latencies_fields_present(client, admin_headers):
-    from jota_gateway.main import app
+    from fogar_gateway.main import app
 
     _make_live_tracker(app, "sess:lat")
     r = client.get("/admin/sessions/sess:lat", headers=admin_headers)
@@ -98,7 +98,7 @@ def test_get_session_last_latencies_fields_present(client, admin_headers):
 async def test_get_session_avg_latencies_computed_correctly(client, admin_headers):
     import asyncio
 
-    from jota_gateway.main import app
+    from fogar_gateway.main import app
 
     ws = AsyncMock()
     registry_mock = MagicMock()
@@ -131,7 +131,7 @@ async def test_get_session_avg_latencies_computed_correctly(client, admin_header
 async def test_get_session_avg_latencies_exclude_cancelled_turns(client, admin_headers):
     import asyncio
 
-    from jota_gateway.main import app
+    from fogar_gateway.main import app
 
     ws = AsyncMock()
     registry_mock = MagicMock()
@@ -161,3 +161,24 @@ async def test_get_session_avg_latencies_exclude_cancelled_turns(client, admin_h
     assert data["summary"]["avg_llm_first_token_ms"] is not None
     assert data["summary"]["avg_llm_first_token_ms"] >= 40
     app.state.session_registry.close("sess:cancel", "completed")
+
+
+async def test_get_session_events_carry_their_turn(client, admin_headers):
+    from fogar_gateway.main import app
+
+    tracker = PipelineTracker(
+        session_id="sess:turns",
+        client_id="c1",
+        input_mode="text",
+        output_mode=["text"],
+        sender=DirectSender(AsyncMock()),
+        registry=MagicMock(),
+    )
+    tracker.start_turn()
+    await tracker.record("llm_start")
+    tracker.start_turn()
+    await tracker.record("llm_start")
+    app.state.session_registry.register(tracker)
+    r = client.get("/admin/sessions/sess:turns", headers=admin_headers)
+    assert [e["turn"] for e in r.json()["events"] if e["stage"] == "llm_start"] == [1, 2]
+    app.state.session_registry.close("sess:turns", "completed")

@@ -3,10 +3,10 @@ import logging
 import pytest
 from pydantic import SecretStr
 
-from jota_gateway.core.config import Settings
-from jota_gateway.core.startup_checks import SpeechConfigError, check_speech_settings
-from jota_gateway.services.speech import voices
-from jota_gateway.services.speech.voices import resolve_voice
+from fogar_gateway.core.config import Settings
+from fogar_gateway.core.startup_checks import SpeechConfigError, check_speech_settings
+from fogar_gateway.services.speech import voices
+from fogar_gateway.services.speech.voices import resolve_voice
 
 
 @pytest.fixture(autouse=True)
@@ -48,24 +48,24 @@ def _s(**kw):
 def test_startup_fails_without_key_when_elevenlabs():
     s = _s(ELEVENLABS_TTS_DEFAULT_VOICE="v1")
     with pytest.raises(SpeechConfigError) as e:
-        check_speech_settings(s, stt_provider="elevenlabs", tts_provider="jota")
+        check_speech_settings(s, stt_provider="elevenlabs", tts_provider="fogar")
     assert "ELEVENLABS_API_KEY" in str(e.value)
     s2 = _s(ELEVENLABS_API_KEY="   ", ELEVENLABS_TTS_DEFAULT_VOICE="v1")
     with pytest.raises(SpeechConfigError):
-        check_speech_settings(s2, stt_provider="jota", tts_provider="elevenlabs")
+        check_speech_settings(s2, stt_provider="fogar", tts_provider="elevenlabs")
     secret = "sk-very-secret-value"
     ok = _s(ELEVENLABS_API_KEY=secret, ELEVENLABS_TTS_DEFAULT_VOICE="v1")
     check_speech_settings(ok, stt_provider="elevenlabs", tts_provider="elevenlabs")
     assert isinstance(ok.ELEVENLABS_API_KEY, SecretStr)
-    check_speech_settings(_s(), stt_provider="jota", tts_provider="jota")
+    check_speech_settings(_s(), stt_provider="fogar", tts_provider="fogar")
 
 
 def test_tts_elevenlabs_requires_default_voice():
     assert _s().ELEVENLABS_TTS_DEFAULT_VOICE == "gc61tTk93h3LBXPxew2V"
-    check_speech_settings(_s(ELEVENLABS_API_KEY="k"), stt_provider="jota", tts_provider="elevenlabs")
+    check_speech_settings(_s(ELEVENLABS_API_KEY="k"), stt_provider="fogar", tts_provider="elevenlabs")
     s = _s(ELEVENLABS_API_KEY="k", ELEVENLABS_TTS_DEFAULT_VOICE="  ")
     with pytest.raises(SpeechConfigError) as e:
-        check_speech_settings(s, stt_provider="jota", tts_provider="elevenlabs")
+        check_speech_settings(s, stt_provider="fogar", tts_provider="elevenlabs")
     assert "ELEVENLABS_TTS_DEFAULT_VOICE" in str(e.value)
 
 
@@ -73,7 +73,7 @@ def test_tts_elevenlabs_requires_default_voice():
 def test_rejects_v3_model_for_ws(model):
     s = _s(ELEVENLABS_API_KEY="k", ELEVENLABS_TTS_DEFAULT_VOICE="v", ELEVENLABS_TTS_MODEL=model)
     with pytest.raises(SpeechConfigError) as e:
-        check_speech_settings(s, stt_provider="jota", tts_provider="elevenlabs")
+        check_speech_settings(s, stt_provider="fogar", tts_provider="elevenlabs")
     assert "ELEVENLABS_TTS_MODEL" in str(e.value) and model not in str(e.value)
 
 

@@ -1,6 +1,6 @@
 import pytest
 
-from jota_gateway.services.pacing import BYTES_PER_S, FRAME_BYTES, AudioPacer
+from fogar_gateway.services.pacing import BYTES_PER_S, FRAME_BYTES, AudioPacer
 
 
 class FakeTime:

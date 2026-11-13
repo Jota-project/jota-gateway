@@ -4,7 +4,7 @@ import json
 
 from sqlmodel import Session
 
-from jota_gateway.db.models import ClientRecord
+from fogar_gateway.db.models import ClientRecord
 from tests.integration.conftest import CLIENT_ID
 
 
@@ -67,8 +67,8 @@ def test_rest_default_agent_applied_when_model_missing(
     """default_agent='a' set, body.model='' → 200, session uses agent='a'."""
     _patch_client(db_engine, default_agent="a", allowed_agents=None)
 
-    from jota_gateway.core.session_key import make_session_key
-    from jota_gateway.services.protocol import OrchestratorEvent
+    from fogar_gateway.core.session_key import make_session_key
+    from fogar_gateway.services.protocol import OrchestratorEvent
 
     captured = {}
 
@@ -94,8 +94,8 @@ def test_rest_legacy_trusted_origin_still_uses_gateway_default(client, mock_orch
 
     Regression check: this path must keep working exactly as before.
     """
-    from jota_gateway.core.session_key import make_session_key
-    from jota_gateway.services.protocol import OrchestratorEvent
+    from fogar_gateway.core.session_key import make_session_key
+    from fogar_gateway.services.protocol import OrchestratorEvent
 
     captured = {}
 

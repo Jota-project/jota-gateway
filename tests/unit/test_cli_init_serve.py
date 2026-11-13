@@ -1,4 +1,4 @@
-"""`jota-gw init`, `jota-gw serve` y `--home` (M14c, #295)."""
+"""`fogar-gw init`, `fogar-gw serve` y `--home` (M14c, #295)."""
 
 import json
 import os
@@ -11,20 +11,20 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from jota_gateway.cli import serve as serve_mod
-from jota_gateway.cli.app import cli
-from jota_gateway.core.config import settings
-from jota_gateway.db import database
+from fogar_gateway.cli import serve as serve_mod
+from fogar_gateway.cli.app import cli
+from fogar_gateway.core.config import settings
+from fogar_gateway.db import database
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def _cli(*args: str, cwd: Path, home: Path | None = None, timeout: float = 60):
     env = {k: v for k, v in os.environ.items() if k not in ("ADMIN_TOKEN", "DATABASE_URL")}
-    env.pop("JOTA_GATEWAY_HOME", None)
+    env.pop("FOGAR_GATEWAY_HOME", None)
     if home is not None:
-        env["JOTA_GATEWAY_HOME"] = str(home)
-    return subprocess.run([sys.executable, "-m", "jota_gateway.cli", *args], cwd=cwd, env=env,
+        env["FOGAR_GATEWAY_HOME"] = str(home)
+    return subprocess.run([sys.executable, "-m", "fogar_gateway.cli", *args], cwd=cwd, env=env,
                           capture_output=True, text=True, timeout=timeout)
 
 
@@ -73,11 +73,11 @@ def test_init_with_invalid_config_creates_no_db(tmp_path):
 def test_same_paths_from_any_working_directory(tmp_path):
     """Criterio de #295: arrancando desde dos directorios distintos, mismas rutas."""
     base = tmp_path / "base"
-    probe = ("from jota_gateway import paths; from jota_gateway.core.config import settings; "
+    probe = ("from fogar_gateway import paths; from fogar_gateway.core.config import settings; "
              "print(paths.config_file()); print(paths.sqlite_file(settings.DATABASE_URL))")
     seen = []
     for cwd in (tmp_path, ROOT):
-        env = {**os.environ, "JOTA_GATEWAY_HOME": str(base)}
+        env = {**os.environ, "FOGAR_GATEWAY_HOME": str(base)}
         env.pop("DATABASE_URL", None)
         r = subprocess.run([sys.executable, "-c", probe], cwd=cwd, env=env,
                            capture_output=True, text=True, check=True)
@@ -89,13 +89,13 @@ def test_serve_without_db_stops_and_creates_nothing(tmp_path):
     base = tmp_path / "errata"  # p. ej. un --home mal escrito
     r = _cli("--home", str(base), "serve", cwd=tmp_path)
     assert r.returncode == 3  # uvicorn: fallo de arranque
-    assert "jota-gw init" in r.stderr
+    assert "fogar-gw init" in r.stderr
     assert not base.exists()  # ni la BD, ni data/, ni el candado
 
 
 def test_alembic_cli_does_not_create_a_db_either(tmp_path):
     base = tmp_path / "vacia"
-    env = {**os.environ, "JOTA_GATEWAY_HOME": str(base)}
+    env = {**os.environ, "FOGAR_GATEWAY_HOME": str(base)}
     env.pop("DATABASE_URL", None)
     ini = Path(database.__file__).resolve().parents[1] / "alembic.ini"
     r = subprocess.run([sys.executable, "-m", "alembic", "-c", str(ini), "current"], cwd=tmp_path,
@@ -122,7 +122,7 @@ def test_serve_passes_the_hardening_that_used_to_live_in_the_cmd(uvicorn_calls, 
     assert r.exit_code == 0, r.output
     (args, kwargs), = uvicorn_calls
     # Como cadena: uvicorn configura sus loggers antes de importar la app (core/logging.py).
-    assert args == ("jota_gateway.main:app",)
+    assert args == ("fogar_gateway.main:app",)
     assert kwargs == {"host": "127.0.0.1", "port": 8004, "proxy_headers": False,
                       "ws_max_size": 1_048_576, "timeout_graceful_shutdown": 35}
     assert database.CREATE_DB is False
@@ -141,7 +141,7 @@ def test_serve_create_db_allows_creating_it(uvicorn_calls):
 
 def test_docker_image_starts_with_serve_create_db():
     cmd = (ROOT / "Dockerfile").read_text(encoding="utf-8").rsplit("\nCMD", 1)[1]
-    assert json.loads(cmd.strip()) == ["jota-gw", "serve", "--create-db"]
+    assert json.loads(cmd.strip()) == ["fogar-gw", "serve", "--create-db"]
 
 
 def test_serve_constants_match_the_shutdown_budget():

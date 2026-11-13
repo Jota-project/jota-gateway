@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from jota_gateway.core.logging import fingerprint_key
+from fogar_gateway.core.logging import fingerprint_key
 
 ADMIN_TOKEN = "test-admin-token"
 HEADERS = {"x-admin-token": ADMIN_TOKEN}
@@ -16,14 +16,14 @@ TAKEN_KEY = "taken-secret-key-0123456789abcdef"
 
 @pytest.fixture(autouse=True)
 def override_admin_token(monkeypatch):
-    from jota_gateway.core import config
+    from fogar_gateway.core import config
 
     monkeypatch.setattr(config.settings, "ADMIN_TOKEN", ADMIN_TOKEN)
 
 
 @pytest.fixture(autouse=True)
 def db_engine(monkeypatch):
-    from jota_gateway import db
+    from fogar_gateway import db
 
     engine = create_engine(
         "sqlite:///:memory:",
@@ -39,7 +39,7 @@ def db_engine(monkeypatch):
 def http(db_engine):
     from starlette.testclient import TestClient
 
-    from jota_gateway.main import app
+    from fogar_gateway.main import app
 
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
@@ -126,7 +126,7 @@ def test_patch_empty_strings_are_422(http):
 
 
 def _legacy_inconsistent(db_engine):
-    from jota_gateway.db.models import ClientRecord
+    from fogar_gateway.db.models import ClientRecord
 
     with Session(db_engine) as s:
         rec = ClientRecord(
@@ -160,7 +160,7 @@ def test_legacy_inconsistent_row_can_be_fixed_through_patch(http, db_engine):
 
 
 def _fake_tokens(monkeypatch, values):
-    from jota_gateway.api import admin_routes
+    from fogar_gateway.api import admin_routes
 
     it = iter(values)
     last = values[-1]
