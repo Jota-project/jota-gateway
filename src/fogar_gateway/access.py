@@ -2,6 +2,12 @@
 
 from urllib.parse import urlsplit
 
+# Sin eco del valor: podría llevar usuario:contraseña y los errores acaban en logs.
+_MSG = (
+    "PUBLIC_URLS: una de las URLs no es válida; usa https://host[:puerto] sin ruta, "
+    "parámetros ni usuario"
+)
+
 
 def parse_public_urls(raw: str) -> list[str]:
     """CSV de URLs propias del usuario -> `https://host[:port]/` normalizadas. `ValueError` si alguna no vale."""
@@ -13,7 +19,7 @@ def parse_public_urls(raw: str) -> list[str]:
             u = urlsplit(item)
             host, port = u.hostname, u.port
         except ValueError:
-            host = port = None
+            raise ValueError(_MSG) from None
         if (
             u.scheme != "https"
             or not host
@@ -23,9 +29,7 @@ def parse_public_urls(raw: str) -> list[str]:
             or u.query
             or u.fragment
         ):
-            raise ValueError(
-                f"PUBLIC_URLS: «{item}» no es válida; usa https://host[:puerto] sin ruta, "
-                "parámetros ni usuario"
-            )
+            raise ValueError(_MSG)
+        host = f"[{host}]" if ":" in host else host
         urls.append(f"https://{host}{f':{port}' if port else ''}/")
     return urls

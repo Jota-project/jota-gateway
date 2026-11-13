@@ -42,3 +42,18 @@ def test_settings_rejects_http_public_url(monkeypatch):
 def test_settings_keeps_original_public_urls(monkeypatch):
     monkeypatch.setenv("PUBLIC_URLS", "https://A.com")
     assert Settings().PUBLIC_URLS == "https://A.com"
+
+
+def test_parse_public_urls_malformed_raises_valueerror():
+    with pytest.raises(ValueError):
+        parse_public_urls("https://ok.com, https://[abc")
+
+
+def test_parse_public_urls_error_does_not_leak_credentials():
+    with pytest.raises(ValueError) as e:
+        parse_public_urls("https://u:secretpw@a.com")
+    assert "secretpw" not in str(e.value) and "p@" not in str(e.value)
+
+
+def test_parse_public_urls_keeps_ipv6_brackets():
+    assert parse_public_urls("https://[::1]:8443") == ["https://[::1]:8443/"]
