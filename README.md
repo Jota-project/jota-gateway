@@ -208,12 +208,14 @@ Qué hace `install.sh`:
 
 #### El asistente: `fogar-gw onboard`
 
-`fogar-gw onboard` pregunta lo mínimo y **verifica cada proveedor contra el servicio real antes de guardarlo** en `config.env`:
+`fogar-gw onboard` pregunta lo mínimo y **verifica cada proveedor contra el servicio real antes de guardarlo** en `config.env`.
+
+En una terminal con color empieza con la línea viva de Fogar escribiendo su nombre (con `FOGAR_REDUCED_MOTION=1`, quieta; en una terminal de menos de 60 columnas, no sale). Cada paso se abre con «● Paso» y lo resuelto queda en «■ …». Los colores dicen siempre lo mismo: naranja es lo que pasa ahora, azul lo resuelto, amarillo ◆ un aviso y rosa ▲ un error; el resto va sin color. Con `NO_COLOR`, `--json` o `--answers`, la salida es texto plano.
 
 1. Si falta `config.env` o la BD, prepara `<base>` como `fogar-gw init` (no toca lo que ya exista).
 2. OpenClaw: lo busca en este equipo (si no, pregunta host y puerto) y pide su token (`openclaw config get gateway.auth.token`). Solo en loopback: para un OpenClaw de otra máquina, un túnel SSH (`ssh -L 18789:127.0.0.1:18789 …`). Sin OpenClaw verificado no sigue.
 3. STT y TTS: servicio propio (`host:puerto` y, si la usa, su clave), ElevenLabs (una sola clave para los dos) o «ahora no» (`off`: sin STT no hay transcripción y sin TTS las respuestas llegan solo en texto).
-4. «¿Cómo vas a entrar a Fogar?»: desde casa (red local) siempre; además, si los marcas:
+4. «¿Desde dónde vas a entrar a Fogar?»: una sola elección entre «Solo desde casa», «Casa y Tailscale», «Casa y mi dominio» y «Casa, Tailscale y mi dominio». El paso acaba diciendo qué ha quedado listo:
    - **Con Tailscale:** si `tailscale serve` ya lleva al gateway, te da su `https://…` y no toca nada. Si no, pregunta antes de activarlo en 443 (o en 8443 si 443 ya sirve otra cosa; si los dos están ocupados, no lo toca). Si Tailscale pide permiso, te enseña `sudo tailscale set --operator=$USER` y lo ejecuta solo si eliges «Ejecutarlo ahora» (y reintenta una vez); si la tailnet no tiene HTTPS, te da el enlace para activarlo. Sin Tailscale te da los comandos oficiales para instalarlo (`curl -fsSL https://tailscale.com/install.sh | sh` y `sudo tailscale up`) y vuelve a mirar cuando quieras, o sigues sin él: nunca lo instala por ti.
    - **Con mi propio dominio:** una URL `https://` (sin ruta, parámetros ni usuario) que tu proxy haga llegar a `http://localhost:8004`; se añade a `PUBLIC_URLS` sin quitar las que ya hay.
 
@@ -221,7 +223,8 @@ Qué hace `install.sh`:
 5. Instala el servicio, o lo reinicia si ya estaba instalado (con terminal pregunta antes, porque corta las sesiones abiertas), y pasa `fogar-gw doctor`.
 6. Termina en el dashboard:
    - las vías para llegar al dashboard desde otro aparato: la recomendada («Tu dashboard») y las demás, cada una con su estado (verificada, sin comprobar…). Por la LAN es `http://<IP de la LAN>:8004/` (o la de `GATEWAY_HOST` si escucha en una dirección concreta; si solo escucha en loopback y no hay otra vía, te dice cómo entrar con un túnel SSH). Para verlas o cambiarlas después: `fogar-gw access` y `fogar-gw access setup`;
-   - el token de administración que se pega en él (solo en una terminal), dónde está (`<base>/config.env`, `ADMIN_TOKEN`) y cómo verlo otra vez: `fogar-gw token`;
+   - en una terminal con color, un QR de la vía recomendada para abrirla con el móvil;
+   - el token de administración que se pega en él. En una terminal con color no se imprime: se copia al portapapeles (OSC 52, también por ssh; el Terminal de macOS no lo admite, iTerm2 lo pide en sus ajustes y Ghostty, Kitty y WezTerm lo hacen solos). Sin color se imprime en la terminal, y nunca con `--answers`. Siempre dice dónde está (`<base>/config.env`, `ADMIN_TOKEN`) y cómo verlo otra vez: `fogar-gw token`;
    - el recordatorio de no compartirlo: quien lo tenga controla el gateway.
 
    Después te espera hasta que abres el dashboard y pegas el token («Conectado»); Enter sigue sin esperar. El primer cliente se empareja desde Clientes, en el dashboard. También da la dirección `ws://<host>:8004/ws/stream` para quien configure un cliente a mano.

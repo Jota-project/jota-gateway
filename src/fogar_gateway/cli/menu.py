@@ -12,7 +12,7 @@ from typing import Any
 import click
 
 from fogar_gateway.cli import api
-from fogar_gateway.cli.output import ACCENT, INFO, MUTED
+from fogar_gateway.cli.output import BRASA, MUTED, OK
 
 MAIN = [
     ("Estado", "status", ["status"]),
@@ -45,12 +45,14 @@ def interactive() -> bool:
 def _style() -> Any:
     import questionary
 
+    # La brasa marca lo que pasa ahora (la pregunta y la opción bajo el cursor); la respuesta ya
+    # dada queda en el color de lo resuelto.
     return questionary.Style([
-        ("qmark", f"fg:{ACCENT}"),
+        ("qmark", f"fg:{BRASA}"),
         ("question", "bold"),
-        ("pointer", f"fg:{ACCENT} bold"),
-        ("highlighted", f"fg:{ACCENT}"),
-        ("answer", f"fg:{INFO}"),
+        ("pointer", f"fg:{BRASA} bold"),
+        ("highlighted", "bold"),
+        ("answer", f"fg:{OK}"),
         ("instruction", f"fg:{MUTED}"),
     ])
 

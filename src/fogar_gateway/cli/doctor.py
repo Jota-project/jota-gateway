@@ -21,7 +21,7 @@ import click
 from fogar_gateway import paths
 from fogar_gateway.cli import api
 from fogar_gateway.cli import config as cfg
-from fogar_gateway.cli.output import ACCENT, ERROR, MUTED, TEXT, Out
+from fogar_gateway.cli.output import ERROR, MUTED, OK, WARN, Out
 
 MIGRATIONS = Path(__file__).resolve().parents[1] / "migrations" / "versions"
 TCP_TIMEOUT_S = 2.0
@@ -238,7 +238,7 @@ def run_checks(url: str, token: str | None) -> list[Check]:
     return out
 
 
-_MARKS = {"ok": ("✓", TEXT), "warn": ("!", ACCENT), "fail": ("✗", ERROR), "info": ("·", MUTED)}
+_MARKS = {"ok": ("✓", OK), "warn": ("!", WARN), "fail": ("✗", ERROR), "info": ("·", MUTED)}
 
 
 @click.command()

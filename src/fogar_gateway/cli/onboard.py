@@ -10,14 +10,22 @@ nada, ni enseña el token: es el modo del CI (y su `first_client`, opcional, cre
 como estaba más lo ya verificado; volver a ejecutarlo retoma, y con terminal ofrece primero
 «Dejar como está» en cada paso que config.env ya tiene (ni verifica ni escribe).
 
-`questionary`, `pydantic` y los verificadores se importan al usarse (`--help` < 150 ms).
+Con terminal y color (`Out.styled`) se ve la versión de la marca (#328): la entrada con la línea
+viva (`cli/linea_viva.py`), un «● Paso» por paso con su resultado en «■ …», `init`, el servicio y
+`doctor` resumidos en una línea, y un final con el enlace, su QR y el token copiado al portapapeles
+(OSC 52) en vez de impreso. Sin estilo (`--answers`, `--json`, NO_COLOR, sin terminal), la salida
+de siempre.
+
+`questionary`, `pydantic`, `rich`, `segno` y los verificadores se importan al usarse (`--help` < 150 ms).
 """
 
 import asyncio
+import contextlib
+import io
 import logging
 import os
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -46,11 +54,17 @@ KEEP = {"fogar": "servicio propio", "elevenlabs": "ElevenLabs", "off": "desactiv
 
 def _ask(kind: str, message: str, **kwargs: Any) -> Any:
     """Una pregunta de questionary; Ctrl+C (questionary devuelve None) cancela el asistente."""
+    # Sin consultas de posición del cursor: hay terminales que no las contestan y prompt_toolkit
+    # pintaría un WARNING entre las preguntas.
+    os.environ.setdefault("PROMPT_TOOLKIT_NO_CPR", "1")
     import questionary
 
     from fogar_gateway.cli.menu import _style
 
-    answer = getattr(questionary, kind)(message, style=_style(), **kwargs).ask()
+    if kind == "confirm":  # questionary solo entiende y/n: se dice en castellano qué tecla es qué
+        yes = kwargs.get("default", True)
+        kwargs.setdefault("instruction", "(Enter: sí · n: no) " if yes else "(Enter: no · y: sí) ")
+    answer = getattr(questionary, kind)(message, style=_style(), qmark="\u203a", **kwargs).ask()
     if answer is None:
         raise click.Abort
     return answer
@@ -60,7 +74,8 @@ def _choose(message: str, options: list[tuple[str, str]], default: str | None = 
     import questionary
 
     choices = [questionary.Choice(title, value=value) for title, value in options]
-    answer: str = _ask("select", message, choices=choices, default=default)
+    answer: str = _ask("select", message, choices=choices, default=default,
+                       instruction="(↑↓ y Enter)")
     return answer
 
 
@@ -75,15 +90,39 @@ def _required(value: str) -> bool | str:
     return bool(value.strip()) or "Es obligatorio."
 
 
+@contextlib.contextmanager
+def _busy(out: Out, text: str) -> Iterator[None]:
+    """Con estilo, un spinner en brasa mientras dura (no deja rastro); sin estilo, nada."""
+    if not out.styled:
+        yield
+        return
+    from fogar_gateway.cli.output import BRASA
+
+    with out._console().status(text, spinner="dots", spinner_style=BRASA):
+        yield
+
+
+@contextlib.contextmanager
+def _hidden(out: Out) -> Iterator[None]:
+    """Con estilo, calla la salida de un subcomando (init, install): su resumen lo pinta el paso.
+    Los errores siguen saliendo: van a stderr o como excepción."""
+    if not out.styled:
+        yield
+        return
+    with contextlib.redirect_stdout(io.StringIO()):
+        yield
+
+
 def _settle[T](out: Out, ask: Callable[[], T], check: Callable[[T], Any], interactive: bool,
                give_up: tuple[str, str]) -> T | None:
     """Pregunta y verifica hasta que pase. Sin terminal, un fallo sale con 1 y su detalle;
     con terminal, se elige reintentar, cambiar las respuestas o `give_up` (devuelve None)."""
     values = ask()
     while True:
-        verdict = check(values)
+        with _busy(out, "Comprobando…"):
+            verdict = check(values)
         if verdict.ok:
-            out.message(verdict.detail)
+            out.ok(verdict.detail)
             return values
         if not interactive:
             raise api.ApiError(verdict.detail, 1)
@@ -111,11 +150,12 @@ def _openclaw(out: Out, answers: Any, settings: Any) -> None:
         if _choose("OpenClaw ya está configurado: ¿lo cambio?",
                    [(f"Dejar como está ({where})", "keep"), ("Cambiarlo", "change")],
                    default="keep") == "keep":
+            out.ok(f"OpenClaw: sin cambios ({where}).")
             return
     found = None if answers else asyncio.run(verify.detect_openclaw())
     if found is not None:  # "" = encontrado, sin versión (OpenClaw 2026.11.1)
         version = f" {found}" if found else ""
-        out.message(f"He encontrado OpenClaw{version} en este equipo.")
+        out.note(f"He encontrado OpenClaw{version} en este equipo.")
 
     def ask() -> tuple[str, int, str]:
         if answers:
@@ -125,7 +165,7 @@ def _openclaw(out: Out, answers: Any, settings: Any) -> None:
             host = _ask("text", "Host de OpenClaw", default=host, validate=_required).strip()
             port = int(_ask("text", "Puerto de OpenClaw", default=str(port),
                             validate=lambda v: v.strip().isdigit() or "Es un número."))
-        out.message(TOKEN_HINT, MUTED)
+        out.note(TOKEN_HINT)
         token = _ask("password", "Token de OpenClaw", validate=_required).strip()
         return host, port, token
 
@@ -183,11 +223,11 @@ def _voice_step(out: Out, kind: Literal["stt", "tts"], answer: Any,
                 token = _ask("password", f"Clave del servicio de {name}",
                              validate=_required).strip() if uses_key else ""
             if not token:
-                out.message(OPEN_SERVICE, MUTED)
+                out.note(OPEN_SERVICE)
             return {url_key: url, token_key: token, provider_key: "fogar"}
         if provider == "elevenlabs":
             if ELEVENLABS_KEY in verified:
-                out.message("Uso la clave de ElevenLabs que ya has verificado.", MUTED)
+                out.note("Uso la clave de ElevenLabs que ya has verificado.")
                 key = verified[ELEVENLABS_KEY]
             else:
                 key = answer.api_key if answer else _ask(
@@ -244,12 +284,47 @@ def _enter_pressed(timeout: float) -> bool:
     return bool(ready)
 
 
+@contextlib.contextmanager
+def _no_echo(out: Out) -> Iterator[None]:
+    """Con estilo, la terminal no repite el Enter: su salto de línea descolocaría el spinner."""
+    import sys
+
+    if not out.styled or not sys.stdin.isatty():
+        yield
+        return
+    import termios
+
+    fd = sys.stdin.fileno()
+    before = termios.tcgetattr(fd)
+    quiet = termios.tcgetattr(fd)
+    quiet[3] &= ~termios.ECHO
+    termios.tcsetattr(fd, termios.TCSANOW, quiet)
+    try:
+        yield
+    finally:
+        termios.tcsetattr(fd, termios.TCSANOW, before)
+
+
 def _wait_dashboard(ctx: click.Context, out: Out, url: str | None) -> None:
     """Espera a que la pantalla Estado del dashboard abra su flujo (`gateway.dashboards`).
     Enter o Ctrl+C dejan de esperar sin error; un gateway que aún arranca, se reintenta."""
     client = api.from_context(ctx)
-    out.message("Abre el dashboard en otro aparato y pega el token. Te espero… "
-                "(Enter para seguir sin esperar)", MUTED)
+    if out.styled:
+        waiting = "Te espero en el dashboard… (Enter para seguir sin esperar)"
+    else:
+        out.message("Abre el dashboard en otro aparato y pega el token. Te espero… "
+                    "(Enter para seguir sin esperar)", MUTED)
+        waiting = ""
+    with _no_echo(out), _busy(out, waiting):
+        connected = _poll_dashboard(client)
+    if connected:
+        out.ok("Conectado: ya puedes seguir en el dashboard.")
+        return
+    out.note(f"Sin esperar: entra cuando quieras{f' en {url}' if url else ''}.")
+
+
+def _poll_dashboard(client: Any) -> bool:
+    """True cuando un dashboard abre su flujo; False con Enter o Ctrl+C."""
     try:
         while True:
             try:
@@ -257,13 +332,72 @@ def _wait_dashboard(ctx: click.Context, out: Out, url: str | None) -> None:
             except api.ApiError:
                 state = {}
             if state.get("gateway", {}).get("dashboards"):
-                out.message("Conectado: ya puedes seguir en el dashboard.")
-                return
+                return True
             if _enter_pressed(DASHBOARD_POLL_S):
-                break
+                return False
     except KeyboardInterrupt:
-        pass
-    out.message(f"Sin esperar: entra cuando quieras{f' en {url}' if url else ''}.", MUTED)
+        return False
+
+
+def _qr(url: str) -> Any:
+    """El QR de `url` en medios bloques, negro sobre blanco forzado: se lee igual en una terminal
+    clara que en una oscura."""
+    import segno
+    from rich.text import Text
+
+    rows = [list(r) for r in segno.make(url, error="l").matrix_iter(scale=1, border=2)]
+    if len(rows) % 2:
+        rows.append([0] * len(rows[0]))
+    out = Text(no_wrap=True)
+    for top, bottom in zip(rows[::2], rows[1::2], strict=True):
+        out.append("  ")
+        for a, b in zip(top, bottom, strict=True):
+            out.append("▀", style=f"{'#000000' if a else '#ffffff'} on {'#000000' if b else '#ffffff'}")
+        out.append("\n")
+    return out
+
+
+def _copy_to_clipboard(value: str) -> None:
+    """OSC 52: la terminal del usuario lo copia en su portapapeles, también por ssh. No hay
+    respuesta: no se sabe si la terminal lo admite (el Terminal de macOS, no)."""
+    import base64
+    import sys
+
+    sys.stdout.write(f"\x1b]52;c;{base64.b64encode(value.encode()).decode()}\x07")
+    sys.stdout.flush()
+
+
+def _dashboard_styled(out: Out, routes: list[Any], settings: Any,
+                      lan: Any) -> str | None:
+    """El final con estilo: el enlace del dashboard, su QR y el token al portapapeles; el token
+    nunca en pantalla. Devuelve la URL recomendada."""
+    from rich.text import Text
+
+    from fogar_gateway.cli.access import HTTPS_HINT, _status_text
+    from fogar_gateway.cli.token import WARNING
+
+    out.step("Tu dashboard")
+    rec = next((r for r in routes if r.recommended), None)
+    console = out._console()
+    if rec:
+        console.print(Text.assemble("  ", (rec.url, f"bold link {rec.url}"),
+                                    (f"  {_status_text(rec)}", MUTED)))
+        if console.width >= 40:
+            console.print(_qr(rec.url))
+    for r in routes:
+        if r is not rec:
+            out.note(f"{r.url}  ({_status_text(r)})")
+    if rec and not rec.https:
+        out.note(HTTPS_HINT)
+    _copy_to_clipboard(settings.ADMIN_TOKEN)
+    out.ok("Token de administración copiado al portapapeles: pégalo en el dashboard para entrar.")
+    out.note(f"Si tu terminal no deja copiar, míralo con `fogar-gw token` "
+             f"(está en {paths.config_file()}).")
+    out.note(WARNING)
+    out.ok("Empareja tu primer aparato desde Clientes, en el dashboard.")
+    if lan:
+        out.note(f"Los clientes se conectan a ws://{urlsplit(lan.url).netloc}/ws/stream")
+    return rec.url if rec else None
 
 
 def _dashboard(ctx: click.Context, out: Out, answers: Any, settings: Any) -> None:
@@ -278,6 +412,9 @@ def _dashboard(ctx: click.Context, out: Out, answers: Any, settings: Any) -> Non
     rec = next((r for r in routes if r.recommended), None)
     url = rec.url if rec else None
     lan = next((r for r in routes if r.kind == "lan"), None)
+    if routes and out.styled:
+        _wait_dashboard(ctx, out, _dashboard_styled(out, routes, settings, lan))
+        return
     if routes:
         show_routes(out, routes, "Tu dashboard")
     elif _is_loopback(bind):
@@ -377,19 +514,51 @@ def _read_answers(path: Path) -> Any:
     return answers
 
 
+def _doctor_summary(ctx: click.Context, out: Out) -> None:
+    """Con estilo, `doctor` en una línea si todo va bien; si no, solo lo que avisa o falla."""
+    from fogar_gateway.cli import doctor
+
+    obj = ctx.find_root().obj
+    with _busy(out, "Diagnosticando…"):
+        results = doctor.run_checks(obj["url"], obj["token"])
+    bad = [c for c in results if c["level"] in ("warn", "fail")]
+    if not bad:
+        good = sum(c["level"] == "ok" for c in results)
+        out.ok(f"Diagnóstico: {good} comprobaciones correctas.")
+        return
+    for c in bad:
+        text = f"{c['check']}: {c['detail']}"
+        if c["level"] == "warn":
+            out.warn(text)
+        else:
+            out.error(text)
+    out.note("El asistente sigue. El detalle completo, con `fogar-gw doctor`.")
+
+
 def _run(ctx: click.Context, out: Out, answers: Any) -> None:
     from fogar_gateway.cli import doctor, service
     from fogar_gateway.cli import init as init_mod
 
     service.require_systemd()  # antes de crear o preguntar nada
+    styled = out.styled  # --answers lo apaga en `onboard`
+    if styled:
+        from fogar_gateway.cli import linea_viva
+
+        linea_viva.play(out._console())
+        out.note("Gateway · puesta en marcha")
     settings, errors, _ = cfg.load()
     db = paths.sqlite_file(settings.DATABASE_URL) if settings else None
     # init no toca lo que ya existe: también retoma una base con config.env y sin BD.
     if not paths.config_file().is_file() or (db is not None and not db.exists()):
-        ctx.invoke(init_mod.init)
+        with _hidden(out):
+            ctx.invoke(init_mod.init)
+        if styled:
+            out.note(f"Base nueva en {paths.home()}: configuración y base de datos creadas.")
     settings, _ = cfg._load_or_fail(out)  # antes de preguntar nada: campo y tipo, sin traza
     before = paths.config_file().read_bytes()  # para no reiniciar si el relanzamiento no cambia nada
+    out.step("OpenClaw")
     _openclaw(out, answers, settings)
+    out.step("Voz")
     verified: dict[str, str] = {}
     # Solo un TTS `off` en el fichero se libra: su paso no falla. Con fogar o ElevenLabs, el paso
     # TTS puede fallar (o cortarse) y dejar el TTS en ElevenLabs con la clave nueva.
@@ -399,23 +568,30 @@ def _run(ctx: click.Context, out: Out, answers: Any) -> None:
     if answers is None or answers.access is not None:
         from fogar_gateway.cli import access as cli_access
 
+        out.step("Acceso")
         cli_access.access_step(out, answers and answers.access, settings)
+    out.step("Servicio")
     if not service.unit_path().exists():
-        ctx.invoke(service.install)
+        with _hidden(out), _busy(out, "Instalando y arrancando el servicio…"):
+            ctx.invoke(service.install)
+        if styled:
+            out.ok("Servicio instalado y en marcha (se arranca solo con el equipo).")
     elif paths.config_file().read_bytes() == before and service.is_active():
         # Relanzar sin cambiar nada no corta las sesiones abiertas.
-        out.message("Sin cambios en la configuración: el servicio sigue en marcha, sin reiniciar.",
-                    MUTED)
+        out.ok("Sin cambios en la configuración: el servicio sigue en marcha, sin reiniciar.")
     # Nunca el confirm() de `fogar-gw restart`: sin terminal saldría con 2 y config.env escrito.
     elif answers or _ask("confirm", "Reinicio el servicio para aplicarlo; se cortarán las "
                          "sesiones abiertas. ¿Sigo?", default=True):
         service._verb(ctx, "restart", "reiniciado", wait=True)
     else:
         out.message("Sin reiniciar: lo nuevo se aplica con `fogar-gw restart`.", MUTED)
-    try:
-        ctx.invoke(doctor.doctor)
-    except click.exceptions.Exit:
-        out.message("El diagnóstico marca algún fallo (arriba); el asistente sigue.", MUTED)
+    if styled:
+        _doctor_summary(ctx, out)
+    else:
+        try:
+            ctx.invoke(doctor.doctor)
+        except click.exceptions.Exit:
+            out.message("El diagnóstico marca algún fallo (arriba); el asistente sigue.", MUTED)
     _first_client(ctx, out, answers)
     _dashboard(ctx, out, answers, settings)
 
@@ -433,6 +609,8 @@ def onboard(ctx: click.Context, answers_path: Path | None) -> None:
         raise api.ApiError("`fogar-gw onboard` pregunta y aquí no hay terminal: ejecútalo en "
                            "una, o pásale las respuestas con --answers FICHERO.", 1)
     answers = _read_answers(answers_path) if answers_path else None
+    if answers is not None:  # el modo del CI: la salida de siempre, sin color ni animación
+        out.styled = False
     # La CLI no tiene handler de logging: sin uno, logging.lastResort pintaría los WARNING de
     # las librerías entre las preguntas. El usuario ve el Verdict; los niveles no se tocan.
     quiet = logging.NullHandler()
