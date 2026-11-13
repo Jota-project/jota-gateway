@@ -19,7 +19,10 @@ def make_ts(tmp_path):
 
 def test_free_port_prefers_443():
     assert free_serve_port({}) == 443
-    assert free_serve_port(None) == 443
+
+
+def test_free_port_none_when_status_unreadable():
+    assert free_serve_port(None) is None
 
 
 def test_free_port_falls_back_8443():
@@ -59,3 +62,18 @@ def test_enable_serve_missing_binary():
 def test_enable_serve_args(make_ts, tmp_path):
     enable_serve(8443, 8004, make_ts(record=True))
     assert (tmp_path / "argv").read_text().split() == ["serve", "--bg", "--https=8443", "http://127.0.0.1:8004"]
+
+
+def test_enable_serve_timeout_keeps_the_login_link(tmp_path):
+    script = tmp_path / "tailscale"
+    script.write_text("#!/bin/sh\necho 'Visit: https://login.tailscale.com/f/serve?node=x'\nexec sleep 5\n")
+    script.chmod(0o755)
+    assert enable_serve(443, 8004, str(script), timeout=0.5) == (
+        "https_off", "https://login.tailscale.com/f/serve?node=x")
+
+
+def test_enable_serve_timeout_without_link(tmp_path):
+    script = tmp_path / "tailscale"
+    script.write_text("#!/bin/sh\nexec sleep 5\n")
+    script.chmod(0o755)
+    assert enable_serve(443, 8004, str(script), timeout=0.3) == ("error", "TimeoutExpired")

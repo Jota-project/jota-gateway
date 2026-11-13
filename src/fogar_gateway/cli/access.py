@@ -28,21 +28,30 @@ def gateway_instance_id(url: str) -> str | None:
 
 
 def free_serve_port(serve: dict[str, Any] | None) -> int | None:
-    """Puerto HTTPS libre en `tailscale serve` (443, si no 8443); None si ambos están ocupados."""
-    tcp = (serve or {}).get("TCP")
+    """Puerto HTTPS libre en `tailscale serve` (443, si no 8443); None si ambos están ocupados
+    o si no se ha podido leer (None: no se sabe qué hay, no se pisa)."""
+    if serve is None:
+        return None
+    tcp = serve.get("TCP")
     taken = tcp if isinstance(tcp, dict) else {}
     return next((p for p in (443, 8443) if str(p) not in taken), None)
 
 
-def enable_serve(port: int, gw_port: int, exe: str = "tailscale") -> tuple[str, str]:
+def enable_serve(port: int, gw_port: int, exe: str = "tailscale",
+                 timeout: float = 15) -> tuple[str, str]:
     """`tailscale serve --bg` hacia el gateway: ("ok"|"permiso"|"https_off"|"error", detalle). No lanza."""
     path = shutil.which(exe)
     if path is None:
         return "error", "FileNotFoundError"
     cmd = [path, "serve", "--bg", f"--https={port}", f"http://127.0.0.1:{gw_port}"]
     try:
-        r = subprocess.run(cmd, timeout=15, capture_output=True, text=True, stdin=subprocess.DEVNULL, check=False)
-    except (OSError, subprocess.SubprocessError) as e:  # TimeoutExpired incluido: nunca cuelga
+        r = subprocess.run(cmd, timeout=timeout, capture_output=True, text=True, stdin=subprocess.DEVNULL, check=False)
+    except subprocess.TimeoutExpired as e:  # sin HTTPS en la tailnet imprime el enlace y espera
+        out = "\n".join(s.decode(errors="replace") if isinstance(s, bytes) else s or ""
+                         for s in (e.stdout, e.stderr))
+        m = re.search(r"https://login\.tailscale\.com/\S+", out)
+        return ("https_off", m.group(0)) if m else ("error", "TimeoutExpired")
+    except (OSError, subprocess.SubprocessError) as e:  # nunca cuelga ni lanza
         return "error", type(e).__name__
     if r.returncode == 0:
         return "ok", ""
@@ -63,10 +72,10 @@ def _status_text(r: Any) -> str:
     }.get(r.status, "sin comprobar")
 
 
-def show_routes(out: Out, routes: list[Any]) -> None:
+def show_routes(out: Out, routes: list[Any], label: str = "Recomendada") -> None:
     rec = next((r for r in routes if r.recommended), None)
     if rec:
-        out.message(f"Recomendada: {rec.url}  ({_status_text(rec)})", ACCENT)
+        out.message(f"{label}: {rec.url}  ({_status_text(rec)})", ACCENT)
     for r in routes:
         if r is not rec:
             out.message(f"{r.url}  ({_status_text(r)})", MUTED)
@@ -95,6 +104,9 @@ def _tailscale(out: Out, interactive: bool, gw_port: int) -> None:
                                                  ("Seguir sin Tailscale", "skip")]) == "skip":
             return
     serve = acc.serve_status()
+    if serve is None:
+        out.message("No puedo leer `tailscale serve status`: no lo toco.")
+        return
     if (current := acc.serve_https_port(serve, gw_port)) is not None:
         out.message(f"Ya está: {_tailscale_url(status, current)}")
         return

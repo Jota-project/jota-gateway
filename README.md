@@ -215,7 +215,7 @@ Qué hace `install.sh`:
    Lo mismo, en cualquier momento: `fogar-gw access setup`.
 5. Instala el servicio, o lo reinicia si ya estaba instalado (con terminal pregunta antes, porque corta las sesiones abiertas), y pasa `fogar-gw doctor`.
 6. Termina en el dashboard:
-   - su URL desde otro aparato de tu red, `http://<IP de la LAN>:8004/` (o la de `GATEWAY_HOST` si escucha en una dirección concreta; si solo escucha en loopback, te dice cómo entrar con un túnel SSH);
+   - las vías para llegar al dashboard desde otro aparato: la recomendada («Tu dashboard») y las demás, cada una con su estado (verificada, sin comprobar…). Por la LAN es `http://<IP de la LAN>:8004/` (o la de `GATEWAY_HOST` si escucha en una dirección concreta; si solo escucha en loopback y no hay otra vía, te dice cómo entrar con un túnel SSH). Para verlas o cambiarlas después: `fogar-gw access` y `fogar-gw access setup`;
    - el token de administración que se pega en él (solo en una terminal), dónde está (`<base>/config.env`, `ADMIN_TOKEN`) y cómo verlo otra vez: `fogar-gw token`;
    - el recordatorio de no compartirlo: quien lo tenga controla el gateway.
 

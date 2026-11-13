@@ -151,7 +151,8 @@ def _tailscale_json(exe: str, *args: str) -> dict[str, Any] | None:
     if path is None:
         return None
     try:
-        r = subprocess.run([path, *args, "--json"], timeout=3, capture_output=True, check=False)
+        r = subprocess.run([path, *args, "--json"], timeout=3, capture_output=True, stdin=subprocess.DEVNULL,
+                           check=False)
         data = json.loads(r.stdout) if r.returncode == 0 else None
     except (OSError, subprocess.SubprocessError, ValueError):  # ValueError: JSON roto o no UTF-8
         return None

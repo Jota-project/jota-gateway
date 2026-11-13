@@ -702,7 +702,7 @@ def test_dashboard_and_client_address_follow_gateway_host(gw, tmp_path, host, sh
     gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\nGATEWAY_HOST={host}\n")
     r = onboard(write_answers(tmp_path))
     assert r.exit_code == 0, r.output
-    assert f"Recomendada: http://{shown}:8004/" in r.output
+    assert f"Tu dashboard: http://{shown}:8004/" in r.output
     assert f"ws://{shown}:8004/ws/stream" in r.output
 
 
@@ -712,7 +712,7 @@ def test_loopback_gateway_gives_no_lan_url(gw, tmp_path, host):
     r = onboard(write_answers(tmp_path))
     assert r.exit_code == 0, r.output
     assert "solo escucha en este equipo" in r.output and "ssh -L 8004:127.0.0.1:8004" in r.output
-    assert "Recomendada:" not in r.output and "ws://" not in r.output
+    assert "Tu dashboard: http" not in r.output and "ws://" not in r.output
 
 
 def test_without_lan_ip_never_prints_loopback(gw, tmp_path, monkeypatch):
@@ -744,7 +744,7 @@ def test_interactive_shows_the_token_only_on_a_terminal(gw, tty, monkeypatch, te
     assert r.exit_code == 0, r.output
     assert (f"Token: {ADMIN}" in r.output) is terminal
     assert (ADMIN in r.output) is terminal
-    assert f"Recomendada: http://{LAN_IP}:8004/" in r.output and "`fogar-gw token`" in r.output
+    assert f"Tu dashboard: http://{LAN_IP}:8004/" in r.output and "`fogar-gw token`" in r.output
 
 
 @pytest.mark.parametrize("how", ["enter", "ctrl_c"])
@@ -999,7 +999,7 @@ def test_dashboard_recommends_public_url(gw, tmp_path, monkeypatch):
     monkeypatch.setattr(onboard_mod, "collect", lambda *a, **k: routes)
     r = onboard(write_answers(tmp_path))
     assert r.exit_code == 0, r.output
-    assert r.output.index("Recomendada: https://gw.example.com/") < r.output.index(
+    assert r.output.index("Tu dashboard: https://gw.example.com/") < r.output.index(
         f"http://{LAN_IP}:8004/")
     assert f"ws://{LAN_IP}:8004/ws/stream" in r.output
 
@@ -1015,7 +1015,7 @@ def test_dashboard_loopback_with_a_route_shows_it(gw, tmp_path, monkeypatch):
     routes = _routes(("tailscale_https", "https://box.ts.net/", True, "ok"))
     monkeypatch.setattr(onboard_mod, "collect", lambda *a, **k: routes)
     r = onboard(write_answers(tmp_path))
-    assert "Recomendada: https://box.ts.net/" in r.output
+    assert "Tu dashboard: https://box.ts.net/" in r.output
     assert "solo escucha en este equipo" not in r.output and "ws://" not in r.output
 
 

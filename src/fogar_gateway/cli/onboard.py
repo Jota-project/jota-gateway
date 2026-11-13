@@ -20,11 +20,12 @@ import stat
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import click
 
 from fogar_gateway import paths
-from fogar_gateway.access import collect, configured_public_urls, lan_route
+from fogar_gateway.access import _is_loopback, collect, configured_public_urls
 from fogar_gateway.cli import api
 from fogar_gateway.cli import config as cfg
 from fogar_gateway.cli.access import gateway_instance_id, show_routes
@@ -220,15 +221,6 @@ def _voice_step(out: Out, kind: Literal["stt", "tts"], answer: Any,
     verified.update((k, v) for k, v in values.items() if k == ELEVENLABS_KEY)
 
 
-def _is_loopback(host: str) -> bool:
-    import ipaddress
-
-    try:
-        return host == "localhost" or ipaddress.ip_address(host.strip("[]")).is_loopback
-    except ValueError:  # un nombre: se da tal cual
-        return False
-
-
 def _first_client(ctx: click.Context, out: Out, answers: Any) -> None:
     """Solo con --answers: el CI crea su cliente. Con terminal, se empareja desde el dashboard."""
     from fogar_gateway.cli import clients
@@ -285,9 +277,9 @@ def _dashboard(ctx: click.Context, out: Out, answers: Any, settings: Any) -> Non
                      gateway_instance_id(ctx.find_root().obj["url"]))
     rec = next((r for r in routes if r.recommended), None)
     url = rec.url if rec else None
-    lan = lan_route(bind, port)
+    lan = next((r for r in routes if r.kind == "lan"), None)
     if routes:
-        show_routes(out, routes)
+        show_routes(out, routes, "Tu dashboard")
     elif _is_loopback(bind):
         out.message(f"El gateway solo escucha en este equipo (GATEWAY_HOST={bind}): desde otro "
                     f"aparato no se llega. Entra con un túnel SSH (`ssh -L {port}:127.0.0.1:{port}"
@@ -304,7 +296,7 @@ def _dashboard(ctx: click.Context, out: Out, answers: Any, settings: Any) -> Non
     out.message(WARNING, MUTED)
     out.message("Empareja tu primer aparato desde Clientes, en el dashboard.")
     if lan:
-        out.message(f"Los clientes se conectan a ws://{lan.url.split('//')[1].split('/')[0]}"
+        out.message(f"Los clientes se conectan a ws://{urlsplit(lan.url).netloc}"
                     "/ws/stream", MUTED)
     if answers is None:
         _wait_dashboard(ctx, out, url)

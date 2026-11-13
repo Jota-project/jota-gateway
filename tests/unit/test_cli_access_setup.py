@@ -36,7 +36,7 @@ def st(monkeypatch, tmp_path):
     monkeypatch.setattr(access_mod, "tailscale_status", lambda exe="tailscale": s.status)
     monkeypatch.setattr(access_mod, "serve_status", lambda exe="tailscale": s.serve)
 
-    def enable(port, gw_port, exe="tailscale"):
+    def enable(port, gw_port, exe="tailscale", timeout=15):
         s.enabled.append((port, gw_port))
         return s.enable.pop(0)
 
@@ -66,6 +66,15 @@ def st(monkeypatch, tmp_path):
 
 def setup():
     return CliRunner().invoke(app.cli, ["access", "setup"])
+
+
+def test_unreadable_serve_status_is_left_alone(st):
+    st.serve = None
+    st.queue = [["tailscale"]]
+    r = setup()
+    assert r.exit_code == 0, r.output
+    assert "No puedo leer `tailscale serve status`: no lo toco." in r.output
+    assert st.enabled == []
 
 
 def test_setup_offers_three_ways(st):
