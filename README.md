@@ -333,7 +333,7 @@ Los datos (`config.env`, `data/gateway.db`) quedan en `<base>`; bórralos a mano
 
 ### Pasar de Docker a nativo
 
-`fogar-gw migrate --from-docker <carpeta de compose>` copia `.env` y `data/gateway.db` de una instalación Docker a `<base>`. Procedimiento, con la ventana de parada y la vuelta atrás:
+`fogar-gw migrate --from-docker <carpeta de compose>` copia `.env` y `data/gateway.db` de una instalación Docker a `<base>`. Solo vale para una instalación Docker de **Fogar** (v2.0.0 o posterior): pasar de una de Jota (v1.x) no está soportado, porque Fogar se instala desde cero. Procedimiento, con la ventana de parada y la vuelta atrás:
 
 1. **Misma versión a los dos lados.** Despliega la versión vN en Docker e instala la vN nativa **sin arrancarla**, con el instalador y `--no-onboard`:
    ```bash

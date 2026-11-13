@@ -115,6 +115,11 @@ def systemctl_or_fail(*args: str) -> None:
                        f"{f': {detail}' if detail else ''}.", 1) from None
 
 
+def is_active() -> bool:
+    """El servicio de usuario está en marcha (`systemctl --user is-active`)."""
+    return systemctl("is-active", "--quiet", UNIT_NAME, check=False).returncode == 0
+
+
 def port_free() -> bool:
     """El puerto del gateway (127.0.0.1) no lo usa nadie: ni bind ni conexión."""
     import socket
@@ -182,8 +187,7 @@ def install(ctx: click.Context, exe: Path | None) -> None:
                        "`fogar-gw migrate --from-docker <carpeta>`.", 1)
     unit = unit_path()
     # Si nuestro servicio ya corre, el 8004 es suyo: se puede reinstalar o actualizar la unidad.
-    active = unit.exists() and systemctl("is-active", "--quiet", UNIT_NAME,
-                                         check=False).returncode == 0
+    active = unit.exists() and is_active()
     if not active and not port_free():
         raise ApiError(f"El puerto {_port()} está ocupado: ¿hay otro gateway (el contenedor)? "
                        "Páralo antes de instalar el servicio.", 1)

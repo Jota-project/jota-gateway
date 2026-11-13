@@ -388,6 +388,7 @@ def _run(ctx: click.Context, out: Out, answers: Any) -> None:
     if not paths.config_file().is_file() or (db is not None and not db.exists()):
         ctx.invoke(init_mod.init)
     settings, _ = cfg._load_or_fail(out)  # antes de preguntar nada: campo y tipo, sin traza
+    before = paths.config_file().read_bytes()  # para no reiniciar si el relanzamiento no cambia nada
     _openclaw(out, answers, settings)
     verified: dict[str, str] = {}
     # Solo un TTS `off` en el fichero se libra: su paso no falla. Con fogar o ElevenLabs, el paso
@@ -401,6 +402,10 @@ def _run(ctx: click.Context, out: Out, answers: Any) -> None:
         cli_access.access_step(out, answers and answers.access, settings)
     if not service.unit_path().exists():
         ctx.invoke(service.install)
+    elif paths.config_file().read_bytes() == before and service.is_active():
+        # Relanzar sin cambiar nada no corta las sesiones abiertas.
+        out.message("Sin cambios en la configuración: el servicio sigue en marcha, sin reiniciar.",
+                    MUTED)
     # Nunca el confirm() de `fogar-gw restart`: sin terminal saldría con 2 y config.env escrito.
     elif answers or _ask("confirm", "Reinicio el servicio para aplicarlo; se cortarán las "
                          "sesiones abiertas. ¿Sigo?", default=True):

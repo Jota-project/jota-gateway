@@ -51,7 +51,7 @@ def gw(monkeypatch, tmp_path, use_api):
     for name in ENV:
         monkeypatch.delenv(name, raising=False)
     st = SimpleNamespace(calls=[], verdicts={}, detected=None, env=base / "config.env",
-                         db=base / "data" / "gateway.db")
+                         db=base / "data" / "gateway.db", active=True)
     st.db.parent.mkdir()
     st.db.touch()
 
@@ -91,6 +91,7 @@ def gw(monkeypatch, tmp_path, use_api):
     monkeypatch.setattr(service, "install", fake_install)
     monkeypatch.setattr(service, "_verb", fake_verb)
     monkeypatch.setattr(service, "require_systemd", lambda: None)
+    monkeypatch.setattr(service, "is_active", lambda: st.active)
     monkeypatch.setattr(access_mod, "lan_ip", lambda: LAN_IP)  # sin socket real
     monkeypatch.setattr(access_mod, "tailscale_routes", lambda *a, **k: [])  # sin tailscale real
     monkeypatch.setattr(onboard_mod, "gateway_instance_id", lambda url: None)  # sin red
@@ -844,7 +845,7 @@ def _configured_rerun(gw, env=CONFIGURED):
 
 def test_interactive_rerun_keeps_everything_by_default(gw, tty):
     _configured_rerun(gw)
-    tty.queue.extend([DEFAULT, DEFAULT, DEFAULT, True])  # OpenClaw, STT, TTS y reinicio
+    tty.queue.extend([DEFAULT, DEFAULT, DEFAULT])  # OpenClaw, STT y TTS; sin cambios no pregunta
     r = run("onboard")
     assert r.exit_code == 0, r.output
     (oc,) = asked(tty, "select", "OpenClaw")
@@ -857,7 +858,29 @@ def test_interactive_rerun_keeps_everything_by_default(gw, tty):
     assert not any(isinstance(c, tuple) for c in gw.calls)  # ni verifica ni busca OpenClaw
     assert dotenv_values(gw.env) == dotenv_values(stream=io.StringIO(CONFIGURED))
     assert asked(tty, "password", "") == []  # no pide ningún token
+    assert asked(tty, "confirm", "sesiones abiertas") == []
+    assert installs(gw) == []  # sin cambios no reinicia: no corta las sesiones abiertas
+    assert "Sin cambios en la configuración" in r.output
+
+
+def test_interactive_rerun_without_changes_restarts_a_stopped_service(gw, tty):
+    _configured_rerun(gw)
+    gw.active = False
+    tty.queue.extend([DEFAULT, DEFAULT, DEFAULT, True])  # OpenClaw, STT, TTS y reinicio
+    r = run("onboard")
+    assert r.exit_code == 0, r.output
     assert installs(gw) == ["restart"]
+    assert "Sin cambios en la configuración" not in r.output
+
+
+def test_answers_rerun_without_changes_does_not_restart(gw, tty, tmp_path):
+    path = write_answers(tmp_path)
+    assert onboard(path).exit_code == 0
+    assert installs(gw) == ["install"]
+    r = onboard(path)  # mismas respuestas: config.env queda igual
+    assert r.exit_code == 0, r.output
+    assert installs(gw) == ["install"]
+    assert "Sin cambios en la configuración" in r.output
 
 
 def test_interactive_rerun_keeps_openclaw_and_changes_stt(gw, tty):
