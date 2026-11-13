@@ -194,7 +194,7 @@ def tailscale_routes(bind: str, port: int, exe: str = "tailscale") -> list[Route
     if https_port:
         suffix = "" if https_port == 443 else f":{https_port}"
         routes.append(Route("tailscale_https", f"https://{dns}{suffix}/", True))
-    if not _is_loopback(bind):  # escucha en la tailnet: también por HTTP directo
+    if bind in _ALL_INTERFACES:  # solo si escucha en la tailnet: también por HTTP directo
         routes.append(Route("tailscale", f"http://{dns}:{port}/", False))
     return routes
 

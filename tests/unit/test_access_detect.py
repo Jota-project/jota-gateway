@@ -60,6 +60,12 @@ def test_tailscale_loopback_bind_only_serve(make_ts):
     assert [r.kind for r in routes] == ["tailscale_https"]
 
 
+def test_tailscale_specific_bind_has_no_http_route(make_ts):
+    assert tailscale_routes("192.168.1.5", 8004, make_ts()) == []
+    routes = tailscale_routes("192.168.1.5", 8004, make_ts(serve=_serve()))
+    assert [r.kind for r in routes] == ["tailscale_https"]
+
+
 @pytest.mark.parametrize("state", ["Stopped", "NeedsLogin"])
 def test_tailscale_not_running(make_ts, state):
     assert tailscale_routes("0.0.0.0", 8004, make_ts(state)) == []
