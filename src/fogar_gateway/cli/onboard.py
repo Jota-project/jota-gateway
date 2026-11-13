@@ -32,7 +32,10 @@ from fogar_gateway.cli.access import gateway_instance_id, show_routes
 from fogar_gateway.cli.output import ACCENT, MUTED, Out
 
 NO_OPENCLAW = "Sin OpenClaw no se instala el servicio. Vuelve a ejecutar `fogar-gw onboard`."
-TOKEN_HINT = "Ejecuta `openclaw config get gateway.auth.token` y pega el resultado."
+# `openclaw config get` siempre lo enseña redactado y no resuelve SecretRefs; `auth-token --show`
+# resuelve gateway.auth.token, OPENCLAW_GATEWAY_TOKEN y SecretRefs, y solo imprime en una terminal.
+TOKEN_HINT = ("En una terminal de la máquina de OpenClaw, ejecuta "
+              "`openclaw gateway auth-token --show` y pega el resultado.")
 OPEN_SERVICE = "Recomendado: deja este servicio accesible solo desde el gateway."
 ELEVENLABS_KEY = "ELEVENLABS_API_KEY"
 # tipo -> (nombre, ajuste de la dirección, de la clave, del proveedor, dirección por defecto)

@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import quote, unquote
 
 LOCK_FILENAME = "gateway.lock"
+OPENCLAW_DEVICE_FILENAME = "openclaw-device.json"
 
 # sqlite:///<ruta>[?query]. `sqlite://` y `:memory:` son bases en memoria.
 _SQLITE_URL = re.compile(r"^(sqlite(?:\+\w+)?):///([^?]*)(\?.*)?$")
@@ -22,6 +23,13 @@ def home() -> Path:
 
 def config_file() -> Path:
     return home() / "config.env"
+
+
+def openclaw_device_file() -> Path:
+    """Identidad de dispositivo del gateway ante OpenClaw (clave Ed25519 y, si lo emparejan,
+    su token de dispositivo): una credencial, 0600, fuera de config.env. En `<base>/data`, junto
+    a la BD por defecto: en Docker es el volumen (`/app` no es escribible ni persiste)."""
+    return home() / "data" / OPENCLAW_DEVICE_FILENAME
 
 
 def absolute_database_url(url: str) -> str:

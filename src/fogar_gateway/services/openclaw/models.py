@@ -1,5 +1,14 @@
 from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
+
+from fogar_gateway.services.openclaw.device import clean_scopes
+
+ADMIN_SCOPE = "operator.admin"
+
+AuthMethod = Literal["shared_token", "device_token"]
+# not_required: conectado sin emparejar (camino local de gateway-client/backend con el token
+# compartido); paired: tiene token de dispositivo; pending: OpenClaw espera la aprobación.
+PairingState = Literal["unknown", "not_required", "paired", "pending"]
 
 
 @dataclass
@@ -9,6 +18,12 @@ class GatewayInfo:
     max_payload: int
     # Agent ids in the order agents.list returns them (/v1/models lists them as-is).
     agents: list[str] = field(default_factory=list)
+    # Permisos concedidos a esta conexión (`hello-ok.auth.scopes`), saneados.
+    scopes: list[str] = field(default_factory=list)
+
+    @property
+    def admin(self) -> bool:
+        return ADMIN_SCOPE in self.scopes
 
     def has_agent(self, agent_id: str) -> bool:
         return agent_id in self.agents
@@ -23,11 +38,40 @@ class GatewayInfo:
     def from_hello_ok(cls, payload: dict) -> "GatewayInfo":
         policy = payload.get("policy", {})
         snapshot = payload.get("snapshot", {})
+        auth = payload.get("auth")
         return cls(
             default_agent_id=snapshot.get("sessionDefaults", {}).get("defaultAgentId") or "main",
             tick_interval_ms=policy.get("tickIntervalMs", 15000),
             max_payload=policy.get("maxPayload", 26214400),
+            scopes=clean_scopes(auth.get("scopes")) if isinstance(auth, dict) else [],
         )
+
+
+@dataclass
+class OrchestratorAccess:
+    """Con qué acceso está (o intenta estar) el gateway en OpenClaw: lo enseñan `/admin/state`,
+    `fogar-gw status` y `doctor`. Lo actualiza OpenClawClient en el sitio (nunca se reemplaza),
+    sin credenciales: el deviceId y el id de la petición de emparejamiento son públicos."""
+
+    scopes: list[str] | None = None  # None: aún no ha conectado
+    auth_method: AuthMethod | None = None
+    pairing: PairingState = "unknown"
+    pairing_request_id: str | None = None
+    device_id: str | None = None
+
+    @property
+    def admin(self) -> bool:
+        return ADMIN_SCOPE in (self.scopes or [])
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "scopes": list(self.scopes) if self.scopes is not None else None,
+            "admin": self.admin,
+            "auth_method": self.auth_method,
+            "pairing": self.pairing,
+            "pairing_request_id": self.pairing_request_id,
+            "device_id": self.device_id,
+        }
 
 
 def _flatten_tool_result_content(content: list | None) -> str | None:

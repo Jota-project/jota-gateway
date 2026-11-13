@@ -451,7 +451,8 @@ def test_interactive_full_flow(gw, tty):
     r = run("onboard")
     assert r.exit_code == 0, r.output
     assert "He encontrado OpenClaw en este equipo." in r.output
-    assert "Ejecuta `openclaw config get gateway.auth.token` y pega el resultado." in r.output
+    assert "`openclaw gateway auth-token --show`" in r.output
+    assert "openclaw config get" not in r.output  # redacta el token y no resuelve SecretRefs
     assert "Recomendado: deja este servicio accesible solo desde el gateway." in r.output
     assert dotenv_values(gw.env) == {
         "ADMIN_TOKEN": ADMIN,

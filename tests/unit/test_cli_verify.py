@@ -90,6 +90,28 @@ async def test_verify_openclaw_ok():
         v = await verify_openclaw("127.0.0.1", server.port, TOKEN)
     assert (v.ok, v.reason) == (True, "ok")
     assert TOKEN not in v.detail
+    # M19: dice con qué acceso queda (en local, admin con el token compartido).
+    assert v.detail == f"Conectado a OpenClaw en 127.0.0.1:{server.port} con permisos de administración."
+
+
+async def test_verify_openclaw_without_admin_says_so():
+    hello = {"type": "hello-ok", "protocol": 4, "policy": {"tickIntervalMs": 30000},
+             "snapshot": {}, "auth": {"scopes": ["operator.read", "operator.write"]}}
+    async with FakeOpenClawServer(token=TOKEN, hello_payload=hello) as server:
+        v = await verify_openclaw("127.0.0.1", server.port, TOKEN)
+    assert (v.ok, v.reason) == (True, "ok")
+    assert "sin permisos de administración (permisos: operator.read, operator.write)" in v.detail
+
+
+async def test_verify_openclaw_pairing_pending_is_not_a_rejection(caplog):
+    """OpenClaw comprueba el token antes del emparejamiento: aceptado, falta aprobarlo."""
+    caplog.set_level(logging.DEBUG)
+    async with FakeOpenClawServer(token=TOKEN, remote=True) as server:
+        v = await verify_openclaw("127.0.0.1", server.port, TOKEN)
+        assert list(server.pending) == ["req-1"]
+    assert (v.ok, v.reason) == (True, "pairing_required")
+    assert "`openclaw devices approve req-1`" in v.detail
+    assert TOKEN not in v.detail and TOKEN not in caplog.text
 
 
 async def test_verify_openclaw_bad_token_rejected(caplog, ws_debug_unpinned):

@@ -33,6 +33,7 @@ from fogar_gateway.core.transport import TransportCaptureMiddleware
 from fogar_gateway.db.database import dispose_engine, require_database, run_migrations
 from fogar_gateway.services.openclaw.client import OpenClawClient
 from fogar_gateway.services.openclaw.dispatcher import FrameDispatcher
+from fogar_gateway.services.openclaw.models import OrchestratorAccess
 from fogar_gateway.services.openclaw.reconnecting import ReconnectingOpenClawClient
 from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
 from fogar_gateway.services.pairing import PairingStore
@@ -94,12 +95,15 @@ async def _lifespan_body(app: FastAPI):
     turn_registry = TurnRegistry()
     client_registry = ClientRegistry()
     dispatcher = FrameDispatcher(turn_registry, client_registry)
+    # Acceso a OpenClaw (permisos, emparejamiento): lo actualiza el cliente, lo lee /admin/state.
+    openclaw_access = OrchestratorAccess()
     inner = OpenClawClient(
         host=settings.OPENCLAW_HOST,
         port=settings.OPENCLAW_PORT,
         token=settings.OPENCLAW_TOKEN,
         turn_registry=turn_registry,
         dispatcher=dispatcher,
+        access=openclaw_access,
     )
     openclaw = ReconnectingOpenClawClient(
         inner,
@@ -155,6 +159,7 @@ async def _lifespan_body(app: FastAPI):
     speech = SpeechProviders(stt, tts)
 
     app.state.openclaw = openclaw
+    app.state.openclaw_access = openclaw_access
     app.state.speech = speech
     app.state.turn_registry = turn_registry  # read by routes.py for queue depths (#219)
     app.state.client_registry = client_registry

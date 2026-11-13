@@ -2,18 +2,33 @@ import asyncio
 import json
 import logging
 import re
+import time
 import uuid
 from collections.abc import AsyncGenerator, Callable
+from dataclasses import dataclass, field
 
 import websockets
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
 from fogar_gateway.core.config import settings
+from fogar_gateway.core.logging import fingerprint_key
 from fogar_gateway.services.openclaw import frames
 from fogar_gateway.services.openclaw.chat_text import ChatTextTracker
+from fogar_gateway.services.openclaw.device import (
+    DeviceFileError,
+    DeviceIdentity,
+    DeviceStore,
+    StoredDeviceToken,
+    build_auth_payload_v3,
+)
 from fogar_gateway.services.openclaw.dispatcher import FrameDispatcher
-from fogar_gateway.services.openclaw.models import GatewayInfo, ToolCallEvent
+from fogar_gateway.services.openclaw.models import (
+    AuthMethod,
+    GatewayInfo,
+    OrchestratorAccess,
+    ToolCallEvent,
+)
 from fogar_gateway.services.openclaw.registry import (
     TURN_IN_PROGRESS_ERROR,
     TURN_OVERFLOW_ERROR,
@@ -39,6 +54,8 @@ ORCHESTRATOR_SEND_FAILED_ERROR = "orchestrator_send_failed"  # chat.send could n
 ORCHESTRATOR_UNAVAILABLE_ERROR = "orchestrator_unavailable"  # not connected / reconnecting
 ORCHESTRATOR_ERROR = "orchestrator_error"  # OpenClaw rejected the turn, or an internal failure
 ORCHESTRATOR_HANDSHAKE_FAILED_ERROR = "orchestrator_handshake_failed"  # connect() handshake
+# OpenClaw accepted the token but waits for the operator to approve this device (`last_error`).
+ORCHESTRATOR_PAIRING_REQUIRED_ERROR = "orchestrator_pairing_required"
 
 _TERMINAL = ("aborted", "final", "error")  # terminal `chat` states
 
@@ -61,6 +78,56 @@ class OrchestratorRejectedError(OrchestratorHandshakeError):
 class OrchestratorStartingError(OrchestratorHandshakeError):
     """OpenClaw was still starting (startup-sidecars) when the retry budget ran out: the same
     stable code, but not a rejected token (`fogar-gw onboard` tells them apart)."""
+
+
+class OrchestratorPairingRequired(OrchestratorRejectedError):
+    """OpenClaw answered `connect` with `NOT_PAIRED` / `details.code: PAIRING_REQUIRED`: the
+    token was accepted (OpenClaw checks it before pairing) and the operator has to approve
+    this device once with `openclaw devices approve <request_id>`. Its own stable code, so
+    `last_error` says it; `request_id` is the pending request (sanitized, or None)."""
+
+    stable_code = ORCHESTRATOR_PAIRING_REQUIRED_ERROR
+
+    def __init__(self, request_id: str | None) -> None:
+        RuntimeError.__init__(self, ORCHESTRATOR_PAIRING_REQUIRED_ERROR)
+        self.request_id = request_id
+
+
+class _DeviceTokenRejected(Exception):
+    """Internal: OpenClaw refused the stored device token (already dropped); never escapes
+    _do_connect, which retries once with the shared token."""
+
+
+# `details.code` that mean the stored device token no longer works (revoked, rotated, device
+# removed → device_token_mismatch; approved scopes narrowed → scope_mismatch). Server 2026.10.5,
+# `resolveConnectAuthDecisionCore` + `connect-error-details`.
+_DEVICE_TOKEN_REJECTED = frozenset({"AUTH_DEVICE_TOKEN_MISMATCH", "AUTH_SCOPE_MISMATCH"})
+_PAIRING_REQUIRED = "PAIRING_REQUIRED"
+# OpenClaw's own PAIRING_CONNECT_REQUEST_ID_PATTERN: anything else is not echoed.
+_REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+
+
+def _pairing_request_id(details: object) -> str | None:
+    rid = details.get("requestId") if isinstance(details, dict) else None
+    return rid if isinstance(rid, str) and _REQUEST_ID_RE.fullmatch(rid) else None
+
+
+def approve_command(request_id: str | None) -> str:
+    """The command the operator runs on the OpenClaw host to approve the gateway."""
+    return f"openclaw devices approve {request_id or '--latest'}"
+
+
+@dataclass
+class _AuthPlan:
+    """What one `connect` sends: credential, scopes and (if the challenge has a nonce) the
+    signed device block."""
+
+    method: AuthMethod
+    token: str = field(repr=False)
+    scopes: list[str] = field(default_factory=list)
+    identity: DeviceIdentity | None = None
+    stored: StoredDeviceToken | None = None
+    device: dict | None = None
 
 
 # OpenClaw ≥2026.11 answers `connect` with a retryable UNAVAILABLE while its startup sidecars
@@ -153,7 +220,16 @@ class OpenClawClient:
         token: str,
         turn_registry: TurnRegistry,
         dispatcher: FrameDispatcher,
+        device_store: DeviceStore | None = None,
+        access: OrchestratorAccess | None = None,
     ) -> None:
+        # Key of the stored device token: the configured OpenClaw `host:port`.
+        self._gateway = f"{host}:{port}"
+        self._device_store = device_store if device_store is not None else DeviceStore()
+        # Updated in place (main.py shares it with /admin/state); never replaced.
+        self.access = access if access is not None else OrchestratorAccess()
+        self._pairing_logged: str | None = None  # last pending request logged at WARNING
+        self._identity_warned = False
         # An IPv6 literal (`::1`) goes in brackets inside the URI, unless it already has them.
         bare_ipv6 = ":" in host and not host.startswith("[")
         self._uri = f"ws://[{host}]:{port}" if bare_ipv6 else f"ws://{host}:{port}"
@@ -182,9 +258,15 @@ class OpenClawClient:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _STARTUP_RETRY_BUDGET_S
         retries = 0
+        skip_device_token = False
         while True:
             try:
-                return await self._connect_once()
+                return await self._connect_once(skip_device_token)
+            except _DeviceTokenRejected:
+                if skip_device_token:  # cannot happen (no device token sent): never loop
+                    raise OrchestratorRejectedError() from None
+                skip_device_token = True  # once, on a new socket, with the shared token
+                continue
             except _StartupPending as e:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
@@ -202,7 +284,7 @@ class OpenClawClient:
                 retries += 1
                 await asyncio.sleep(wait_s)  # the failed attempt already closed its socket
 
-    async def _connect_once(self) -> GatewayInfo:
+    async def _connect_once(self, skip_device_token: bool = False) -> GatewayInfo:
         # Last roster known from a previous connect, kept as fallback if agents.list
         # fails on this one (#151). Captured before gateway_info is rebuilt below.
         previous_agents = list(self.gateway_info.agents) if self.gateway_info else []
@@ -215,19 +297,40 @@ class OpenClawClient:
             if frame.get("event") != "connect.challenge":
                 raise OrchestratorHandshakeError()
 
+            plan = self._plan_auth(frame.get("payload"), skip_device_token)
             req_id = str(uuid.uuid4())
-            await self._ws.send(json.dumps(frames.connect_backend(req_id, self._token)))
+            connect = frames.connect_backend(
+                req_id,
+                plan.token,
+                scopes=plan.scopes,
+                device=plan.device,
+                device_token=plan.method == "device_token",
+            )
+            await self._ws.send(json.dumps(connect))
 
             raw = await asyncio.wait_for(self._ws.recv(), timeout=30.0)
             hello = self._parse_handshake_frame(raw)
             if not hello.get("ok"):
-                wait_s = _startup_retry_after_s(hello.get("error"))
+                error = hello.get("error")
+                wait_s = _startup_retry_after_s(error)
                 if wait_s is not None:
                     raise _StartupPending(wait_s)
+                rejected = hello.get("type") == "res" and hello.get("ok") is False
+                details = error.get("details") if isinstance(error, dict) else None
+                detail_code = _safe_error_code(details)
+                if rejected and plan.method == "device_token" and detail_code in _DEVICE_TOKEN_REJECTED:
+                    self._forget_device_token(detail_code)
+                    raise _DeviceTokenRejected()
+                if rejected and detail_code == _PAIRING_REQUIRED:
+                    request_id = _pairing_request_id(details)
+                    self._mark_pairing_pending(request_id, plan, details)
+                    raise OrchestratorPairingRequired(request_id)
                 logger.warning(
-                    "OpenClaw rejected the handshake (code=%s)", _safe_error_code(hello.get("error"))
+                    "OpenClaw rejected the handshake (code=%s, detail=%s)",
+                    _safe_error_code(error),
+                    detail_code,
                 )
-                if hello.get("type") == "res" and hello.get("ok") is False:
+                if rejected:
                     raise OrchestratorRejectedError()  # a real `ok:false` answer to `connect`
                 raise OrchestratorHandshakeError()  # an event, or a `res` without ok:false
             hello_payload = hello.get("payload") or {}
@@ -235,6 +338,7 @@ class OpenClawClient:
                 raise OrchestratorHandshakeError()
             self.gateway_info = GatewayInfo.from_hello_ok(hello_payload)
             self._log_hello(hello_payload)
+            self._accept_hello(hello_payload, plan)
             self._apply_frame_limit(self.gateway_info.max_payload, limit)
 
             agents_req_id = str(uuid.uuid4())
@@ -277,6 +381,152 @@ class OpenClawClient:
                 except Exception as e:  # noqa: BLE001 — limpieza tras un connect fallido
                     logger.debug("OpenClaw: cierre del socket tras connect fallido (%s)", describe_error(e))
                 self._ws = None
+
+    # ── Device identity and auth (docs/openclaw-protocol.md, «2026-11-13») ──
+
+    def _plan_auth(self, challenge: object, skip_device_token: bool) -> _AuthPlan:
+        """Credential for this `connect`: the stored device token of this OpenClaw `host:port`
+        (with its stored scopes, like the reference client), else the shared token. With a
+        challenge nonce (every real OpenClaw), the device block signs the v3 payload; without
+        one (an old or fake server) the connect goes without device identity."""
+        payload = challenge if isinstance(challenge, dict) else {}
+        nonce = payload.get("nonce")
+        nonce = nonce.strip() if isinstance(nonce, str) else ""
+        identity = self._load_identity() if nonce else None
+        stored = None
+        if identity is not None and not skip_device_token:
+            try:
+                stored = self._device_store.token_for(self._gateway)
+            except DeviceFileError as e:
+                logger.warning(
+                    "OpenClaw: no se puede leer el token de dispositivo (%s)", describe_error(e)
+                )
+        if stored is not None:
+            scopes = list(stored.scopes or frames.OPERATOR_SCOPES)
+            plan = _AuthPlan("device_token", stored.token, scopes, identity, stored)
+        else:
+            plan = _AuthPlan("shared_token", self._token, list(frames.OPERATOR_SCOPES), identity)
+        if identity is None:
+            return plan
+        ts = payload.get("ts")
+        # Like the reference client: the challenge's `ts` (a safe integer), else the clock.
+        signed_at = int(time.time() * 1000)
+        if isinstance(ts, int) and not isinstance(ts, bool) and 0 <= ts < 2**53:
+            signed_at = ts
+        signature = identity.sign(
+            build_auth_payload_v3(
+                device_id=identity.device_id,
+                client_id=frames.CLIENT_ID,
+                client_mode=frames.CLIENT_MODE,
+                role=frames.ROLE,
+                scopes=plan.scopes,
+                signed_at_ms=signed_at,
+                token=plan.token,
+                nonce=nonce,
+                platform=frames.CLIENT_PLATFORM,
+            )
+        )
+        plan.device = {
+            "id": identity.device_id,
+            "publicKey": identity.public_key,
+            "signature": signature,
+            "signedAt": signed_at,
+            "nonce": nonce,
+        }
+        return plan
+
+    def _load_identity(self) -> DeviceIdentity | None:
+        """The install's identity, created on first use. If the file is unusable the connect
+        goes without device identity (enough on the same host) and says so once."""
+        try:
+            identity = self._device_store.load_or_create()
+        except (DeviceFileError, OSError) as e:
+            if not self._identity_warned:
+                self._identity_warned = True
+                logger.warning(
+                    "OpenClaw: sin identidad de dispositivo (%s en %s); solo vale con OpenClaw en "
+                    "esta misma máquina. Revísalo con `fogar-gw doctor`.",
+                    describe_error(e),
+                    self._device_store.path,
+                )
+            return None
+        self._identity_warned = False
+        self.access.device_id = identity.device_id
+        return identity
+
+    def _forget_device_token(self, detail_code: str) -> None:
+        logger.warning(
+            "OpenClaw rechazó el token de dispositivo (detail=%s): se borra y se reintenta con "
+            "el token compartido",
+            detail_code,
+        )
+        try:
+            self._device_store.clear_token(self._gateway)
+        except (DeviceFileError, OSError) as e:
+            logger.warning(
+                "OpenClaw: no se pudo borrar el token de dispositivo (%s)", describe_error(e)
+            )
+
+    def _mark_pairing_pending(
+        self, request_id: str | None, plan: _AuthPlan, details: object
+    ) -> None:
+        """Once per pending request at WARNING (the approval command); every retry at DEBUG."""
+        self.access.scopes = None
+        self.access.auth_method = None
+        self.access.pairing = "pending"
+        self.access.pairing_request_id = request_id
+        device = plan.identity.device_id[:12] if plan.identity else "?"
+        next_step = details.get("recommendedNextStep") if isinstance(details, dict) else None
+        if self._pairing_logged != (request_id or "?"):
+            self._pairing_logged = request_id or "?"
+            logger.warning(
+                "OpenClaw espera que apruebes este gateway como dispositivo (petición %s, "
+                "device=%s). En la máquina de OpenClaw: `%s`. El gateway reintenta solo.",
+                request_id or "?",
+                device,
+                approve_command(request_id),
+            )
+        logger.debug(
+            "OpenClaw: emparejamiento pendiente (next=%s)",
+            next_step if isinstance(next_step, str) and _REQUEST_ID_RE.fullmatch(next_step) else None,
+        )
+
+    def _accept_hello(self, payload: dict, plan: _AuthPlan) -> None:
+        """Persist `hello-ok.auth.deviceToken` when it is new or different (an identical one
+        keeps its stored scopes, like the reference client's acceptHello) and publish the
+        access this connection got. A failed write is logged: the connection still works."""
+        auth = payload.get("auth")
+        token = auth.get("deviceToken") if isinstance(auth, dict) else None
+        token = token.strip() if isinstance(token, str) else ""
+        scopes = self.gateway_info.scopes if self.gateway_info else []
+        paired = plan.method == "device_token"
+        if plan.identity is not None and token and len(token) <= 4096:
+            paired = True
+            if plan.stored is None or plan.stored.token != token:
+                try:
+                    self._device_store.save_token(self._gateway, token, scopes)
+                    logger.info(
+                        "OpenClaw: token de dispositivo guardado (device=%s, fp=%s, scopes=%s)",
+                        plan.identity.device_id[:12],
+                        fingerprint_key(token),
+                        ",".join(scopes) or "-",
+                    )
+                except (DeviceFileError, OSError) as e:
+                    logger.warning(
+                        "OpenClaw: no se pudo guardar el token de dispositivo (%s)",
+                        describe_error(e),
+                    )
+        self._pairing_logged = None
+        self.access.scopes = list(scopes)
+        self.access.auth_method = plan.method
+        self.access.pairing = "paired" if paired else "not_required"
+        self.access.pairing_request_id = None
+        logger.info(
+            "OpenClaw: acceso %s (auth=%s, pairing=%s)",
+            ",".join(scopes) or "sin permisos",
+            plan.method,
+            self.access.pairing,
+        )
 
     @staticmethod
     def _parse_handshake_frame(raw: str | bytes) -> dict:

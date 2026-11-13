@@ -412,3 +412,90 @@ def test_db_path_with_uri_characters(monkeypatch, tmp_path):
     _make_db(home / "data" / "gateway.db", _head())
     check = doctor._check_db(home / "data" / "gateway.db", "sqlite:///data/gateway.db")
     assert check["level"] == "ok", check
+
+
+# --- acceso a OpenClaw (M19) ---
+
+ACCESS = "acceso a OpenClaw"
+
+
+def _state_with_access(**orch) -> tuple[int, dict]:
+    status, body = _state("fogar", "fogar")
+    body["services"]["orchestrator"] = {"state": "CONNECTED", "last_error": None, **orch}
+    return status, body
+
+
+def test_running_gateway_with_admin_is_ok(base, gateway):
+    _Gateway.routes["/admin/state"] = _state_with_access(
+        scopes=["operator.read", "operator.write", "operator.admin"], admin=True,
+        auth_method="shared_token", pairing="not_required")
+    r = run_at(gateway, "--json", "doctor")
+    found = checks(r)
+    assert found[ACCESS] == {"level": "ok", "check": ACCESS,
+                             "detail": "Con permisos de administración (token compartido)."}
+    assert r.exit_code == 0
+
+
+def test_running_gateway_without_admin_is_info(base, gateway):
+    _Gateway.routes["/admin/state"] = _state_with_access(
+        scopes=["operator.read"], admin=False, auth_method="device_token", pairing="paired")
+    found = checks(run_at(gateway, "--json", "doctor"))
+    assert found[ACCESS]["level"] == "info"
+    assert "emparejado como dispositivo" in found[ACCESS]["detail"]
+    assert "operator.read" in found[ACCESS]["detail"]
+
+
+def test_pending_pairing_is_a_warning_with_the_command(base, gateway):
+    _Gateway.routes["/admin/state"] = _state_with_access(pairing="pending", pairing_request_id="req-9")
+    r = run_at(gateway, "--json", "doctor")
+    found = checks(r)
+    assert found[ACCESS]["level"] == "warn"
+    assert "`openclaw devices approve req-9`" in found[ACCESS]["detail"]
+
+
+def _identity_file(base: Path, token_gateway: str | None = None) -> str:
+    from fogar_gateway.services.openclaw.device import DeviceStore
+
+    store = DeviceStore(base / "data" / "openclaw-device.json")
+    identity = store.load_or_create()
+    if token_gateway:
+        store.save_token(token_gateway, "devtok-SECRET-doctor", ["operator.read", "operator.admin"])
+    return identity.device_id
+
+
+def test_stopped_gateway_reads_the_identity_file(base):
+    port = next(line.split("=")[1] for line in (base / "config.env").read_text().splitlines()
+                if line.startswith("OPENCLAW_PORT="))
+    device_id = _identity_file(base, f"127.0.0.1:{port}")
+    for args in (("--json", "doctor"), ("doctor",)):
+        r = run(*args)
+        assert "devtok-SECRET-doctor" not in r.output
+    detail = checks(run("--json", "doctor"))[ACCESS]["detail"]
+    assert device_id[:12] in detail and f"emparejado con 127.0.0.1:{port}" in detail
+    assert "operator.admin" in detail
+
+
+def test_stopped_gateway_without_pairing(base):
+    _identity_file(base, "10.0.0.9:18789")  # el token es de otro OpenClaw
+    detail = checks(run("--json", "doctor"))[ACCESS]["detail"]
+    assert "sin emparejar" in detail
+
+
+def test_no_identity_yet_is_info(base):
+    found = checks(run("--json", "doctor"))
+    assert found[ACCESS]["level"] == "info" and "Sin identidad" in found[ACCESS]["detail"]
+
+
+def test_invalid_identity_file_is_a_warning(base):
+    (base / "data" / "openclaw-device.json").write_text("{roto")
+    (base / "data" / "openclaw-device.json").chmod(0o600)
+    found = checks(run("--json", "doctor"))
+    assert found[ACCESS]["level"] == "warn"
+
+
+def test_loose_identity_file_permissions_are_flagged(base):
+    _identity_file(base)
+    (base / "data" / "openclaw-device.json").chmod(0o644)
+    found = checks(run("--json", "doctor"))
+    assert found["permisos"]["level"] == "warn"
+    assert f"chmod 600 {base / 'data' / 'openclaw-device.json'}" in found["permisos"]["detail"]
