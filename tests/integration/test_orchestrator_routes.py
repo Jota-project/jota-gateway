@@ -1,4 +1,4 @@
-"""Integration tests for /admin/orchestrators/{name}/status and /reconnect."""
+"""Integration tests for /admin/orchestrator/status and /admin/orchestrator/reconnect."""
 
 
 def test_get_orchestrator_status_connected(client, admin_headers):
@@ -41,3 +41,15 @@ def test_post_orchestrator_reconnect_triggers_without_blocking_connect(
     assert response.json() == {"accepted": True}
     mock_registry.trigger_reconnect.assert_called_once()
     assert mock_registry.connect.call_count == connect_calls_before
+
+
+def test_post_orchestrator_reconnect_not_accepted_when_connected(
+    client, admin_headers, mock_registry
+):
+    """Already CONNECTED: reconnecting would tear down a healthy socket."""
+    mock_registry.trigger_reconnect.return_value = False
+
+    response = client.post("/admin/orchestrator/reconnect", headers=admin_headers)
+
+    assert response.status_code == 202
+    assert response.json() == {"accepted": False}

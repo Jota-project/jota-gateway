@@ -318,9 +318,11 @@ async def get_orchestrator_status(request: Request) -> dict:
 
 @router.post("/orchestrator/reconnect", status_code=202)
 async def post_orchestrator_reconnect(request: Request) -> dict:
-    """Retry now: cuts the reconnect loop's wait short (#272). Does not block on the handshake."""
-    request.app.state.openclaw.trigger_reconnect()
-    return {"accepted": True}
+    """Retry now: cuts the reconnect loop's wait short (#272). Does not block on the handshake.
+
+    `{"accepted": false}` when nothing was done: OpenClaw is already CONNECTED (reconnecting
+    would tear down a healthy socket and fail in-flight turns) or the gateway is shutting down."""
+    return {"accepted": request.app.state.openclaw.trigger_reconnect()}
 
 
 # ---------------------------------------------------------------------------

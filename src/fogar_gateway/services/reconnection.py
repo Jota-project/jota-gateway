@@ -153,21 +153,38 @@ class ServiceHealth:
         )
 
 
+async def _wait_or_wake(wake: asyncio.Event, delay: float) -> bool:
+    """Waits `delay` s (through the patchable `_sleep`) or until `wake` is set. True if woken."""
+    sleeper = asyncio.ensure_future(_sleep(delay))
+    waker = asyncio.ensure_future(wake.wait())
+    try:
+        done, _ = await asyncio.wait({sleeper, waker}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        sleeper.cancel()
+        waker.cancel()
+    return waker in done
+
+
 async def reconnect_with_backoff(
     attempt: Callable[[], Awaitable[None]],
     health: ServiceHealth,
     *,
     initial_backoff: float,
     max_backoff: float,
-    max_duration: float,
+    max_duration: float | None,
     label: str,
+    wake: asyncio.Event | None = None,
 ) -> bool:
-    """Retries `attempt()` with exponential backoff until it succeeds or
-    `max_duration` elapses. True on success (health -> CONNECTED); False once
-    exhausted (health -> DEGRADED). Cancellation propagates."""
+    """Retries `attempt()` with exponential backoff until it succeeds or `max_duration`
+    elapses (`None`: never gives up, #272). True on success (health -> CONNECTED); False once
+    exhausted (health -> DEGRADED). With `wake`, setting the event cuts the current wait short
+    and resets the backoff to `initial_backoff` (the event is cleared before each attempt).
+    Cancellation propagates."""
     start = time.monotonic()
     backoff = initial_backoff
     while True:
+        if wake is not None:
+            wake.clear()
         try:
             await attempt()
             health.mark_connected()
@@ -187,13 +204,18 @@ async def reconnect_with_backoff(
                 "[%s] reconnect traceback (no message): %s", label, traceback_no_message(e)
             )
 
-        if time.monotonic() - start >= max_duration:
+        if max_duration is not None and time.monotonic() - start >= max_duration:
             health.set_state(ConnectionState.DEGRADED)
             logger.warning("[%s] reconnect exhausted — DEGRADED.", label)
             return False
 
-        await _sleep(backoff)
-        backoff = min(backoff * 2, max_backoff)
+        if wake is None:
+            await _sleep(backoff)
+            backoff = min(backoff * 2, max_backoff)
+        elif await _wait_or_wake(wake, backoff):
+            backoff = initial_backoff
+        else:
+            backoff = min(backoff * 2, max_backoff)
 
 
 class LazyBackoffGate:

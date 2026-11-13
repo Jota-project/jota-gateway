@@ -1,6 +1,5 @@
 import asyncio
 import contextlib
-import itertools
 from unittest.mock import AsyncMock
 
 import pytest
@@ -106,27 +105,30 @@ async def test_outage_never_exhausts_and_stays_reconnecting():
     await roc.close()
 
 
+async def _until(cond, steps=500):
+    for _ in range(steps):
+        if cond():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("condition not reached")
+
+
 @pytest.mark.asyncio
-async def test_backoff_doubles_and_is_capped():
+async def test_backoff_doubles_and_is_capped(monkeypatch):
+    sleeps: list[float] = []
+
+    async def fake_sleep(d):
+        sleeps.append(d)
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr("fogar_gateway.services.reconnection._sleep", fake_sleep)
     inner = _down_inner()
-    stamps: list[float] = []
-    loop = asyncio.get_running_loop()
-
-    async def failing():
-        stamps.append(loop.time())
-        raise RuntimeError("refused")
-
-    inner.connect.side_effect = failing
-    roc = ReconnectingOpenClawClient(inner, "test", initial_backoff=0.05, max_backoff=0.1)
+    roc = ReconnectingOpenClawClient(inner, "test", initial_backoff=1.0, max_backoff=8.0)
     roc._ensure_loop()
-    await asyncio.sleep(0.65)
+    await _until(lambda: len(sleeps) >= 7)
     await roc.close()
 
-    gaps = [b - a for a, b in itertools.pairwise(stamps)]
-    assert len(gaps) >= 5, gaps
-    assert 0.04 <= gaps[0] < 0.08  # initial
-    assert 0.09 <= gaps[1] < 0.14  # doubled = cap
-    assert all(g < 0.16 for g in gaps[2:]), gaps  # never above the cap
+    assert sleeps[:7] == [1.0, 2.0, 4.0, 8.0, 8.0, 8.0, 8.0]
 
 
 @pytest.mark.asyncio
@@ -159,7 +161,7 @@ async def test_trigger_reconnect_cancels_the_wait_and_retries_now():
     inner.connect.side_effect = None
     inner.connect.return_value = GATEWAY_INFO
 
-    assert roc.trigger_reconnect() is None
+    assert roc.trigger_reconnect() is True
     await asyncio.sleep(0.05)
 
     assert roc.state == ConnectionState.CONNECTED
@@ -168,15 +170,85 @@ async def test_trigger_reconnect_cancels_the_wait_and_retries_now():
 
 
 @pytest.mark.asyncio
-async def test_trigger_reconnect_resets_backoff():
+async def test_trigger_reconnect_resets_backoff(monkeypatch):
+    sleeps: list[float] = []
+
+    async def pending_sleep(d):
+        sleeps.append(d)
+        await asyncio.Event().wait()  # only a wake-up ends the wait
+
+    monkeypatch.setattr("fogar_gateway.services.reconnection._sleep", pending_sleep)
     inner = _down_inner()
-    roc = ReconnectingOpenClawClient(inner, "test", initial_backoff=0.01, max_backoff=60.0)
+    roc = ReconnectingOpenClawClient(inner, "test", initial_backoff=1.0, max_backoff=60.0)
     roc._ensure_loop()
-    await asyncio.sleep(0.2)  # backoff has grown to ~0.16 s+; next wait is long
-    calls = inner.connect.call_count
+    await _until(lambda: len(sleeps) == 1)
     roc.trigger_reconnect()
-    await asyncio.sleep(0.03)
-    assert inner.connect.call_count > calls  # retried right away
+    await _until(lambda: len(sleeps) == 2)
+    roc.trigger_reconnect()
+    await _until(lambda: len(sleeps) == 3)
+    await roc.close()
+
+    assert sleeps == [1.0, 1.0, 1.0]  # never doubled: each request resets the backoff
+
+
+@pytest.mark.asyncio
+async def test_trigger_reconnect_is_a_noop_while_connected():
+    inner = make_mock_client(GATEWAY_INFO)
+    roc = ReconnectingOpenClawClient(inner, "test")
+    await roc.connect()
+    assert roc.trigger_reconnect() is False
+    await asyncio.sleep(0.02)
+    assert roc.state == ConnectionState.CONNECTED
+    assert inner.connect.call_count == 1
+    await roc.close()
+    assert roc.trigger_reconnect() is False
+
+
+@pytest.mark.asyncio
+async def test_drop_after_direct_connect_while_loop_sleeps_still_reconnects(monkeypatch):
+    """A direct connect() succeeds while the loop sleeps in its backoff and the socket drops
+    right after: the service must not end up CONNECTED on a dead socket."""
+
+    async def pending_sleep(d):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("fogar_gateway.services.reconnection._sleep", pending_sleep)
+    inner = _down_inner()
+    roc = ReconnectingOpenClawClient(inner, "test", initial_backoff=1.0, max_backoff=60.0)
+    await roc.connect()  # fails: the loop is now sleeping
+    await asyncio.sleep(0.01)
+    loop_task = roc._reconnect_task
+    assert not loop_task.done()
+
+    inner.connect.side_effect = None
+    inner.connect.return_value = GATEWAY_INFO
+    await roc.connect()  # direct success
+    assert roc.state == ConnectionState.CONNECTED
+    calls = inner.connect.call_count
+    inner.on_disconnect()  # drop before the old loop has woken up
+    assert roc.state == ConnectionState.RECONNECTING
+
+    await _until(lambda: inner.connect.call_count == calls + 1 and loop_task.done())
+    assert roc.state == ConnectionState.CONNECTED  # reconnected for real, loop ended
+    await roc.close()
+
+
+@pytest.mark.asyncio
+async def test_direct_connect_success_ends_a_sleeping_loop(monkeypatch):
+    async def pending_sleep(d):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("fogar_gateway.services.reconnection._sleep", pending_sleep)
+    inner = _down_inner()
+    roc = ReconnectingOpenClawClient(inner, "test", initial_backoff=1.0, max_backoff=60.0)
+    await roc.connect()
+    await asyncio.sleep(0.01)
+    loop_task = roc._reconnect_task
+    inner.connect.side_effect = None
+    inner.connect.return_value = GATEWAY_INFO
+    await roc.connect()
+    await _until(loop_task.done)
+    assert roc.state == ConnectionState.CONNECTED
     await roc.close()
 
 
@@ -221,20 +293,6 @@ async def test_close_cancels_a_long_backoff_wait_quickly():
     async with asyncio.timeout(1):
         await roc.close()
     assert roc._reconnect_task.done()
-
-
-@pytest.mark.asyncio
-async def test_direct_connect_success_stops_the_loop():
-    inner = _down_inner()
-    roc = ReconnectingOpenClawClient(inner, "test", initial_backoff=0.01, max_backoff=0.02)
-    await roc.connect()
-    inner.connect.side_effect = None
-    inner.connect.return_value = GATEWAY_INFO
-    await roc.connect()
-    assert roc.state == ConnectionState.CONNECTED
-    await asyncio.sleep(0.1)
-    assert roc._reconnect_task.done()
-    await roc.close()
 
 
 @pytest.mark.asyncio

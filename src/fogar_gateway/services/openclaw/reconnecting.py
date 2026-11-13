@@ -16,6 +16,7 @@ from fogar_gateway.services.reconnection import (
     ServiceStatus,
     describe_error,
     health_attr,
+    reconnect_with_backoff,
     traceback_no_message,
 )
 from fogar_gateway.services.teardown import Teardown
@@ -65,7 +66,7 @@ class ReconnectingOpenClawClient:
         self._health = ServiceHealth(name, ConnectionState.DEGRADED)
         self.gateway_info: GatewayInfo | None = None
         self._reconnect_task: asyncio.Task | None = None
-        self._wake = asyncio.Event()  # set by trigger_reconnect()/close(): ends the backoff wait
+        self._wake = asyncio.Event()  # set by trigger_reconnect() or a direct connect(): ends the backoff wait
         self._closed = False  # G-52: tras close() nada vuelve a lanzar la reconexión
         # Register disconnect callback so the inner client notifies us on unexpected drops.
         self._client.on_disconnect = self._handle_disconnect
@@ -77,6 +78,7 @@ class ReconnectingOpenClawClient:
         try:
             self.gateway_info = await self._client.connect()
             self._health.mark_connected()
+            self._wake.set()  # a loop sleeping in its backoff ends instead of lingering
         except Exception as e:  # noqa: BLE001 — frontera: el fallo arranca el reintento
             # Type/stable code only (#228): the text can carry OpenClaw-provided content.
             self._last_error = describe_error(e)
@@ -88,7 +90,6 @@ class ReconnectingOpenClawClient:
 
     async def close(self) -> None:
         self._closed = True
-        self._wake.set()
         # G-52 (#221): Teardown termina el cierre aunque cancelen a quien llama y relanza
         # esa cancelación al final. Las tareas de reintento pueden estar cerrando un socket
         # a medio handshake (hasta el close_timeout de 10 s de websockets): de ahí los 12 s.
@@ -146,51 +147,40 @@ class ReconnectingOpenClawClient:
     def _handle_disconnect(self) -> None:
         self._ensure_loop()
 
-    def trigger_reconnect(self) -> None:
+    def trigger_reconnect(self) -> bool:
         """Admin-facing entry point: retry now, without blocking on the handshake. Cuts the
         current backoff wait short (and resets the backoff); if an attempt is already in
-        flight it is not duplicated, and a failure is followed by an immediate new try."""
+        flight it is not duplicated. A no-op (False) while CONNECTED (it would tear down a
+        healthy socket and fail in-flight turns) and after close()."""
+        if self._closed or self.state == ConnectionState.CONNECTED:
+            return False
         self._ensure_loop()
         self._wake.set()
+        return True
 
     def _ensure_loop(self) -> None:
-        """Starts the loop if it is not running. A no-op while it is, and after close()."""
+        """Marks the service as reconnecting and starts the loop if it is not running (a
+        live loop picks the new state up on its next attempt). No-op after close()."""
         if self._closed:
             return
+        self._set_state(ConnectionState.RECONNECTING)
         if not self._reconnect_task or self._reconnect_task.done():
             self._wake.clear()
-            self._set_state(ConnectionState.RECONNECTING)
             self._reconnect_task = asyncio.create_task(self._reconnect_loop())
             self._reconnect_task.add_done_callback(_log_task_failure)
 
     async def _reconnect_loop(self) -> None:
-        backoff = self._initial_backoff
-        while not self._closed and self.state != ConnectionState.CONNECTED:
-            self._wake.clear()
-            try:
-                self.gateway_info = await self._client.connect()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:  # noqa: BLE001 — frontera: un intento fallido (de cualquier tipo) se reintenta
-                # Stable description only (#228): the text can carry server-provided content.
-                reason = describe_error(e)
-                self._health.mark_attempt_failed(reason)
-                logger.warning(
-                    "[%s] reconnect attempt %d failed: %s",
-                    self._name,
-                    self._reconnect_attempts,
-                    reason,
-                )
-                logger.debug(
-                    "[%s] reconnect traceback (no message): %s", self._name, traceback_no_message(e)
-                )
-            else:
-                self._health.mark_connected()
-                logger.info("[%s] reconnected.", self._name)
-                return
-            try:
-                await asyncio.wait_for(self._wake.wait(), timeout=backoff)
-            except TimeoutError:
-                backoff = min(backoff * 2, self._max_backoff)
-            else:
-                backoff = self._initial_backoff  # explicit request (or close): retry now
+        async def attempt() -> None:
+            if self.state == ConnectionState.CONNECTED:
+                return  # a direct connect() already recovered the service: nothing to do
+            self.gateway_info = await self._client.connect()
+
+        await reconnect_with_backoff(
+            attempt,
+            self._health,
+            initial_backoff=self._initial_backoff,
+            max_backoff=self._max_backoff,
+            max_duration=None,
+            label=self._name,
+            wake=self._wake,
+        )

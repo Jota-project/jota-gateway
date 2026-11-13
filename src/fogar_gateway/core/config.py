@@ -1,15 +1,35 @@
-from typing import Literal
+import logging
+from typing import Any, Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from fogar_gateway import paths
 from fogar_gateway.access import parse_public_urls
 
+_logger = logging.getLogger(__name__)
+
+# Keys that older installs still carry in config.env: accepted and ignored (with one WARNING)
+# so an upgrade does not turn them into "Extra inputs are not permitted".
+RETIRED_KEYS = frozenset({"ORCHESTRATOR_RECONNECT_MAX_DURATION"})  # #272: single endless loop
+
 
 class Settings(BaseSettings):
     # Nunca el .env del directorio actual: <base>/config.env (o --home / FOGAR_GATEWAY_HOME).
     model_config = SettingsConfigDict(env_file=paths.config_file())
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_keys(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        retired = sorted(k for k in data if isinstance(k, str) and k.upper() in RETIRED_KEYS)
+        if retired:
+            _logger.warning(
+                "Config: %s is obsolete and ignored (remove it from config.env).", ", ".join(retired)
+            )
+            data = {k: v for k, v in data.items() if k not in retired}
+        return data
 
     # Base de datos interna. Una ruta SQLite relativa cuelga del directorio base, también el
     # default: el engine, Alembic, el candado y `fogar-gw doctor` ven la misma ruta absoluta.

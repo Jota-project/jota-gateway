@@ -79,8 +79,8 @@ Los dos son públicos: detrás de un proxy o un túnel también llegan desde int
 |----------|--------|-------------|
 | `/admin/sessions` | GET | Sesiones activas y recientes en memoria |
 | `/admin/sessions/{id}` | GET | Detalle con eventos y latencias por turno |
-| `/admin/orchestrator/status` | GET | Estado del orquestador (CONNECTED / RECONNECTING / DEGRADED) |
-| `/admin/orchestrator/reconnect` | POST | Fuerza reconexión — responde 202 |
+| `/admin/orchestrator/status` | GET | Estado del orquestador (CONNECTED / RECONNECTING) |
+| `/admin/orchestrator/reconnect` | POST | Reintenta ya (corta la espera del backoff) — responde 202 con `{"accepted": true}`; `{"accepted": false}` si ya está CONNECTED |
 | `/admin/transcriber/status` | GET | Estado del proveedor STT activo (`provider`; con fogar, reachability en vivo; con ElevenLabs, salud cacheada + `counters`) |
 | `/admin/tts/status` | GET | Estado del proveedor TTS activo (`provider`, breaker, último error; con ElevenLabs, `counters`) |
 | `/admin/speech` | GET | Proveedores de voz activos (`stt`, `tts`) y puerta de audio efectiva |
