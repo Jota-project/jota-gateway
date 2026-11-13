@@ -165,7 +165,7 @@ def test_state_skips_bridge_whose_snapshot_fails(client, admin_headers):
 # ── Acceso a OpenClaw (M19): permisos, admin, token en uso y emparejamiento ──
 
 ACCESS_KEYS = {"state", "last_error", "scopes", "admin", "auth_method", "pairing",
-               "pairing_request_id", "device_id"}
+               "pairing_request_id", "identity_error", "device_id"}
 
 
 def test_state_orchestrator_access_before_connecting(client, admin_headers):
@@ -229,7 +229,10 @@ async def test_state_reflects_a_real_pairing_flow(tmp_path, monkeypatch):
         assert orch["last_error"] == "orchestrator_pairing_required"
         server.approve()
         await client.connect()
-        await client.close()
         orch = admin_routes._build_state(app)["services"]["orchestrator"]
         assert orch["pairing"] == "paired" and orch["admin"] is True
         assert "devtok" not in json.dumps(orch)
+        await client.close()  # sin conexión: el acceso vuelve a desconocido
+        orch = admin_routes._build_state(app)["services"]["orchestrator"]
+        assert orch["pairing"] == "unknown" and orch["admin"] is False
+        assert orch["device_id"] is not None

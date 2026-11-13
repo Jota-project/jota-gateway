@@ -185,31 +185,12 @@ def _services_online(client: api.Api, off: set[str], configured_off: set[str]) -
 
 
 ACCESS = "acceso a OpenClaw"
-_AUTH = {"shared_token": "token compartido", "device_token": "token de dispositivo"}
-
-
-def _scopes(scopes: Any) -> str:
-    return ", ".join(str(s) for s in scopes) if isinstance(scopes, list) and scopes else "ninguno"
-
-
-def _access_from_state(orch: dict[str, Any]) -> Check:
-    """Lo que dice el gateway en marcha (/admin/state, M19)."""
-    if orch.get("pairing") == "pending":
-        rid = orch.get("pairing_request_id") or "--latest"
-        return _c("warn", ACCESS, "OpenClaw espera que apruebes este gateway como dispositivo. En "
-                  f"la máquina de OpenClaw: `openclaw devices approve {rid}`; el gateway se "
-                  "conecta solo al aprobarlo.")
-    how = _AUTH.get(str(orch.get("auth_method")), "?")
-    paired = " · emparejado como dispositivo" if orch.get("pairing") == "paired" else ""
-    if orch.get("admin"):
-        return _c("ok", ACCESS, f"Con permisos de administración ({how}{paired}).")
-    return _c("info", ACCESS, f"Sin permisos de administración ({how}{paired}; permisos: "
-              f"{_scopes(orch.get('scopes'))}). Hoy no hacen falta para hablar.")
 
 
 def _access_from_file(settings: Any) -> Check:
     """Con el gateway parado (o sin ese dato): la identidad guardada, sin cargar `cryptography`
     ni enseñar la clave o el token."""
+    from fogar_gateway.cli.openclaw_access import scopes_text
     from fogar_gateway.services.openclaw.device import DeviceFileError, DeviceStore
 
     store = DeviceStore(paths.openclaw_device_file())
@@ -226,15 +207,20 @@ def _access_from_file(settings: Any) -> Check:
     gateway = f"{settings.OPENCLAW_HOST}:{settings.OPENCLAW_PORT}" if settings else None
     if summary["token_gateway"] and summary["token_gateway"] == gateway:
         return _c("info", ACCESS, f"Dispositivo {device}, emparejado con {gateway} (permisos: "
-                  f"{_scopes(summary['token_scopes'])}).")
+                  f"{scopes_text(summary['token_scopes'])}).")
     return _c("info", ACCESS, f"Dispositivo {device}, sin emparejar con {gateway or 'OpenClaw'} (con "
               "OpenClaw en esta máquina no hace falta).")
 
 
 def _check_openclaw_access(state: Any, settings: Any) -> Check:
+    """Con el gateway en marcha y conectado (o esperando aprobación), lo que dice /admin/state;
+    si no, la identidad guardada."""
+    from fogar_gateway.cli.openclaw_access import describe
+
     orch = state.get("services", {}).get("orchestrator") if isinstance(state, dict) else None
-    if isinstance(orch, dict) and orch.get("pairing") not in (None, "unknown"):
-        return _access_from_state(orch)
+    found = describe(orch) if isinstance(orch, dict) else None
+    if found is not None:
+        return _c(found[0], ACCESS, found[1])
     return _access_from_file(settings)
 
 

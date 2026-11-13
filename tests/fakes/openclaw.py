@@ -135,6 +135,8 @@ class FakeOpenClawServer:
         self.token = token
         self.remote = remote
         self.challenge_nonce = challenge_nonce
+        # Lo que contesta `remote` a un connect sin `device` (el real: DEVICE_IDENTITY_REQUIRED).
+        self.no_device_code = "DEVICE_IDENTITY_REQUIRED"
         self.connects: list[dict] = []
         self.paired: dict[str, list[str]] = {}  # deviceId -> permisos aprobados
         self.device_tokens: dict[str, tuple[str, list[str]]] = {}  # deviceId -> (token, permisos)
@@ -300,7 +302,7 @@ class FakeOpenClawServer:
         if self.remote:
             if device is None:
                 await self._reject(ws, rid, "NOT_PAIRED", "device identity required",
-                                   {"code": "DEVICE_IDENTITY_REQUIRED"})
+                                   {"code": self.no_device_code})
                 return
             if device["id"] not in self.paired:
                 request_id = next((r for r, (d, _) in self.pending.items() if d == device["id"]), None)

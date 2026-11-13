@@ -4,7 +4,7 @@ from typing import Any
 
 import click
 
-from fogar_gateway.cli import api
+from fogar_gateway.cli import api, openclaw_access
 from fogar_gateway.cli.output import Out
 
 
@@ -17,20 +17,6 @@ def _uptime(seconds: float) -> str:
     if s < 86_400:
         return f"{s // 3600} h {s % 3600 // 60} min"
     return f"{s // 86_400} d {s % 86_400 // 3600} h"
-
-
-def _access(orch: dict[str, Any]) -> str | None:
-    """Acceso a OpenClaw (M19); None con un gateway que no lo da."""
-    pairing = orch.get("pairing")
-    if pairing in (None, "unknown"):
-        return None
-    if pairing == "pending":
-        rid = orch.get("pairing_request_id") or "--latest"
-        return f"pendiente de aprobar: `openclaw devices approve {rid}` en la máquina de OpenClaw"
-    how = {"shared_token": "token compartido", "device_token": "token de dispositivo"}.get(
-        str(orch.get("auth_method")), "?")
-    paired = " · emparejado" if pairing == "paired" else ""
-    return f"{'admin' if orch.get('admin') else 'sin admin'} · {how}{paired}"
 
 
 def _service(svc: dict[str, Any]) -> str:
@@ -51,7 +37,7 @@ def status(ctx: click.Context) -> None:
     gw, services = state.get("gateway", {}), state.get("services", {})
     uptime = gw.get("uptime_s")
     orch = services.get("orchestrator", {})
-    access = _access(orch)
+    access = openclaw_access.short(orch)
     out.pairs(
         [
             ("gateway", f"en marcha · v{gw.get('version', '?')}"),

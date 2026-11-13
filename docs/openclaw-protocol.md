@@ -674,24 +674,48 @@ v3|{deviceId}|{client.id}|{client.mode}|{role}|{scopes joined by ","}|{signedAt}
 `…_NONCE_REQUIRED`, `…_NONCE_MISMATCH`, `…_SIGNATURE_INVALID` or `…_PUBLIC_KEY_INVALID`.
 
 **Device token.** The reference client sends a stored device token in **both** `auth.token` and
-`auth.deviceToken`, requests the scopes stored with it, and stores `hello-ok.auth.deviceToken` with
-`hello-ok.auth.scopes` when it is new or different (an identical token keeps its stored scopes).
+`auth.deviceToken`, requests the scopes stored with it, and in `acceptHello` stores
+`hello-ok.auth.deviceToken` with `hello-ok.auth.scopes ?? []` when it is new or different; an
+identical token always keeps its stored scopes (`stored.token === token ? stored.scopes : …`).
 A token that no longer works (revoked, rotated, device removed) is `AUTH_DEVICE_TOKEN_MISMATCH`;
-one that does not cover the requested scopes is `AUTH_SCOPE_MISMATCH`.
+one that does not cover the requested scopes is `AUTH_SCOPE_MISMATCH`. `hello-ok.auth.scopes` is
+the live session's scopes (what was requested, within the grant); older servers (≥ 2026.6.11)
+may omit it.
 
 **How the gateway reacts** (`services/openclaw/device.py`, `client.py`): the identity lives in
-`<base>/data/openclaw-device.json` (0600, atomic writes; private key, public key, deviceId and, once
-paired, the device token with its scopes and the OpenClaw `host:port` it belongs to). Every
-challenge with a nonce is signed (a challenge without one, as in old fakes, connects without
-device). A stored token for the configured `OPENCLAW_HOST:OPENCLAW_PORT` is preferred over
-`OPENCLAW_TOKEN`; on `AUTH_DEVICE_TOKEN_MISMATCH`/`AUTH_SCOPE_MISMATCH` the gateway drops it and
-retries once, on a new socket, with the shared token. `PAIRING_REQUIRED` raises
-`OrchestratorPairingRequired` (stable code `orchestrator_pairing_required`, in `last_error`), logs
-the request id and the approval command once per request at WARNING, and the usual reconnect
-loop keeps retrying until the approval. `/admin/state` (`services.orchestrator`), `fogar-gw status`
-and `fogar-gw doctor` show the granted scopes, `admin`, `auth_method`
-(`shared_token`|`device_token`), `pairing` (`unknown`|`not_required`|`paired`|`pending`) with the
-request id, and the deviceId (public: `openclaw devices list` shows it).
+`<base>/data/openclaw-device.json` (0600; private key, public key, deviceId and, once paired, the
+device token with its scopes and the OpenClaw `host:port` it belongs to). Every write is atomic
+(temp 0600 + fsync + rename) and every read-modify-write runs under an exclusive `flock` on the
+sibling `.openclaw-device.json.lock`, because `fogar-gw onboard` can write it while the gateway
+runs; file I/O runs in `asyncio.to_thread`, with one read per connect (identity + token).
+`fogar-gw migrate --from-docker` copies it from `DIR/data/` when present (read-only source, 0600,
+never over an existing one). Every challenge with a nonce is signed. A stored token for the
+configured `OPENCLAW_HOST:OPENCLAW_PORT` is preferred over `OPENCLAW_TOKEN`; on
+`AUTH_DEVICE_TOKEN_MISMATCH`/`AUTH_SCOPE_MISMATCH` the gateway drops it and retries once, on a new
+socket, with the shared token. **`fogar-gw onboard` never uses the stored device token**
+(`OpenClawClient(use_device_token=False)`): it tests the token that was pasted, still signing so
+pairing is detected.
+
+- **Same token, different scopes (deliberate deviation).** Like the reference client an identical
+  token never narrows its stored scopes, but when `hello-ok.auth.scopes` is a strict superset of
+  them (an approved scope upgrade can keep the token: `ensureDeviceToken` reuses it when it
+  already covers the request) the broader set is stored, so the next `connect` requests it.
+  Without `hello-ok.auth.scopes` the scopes are **unknown**: `None` in `GatewayInfo`/
+  `OrchestratorAccess`, `null` in the file (never an empty list), «desconocidos» in the CLI.
+- **`PAIRING_REQUIRED`** to a connect that carried the device proof raises
+  `OrchestratorPairingRequired` (stable code `orchestrator_pairing_required`, in `last_error`;
+  `auth_method` says which credential OpenClaw accepted), logs the request id and the approval
+  command once per request at WARNING, and the usual reconnect loop keeps retrying until the
+  approval. `PAIRING_REQUIRED` or `DEVICE_IDENTITY_REQUIRED` to a connect **without** device proof
+  (identity file unusable, or a challenge without nonce) raises
+  `OrchestratorDeviceIdentityRequired` (`orchestrator_device_identity_required`, `cause`
+  `identity_file_invalid`|`challenge_without_nonce`) and never suggests `devices approve`.
+- `/admin/state` (`services.orchestrator`), `fogar-gw status` and `fogar-gw doctor` show the
+  granted scopes, `admin`, `auth_method` (`shared_token`|`device_token`), `pairing`
+  (`unknown`|`not_required`|`paired`|`pending`|`identity_required`) with the request id or the
+  `identity_error`, and the deviceId (public: `openclaw devices list` shows it). This is the access
+  **now**: a failed connect, a dropped connection and `close()` reset it to `unknown` (keeping the
+  deviceId), and doctor then reads the identity file instead.
 
 **Method → scope** (`core-method-policy`, 2026.10.5):
 
@@ -722,6 +746,11 @@ says so.
   signs every `connect` (device auth v3), stores and prefers the device token issued after a
   remote pairing, falls back to the shared token when it is refused, and reports
   `PAIRING_REQUIRED` with the approval command. The token hint is `openclaw gateway auth-token --show`.
+  Review the same day: onboard always tests the shared token, a missing device proof is its own
+  error (`orchestrator_device_identity_required`), the access resets on failure/drop/close,
+  unannounced scopes are unknown (`None`), broader scopes on the same token are stored, and the
+  identity file is locked (`flock`) and copied by `migrate`. Signature verified live against a
+  2026.10.5 on loopback (hello-ok read/write/admin, `shared_token`/`not_required`).
 
 - **2026-11-06**: added "Connect deadline and `chat.send` session keys" (server 2026.11.1, read in
   the package source): the handshake deadline is now 30 s and `chat.send` rejects session keys

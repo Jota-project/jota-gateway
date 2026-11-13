@@ -24,7 +24,10 @@ def test_from_hello_ok_scopes_with_admin_and_junk():
     payload = {**HELLO_OK_PAYLOAD, "auth": {"scopes": ["operator.admin", {"x": 1}, "bad scope"]}}
     info = GatewayInfo.from_hello_ok(payload)
     assert info.scopes == ["operator.admin"] and info.admin
-    assert GatewayInfo.from_hello_ok({**HELLO_OK_PAYLOAD, "auth": "nope"}).scopes == []
+    assert GatewayInfo.from_hello_ok({**HELLO_OK_PAYLOAD, "auth": "nope"}).scopes is None
+    # Sin auth.scopes (servidores ≥ 2026.6.11 que no los anuncian): desconocidos, no ninguno.
+    no_scopes = GatewayInfo.from_hello_ok({**HELLO_OK_PAYLOAD, "auth": {"role": "operator"}})
+    assert no_scopes.scopes is None and not no_scopes.admin
 
 
 def test_from_hello_ok_minimal():

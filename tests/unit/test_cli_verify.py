@@ -91,7 +91,8 @@ async def test_verify_openclaw_ok():
     assert (v.ok, v.reason) == (True, "ok")
     assert TOKEN not in v.detail
     # M19: dice con qué acceso queda (en local, admin con el token compartido).
-    assert v.detail == f"Conectado a OpenClaw en 127.0.0.1:{server.port} con permisos de administración."
+    assert v.detail == (f"Conectado a OpenClaw en 127.0.0.1:{server.port}. Con permisos de "
+                        "administración (token compartido).")
 
 
 async def test_verify_openclaw_without_admin_says_so():
@@ -100,7 +101,70 @@ async def test_verify_openclaw_without_admin_says_so():
     async with FakeOpenClawServer(token=TOKEN, hello_payload=hello) as server:
         v = await verify_openclaw("127.0.0.1", server.port, TOKEN)
     assert (v.ok, v.reason) == (True, "ok")
-    assert "sin permisos de administración (permisos: operator.read, operator.write)" in v.detail
+    assert "Sin permisos de administración (token compartido; permisos: operator.read, " \
+           "operator.write)" in v.detail
+
+
+async def test_verify_openclaw_unannounced_scopes_are_unknown():
+    hello = {"type": "hello-ok", "protocol": 4, "policy": {"tickIntervalMs": 30000},
+             "snapshot": {}, "auth": {"role": "operator"}}
+    async with FakeOpenClawServer(token=TOKEN, hello_payload=hello) as server:
+        v = await verify_openclaw("127.0.0.1", server.port, TOKEN)
+    assert (v.ok, v.reason) == (True, "ok")
+    assert "permisos desconocidos" in v.detail and "ninguno" not in v.detail
+
+
+@pytest.fixture
+def own_home(monkeypatch, tmp_path):
+    """Base propia: el DeviceStore por defecto de verify_openclaw lee y escribe aquí."""
+    monkeypatch.setenv("FOGAR_GATEWAY_HOME", str(tmp_path))
+    return tmp_path
+
+
+async def _pair_gateway(server) -> None:
+    """El gateway (con el DeviceStore por defecto) se empareja y guarda su token de dispositivo."""
+    from fogar_gateway.services.openclaw.client import OpenClawClient, OrchestratorPairingRequired
+    from fogar_gateway.services.openclaw.dispatcher import FrameDispatcher
+    from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
+
+    def make():
+        turns = TurnRegistry()
+        return OpenClawClient("127.0.0.1", server.port, TOKEN, turns, FrameDispatcher(turns, ClientRegistry()))
+
+    with pytest.raises(OrchestratorPairingRequired):
+        await make().connect()
+    server.approve()
+    gateway = make()
+    await gateway.connect()
+    await gateway.close()
+
+
+async def test_verify_openclaw_tests_the_pasted_token_not_the_stored_device_token(own_home):
+    """Con un token de dispositivo guardado para ese OpenClaw, un token compartido malo se
+    rechaza (antes se conectaba con el de dispositivo y onboard guardaba un token sin probar)."""
+    from fogar_gateway.services.openclaw.device import DeviceStore
+
+    async with FakeOpenClawServer(token=TOKEN, remote=True) as server:
+        await _pair_gateway(server)
+        assert DeviceStore().token_for(f"127.0.0.1:{server.port}") is not None
+        bad = await verify_openclaw("127.0.0.1", server.port, "token-malo")
+        assert (bad.ok, bad.reason) == (False, "rejected")
+        good = await verify_openclaw("127.0.0.1", server.port, TOKEN)
+        assert (good.ok, good.reason) == (True, "ok")
+        assert server.connects[-1]["auth"] == {"token": TOKEN}
+        assert "emparejado como dispositivo" in good.detail
+
+
+async def test_verify_openclaw_identity_problem_is_not_a_pairing_request(own_home, caplog):
+    caplog.set_level(logging.DEBUG)
+    device_file = own_home / "data" / "openclaw-device.json"
+    device_file.parent.mkdir()
+    device_file.write_text("{roto")
+    async with FakeOpenClawServer(token=TOKEN, remote=True) as server:
+        v = await verify_openclaw("127.0.0.1", server.port, TOKEN)
+    assert (v.ok, v.reason) == (False, "invalid")
+    assert "identidad de dispositivo" in v.detail and "fichero de identidad" in v.detail
+    assert "devices approve" not in v.detail and "acepta el token" not in v.detail
 
 
 async def test_verify_openclaw_pairing_pending_is_not_a_rejection(caplog):
@@ -111,6 +175,7 @@ async def test_verify_openclaw_pairing_pending_is_not_a_rejection(caplog):
         assert list(server.pending) == ["req-1"]
     assert (v.ok, v.reason) == (True, "pairing_required")
     assert "`openclaw devices approve req-1`" in v.detail
+    assert v.detail.startswith("OpenClaw acepta el token. ")  # se mandó el compartido
     assert TOKEN not in v.detail and TOKEN not in caplog.text
 
 

@@ -18,16 +18,18 @@ from __future__ import annotations
 import base64
 import binascii
 import errno
+import fcntl
 import hashlib
 import json
 import logging
 import os
 import re
 import secrets
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fogar_gateway import paths
 
@@ -183,7 +185,7 @@ class DeviceIdentity:
 @dataclass(frozen=True)
 class StoredDeviceToken:
     token: str = field(repr=False)  # credencial
-    scopes: tuple[str, ...]
+    scopes: tuple[str, ...] | None  # None: OpenClaw no anunció los permisos (desconocidos)
     gateway: str  # host:puerto del OpenClaw que lo emitió
     role: str = "operator"
 
@@ -196,17 +198,38 @@ def _token_from_record(value: object) -> StoredDeviceToken | None:
         return None
     if not isinstance(gateway, str) or not isinstance(role, str):
         return None
-    return StoredDeviceToken(token, tuple(clean_scopes(value.get("scopes"))), gateway, role)
+    raw = value.get("scopes")
+    scopes = tuple(clean_scopes(raw)) if isinstance(raw, list) else None
+    return StoredDeviceToken(token, scopes, gateway, role)
+
+
+TokenUpdate = Literal["saved", "scopes_updated", "unchanged"]
 
 
 class DeviceStore:
     """Lee y escribe `openclaw-device.json`. Cada operación relee el fichero (es pequeño): otro
     proceso del mismo usuario (`fogar-gw onboard` con el gateway en marcha) puede haberlo
-    cambiado. Escrituras atómicas (fichero temporal 0600 + rename); la creación no pisa a otra
-    simultánea (link exclusivo)."""
+    cambiado. Toda lectura-modificación-escritura va bajo un `flock` exclusivo sobre un fichero
+    hermano (`.openclaw-device.json.lock`), y cada escritura es atómica (temporal 0600 +
+    rename); la creación, además, no pisa a otra simultánea (link exclusivo). Bloquea (E/S y
+    fsync): desde asyncio, en `asyncio.to_thread`."""
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path if path is not None else paths.openclaw_device_file()
+
+    @property
+    def lock_path(self) -> Path:
+        return self.path.with_name(f".{self.path.name}.lock")
+
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)  # cerrar suelta el flock
 
     # ── lectura ──────────────────────────────────────────────────────────
 
@@ -225,24 +248,39 @@ class DeviceStore:
             raise DeviceFileError()
         return data
 
-    def load_or_create(self) -> DeviceIdentity:
-        """La identidad guardada, o una nueva si no hay fichero. DeviceFileError si el fichero
-        no vale; OSError si no se puede crear."""
+    def load_for(self, gateway: str) -> tuple[DeviceIdentity, StoredDeviceToken | None]:
+        """Una sola lectura por `connect`: la identidad (creada si no hay fichero) y el token
+        guardado para `gateway`. DeviceFileError si el fichero no vale; OSError si no se puede
+        crear."""
         data = self._read()
-        if data is not None:
-            return DeviceIdentity.from_record(data)
-        identity = DeviceIdentity.generate()
-        if self._write(identity.record(), create=True):
-            logger.info(
-                "OpenClaw: nueva identidad de dispositivo del gateway (device=%s) en %s",
-                identity.device_id[:12],
-                self.path,
-            )
-            return identity
-        data = self._read()  # otro proceso la creó a la vez: vale la suya
         if data is None:
-            raise DeviceFileError()
-        return DeviceIdentity.from_record(data)
+            return self._create(), None
+        identity = DeviceIdentity.from_record(data)
+        stored = _token_from_record(data.get("device_token"))
+        return identity, stored if stored is not None and stored.gateway == gateway else None
+
+    def load_or_create(self) -> DeviceIdentity:
+        """La identidad guardada, o una nueva si no hay fichero."""
+        data = self._read()
+        return DeviceIdentity.from_record(data) if data is not None else self._create()
+
+    def _create(self) -> DeviceIdentity:
+        with self._locked():
+            data = self._read()  # otro proceso pudo crearla mientras esperábamos el candado
+            if data is not None:
+                return DeviceIdentity.from_record(data)
+            identity = DeviceIdentity.generate()
+            if not self._write(identity.record(), create=True):
+                data = self._read()
+                if data is None:
+                    raise DeviceFileError()
+                return DeviceIdentity.from_record(data)
+        logger.info(
+            "OpenClaw: nueva identidad de dispositivo del gateway (device=%s) en %s",
+            identity.device_id[:12],
+            self.path,
+        )
+        return identity
 
     def token_for(self, gateway: str) -> StoredDeviceToken | None:
         data = self._read()
@@ -253,46 +291,84 @@ class DeviceStore:
 
     def summary(self) -> dict[str, Any]:
         """Lo que se puede enseñar (doctor, sin `cryptography`): nunca la clave ni el token.
-        DeviceFileError si el fichero no vale."""
+        DeviceFileError si el fichero no vale. `token_scopes` None: desconocidos."""
         data = self._read()
         if data is None:
             return {"exists": False}
         device_id = data.get("device_id")
         stored = _token_from_record(data.get("device_token"))
+        scopes: list[str] | None = []
+        if stored is not None:
+            scopes = list(stored.scopes) if stored.scopes is not None else None
         return {
             "exists": True,
             "device_id": device_id if isinstance(device_id, str) else None,
             "token_gateway": stored.gateway if stored else None,
-            "token_scopes": list(stored.scopes) if stored else [],
+            "token_scopes": scopes,
         }
 
     # ── escritura ────────────────────────────────────────────────────────
 
-    def save_token(self, gateway: str, token: str, scopes: Iterable[str], role: str = "operator") -> None:
-        data = self._read()
-        if data is None:
-            raise DeviceFileError()  # sin identidad no hay token que guardar
-        DeviceIdentity.from_record(data)  # no se reescribe un fichero que no vale
+    def _put_token(
+        self, data: dict[str, Any], gateway: str, token: str, scopes: Iterable[str] | None, role: str
+    ) -> None:
         data["device_token"] = {
             "token": token,
-            "scopes": clean_scopes(list(scopes)),
+            # None (no anunciados) se guarda como null, nunca como una lista vacía.
+            "scopes": clean_scopes(list(scopes)) if scopes is not None else None,
             "role": role,
             "gateway": gateway,
         }
         self._write(data, create=False)
 
-    def clear_token(self, gateway: str) -> bool:
-        """Borra el token de `gateway` (si es el guardado). True si había uno."""
+    def _identity_data(self) -> dict[str, Any]:
         data = self._read()
         if data is None:
-            return False
-        stored = _token_from_record(data.get("device_token"))
-        if stored is None or stored.gateway != gateway:
-            return False
-        DeviceIdentity.from_record(data)
-        del data["device_token"]
-        self._write(data, create=False)
-        return True
+            raise DeviceFileError()  # sin identidad no hay token que guardar
+        DeviceIdentity.from_record(data)  # no se reescribe un fichero que no vale
+        return data
+
+    def save_token(
+        self, gateway: str, token: str, scopes: Iterable[str] | None, role: str = "operator"
+    ) -> None:
+        with self._locked():
+            self._put_token(self._identity_data(), gateway, token, scopes, role)
+
+    def accept_token(
+        self, gateway: str, token: str, scopes: Iterable[str] | None, role: str = "operator"
+    ) -> TokenUpdate:
+        """`hello-ok.auth.deviceToken`, como el `acceptHello` del cliente de referencia: un token
+        nuevo o distinto se guarda con los permisos de hello-ok; el mismo token conserva los
+        guardados (nunca se estrechan), salvo que hello-ok anuncie unos más amplios: una
+        ampliación aprobada conserva el token, y esos permisos se piden en el próximo
+        `connect`. Sin permisos anunciados (None) nada cambia."""
+        with self._locked():
+            data = self._identity_data()
+            stored = _token_from_record(data.get("device_token"))
+            if stored is None or stored.gateway != gateway or stored.token != token:
+                self._put_token(data, gateway, token, scopes, role)
+                return "saved"
+            if scopes is None:
+                return "unchanged"
+            new = clean_scopes(list(scopes))
+            if stored.scopes is not None and not set(new) > set(stored.scopes):
+                return "unchanged"
+            self._put_token(data, gateway, token, new, role)
+            return "scopes_updated"
+
+    def clear_token(self, gateway: str) -> bool:
+        """Borra el token de `gateway` (si es el guardado). True si había uno."""
+        with self._locked():
+            data = self._read()
+            if data is None:
+                return False
+            stored = _token_from_record(data.get("device_token"))
+            if stored is None or stored.gateway != gateway:
+                return False
+            DeviceIdentity.from_record(data)
+            del data["device_token"]
+            self._write(data, create=False)
+            return True
 
     def _write(self, data: dict[str, Any], *, create: bool) -> bool:
         """Escribe `data` en un temporal 0600 del mismo directorio y lo pone en su sitio:

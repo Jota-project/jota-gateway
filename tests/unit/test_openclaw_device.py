@@ -131,7 +131,8 @@ def test_created_once_with_0600_and_reused(store):
     assert store.load_or_create() == first
     data = json.loads(store.path.read_text())
     assert data["device_id"] == first.device_id and data["public_key"] == first.public_key
-    assert [p.name for p in store.path.parent.iterdir()] == [store.path.name]  # sin temporales
+    assert sorted(p.name for p in store.path.parent.iterdir()) == sorted(  # sin temporales
+        [store.path.name, store.lock_path.name])
 
 
 def test_concurrent_creation_keeps_the_first_identity(store, monkeypatch):
@@ -158,7 +159,8 @@ def test_failed_write_leaves_the_file_untouched(store, monkeypatch):
     with pytest.raises(OSError):
         store.save_token("127.0.0.1:18789", "devtok-1", ["operator.read"])
     assert store.path.read_bytes() == before
-    assert [p.name for p in store.path.parent.iterdir()] == [store.path.name]
+    assert sorted(p.name for p in store.path.parent.iterdir()) == sorted(
+        [store.path.name, store.lock_path.name])
 
 
 @pytest.mark.parametrize("content", [b"{not json", b"[]", b'{"version": 9}'])
@@ -234,3 +236,122 @@ def test_device_module_top_level_is_stdlib_only():
             "print('cryptography' in sys.modules)")
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert r.stdout.strip() == "False"
+
+
+# ── load_for, accept_token, permisos desconocidos y candado (revisión M19) ──
+
+
+def test_load_for_returns_identity_and_token_in_one_read(store, monkeypatch):
+    identity = store.load_or_create()
+    store.save_token("h:1", "devtok-x", ["operator.read"])
+    reads = []
+    real_read = DeviceStore._read
+
+    def counting_read(self):
+        reads.append(1)
+        return real_read(self)
+
+    monkeypatch.setattr(DeviceStore, "_read", counting_read)
+    got, stored = store.load_for("h:1")
+    assert got == identity and stored.token == "devtok-x"
+    assert len(reads) == 1
+    assert store.load_for("other:2")[1] is None
+
+
+def test_load_for_creates_the_identity(store):
+    identity, stored = store.load_for("h:1")
+    assert stored is None and store.load_or_create() == identity
+
+
+@pytest.mark.parametrize(
+    ("stored", "hello", "result", "expected"),
+    [
+        # Mismo token, permisos más amplios (ampliación aprobada que conserva el token): se guardan.
+        (["operator.read"], ["operator.read", "operator.admin"], "scopes_updated",
+         ("operator.read", "operator.admin")),
+        # Mismo token, hello-ok más estrecho o distinto: los guardados no se estrechan.
+        (["operator.read", "operator.admin"], ["operator.read"], "unchanged",
+         ("operator.read", "operator.admin")),
+        (["operator.read"], ["operator.write"], "unchanged", ("operator.read",)),
+        # hello-ok sin permisos: desconocidos, nada cambia.
+        (["operator.read"], None, "unchanged", ("operator.read",)),
+        # Guardados desconocidos y hello-ok los anuncia: se guardan.
+        (None, ["operator.read"], "scopes_updated", ("operator.read",)),
+    ],
+)
+def test_accept_token_same_token(store, stored, hello, result, expected):
+    store.load_or_create()
+    store.save_token("h:1", "devtok-same", stored)
+    assert store.accept_token("h:1", "devtok-same", hello) == result
+    assert store.token_for("h:1").scopes == expected
+
+
+def test_accept_token_new_token_takes_hello_scopes(store):
+    store.load_or_create()
+    store.save_token("h:1", "devtok-old", ["operator.read", "operator.admin"])
+    assert store.accept_token("h:1", "devtok-new", ["operator.read"]) == "saved"
+    stored = store.token_for("h:1")
+    assert stored.token == "devtok-new" and stored.scopes == ("operator.read",)
+
+
+def test_unknown_scopes_are_stored_as_null_not_empty(store):
+    store.load_or_create()
+    store.accept_token("h:1", "devtok-x", None)
+    assert json.loads(store.path.read_text())["device_token"]["scopes"] is None
+    assert store.token_for("h:1").scopes is None
+    assert store.summary()["token_scopes"] is None
+
+
+def test_lock_file_is_private(store):
+    store.load_or_create()
+    store.save_token("h:1", "t", [])
+    assert stat.S_IMODE(store.lock_path.stat().st_mode) == 0o600
+
+
+def test_writers_are_serialized_by_the_lock(store):
+    """Un segundo proceso (aquí, el test) tiene el flock: save_token espera a que lo suelte."""
+    import fcntl
+    import threading
+
+    store.load_or_create()
+    fd = os.open(store.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    done = threading.Event()
+    writer = threading.Thread(
+        target=lambda: (DeviceStore(store.path).save_token("h:1", "devtok-w", ["a.b"]), done.set())
+    )
+    writer.start()
+    try:
+        assert not done.wait(0.3)  # bloqueado mientras el otro tiene el candado
+        assert store.token_for("h:1") is None
+    finally:
+        os.close(fd)
+    assert done.wait(5)
+    writer.join(5)
+    assert store.token_for("h:1").token == "devtok-w"
+
+
+def test_two_writer_processes_never_lose_the_identity(store):
+    """Dos procesos guardando y borrando tokens a la vez: el fichero siempre vale y conserva la
+    identidad (lectura-modificación-escritura bajo el candado, rename atómico)."""
+    import subprocess
+    import sys
+
+    identity = store.load_or_create()
+    code = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from fogar_gateway.services.openclaw.device import DeviceStore\n"
+        "s = DeviceStore(Path(sys.argv[1]))\n"
+        "for i in range(40):\n"
+        "    s.save_token(sys.argv[2], f'tok-{i}', ['operator.read'])\n"
+        "    s.clear_token(sys.argv[2])\n"
+        "s.save_token(sys.argv[2], 'final', ['operator.read'])\n"
+    )
+    procs = [subprocess.Popen([sys.executable, "-c", code, str(store.path), gw])
+             for gw in ("a:1", "b:2")]
+    for p in procs:
+        assert p.wait(60) == 0
+    assert store.load_or_create() == identity
+    final = json.loads(store.path.read_text())["device_token"]
+    assert final["token"] == "final" and final["gateway"] in ("a:1", "b:2")

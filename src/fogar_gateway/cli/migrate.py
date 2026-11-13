@@ -155,6 +155,18 @@ def _lock_source(lock: Path) -> int | None:
     return fd
 
 
+def _copy_private(src: Path, tmp: Path, dst: Path) -> None:
+    """Copia `src` (abierto solo para leer) a `dst` vía un temporal 0600 con fsync y rename: en
+    destino nunca hay un fichero a medias ni legible por otros."""
+    data = src.read_bytes()
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, dst)
+
+
 @click.command()
 @click.option("--from-docker", "source", required=True, metavar="DIR",
               type=click.Path(path_type=Path), help="Directorio de la instalación Docker.")
@@ -172,7 +184,12 @@ def migrate(ctx: click.Context, source: Path) -> None:
     base = paths.home()
     config, data = paths.config_file(), base / "data"
     db = data / "gateway.db"
-    leftovers = [f for f in (config, db, *(db.with_name(db.name + x) for x in ("-journal", "-wal", "-shm")))
+    # La identidad ante OpenClaw (M19), si la instalación de Docker tiene una: con ella el
+    # gateway nativo sigue emparejado. Nunca se pisa una que ya exista aquí.
+    device_src, device = source / "data" / paths.OPENCLAW_DEVICE_FILENAME, paths.openclaw_device_file()
+    has_device = device_src.is_file()
+    leftovers = [f for f in (config, db, *(db.with_name(db.name + x) for x in ("-journal", "-wal", "-shm")),
+                             *((device,) if has_device else ()))
                  if f.exists()]
     if leftovers:
         raise api.ApiError(f"Ya hay una instalación en {base} ({leftovers[0].name}); no se sobrescribe.")
@@ -180,6 +197,8 @@ def migrate(ctx: click.Context, source: Path) -> None:
     old_umask = os.umask(0o077)  # 700 y 600 desde el primer momento
     made = [d for d in (base, data) if not d.exists()]
     tmp_db, tmp_cfg = db.with_name(db.name + ".tmp"), config.with_name(config.name + ".tmp")
+    tmp_device = device.with_name(device.name + ".tmp")
+    device_copied = False
     done = False
     try:
         text = _read_env(env_src)
@@ -202,6 +221,9 @@ def migrate(ctx: click.Context, source: Path) -> None:
         if errors:
             raise api.ApiError("La configuración migrada no es válida: " + "; ".join(errors)
                                + ". No se ha creado nada.")
+        if has_device:
+            _copy_private(device_src, tmp_device, device)
+            device_copied = True
         done = True
     except (sqlite3.Error, OSError) as e:
         raise api.ApiError(f"Ha fallado la migración ({type(e).__name__}). No se ha creado nada.") from None
@@ -210,8 +232,10 @@ def migrate(ctx: click.Context, source: Path) -> None:
         if lock_fd is not None:
             os.close(lock_fd)
         if not done:
-            for f in (tmp_db, tmp_cfg, db, config):
+            for f in (tmp_db, tmp_cfg, tmp_device, db, config):
                 f.unlink(missing_ok=True)
+            if device_copied:
+                device.unlink(missing_ok=True)
             for d in reversed(made):
                 try:
                     d.rmdir()
@@ -220,8 +244,10 @@ def migrate(ctx: click.Context, source: Path) -> None:
 
     if out.as_json:
         out.json({"from": str(source), "config": {"path": str(config), "dropped": dropped, "added": added},
-                  "db": {"path": str(db), "revision": revision, "clients": clients}})
+                  "db": {"path": str(db), "revision": revision, "clients": clients},
+                  "openclaw_device": str(device) if device_copied else None})
         return
     out.pairs([("origen", source), ("configuración", config), ("quitado", ", ".join(dropped) or "nada"),
-               ("añadido", ", ".join(added) or "nada"), ("BD", f"{db} · migración {revision} · {clients} clientes")])
+               ("añadido", ", ".join(added) or "nada"), ("BD", f"{db} · migración {revision} · {clients} clientes"),
+               *([("identidad OpenClaw", device)] if device_copied else [])])
     out.message("Siguiente paso: fogar-gw install")

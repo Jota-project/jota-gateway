@@ -499,3 +499,31 @@ def test_loose_identity_file_permissions_are_flagged(base):
     found = checks(run("--json", "doctor"))
     assert found["permisos"]["level"] == "warn"
     assert f"chmod 600 {base / 'data' / 'openclaw-device.json'}" in found["permisos"]["detail"]
+
+
+def test_identity_required_is_a_warning_without_approve(base, gateway):
+    _Gateway.routes["/admin/state"] = _state_with_access(
+        pairing="identity_required", identity_error="identity_file_invalid")
+    found = checks(run_at(gateway, "--json", "doctor"))
+    assert found[ACCESS]["level"] == "warn"
+    assert "fichero de identidad" in found[ACCESS]["detail"]
+    assert "approve" not in found[ACCESS]["detail"]
+
+
+def test_unknown_access_while_running_falls_back_to_the_file(base, gateway):
+    """Desconectado (`unknown`): no se presenta un acceso viejo como actual."""
+    _Gateway.routes["/admin/state"] = _state_with_access(pairing="unknown", scopes=None, admin=False)
+    found = checks(run_at(gateway, "--json", "doctor"))
+    assert found[ACCESS]["level"] == "info" and "Sin identidad" in found[ACCESS]["detail"]
+
+
+def test_stored_token_with_unknown_scopes(base):
+    from fogar_gateway.services.openclaw.device import DeviceStore
+
+    port = next(line.split("=")[1] for line in (base / "config.env").read_text().splitlines()
+                if line.startswith("OPENCLAW_PORT="))
+    store = DeviceStore(base / "data" / "openclaw-device.json")
+    store.load_or_create()
+    store.save_token(f"127.0.0.1:{port}", "devtok-x", None)
+    detail = checks(run("--json", "doctor"))[ACCESS]["detail"]
+    assert "permisos: desconocidos" in detail

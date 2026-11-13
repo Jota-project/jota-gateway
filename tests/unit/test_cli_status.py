@@ -117,3 +117,15 @@ def test_status_shows_pending_pairing_with_the_command(use_api):
 def test_status_without_access_fields_has_no_access_line(use_api):
     use_api(FakeApi({("GET", "/admin/state"): STATE}))
     assert "acceso OpenClaw" not in run("status").output
+
+
+def test_status_unknown_scopes(use_api):
+    state = _with_access(scopes=None, admin=False, auth_method="shared_token", pairing="not_required")
+    use_api(FakeApi({("GET", "/admin/state"): state}))
+    assert "permisos desconocidos · token compartido" in run("status").output
+
+
+def test_status_disconnected_hides_access(use_api):
+    state = _with_access(state="RECONNECTING", pairing="unknown")
+    use_api(FakeApi({("GET", "/admin/state"): state}))
+    assert "acceso OpenClaw" not in run("status").output

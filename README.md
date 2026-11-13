@@ -211,7 +211,7 @@ Qué hace `install.sh`:
 `fogar-gw onboard` pregunta lo mínimo y **verifica cada proveedor contra el servicio real antes de guardarlo** en `config.env`:
 
 1. Si falta `config.env` o la BD, prepara `<base>` como `fogar-gw init` (no toca lo que ya exista).
-2. OpenClaw: lo busca en este equipo (si no, pregunta host y puerto) y pide su token: ejecuta `openclaw gateway auth-token --show` en una terminal de la máquina de OpenClaw (`openclaw config get gateway.auth.token` lo enseña siempre redactado). Al verificarlo dice con qué acceso queda («Conectado a OpenClaw … con permisos de administración»). Solo en loopback: para un OpenClaw de otra máquina, un túnel SSH (`ssh -L 18789:127.0.0.1:18789 …`) o, a mano, `fogar-gw config set OPENCLAW_HOST` y aprobar el gateway en OpenClaw (ver [Conexión con OpenClaw](#conexión-con-openclaw)). Sin OpenClaw verificado no sigue.
+2. OpenClaw: lo busca en este equipo (si no, pregunta host y puerto) y pide su token: ejecuta `openclaw gateway auth-token --show` en una terminal de la máquina de OpenClaw (`openclaw config get gateway.auth.token` lo enseña siempre redactado). Verifica siempre el token pegado (aunque el gateway ya tenga un token de dispositivo) y dice con qué acceso queda («Conectado a OpenClaw … con permisos de administración»). Solo en loopback: para un OpenClaw de otra máquina, un túnel SSH (`ssh -L 18789:127.0.0.1:18789 …`) o, a mano, `fogar-gw config set OPENCLAW_HOST` y aprobar el gateway en OpenClaw (ver [Conexión con OpenClaw](#conexión-con-openclaw)). Sin OpenClaw verificado no sigue.
 3. STT y TTS: servicio propio (`host:puerto` y, si la usa, su clave), ElevenLabs (una sola clave para los dos) o «ahora no» (`off`: sin STT no hay transcripción y sin TTS las respuestas llegan solo en texto).
 4. «¿Cómo vas a entrar a Fogar?»: desde casa (red local) siempre; además, si los marcas:
    - **Con Tailscale:** si `tailscale serve` ya lleva al gateway, te da su `https://…` y no toca nada. Si no, pregunta antes de activarlo en 443 (o en 8443 si 443 ya sirve otra cosa; si los dos están ocupados, no lo toca). Si Tailscale pide permiso, te enseña `sudo tailscale set --operator=$USER` y lo ejecuta solo si eliges «Ejecutarlo ahora» (y reintenta una vez); si la tailnet no tiene HTTPS, te da el enlace para activarlo. Sin Tailscale te da los comandos oficiales para instalarlo (`curl -fsSL https://tailscale.com/install.sh | sh` y `sudo tailscale up`) y vuelve a mirar cuando quieras, o sigues sin él: nunca lo instala por ti.
@@ -346,7 +346,7 @@ Los datos (`config.env`, `data/gateway.db`) quedan en `<base>`; bórralos a mano
 
 ### Pasar de Docker a nativo
 
-`fogar-gw migrate --from-docker <carpeta de compose>` copia `.env` y `data/gateway.db` de una instalación Docker a `<base>`. Solo vale para una instalación Docker de la v2.0.0 o posterior: las versiones 1.x no se migran, se instala desde cero. Procedimiento, con la ventana de parada y la vuelta atrás:
+`fogar-gw migrate --from-docker <carpeta de compose>` copia `.env` y `data/gateway.db` de una instalación Docker a `<base>` (y `data/openclaw-device.json`, la identidad ante OpenClaw, si existe: así sigue emparejado). Solo vale para una instalación Docker de la v2.0.0 o posterior: las versiones 1.x no se migran, se instala desde cero. Procedimiento, con la ventana de parada y la vuelta atrás:
 
 1. **Misma versión a los dos lados.** Despliega la versión vN en Docker e instala la vN nativa **sin arrancarla**, con el instalador y `--no-onboard`:
    ```bash
