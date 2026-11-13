@@ -24,6 +24,7 @@ from typing import Any, Literal
 import click
 
 from fogar_gateway import paths
+from fogar_gateway.access import lan_ip as _lan_ip
 from fogar_gateway.cli import api
 from fogar_gateway.cli import config as cfg
 from fogar_gateway.cli.output import ACCENT, MUTED, Out
@@ -216,20 +217,6 @@ def _voice_step(out: Out, kind: Literal["stt", "tts"], answer: Any,
         values = {provider_key: "off"}
     _write(out, values)
     verified.update((k, v) for k, v in values.items() if k == ELEVENLABS_KEY)
-
-
-def _lan_ip() -> str | None:
-    """La IP de la LAN: la de la ruta hacia 8.8.8.8 (`connect` en UDP no envía nada); None si
-    no hay ruta (una LAN sin salida): mejor decirlo que dar 127.0.0.1."""
-    import socket
-
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("8.8.8.8", 80))
-            ip: str = s.getsockname()[0]
-            return ip
-    except OSError:
-        return None
 
 
 def _is_loopback(host: str) -> bool:
