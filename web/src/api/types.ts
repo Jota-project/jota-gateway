@@ -110,7 +110,7 @@ export interface PairingOpened extends PairingSummary {
   code: string
 }
 
-/** `/admin/orchestrators/openclaw/status`, `/admin/transcriber/status`, `/admin/tts/status`. */
+/** `/admin/orchestrator/status`, `/admin/transcriber/status`, `/admin/tts/status`. */
 export interface ServiceDetail {
   name: string
   provider?: string

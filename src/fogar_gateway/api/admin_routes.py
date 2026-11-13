@@ -16,8 +16,8 @@ Clientes:
 Observabilidad:
   GET    /admin/sessions             — sesiones en memoria
   GET    /admin/sessions/{id}        — detalle de sesión
-  GET    /admin/orchestrators/{name}/status
-  POST   /admin/orchestrators/{name}/reconnect  (202)
+  GET    /admin/orchestrator/status
+  POST   /admin/orchestrator/reconnect  (202)
   GET    /admin/transcriber/status
   GET    /admin/tts/status
   GET    /admin/state                — instantánea viva (gateway con `dashboards`, servicios, totales, sesiones)
@@ -304,12 +304,9 @@ async def get_session(session_id: str, request: Request) -> dict:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/orchestrators/{name}/status")
-async def get_orchestrator_status(name: str, request: Request) -> dict:
-    openclaw = request.app.state.openclaw
-    if name != openclaw.get_name():
-        raise HTTPException(status_code=404, detail=f"Orchestrator '{name}' not registered")
-    s = openclaw.status()
+@router.get("/orchestrator/status")
+async def get_orchestrator_status(request: Request) -> dict:
+    s = request.app.state.openclaw.status()
     return {
         "name": s.name,
         "state": s.state.value,
@@ -319,13 +316,11 @@ async def get_orchestrator_status(name: str, request: Request) -> dict:
     }
 
 
-@router.post("/orchestrators/{name}/reconnect", status_code=202)
-async def post_orchestrator_reconnect(name: str, request: Request) -> dict:
-    openclaw = request.app.state.openclaw
-    if name != openclaw.get_name():
-        raise HTTPException(status_code=404, detail=f"Orchestrator '{name}' not registered")
-    job_id = openclaw.trigger_reconnect()
-    return {"accepted": True, "job_id": job_id}
+@router.post("/orchestrator/reconnect", status_code=202)
+async def post_orchestrator_reconnect(request: Request) -> dict:
+    """Retry now: cuts the reconnect loop's wait short (#272). Does not block on the handshake."""
+    request.app.state.openclaw.trigger_reconnect()
+    return {"accepted": True}
 
 
 # ---------------------------------------------------------------------------

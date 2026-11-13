@@ -184,7 +184,7 @@ async def _failed_connect(srv_kwargs, caplog):
     caplog.set_level(logging.DEBUG, logger="fogar_gateway")
     async with Server(**srv_kwargs) as srv:
         roc = ReconnectingOpenClawClient(
-            make_client(srv.port), "test", initial_backoff=0.01, max_backoff=0.02, max_duration=0.3
+            make_client(srv.port), "test", initial_backoff=0.01, max_backoff=0.02
         )
         await roc.connect()
         try:
@@ -227,7 +227,7 @@ async def test_connect_exception_last_error_is_type_name_only(caplog):
     inner.on_disconnect = None
     inner.connect.side_effect = OSError(MARK)
     roc = ReconnectingOpenClawClient(
-        inner, "test", initial_backoff=0.01, max_backoff=0.02, max_duration=0.1
+        inner, "test", initial_backoff=0.01, max_backoff=0.02
     )
     await roc.connect()
     try:

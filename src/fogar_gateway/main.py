@@ -106,7 +106,6 @@ async def _lifespan_body(app: FastAPI):
         name="openclaw",
         initial_backoff=settings.ORCHESTRATOR_RECONNECT_INITIAL_BACKOFF,
         max_backoff=settings.ORCHESTRATOR_RECONNECT_MAX_BACKOFF,
-        max_duration=settings.ORCHESTRATOR_RECONNECT_MAX_DURATION,
     )
     # Never raises: a failed first connect is logged and retried in the background.
     await openclaw.connect()

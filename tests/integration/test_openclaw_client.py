@@ -932,8 +932,7 @@ async def test_admin_trigger_reconnect_coalesces_with_real_background_reconnect(
         await fake_ws.close()  # simulate an unexpected drop → background reconnect starts
         await connect_attempted.wait()  # background reconnect is now mid-handshake
 
-        admin_job_id = roc.trigger_reconnect()
-        assert admin_job_id == roc._reconnect_job_id
+        roc.trigger_reconnect()
 
         release_connect.set()
         await asyncio.sleep(0.05)

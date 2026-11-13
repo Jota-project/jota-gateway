@@ -466,7 +466,7 @@ a challenge/`hello`/`hello.payload` that is not a JSON object all raise
 retried by the reconnect loop like any failed connect (the one exception, the retryable
 `startup-sidecars` `UNAVAILABLE`, is first retried inside `connect()` itself — see "OpenClaw
 still starting" below). `ReconnectingOpenClawClient`'s
-`last_error` (exposed by `GET /admin/orchestrators/{name}/status`) holds that code, or just the
+`last_error` (exposed by `GET /admin/orchestrator/status`) holds that code, or just the
 exception type name (`OSError`, `TimeoutError`...) for anything else. The same `last_error`
 rule applies to every wrapper that goes through `reconnect_with_backoff`.
 

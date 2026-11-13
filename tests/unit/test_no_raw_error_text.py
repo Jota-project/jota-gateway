@@ -67,28 +67,17 @@ async def test_turn_error_relays_orchestrator_error_code(make_bridge):
     assert ws.of("error")[0]["message"] == "turn_timeout"
 
 
-async def test_openclaw_slow_retry_last_error_has_no_raw_text(caplog):
+async def test_openclaw_reconnect_last_error_has_no_raw_text(caplog):
     caplog.set_level(logging.DEBUG)
     inner = AsyncMock(spec=OpenClawClient)
     inner.on_disconnect = None
     inner.gateway_info = None
     inner.connect.side_effect = RuntimeError(SECRET)
-    roc = ReconnectingOpenClawClient(
-        inner, "test", initial_backoff=0.01, max_backoff=0.02, max_duration=0.05
-    )
+    roc = ReconnectingOpenClawClient(inner, "test", initial_backoff=0.01, max_backoff=0.02)
     await roc.connect()
-    for _ in range(100):
-        if roc._reconnect_exhausted:
-            break
-        await asyncio.sleep(0.01)
-    assert roc.state == ConnectionState.DEGRADED
-    before = inner.connect.call_count
-    for _ in range(100):  # al menos un intento del reintento lento
-        if inner.connect.call_count > before:
-            break
-        await asyncio.sleep(0.01)
-    await asyncio.sleep(0.01)
-    assert inner.connect.call_count > before
+    await asyncio.sleep(0.15)  # several attempts of the one loop
+    assert inner.connect.call_count > 2
+    assert roc.state == ConnectionState.RECONNECTING
 
     assert roc.status().last_error == "RuntimeError"
     assert SECRET not in _logged(caplog)
@@ -331,9 +320,9 @@ async def test_openclaw_reconnect_task_failure_logs_type_only(monkeypatch, caplo
     async def _boom_async(*a, **k):
         raise RuntimeError(SECRET)
 
-    monkeypatch.setattr("fogar_gateway.services.openclaw.reconnecting.reconnect_with_backoff", _boom_async)
     roc = ReconnectingOpenClawClient(AsyncMock(spec=OpenClawClient), "oc")
-    roc._ensure_reconnecting()
+    monkeypatch.setattr(roc, "_reconnect_loop", _boom_async)
+    roc._ensure_loop()
     for _ in range(3):
         await asyncio.sleep(0)
     assert roc._reconnect_task.done()
