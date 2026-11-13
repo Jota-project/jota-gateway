@@ -63,7 +63,7 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la guía completa 
 
 | Endpoint | Método | Auth | Descripción |
 |----------|--------|------|-------------|
-| `/.well-known/fogar-gateway` | GET | ninguna | Identifica al gateway: `{"service": "fogar-gateway", "version", "name"}` (`name` = `GATEWAY_NAME` o el nombre del equipo) |
+| `/.well-known/fogar-gateway` | GET | ninguna | Identifica al gateway: `{"service": "fogar-gateway", "version", "name", "instance_id"}` (`name` = `GATEWAY_NAME` o el nombre del equipo; `instance_id` = identificador aleatorio por arranque del proceso) |
 | `/pair` | POST | un código de `fogar-gw pair` | El cliente canjea el código y recibe su `client_key`, la única vez que se ve. Ver [Emparejar un cliente](#emparejar-un-cliente) |
 
 Los dos son públicos: detrás de un proxy o un túnel también llegan desde internet. `/pair` solo acepta un código abierto por el administrador, y 5 códigos erróneos seguidos anulan todos los abiertos. El protocolo para clientes está en [`docs/client-protocol.md` §0](docs/client-protocol.md#0-descubrir-el-gateway-y-emparejarse).

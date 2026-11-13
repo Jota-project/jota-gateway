@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 
 import pytest
 from sqlmodel import Session, select
@@ -60,9 +61,15 @@ def test_well_known_shape(http):
     r = http.get("/.well-known/fogar-gateway")
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"service", "version", "name"}
+    assert set(body) == {"service", "version", "name", "instance_id"}
     assert body["service"] == "fogar-gateway"
     assert body["name"]  # nombre del equipo por defecto
+
+
+def test_well_known_instance_id_stable_per_process(http):
+    a = http.get("/.well-known/fogar-gateway").json()["instance_id"]
+    b = http.get("/.well-known/fogar-gateway").json()["instance_id"]
+    assert a == b and re.fullmatch(r"[0-9a-f]{16}", a)
 
 
 def test_well_known_uses_gateway_name(http, monkeypatch):

@@ -3,7 +3,7 @@
 Descubrimiento y emparejamiento de clientes (#317).
 
 Público, sin autenticación:
-  GET    /.well-known/fogar-gateway  — «soy un Fogar»: servicio, versión y nombre
+  GET    /.well-known/fogar-gateway  — «soy un Fogar»: servicio, versión, nombre e instance_id
   POST   /pair                      — el cliente canjea un código y recibe su client_key (una sola vez)
 
 Administración (X-Admin-Token):
@@ -41,6 +41,9 @@ from fogar_gateway.services.pairing import InvalidCode, Pairing, PairingFull, Pa
 
 logger = logging.getLogger(__name__)
 
+# Uno por arranque del proceso: confirma que una URL llega a *este* gateway. No es un secreto.
+INSTANCE_ID: str = secrets.token_hex(8)
+
 public_router = APIRouter()
 admin_router = APIRouter(prefix="/admin/pairing", dependencies=[Depends(get_admin_auth)])
 
@@ -65,6 +68,7 @@ def well_known() -> dict[str, Any]:
         "service": "fogar-gateway",
         "version": __version__,
         "name": gateway_name(),
+        "instance_id": INSTANCE_ID,
     }
 
 

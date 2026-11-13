@@ -38,10 +38,10 @@ GET http://<host>:8004/.well-known/fogar-gateway
 ```
 
 ```json
-{"service": "fogar-gateway", "version": "1.29.0", "name": "green-house"}
+{"service": "fogar-gateway", "version": "1.29.0", "name": "green-house", "instance_id": "3f9a1c2e7b5d4a60"}
 ```
 
-Es un Fogar si responde 200 con `"service": "fogar-gateway"`. No basta con `/healthz`: su `{"status": "ok"}` lo devolvería cualquier servicio. `name` es el nombre que enseñar al usuario (`GATEWAY_NAME`, o el del equipo).
+Es un Fogar si responde 200 con `"service": "fogar-gateway"`. No basta con `/healthz`: su `{"status": "ok"}` lo devolvería cualquier servicio. `name` es el nombre que enseñar al usuario (`GATEWAY_NAME`, o el del equipo). `instance_id` cambia en cada arranque del proceso y sirve para comprobar que una dirección llega a este gateway; no es un secreto.
 
 Una dirección es `host` o `host:puerto` (puerto 8004 por defecto), sin protocolo. En la LAN y en la tailnet se habla en claro (`http://`, `ws://`); detrás de un proxy con TLS, `https://` y `wss://`.
 
