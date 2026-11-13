@@ -1,6 +1,9 @@
 """`fogar-gw access`: desde dónde se llega al gateway, verificado y con una vía recomendada."""
 
 import json
+import re
+import shutil
+import subprocess
 import urllib.request
 from typing import Any
 
@@ -21,6 +24,33 @@ def gateway_instance_id(url: str) -> str | None:
         return iid if isinstance(iid, str) else None
     except (OSError, ValueError):  # URLError, timeout y JSON ilegible: para la CLI, «no responde»
         return None
+
+
+def free_serve_port(serve: dict[str, Any] | None) -> int | None:
+    """Puerto HTTPS libre en `tailscale serve` (443, si no 8443); None si ambos están ocupados."""
+    tcp = (serve or {}).get("TCP")
+    taken = tcp if isinstance(tcp, dict) else {}
+    return next((p for p in (443, 8443) if str(p) not in taken), None)
+
+
+def enable_serve(port: int, gw_port: int, exe: str = "tailscale") -> tuple[str, str]:
+    """`tailscale serve --bg` hacia el gateway: ("ok"|"permiso"|"https_off"|"error", detalle). No lanza."""
+    path = shutil.which(exe)
+    if path is None:
+        return "error", "FileNotFoundError"
+    cmd = [path, "serve", "--bg", f"--https={port}", f"http://127.0.0.1:{gw_port}"]
+    try:
+        r = subprocess.run(cmd, timeout=15, capture_output=True, text=True, stdin=subprocess.DEVNULL, check=False)
+    except (OSError, subprocess.SubprocessError) as e:  # TimeoutExpired incluido: nunca cuelga
+        return "error", type(e).__name__
+    if r.returncode == 0:
+        return "ok", ""
+    out = f"{r.stdout}\n{r.stderr}"
+    if "Access denied" in out or "--operator" in out:
+        return "permiso", ""
+    if m := re.search(r"https://login\.tailscale\.com/\S+", out):
+        return "https_off", m.group(0)
+    return "error", f"exit {r.returncode}"
 
 
 def _status_text(r: Any) -> str:
