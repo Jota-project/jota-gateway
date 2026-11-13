@@ -54,16 +54,15 @@ KEEP = {"fogar": "servicio propio", "elevenlabs": "ElevenLabs", "off": "desactiv
 
 def _ask(kind: str, message: str, **kwargs: Any) -> Any:
     """Una pregunta de questionary; Ctrl+C (questionary devuelve None) cancela el asistente."""
-    # Sin consultas de posición del cursor: hay terminales que no las contestan y prompt_toolkit
-    # pintaría un WARNING entre las preguntas.
-    os.environ.setdefault("PROMPT_TOOLKIT_NO_CPR", "1")
     import questionary
 
-    from fogar_gateway.cli.menu import _style
+    from fogar_gateway.cli.menu import SELECT_HINT, _style
 
     if kind == "confirm":  # questionary solo entiende y/n: se dice en castellano qué tecla es qué
         yes = kwargs.get("default", True)
         kwargs.setdefault("instruction", "(Enter: sí · n: no) " if yes else "(Enter: no · y: sí) ")
+    elif kind == "select":
+        kwargs.setdefault("instruction", SELECT_HINT)
     answer = getattr(questionary, kind)(message, style=_style(), qmark="\u203a", **kwargs).ask()
     if answer is None:
         raise click.Abort
@@ -74,8 +73,7 @@ def _choose(message: str, options: list[tuple[str, str]], default: str | None = 
     import questionary
 
     choices = [questionary.Choice(title, value=value) for title, value in options]
-    answer: str = _ask("select", message, choices=choices, default=default,
-                       instruction="(↑↓ y Enter)")
+    answer: str = _ask("select", message, choices=choices, default=default)
     return answer
 
 
@@ -96,9 +94,13 @@ def _busy(out: Out, text: str) -> Iterator[None]:
     if not out.styled:
         yield
         return
+    import sys
+
     from fogar_gateway.cli.output import BRASA
 
-    with out._console().status(text, spinner="dots", spinner_style=BRASA):
+    console = out._console()
+    console.file = sys.stdout  # la terminal de ahora: un `_hidden` posterior no se lo traga
+    with console.status(text, spinner="dots", spinner_style=BRASA):
         yield
 
 
@@ -390,9 +392,10 @@ def _dashboard_styled(out: Out, routes: list[Any], settings: Any,
     if rec and not rec.https:
         out.note(HTTPS_HINT)
     _copy_to_clipboard(settings.ADMIN_TOKEN)
-    out.ok("Token de administración copiado al portapapeles: pégalo en el dashboard para entrar.")
-    out.note(f"Si tu terminal no deja copiar, míralo con `fogar-gw token` "
-             f"(está en {paths.config_file()}).")
+    out.message("  Para entrar, pega el token de administración. Te lo he mandado al portapapeles "
+                "(no se imprime).")
+    out.note(f"Si no está en tu portapapeles (el Terminal de macOS no lo permite), míralo con "
+             f"`fogar-gw token` (está en {paths.config_file()}).")
     out.note(WARNING)
     out.ok("Empareja tu primer aparato desde Clientes, en el dashboard.")
     if lan:
@@ -572,7 +575,7 @@ def _run(ctx: click.Context, out: Out, answers: Any) -> None:
         cli_access.access_step(out, answers and answers.access, settings)
     out.step("Servicio")
     if not service.unit_path().exists():
-        with _hidden(out), _busy(out, "Instalando y arrancando el servicio…"):
+        with _busy(out, "Instalando y arrancando el servicio…"), _hidden(out):
             ctx.invoke(service.install)
         if styled:
             out.ok("Servicio instalado y en marcha (se arranca solo con el equipo).")

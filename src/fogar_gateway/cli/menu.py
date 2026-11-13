@@ -42,7 +42,16 @@ def interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
+SELECT_HINT = "(↑↓ y Enter)"
+
+
 def _style() -> Any:
+    """El estilo de todas las preguntas. Lo llama cada pregunta antes de abrirse: aquí también
+    se apagan las consultas de posición del cursor (CPR), que hay terminales que no contestan y
+    prompt_toolkit pintaría un WARNING entre las preguntas."""
+    import os
+
+    os.environ.setdefault("PROMPT_TOOLKIT_NO_CPR", "1")
     import questionary
 
     # La brasa marca lo que pasa ahora (la pregunta y la opción bajo el cursor); la respuesta ya
@@ -61,7 +70,8 @@ def _select(message: str, options: list[tuple[str, str]]) -> str | None:
     import questionary
 
     choices = [questionary.Choice(title, value=value) for title, value in options]
-    answer: str | None = questionary.select(message, choices=choices, style=_style()).ask()
+    answer: str | None = questionary.select(message, choices=choices, style=_style(),
+                                            instruction=SELECT_HINT).ask()
     return answer
 
 

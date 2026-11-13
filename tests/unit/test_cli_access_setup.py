@@ -85,7 +85,7 @@ def test_setup_offers_one_choice_with_four_ways(st):
     # Una sola elección (#328): con casillas no quedaba claro qué se había elegido.
     assert kind == "select" and message == "¿Desde dónde vas a entrar a Fogar?"
     assert [c.value for c in kw["choices"]] == ["lan", "tailscale", "domain", "tailscale+domain"]
-    assert kw["choices"][0].title == "Solo desde casa (red local)" and kw["default"] == "lan"
+    assert kw["choices"][0].title == "Desde casa (red local)" and kw["default"] == "lan"
     assert st.enabled == [] and "PUBLIC_URLS" not in dotenv_values(st.env)
     assert "Acceso: desde casa." in r.output
 
@@ -213,7 +213,7 @@ def test_setup_tailscale_missing_shows_install_commands(st):
 def test_setup_tailscale_redetects_after_install(st, monkeypatch):
     st.serve = OURS
     st.queue = ["tailscale", "retry"]
-    seen = iter([None, RUNNING])
+    seen = iter([None, None, RUNNING])  # la 1.ª, al mirar qué hay ya
     monkeypatch.setattr(access_mod, "tailscale_status", lambda exe="tailscale": next(seen))
     r = setup()
     assert r.exit_code == 0, r.output
@@ -231,3 +231,13 @@ def test_setup_ctrl_c_aborts(st):
     st.queue = [None]
     r = setup()
     assert r.exit_code == 1 and "Aborted!" in r.output
+
+
+def test_setup_starts_from_what_is_already_there(st):
+    st.serve = OURS  # `tailscale serve` ya lleva al gateway
+    st.env.write_text(f"ADMIN_TOKEN={ADMIN}\nPUBLIC_URLS=https://a.example.com/\n")
+    st.queue = ["lan"]  # elegir «Desde casa» no quita nada: el resumen lo dice
+    r = setup()
+    assert r.exit_code == 0, r.output
+    assert st.asked[0][2]["default"] == "tailscale+domain"
+    assert "Acceso: desde casa, con Tailscale y con tu dominio." in r.output

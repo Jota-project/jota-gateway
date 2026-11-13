@@ -13,7 +13,7 @@ import click
 from fogar_gateway.cli.output import ACCENT, MUTED, Out
 
 ACCESS_OPTIONS = [
-    ("Solo desde casa (red local)", "lan"),
+    ("Desde casa (red local)", "lan"),
     ("Casa y Tailscale (desde fuera, sin abrir puertos)", "tailscale"),
     ("Casa y mi dominio (HTTPS con tu proxy)", "domain"),
     ("Casa, Tailscale y mi dominio", "tailscale+domain"),
@@ -188,21 +188,35 @@ def access_step(out: Out, answers: Any | None, settings: Any) -> None:
         if answers.public_urls:
             _domain(out, parse_public_urls(",".join(answers.public_urls)))
         return
+    from fogar_gateway import access as acc
     from fogar_gateway.cli.onboard import _choose
 
     # Una sola elección (no casillas): la respuesta dice entera qué se ha elegido. Desde casa
-    # se entra siempre; cada opción añade lo de fuera.
-    chosen = _choose("¿Desde dónde vas a entrar a Fogar?", ACCESS_OPTIONS, default="lan")
-    ways = ["desde casa"]  # lo que queda listo, no lo elegido: Tailscale puede saltarse o fallar
-    if "tailscale" in chosen:
-        if _tailscale(out, True, serve.PORT):
-            ways.append("con Tailscale")
-        else:
-            out.warn("Tailscale queda sin activar: `fogar-gw access setup` cuando quieras.")
+    # se entra siempre; cada opción añade lo de fuera. Por defecto, lo que ya hay.
+    ts_on = _serving(serve.PORT)
+    dom_on = bool(acc.configured_public_urls())
+    current = {(False, False): "lan", (True, False): "tailscale", (False, True): "domain",
+               (True, True): "tailscale+domain"}[(ts_on, dom_on)]
+    chosen = _choose("¿Desde dónde vas a entrar a Fogar?", ACCESS_OPTIONS, default=current)
+    if "tailscale" in chosen and not (ts_on := _tailscale(out, True, serve.PORT)):
+        out.warn("Tailscale queda sin activar: `fogar-gw access setup` cuando quieras.")
     if "domain" in chosen:
         _domain(out, None)
-        ways.append("con tu dominio")
+    # Lo que queda listo, no lo elegido: Tailscale puede saltarse o fallar, y nada se quita.
+    ways = ["desde casa", *(["con Tailscale"] if ts_on else []),
+            *(["con tu dominio"] if acc.configured_public_urls() else [])]
     out.ok("Acceso: " + ", ".join(ways[:-1]) + (" y " if len(ways) > 1 else "") + ways[-1] + ".")
+
+
+def _serving(gw_port: int) -> bool:
+    """¿`tailscale serve` ya lleva al gateway? Solo mira; sin Tailscale, False."""
+    from fogar_gateway import access as acc
+
+    status = acc.tailscale_status()
+    if status is None or status.get("BackendState") != "Running":
+        return False
+    serve = acc.serve_status()
+    return serve is not None and acc.serve_https_port(serve, gw_port) is not None
 
 
 def _list(ctx: click.Context, out: Out, settings: Any) -> None:
