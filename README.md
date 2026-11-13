@@ -91,6 +91,7 @@ Los dos son públicos: detrás de un proxy o un túnel también llegan desde int
 | `/admin/pairing/{id}` | DELETE | Anular un código abierto |
 | `/admin/state` | GET | Instantánea viva: versión, uptime, flujos `/admin/state/stream` abiertos (`gateway.dashboards`), estado de servicios, contadores y una fila por sesión |
 | `/admin/state/stream` | GET | La misma instantánea por SSE cada segundo; cada stream termina solo a los 25 s, el cliente debe reconectar (`EventSource` lo hace solo) |
+| `/admin/access` | GET | Vías para llegar al gateway (`public`, `tailscale_https`, `tailscale`, `lan`), cada una con su estado (`ok`, `protegida`, `otro_gateway`, `inalcanzable`, `sin_verificar`) y la recomendada; `{"docker": bool, "routes": [...]}`, en caché 15 s |
 
 Los tres endpoints `*/status` comparten la forma `{"name", "state", "connected_at", "reconnect_attempts", "last_error"}`; los de transcriber y TTS añaden `provider` y, con ElevenLabs, `counters`.
 
@@ -101,6 +102,7 @@ fogar-gw                        # en una terminal: menú interactivo; en un scri
 fogar-gw init                   # instalación nueva: <base>, config.env con ADMIN_TOKEN aleatorio y la BD
 fogar-gw onboard [--answers FICHERO]   # asistente: OpenClaw, voz, servicio y dashboard
 fogar-gw token                  # el token del dashboard (ADMIN_TOKEN), solo en una terminal
+fogar-gw access                 # desde dónde se llega al gateway, verificado, con la vía recomendada
 fogar-gw serve [--create-db]    # arranca el gateway (puerto 8004, host GATEWAY_HOST)
 fogar-gw doctor                 # diagnóstico: configuración, BD, permisos, candado, gateway y servicios
 fogar-gw config show            # ajustes efectivos y su origen (entorno, config.env o por defecto)
