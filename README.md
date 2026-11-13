@@ -1,28 +1,33 @@
-# fogar-gateway
+# Fogar Gateway
 
-BFF (Backend For Frontend) del ecosistema Fogar IA. Punto de entrada único para todos los clientes: Fogar TV (tele), jota-voice (Mac y Android), la app de iPhone (fase inicial) y Home Assistant. Un cliente ESP32 está planificado (*planned*) y sin desarrollar.
+La puerta de entrada de Fogar en casa. Un solo servicio que reconoce cada aparato del hogar, lo conecta con el asistente y con la voz, y se administra desde el navegador o la terminal.
+
+- **Aparatos**: Fogar TV, el cliente de voz (Mac y Android), la app de iPhone y Home Assistant. Un aparato nuevo **descubre el gateway y se empareja con un código de 6 cifras**, sin copiar claves.
+- **Asistente**: los turnos de voz y texto van a [OpenClaw](docs/openclaw-protocol.md), que elige el agente y sus herramientas. El gateway lleva el turno de principio a fin: streaming, interrupciones (barge-in) y avisos que llegan sin preguntar (push).
+- **Voz**: transcripción (STT) y síntesis (TTS) con los servicios propios de Fogar, con ElevenLabs o desactivadas. Sin voz, el texto sigue funcionando.
+- **Administración**: un panel web en `/` (estado en vivo, sesiones y clientes) y la CLI `fogar-gw` (diagnóstico, configuración, servicio, logs y emparejamiento).
+- **Instalación**: un comando instala, verifica OpenClaw y la voz contra los servicios reales, lo deja como servicio de usuario y te dice cómo llegar al panel: desde casa, por Tailscale o por tu propio dominio.
 
 ```
-Fogar TV / jota-voice / App iPhone / Home Assistant
-        │
-        ▼
-  fogar-gateway (FastAPI :8004)
-  ├── /ws/stream          WebSocket — sesión interactiva de voz/texto
-  ├── /healthz            Liveness probe
-  ├── /ready              Readiness probe
-  ├── /admin/*            Gestión y observabilidad (X-Admin-Token)
-  └── /v1/*               OpenAI-compatible (Home Assistant, Open WebUI)
-        │
-        ▼
-  ┌──────────────────────────────────────────┐
-  │             Microservicios               │
-  │  OpenClaw         WebSocket v4           │
-  │  fogar-transcriber WebSocket              │
-  │  fogar-speaker     WebSocket              │
-  └──────────────────────────────────────────┘
+  Aparatos de casa                    Fogar Gateway  :8004                     Servicios
+  ────────────────                    ────────────────────                     ─────────
+  Fogar TV           ──┐          ┌── /ws/stream      voz y texto en vivo  ──┐
+  Voz (Mac, Android) ──┤ descubren│   /.well-known    descubrimiento        │──► OpenClaw (agentes)
+  App iPhone         ──┤ y se     │   /pair           emparejamiento        │──► STT: propio · ElevenLabs · off
+  Home Assistant     ──┘ emparejan└── /v1/*           API compatible OpenAI ┘──► TTS: propio · ElevenLabs · off
+
+  Tú, desde casa, Tailscale o tu dominio:
+    navegador ──► /           panel web (estado, sesiones, clientes)
+    terminal  ──► fogar-gw    CLI sobre /admin/* (doctor, config, servicio, logs, pair)
 ```
 
-No hay dependencia de `jota-db` — la identidad y configuración de clientes viven en una base de datos SQLite local (`<base>/data/gateway.db`, con `<base>` = `~/.fogar-gateway` por defecto). Requiere OpenClaw **2026.6.11 o posterior** (detalles del protocolo en [`docs/openclaw-protocol.md`](docs/openclaw-protocol.md)).
+La identidad y la configuración de cada aparato viven en una base de datos SQLite local (`<base>/data/gateway.db`, con `<base>` = `~/.fogar-gateway` por defecto). Requiere OpenClaw **2026.6.11 o posterior**.
+
+```bash
+curl -fsSL https://github.com/fogarhome/fogar-gateway/releases/latest/download/install.sh | sh
+```
+
+Detalles en [Instalación](#instalación). Si integras un aparato nuevo, el protocolo está en [`docs/client-protocol.md`](docs/client-protocol.md).
 
 ---
 
@@ -333,7 +338,7 @@ Los datos (`config.env`, `data/gateway.db`) quedan en `<base>`; bórralos a mano
 
 ### Pasar de Docker a nativo
 
-`fogar-gw migrate --from-docker <carpeta de compose>` copia `.env` y `data/gateway.db` de una instalación Docker a `<base>`. Procedimiento, con la ventana de parada y la vuelta atrás:
+`fogar-gw migrate --from-docker <carpeta de compose>` copia `.env` y `data/gateway.db` de una instalación Docker a `<base>`. Solo vale para una instalación Docker de la v2.0.0 o posterior: las versiones 1.x no se migran, se instala desde cero. Procedimiento, con la ventana de parada y la vuelta atrás:
 
 1. **Misma versión a los dos lados.** Despliega la versión vN en Docker e instala la vN nativa **sin arrancarla**, con el instalador y `--no-onboard`:
    ```bash
@@ -480,7 +485,7 @@ Antes de poder usarlo hace falta configurar, una sola vez, lo siguiente
 2. **Runner self-hosted dedicado**, separado del runner `green-house` existente
    (que sirve a otro repo). Registrar una segunda instancia de
    [`actions-runner`](https://github.com/actions/runner) en este servidor, con
-   label `jota-e2e`, contra este repo.
+   label `fogar-e2e`, contra este repo.
 3. **GitHub Environment `e2e-real-production`** (Settings → Environments):
    - *Required reviewers*: el usuario propietario del repo, explícitamente.
    - *Deployment branches*: restringido a `main`.
@@ -517,11 +522,15 @@ El gateway instancia un `FogarBridge` por cada sesión WebSocket. Los tres servi
 ```
 src/fogar_gateway/
 ├── paths.py                 directorio base, config.env y ruta de la BD (compartido con la CLI)
+├── access.py                vías para llegar al gateway: LAN, Tailscale, PUBLIC_URLS; verificación y recomendada
 ├── alembic.ini, migrations/ migraciones de Alembic, dentro del paquete instalado
+├── web/                     el panel compilado (lo mete el build en el wheel; no está en git)
 ├── api/
-│   ├── routes.py            WebSocket /ws/stream — handshake, ready, bridge lifecycle
-│   ├── admin_routes.py      /admin/* — CRUD de clientes + observabilidad (sesiones, orquestador, transcriptor, TTS)
+│   ├── routes.py            WebSocket /ws/stream — handshake, ready, ciclo de vida del bridge
+│   ├── pairing_routes.py    /.well-known/fogar-gateway, POST /pair y /admin/pairing
+│   ├── admin_routes.py      /admin/* — clientes, sesiones, servicios, voz, vías de acceso y estado en vivo (SSE)
 │   ├── openai_routes.py     /v1/models, /v1/chat/completions
+│   ├── web_routes.py        el panel en / (caché, CSP y vuelta a index.html)
 │   ├── health_routes.py     /healthz, /ready
 │   └── deps.py              get_admin_auth — dependencia de auth para admin
 ├── core/
@@ -529,16 +538,22 @@ src/fogar_gateway/
 │   ├── agent_policy.py      resolve_agent() — cascada y política de agentes
 │   ├── network.py           resolve_client_ip() / origen de confianza de /v1
 │   ├── startup_checks.py    lock de proceso único y comprobaciones de arranque
+│   ├── logging.py           formatos de log y fingerprint_key()
 │   └── session_key.py       make_session_key() — formato canónico de session key
 ├── db/
 │   ├── models.py            ClientRecord (SQLModel) — identidad y config por cliente
 │   └── database.py          get_engine() / run_migrations() / get_db_session()
-├── cli/                     fogar-gw — init, serve, menú, doctor, config, status, version, clients, service (servicio systemd), logs, migrate y onboard (onboard.py, el asistente; verify.py, que verifica cada proveedor contra el servicio real)
+├── cli/                     fogar-gw — init, serve, menú, onboard (el asistente; verify.py comprueba cada
+│                            proveedor contra el servicio real), access, token, pair, clients, doctor, config,
+│                            status, version, servicio systemd (install/start/stop/restart), logs y migrate
 └── services/
     ├── bridge.py            FogarBridge — coordinador de sesión WS
-    ├── db_client.py         DbClient — lee ClientRecord de SQLite local (singleton, sin caché)
+    ├── pairing.py           PairingStore — códigos de emparejamiento en memoria
+    ├── db_client.py         DbClient — lee ClientRecord de SQLite local (sin caché)
     ├── outbound.py          QueuedSender — salida serializada hacia cada cliente
+    ├── pacing.py            AudioPacer — el audio TTS a 1× con un pequeño adelanto
     ├── reconnection.py      ConnectionState / ServiceStatus / to_wire_state() — compartido por los 3 wrappers
+    ├── teardown.py          Teardown — cierre ordenado sin perder errores ni cancelaciones
     ├── transcriber_client.py       WebSocket → fogar-transcriber, protocolo puro (sin reconexión)
     ├── transcriber_reconnecting.py ReconnectingTranscriberClient — uno por sesión de audio, backoff en background
     ├── tts_client.py                WebSocket → fogar-speaker, protocolo puro, creado por turno

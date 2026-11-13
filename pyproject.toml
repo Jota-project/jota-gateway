@@ -1,7 +1,7 @@
 [project]
 name = "fogar-gateway"
 dynamic = ["version"]
-description = "BFF gateway for fogar voice/text clients"
+description = "Fogar Gateway: the home entry point that pairs Fogar devices and connects them to OpenClaw and voice (STT/TTS)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -62,7 +62,7 @@ extend-exclude = ["src/fogar_gateway/migrations/versions"]
 
 [tool.ruff.lint]
 # BLE001/S110/S112/B904/RUF006/ASYNC/TID251: política de errores y cancelación (#221,
-# vault «JGW Decisión - Política de errores y cancelación»). TRY400 queda fuera a
+# decisión «Política de errores y cancelación» del vault). TRY400 queda fuera a
 # propósito: logger.exception volcaría el texto de la excepción.
 select = [
     "E", "F", "W", "I", "UP", "B", "SIM", "RUF",

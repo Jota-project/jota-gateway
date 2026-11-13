@@ -29,4 +29,4 @@ Todo sale de `fogar-brand`, copiado y sin editar a mano:
 
 Reglas que no se negocian: nada se carga de fuera (CSP `default-src 'self'`), nunca `v-html` ni `style="…"` estático en las plantillas (la CSP no deja estilos en línea), la clave de un cliente y el código de emparejamiento solo existen en la pantalla que los enseña.
 
-Spec, plan y decisiones: en Obsidian, `JGW Spec 2026-11-12 - Dashboard de Fogar (M18)`.
+Spec, plan y decisiones: en Obsidian, spec «Dashboard de Fogar (M18)» del 2026-11-12.

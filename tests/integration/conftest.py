@@ -1,7 +1,7 @@
 """
 Fixtures de integración.
 
-BD: SQLite en memoria inyectada por monkeypatch (reemplaza respx/jota-db).
+BD: SQLite en memoria inyectada por monkeypatch (sin servicio de BD externo).
 WebSocket: fake servers TTS/transcriber en hilos de background (sin cambios).
 Orchestrator: MockOrchestrator inyectado via monkeypatch (sin cambios).
 """
@@ -166,7 +166,7 @@ def make_mock_registry(orchestrator=None):
 
 
 # ---------------------------------------------------------------------------
-# Health-check HTTP mocks (transcriber + TTS — sin jota-db)
+# Health-check HTTP mocks (transcriber + TTS)
 # ---------------------------------------------------------------------------
 
 
