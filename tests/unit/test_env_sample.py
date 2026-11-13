@@ -1,7 +1,7 @@
 """`.env.sample` debe reflejar `Settings` exactamente (issue #118).
 
 Cada campo de Settings aparece (activo o comentado si es opcional) y no queda
-ninguna variable que Settings ya no conozca (p. ej. las de la era jota-db).
+ninguna variable que Settings ya no conozca (p. ej. las de la antigua BD externa de clientes).
 """
 
 import re

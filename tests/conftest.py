@@ -5,7 +5,7 @@ import tempfile
 
 # Antes del primer import de fogar_gateway: Settings lee <base>/config.env al importarse, y la
 # suite no debe leer ni crear nada en el ~/.fogar-gateway real (M14c). Los subprocesos lo heredan.
-os.environ["FOGAR_GATEWAY_HOME"] = tempfile.mkdtemp(prefix="jgw-tests-")
+os.environ["FOGAR_GATEWAY_HOME"] = tempfile.mkdtemp(prefix="fogar-gw-tests-")
 
 import pytest
 from starlette.testclient import TestClient

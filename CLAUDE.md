@@ -7,7 +7,7 @@ Guidance for Claude Code in this repository. Reference docs live elsewhere; link
 - [`docs/openclaw-protocol.md`](docs/openclaw-protocol.md) — OpenClaw wire protocol as observed (minimum server 2026.6.11).
 - [`.env.sample`](.env.sample) — every `Settings` field with its default (`tests/unit/test_env_sample.py` keeps them in sync with `src/fogar_gateway/core/config.py`).
 
-Roadmap, specs, plans, decisions and audits live **only in Obsidian** (`Producto Jota/jota-gateway/`, note `JGW Roadmap`); issues, milestones and releases live in GitHub.
+Roadmap, specs, plans, decisions and audits live **only in Obsidian** (the gateway's folder and its roadmap note; see «Sincronización obligatoria con Obsidian» below for how to find them); issues, milestones and releases live in GitHub.
 
 ## Commands
 
@@ -48,7 +48,7 @@ CI (`.github/workflows/test.yml`, installs from `uv.lock`) runs ruff, mypy and p
 
 ## What this is
 
-A BFF: the single entry point for Fogar TV, jota-voice (Mac and Android/Termux), the iPhone app and Home Assistant (an ESP32 client is planned, not built). Client identity and per-client config live in a local SQLite DB (`<base>/data/gateway.db`, Alembic migrations applied at startup). One `FogarBridge` per WebSocket session talks to OpenClaw (orchestrator, the only fatal dependency), an STT provider and a TTS provider. One process per DB: `SINGLE_PROCESS_LOCK` takes a `flock` on `gateway.lock` next to the DB; multi-worker is not supported.
+Fogar's front door at home: every device (Fogar TV, the voice client for Mac and Android/Termux, the iPhone app, Home Assistant; an ESP32 client is planned, not built) discovers it, pairs with a code and talks to it; it bridges them to OpenClaw and to speech, and it is administered from its own web panel (`/`) and the `fogar-gw` CLI, installed by `install.sh` + `fogar-gw onboard`. Client identity and per-client config live in a local SQLite DB (`<base>/data/gateway.db`, Alembic migrations applied at startup). One `FogarBridge` per WebSocket session talks to OpenClaw (orchestrator, the only fatal dependency), an STT provider and a TTS provider. One process per DB: `SINGLE_PROCESS_LOCK` takes a `flock` on `gateway.lock` next to the DB; multi-worker is not supported.
 
 ## Module map (`src/fogar_gateway/`)
 
@@ -110,19 +110,19 @@ Breaking any of these is a bug, whatever the change is for.
 
 ## Sincronización obligatoria con Obsidian (ciclo de vida de issues y PRs)
 
-El estado del trabajo de este repo vive en **dos sitios que deben coincidir**: GitHub (issues, PRs, milestones, releases) y el vault de Obsidian J-Project, en `Producto Jota/jota-gateway/` (prefijo `JGW`; ficha `jota-gateway.md`, `JGW Roadmap.md`, carpetas `Fases/`, `Issues/`, `Decisiones/`, `Notas/`). Obsidian no es opcional ni un volcado de una sola vez: **cada cambio de estado de una issue o PR exige contrastar y actualizar los dos**, y **antes de trabajar** hay que leer también Obsidian, no solo GitHub.
+El estado del trabajo de este repo vive en **dos sitios que deben coincidir**: GitHub (issues, PRs, milestones, releases) y el vault de Obsidian del equipo, en la carpeta del gateway (con su ficha, su roadmap y las carpetas `Fases/`, `Issues/`, `Decisiones/`, `Notas/`). La carpeta, el prefijo de sus notas y la ficha conservan el nombre anterior hasta la fase 3 de la migración a Fogar: la nota del gateway en `IA y reglas/Migración Fogar/Repos/` los enlaza. Abajo, `<P>` es ese prefijo y «la ficha», la ficha del repo. Obsidian no es opcional ni un volcado de una sola vez: **cada cambio de estado de una issue o PR exige contrastar y actualizar los dos**, y **antes de trabajar** hay que leer también Obsidian, no solo GitHub.
 
 Se usa el MCP `obsidian` (requiere Obsidian abierto). Antes de escribir, lee `CLAUDE.md` y `IA y reglas/Guia-MCP-Obsidian.md` del vault (sección «Dar de alta un repo de código»). Edita con `vault_patch` y no sobrescribas con `vault_write` sin leer antes; nunca borres notas (se mueven a `Archivo/` con `status: archivada`).
 
 | Momento | Qué hacer en Obsidian (además de GitHub) |
 |---|---|
-| **Antes de empezar** una issue | Lee `JGW-<n> …`, `JGW Roadmap`, la fase y las decisiones relacionadas. Contrasta con `gh issue view <n>`: estado, labels, milestone. Si no coinciden, corrige la nota o avisa al usuario antes de seguir. Si la issue no tiene nota, créala. |
-| **Se crea una issue nueva** | Crea `Issues/JGW-<n> Título.md` con las propiedades fijas: `repo`, `number`, `url`, `status`, `labels`, `phase`, `synced`, más `type: issue`, `area: producto`, `priority`, `project: J`, `created`, `tags`. Añádela a la tabla de `JGW Roadmap` (en «Sin fase» si no tiene milestone). |
+| **Antes de empezar** una issue | Lee `<P>-<n> …`, `<P> Roadmap`, la fase y las decisiones relacionadas. Contrasta con `gh issue view <n>`: estado, labels, milestone. Si no coinciden, corrige la nota o avisa al usuario antes de seguir. Si la issue no tiene nota, créala. |
+| **Se crea una issue nueva** | Crea `Issues/<P>-<n> Título.md` con las propiedades fijas: `repo`, `number`, `url`, `status`, `labels`, `phase`, `synced`, más `type: issue`, `area: producto`, `priority`, `project` (el mismo que las demás notas del repo), `created`, `tags`. Añádela a la tabla de `<P> Roadmap` (en «Sin fase» si no tiene milestone). |
 | **Se empieza a trabajar** en ella | `status: en-curso`, `synced` a hoy; anota la rama. |
 | **Se abre la PR** | Anota en la nota de la issue el número y la URL de la PR y su alcance. Si la PR cierra varias issues, actualiza todas. |
-| **Cambia el alcance o aparece trabajo derivado** | Actualiza la nota; cada issue de seguimiento nueva sigue la fila «Se crea una issue nueva». Una decisión de diseño va a `Decisiones/JGW Decisión - Tema.md`. |
-| **La PR se mergea / la issue se cierra** | `status: hecho` (o muévela a `Archivo/` con `status: archivada`), `synced`; quita o marca la fila en `JGW Roadmap`; si cierra una fase, actualiza `Fases/JGW Fase N …` (`status`, `end`, `release`) y la tabla del roadmap. |
-| **Sale una release** | Añade la línea en `Notas/JGW Changelog.md` y actualiza `version` y `synced` en la ficha `jota-gateway.md`. |
+| **Cambia el alcance o aparece trabajo derivado** | Actualiza la nota; cada issue de seguimiento nueva sigue la fila «Se crea una issue nueva». Una decisión de diseño va a `Decisiones/<P> Decisión - Tema.md`. |
+| **La PR se mergea / la issue se cierra** | `status: hecho` (o muévela a `Archivo/` con `status: archivada`), `synced`; quita o marca la fila en `<P> Roadmap`; si cierra una fase, actualiza `Fases/<P> Fase N …` (`status`, `end`, `release`) y la tabla del roadmap. |
+| **Sale una release** | Añade la línea en `Notas/<P> Changelog.md` y actualiza `version` y `synced` en la ficha. |
 | **Al terminar la sesión** | Una línea en `Actividad IA` de `Diario/Diarias/YYYY-MM-DD.md`, con enlaces a las notas tocadas. |
 
 Reglas de contraste:

@@ -78,7 +78,7 @@ async def gateway_websocket(websocket: WebSocket):
         logger.info("Cliente desconectado antes o durante el handshake.")
         return
 
-    # 2. RESOLVER IDENTIDAD EN JOTA-DB
+    # 2. RESOLVER IDENTIDAD EN LA BD LOCAL
     request_id = websocket.state.request_id
     key_fingerprint = fingerprint_key(handshake.client_key)
     try:

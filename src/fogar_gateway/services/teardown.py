@@ -1,6 +1,6 @@
 """Contrato único de cierre y cancelación (#221).
 
-Política (vault: «JGW Decisión - Política de errores y cancelación»):
+Política (decisión «Política de errores y cancelación» del vault):
 - Una `CancelledError` ajena nunca se traga: el cierre termina todos sus pasos y la
   relanza al final.
 - La cancelación que provocamos nosotros (cancelar una tarea hija y esperarla) es la

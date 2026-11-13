@@ -186,8 +186,8 @@ async def _lifespan_body(app: FastAPI):
 
 
 app = FastAPI(
-    title="FogarGateway (BFF)",
-    description="Backend For Frontend - Enrutador principal de WebSockets.",
+    title="Fogar Gateway",
+    description="Puerta de entrada de Fogar en casa: aparatos, OpenClaw, voz y administración.",
     lifespan=lifespan,
 )
 

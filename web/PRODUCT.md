@@ -17,7 +17,7 @@ Es la cara de un asistente propio en casa: enseña el estado real del gateway, e
 
 ## Operating Context
 - Pantallas: Conectar (token de administrador), Estado, Sesiones, Clientes (con emparejamiento por código de 6 cifras) y Chat (texto y voz).
-- Datos en vivo por `/admin/state/stream` (fetch, sin EventSource) y endpoints de `/admin/*`; especificación en Obsidian, «JGW Spec 2026-11-02 - Web en Vue».
+- Datos en vivo por `/admin/state/stream` (fetch, sin EventSource) y endpoints de `/admin/*`; especificación en Obsidian, spec «Web en Vue» del 2026-11-02.
 - El micrófono solo funciona con HTTPS o en `localhost`; por HTTP la web funciona sin micro.
 
 ## Capabilities and Constraints

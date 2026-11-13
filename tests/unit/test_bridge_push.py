@@ -199,7 +199,7 @@ async def test_deliver_push_tool_call_malformed_payload_ignored(make_push_bridge
 
 
 async def test_multiple_push_starts_and_ends_collapse_to_single_pair(make_push_bridge):
-    """Reproduces issue #84 verbatim from the jota-voice client log:
+    """Reproduces issue #84 verbatim from the voice client log:
 
     ```
     turn_start t-1 (seq=1)
