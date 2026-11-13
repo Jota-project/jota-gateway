@@ -3,12 +3,14 @@
 import http.client
 import ipaddress
 import json
+import os
 import shutil
 import socket
 import ssl
 import subprocess
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -201,3 +203,74 @@ def tailscale_routes(bind: str, port: int, exe: str = "tailscale") -> list[Route
 
 def in_docker(marker: str = "/.dockerenv") -> bool:
     return Path(marker).exists()
+
+
+def configured_public_urls() -> list[str]:
+    """`PUBLIC_URLS` del entorno o, si no está, de `config.env`, leído en cada llamada. Las
+    entradas inválidas se descartan una a una: esto nunca lanza."""
+    raw = os.environ.get("PUBLIC_URLS")
+    if raw is None:
+        from dotenv import dotenv_values  # perezoso: el --help del CLI no lo paga
+
+        from fogar_gateway import paths
+
+        raw = dotenv_values(paths.config_file()).get("PUBLIC_URLS") or ""
+    urls: list[str] = []
+    for item in raw.split(","):
+        try:
+            urls += parse_public_urls(item)
+        except ValueError:
+            continue
+    return urls
+
+
+def _rank(r: Route) -> int | None:
+    """Rango de recomendación (menor = mejor); None si no se puede recomendar."""
+    if r.status in ("inalcanzable", "otro_gateway"):
+        return None
+    if r.kind == "public":
+        return 0 if r.status == "ok" else 1 if r.status == "protegida" else None
+    return {"tailscale_https": 2, "tailscale": 3, "lan": 4}.get(r.kind)
+
+
+def recommend(routes: list[Route]) -> list[Route]:
+    """Recomendables primero por rango (orden estable), el resto detrás; marca la primera."""
+    good = sorted((r for r in routes if _rank(r) is not None), key=lambda r: _rank(r) or 0)
+    rest = [r for r in routes if _rank(r) is None]
+    for r in good:
+        r.recommended = False
+    for r in rest:
+        r.recommended = False
+    if good:
+        good[0].recommended = True
+    return good + rest
+
+
+def _verify_route(r: Route, instance_id: str | None) -> None:
+    try:
+        r.status, r.detail = verify(r.url, instance_id)
+    except Exception:  # noqa: BLE001 — frontera: una vía rota no debe tumbar el resto
+        r.status, r.detail = "inalcanzable", "red"
+
+
+def collect(
+    bind: str,
+    port: int,
+    public_urls: list[str],
+    instance_id: str | None,
+    docker: bool | None = None,
+    exe: str = "tailscale",
+) -> list[Route]:
+    """Todas las vías, verificadas en paralelo (la LAN no) y ordenadas por `recommend`."""
+    routes = [Route("public", u, True) for u in public_urls]
+    lan: Route | None = None
+    if not (in_docker() if docker is None else docker):
+        routes += tailscale_routes(bind, port, exe)
+        lan = lan_route(bind, port)
+    if routes:
+        with ThreadPoolExecutor(max_workers=len(routes)) as ex:
+            for _ in ex.map(lambda r: _verify_route(r, instance_id), routes):
+                pass
+    if lan:
+        routes.append(lan)
+    return recommend(routes)
