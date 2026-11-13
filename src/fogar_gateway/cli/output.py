@@ -1,8 +1,14 @@
 """
 output.py
 ~~~~~~~~~
-Toda la salida de la CLI. Con terminal y color, tema Fogar Dusk con `rich` (importado
-solo aquí y solo al pintar); con --json, NO_COLOR o sin terminal, texto limpio.
+Toda la salida de la CLI. Con terminal y color, la paleta de fogar-brand (`marca/paleta.css`)
+con `rich` (importado solo aquí y solo al pintar); con --json, NO_COLOR o sin terminal, texto limpio.
+
+Cada color dice siempre lo mismo (reglas de la marca):
+- el texto va sin color (vale en terminales claras y oscuras) y lo que se copia o se teclea, en negrita;
+- MUTED (hueso-tenue): pistas y metadatos;
+- BRASA (llama): solo lo que pasa ahora (el paso en curso, la pregunta, el spinner); nunca rellena texto;
+- los estados, planos y con icono: OK ■ (correcto), WARN ◆ (degradado), ERROR ▲ (error).
 """
 
 import json
@@ -14,12 +20,14 @@ import click
 
 from fogar_gateway.cli.api import ApiError
 
-# Tema Fogar Dusk (spec 2026-11-01).
-TEXT = "#ddd6d0"
-MUTED = "#bab2c4"
-ACCENT = "#c3b7e3"
-INFO = "#6e8cc4"
-ERROR = "#e08a8a"
+TEXT = ""
+MUTED = "#8b969f"
+ACCENT = "bold"
+BRASA = "#ee6a2c"
+OK = "#78b8f0"
+WARN = "#e6df7a"
+ERROR = "#ff8db4"
+INFO = OK  # nombre antiguo: el color de lo ya resuelto
 
 
 def _isatty() -> bool:
@@ -79,7 +87,7 @@ class Out:
 
         console = self._console()
         for key, value in items:
-            console.print(f"[{MUTED}]{escape(key.ljust(width))}[/]  [{TEXT}]{escape(fmt(value))}[/]")
+            console.print(f"[{MUTED}]{escape(key.ljust(width))}[/]  {escape(fmt(value))}")
 
     def message(self, text: str, color: str = TEXT) -> None:
         if self.styled:
@@ -89,9 +97,41 @@ class Out:
 
     def error(self, text: str) -> None:
         if self.styled:
-            self._console(stderr=True).print(text, style=ERROR, markup=False)
+            self._console(stderr=True).print(f"▲ {text}", style=ERROR, markup=False)
         else:
             click.echo(text, err=True)
+
+    # Los pasos del asistente. Sin estilo, `step` no pinta nada y el resto es `message`: la
+    # salida de siempre (--answers, el CI, NO_COLOR).
+
+    def step(self, name: str) -> None:
+        """Abre un paso: «● Nombre», con la brasa en el punto (lo que pasa ahora)."""
+        if self.styled:
+            from rich.text import Text
+
+            self._console().print(Text.assemble("\n", ("● ", BRASA), (name, "bold")))
+
+    def ok(self, text: str) -> None:
+        """Lo resuelto en un paso: «■ texto» en el color de correcto."""
+        self._mark("■", OK, text)
+
+    def warn(self, text: str) -> None:
+        self._mark("◆", WARN, text)
+
+    def note(self, text: str) -> None:
+        """Una pista bajo el paso, en tenue."""
+        if self.styled:
+            self._console().print(f"  {text}", style=MUTED, markup=False)
+        else:
+            click.echo(text)
+
+    def _mark(self, icon: str, color: str, text: str) -> None:
+        if self.styled:
+            from rich.text import Text
+
+            self._console().print(Text.assemble("  ", (f"{icon} ", color), text))
+        else:
+            click.echo(text)
 
 
 def _stdin_isatty() -> bool:

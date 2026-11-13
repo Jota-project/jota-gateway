@@ -12,7 +12,7 @@ from typing import Any
 import click
 
 from fogar_gateway.cli import api
-from fogar_gateway.cli.output import ACCENT, INFO, MUTED
+from fogar_gateway.cli.output import BRASA, MUTED, OK
 
 MAIN = [
     ("Estado", "status", ["status"]),
@@ -42,15 +42,26 @@ def interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
+SELECT_HINT = "(↑↓ y Enter)"
+
+
 def _style() -> Any:
+    """El estilo de todas las preguntas. Lo llama cada pregunta antes de abrirse: aquí también
+    se apagan las consultas de posición del cursor (CPR), que hay terminales que no contestan y
+    prompt_toolkit pintaría un WARNING entre las preguntas."""
+    import os
+
+    os.environ.setdefault("PROMPT_TOOLKIT_NO_CPR", "1")
     import questionary
 
+    # La brasa marca lo que pasa ahora (la pregunta y la opción bajo el cursor); la respuesta ya
+    # dada queda en el color de lo resuelto.
     return questionary.Style([
-        ("qmark", f"fg:{ACCENT}"),
+        ("qmark", f"fg:{BRASA}"),
         ("question", "bold"),
-        ("pointer", f"fg:{ACCENT} bold"),
-        ("highlighted", f"fg:{ACCENT}"),
-        ("answer", f"fg:{INFO}"),
+        ("pointer", f"fg:{BRASA} bold"),
+        ("highlighted", "bold"),
+        ("answer", f"fg:{OK}"),
         ("instruction", f"fg:{MUTED}"),
     ])
 
@@ -59,7 +70,8 @@ def _select(message: str, options: list[tuple[str, str]]) -> str | None:
     import questionary
 
     choices = [questionary.Choice(title, value=value) for title, value in options]
-    answer: str | None = questionary.select(message, choices=choices, style=_style()).ask()
+    answer: str | None = questionary.select(message, choices=choices, style=_style(),
+                                            instruction=SELECT_HINT).ask()
     return answer
 
 

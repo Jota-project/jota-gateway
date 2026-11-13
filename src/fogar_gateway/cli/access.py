@@ -12,6 +12,12 @@ import click
 
 from fogar_gateway.cli.output import ACCENT, MUTED, Out
 
+ACCESS_OPTIONS = [
+    ("Desde casa (red local)", "lan"),
+    ("Casa y Tailscale (desde fuera, sin abrir puertos)", "tailscale"),
+    ("Casa y mi dominio (HTTPS con tu proxy)", "domain"),
+    ("Casa, Tailscale y mi dominio", "tailscale+domain"),
+]
 HTTPS_HINT = ("Para hablar con Fogar desde el navegador hace falta HTTPS: activa Tailscale o tu "
               "dominio con `fogar-gw access setup`")
 
@@ -89,10 +95,10 @@ def _tailscale_url(status: dict[str, Any], port: int) -> str:
     return f"https://{dns or '<tu equipo en la tailnet>'}{'' if port == 443 else f':{port}'}/"
 
 
-def _tailscale(out: Out, interactive: bool, gw_port: int) -> None:
+def _tailscale(out: Out, interactive: bool, gw_port: int) -> bool:
     """Activa `tailscale serve` hacia el gateway. Sin terminal (`--answers`) no pregunta: lo
     que pida al usuario (instalar, permiso, HTTPS) solo se explica y se sigue. Nunca pisa un
-    handler existente ni ejecuta sudo sin que se elija."""
+    handler existente ni ejecuta sudo sin que se elija. True si `tailscale serve` queda sirviendo."""
     from fogar_gateway import access as acc
     from fogar_gateway.cli.onboard import _ask, _choose
 
@@ -102,47 +108,47 @@ def _tailscale(out: Out, interactive: bool, gw_port: int) -> None:
         out.message("  sudo tailscale up", ACCENT)
         if not interactive or _choose("¿Sigo?", [("Ya está: vuelve a mirar", "retry"),
                                                  ("Seguir sin Tailscale", "skip")]) == "skip":
-            return
+            return False
     serve = acc.serve_status()
     if serve is None:
         out.message("No puedo leer `tailscale serve status`: no lo toco.")
-        return
+        return False
     if (current := acc.serve_https_port(serve, gw_port)) is not None:
         out.message(f"Ya está: {_tailscale_url(status, current)}")
-        return
+        return True
     if interactive and not _ask("confirm", "¿Activo HTTPS con `tailscale serve`?", default=True):
-        return
+        return False
     port = free_serve_port(serve)
     if port is None:
         out.message("443 y 8443 ya sirven otra cosa: no lo toco")
-        return
+        return False
     sudo_done = False
     while True:
         result, detail = enable_serve(port, gw_port)
         if result == "ok":
             out.message(f"Listo: {_tailscale_url(status, port)}")
-            return
+            return True
         if result == "permiso":
             out.message("Tailscale necesita permiso para que tu usuario lo configure: "
                         "`sudo tailscale set --operator=$USER`")
             if not interactive or sudo_done or _choose(
                     "¿Lo ejecuto?", [("Ejecutarlo ahora", "sudo"), ("Saltar", "skip")]) == "skip":
-                return
+                return False
             sudo_done = True  # un solo reintento tras el sudo
             try:
                 subprocess.run(["sudo", "tailscale", "set", f"--operator={getpass.getuser()}"],
                                check=False)
             except OSError as e:  # sin sudo: se explica y se sigue
                 out.error(f"No he podido ejecutar sudo ({type(e).__name__})")
-                return
+                return False
         elif result == "https_off":
             out.message(f"Activa HTTPS en tu tailnet: {detail}")
             if not interactive or _choose("¿Sigo?", [("Ya lo he activado: reintentar", "retry"),
                                                      ("Saltar", "skip")]) == "skip":
-                return
+                return False
         else:
             out.error(f"No he podido activar `tailscale serve` ({detail})")
-            return
+            return False
 
 
 def _valid_urls(value: str) -> bool | str:
@@ -182,19 +188,35 @@ def access_step(out: Out, answers: Any | None, settings: Any) -> None:
         if answers.public_urls:
             _domain(out, parse_public_urls(",".join(answers.public_urls)))
         return
-    import questionary
+    from fogar_gateway import access as acc
+    from fogar_gateway.cli.onboard import _choose
 
-    from fogar_gateway.cli.onboard import _ask
-
-    choices = [questionary.Choice("Desde casa (red local)", value="lan", checked=True,
-                                  disabled="siempre"),
-               questionary.Choice("Con Tailscale", value="tailscale"),
-               questionary.Choice("Con mi propio dominio", value="domain")]
-    chosen = _ask("checkbox", "¿Cómo vas a entrar a Fogar?", choices=choices)
-    if "tailscale" in chosen:
-        _tailscale(out, True, serve.PORT)
+    # Una sola elección (no casillas): la respuesta dice entera qué se ha elegido. Desde casa
+    # se entra siempre; cada opción añade lo de fuera. Por defecto, lo que ya hay.
+    ts_on = _serving(serve.PORT)
+    dom_on = bool(acc.configured_public_urls())
+    current = {(False, False): "lan", (True, False): "tailscale", (False, True): "domain",
+               (True, True): "tailscale+domain"}[(ts_on, dom_on)]
+    chosen = _choose("¿Desde dónde vas a entrar a Fogar?", ACCESS_OPTIONS, default=current)
+    if "tailscale" in chosen and not (ts_on := _tailscale(out, True, serve.PORT)):
+        out.warn("Tailscale queda sin activar: `fogar-gw access setup` cuando quieras.")
     if "domain" in chosen:
         _domain(out, None)
+    # Lo que queda listo, no lo elegido: Tailscale puede saltarse o fallar, y nada se quita.
+    ways = ["desde casa", *(["con Tailscale"] if ts_on else []),
+            *(["con tu dominio"] if acc.configured_public_urls() else [])]
+    out.ok("Acceso: " + ", ".join(ways[:-1]) + (" y " if len(ways) > 1 else "") + ways[-1] + ".")
+
+
+def _serving(gw_port: int) -> bool:
+    """¿`tailscale serve` ya lleva al gateway? Solo mira; sin Tailscale, False."""
+    from fogar_gateway import access as acc
+
+    status = acc.tailscale_status()
+    if status is None or status.get("BackendState") != "Running":
+        return False
+    serve = acc.serve_status()
+    return serve is not None and acc.serve_https_port(serve, gw_port) is not None
 
 
 def _list(ctx: click.Context, out: Out, settings: Any) -> None:

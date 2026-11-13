@@ -59,7 +59,7 @@ def st(monkeypatch, tmp_path):
                 return answer
         return _Q
 
-    for kind in ("checkbox", "select", "text", "confirm"):
+    for kind in ("select", "text", "confirm"):
         monkeypatch.setattr(questionary, kind, question(kind))
     return s
 
@@ -70,27 +70,43 @@ def setup():
 
 def test_unreadable_serve_status_is_left_alone(st):
     st.serve = None
-    st.queue = [["tailscale"]]
+    st.queue = ["tailscale"]
     r = setup()
     assert r.exit_code == 0, r.output
     assert "No puedo leer `tailscale serve status`: no lo toco." in r.output
     assert st.enabled == []
 
 
-def test_setup_offers_three_ways(st):
-    st.queue = [[]]
+def test_setup_offers_one_choice_with_four_ways(st):
+    st.queue = ["lan"]
     r = setup()
     assert r.exit_code == 0, r.output
     kind, message, kw = st.asked[0]
-    assert kind == "checkbox" and message == "¿Cómo vas a entrar a Fogar?"
-    lan, ts, own = kw["choices"]
-    assert lan.title == "Desde casa (red local)" and lan.checked and lan.disabled
-    assert ts.title == "Con Tailscale" and own.title == "Con mi propio dominio"
+    # Una sola elección (#328): con casillas no quedaba claro qué se había elegido.
+    assert kind == "select" and message == "¿Desde dónde vas a entrar a Fogar?"
+    assert [c.value for c in kw["choices"]] == ["lan", "tailscale", "domain", "tailscale+domain"]
+    assert kw["choices"][0].title == "Desde casa (red local)" and kw["default"] == "lan"
     assert st.enabled == [] and "PUBLIC_URLS" not in dotenv_values(st.env)
+    assert "Acceso: desde casa." in r.output
+
+
+def test_setup_summary_says_what_was_left_ready(st):
+    st.serve = OURS
+    st.queue = ["tailscale+domain", "https://fogar.example.com"]
+    r = setup()
+    assert r.exit_code == 0, r.output
+    assert "Acceso: desde casa, con Tailscale y con tu dominio." in r.output
+
+
+def test_setup_summary_leaves_out_a_skipped_tailscale(st):
+    st.queue = ["tailscale", False]  # no quiere activar `tailscale serve`
+    r = setup()
+    assert r.exit_code == 0, r.output
+    assert "Tailscale queda sin activar" in r.output and "Acceso: desde casa." in r.output
 
 
 def test_setup_saves_public_url(st):
-    st.queue = [["domain"], "https://fogar.example.com"]
+    st.queue = ["domain", "https://fogar.example.com"]
     r = setup()
     assert r.exit_code == 0, r.output
     assert dotenv_values(st.env)["PUBLIC_URLS"] == "https://fogar.example.com/"
@@ -98,7 +114,7 @@ def test_setup_saves_public_url(st):
 
 
 def test_setup_rejects_bad_domain_in_prompt(st):
-    st.queue = [["domain"], "https://fogar.example.com"]
+    st.queue = ["domain", "https://fogar.example.com"]
     setup()
     validate = next(kw for k, _, kw in st.asked if k == "text")["validate"]
     assert validate("http://fogar.example.com") is not True
@@ -107,7 +123,7 @@ def test_setup_rejects_bad_domain_in_prompt(st):
 
 def test_setup_keeps_existing_public_urls(st):
     st.env.write_text(f"ADMIN_TOKEN={ADMIN}\nPUBLIC_URLS=https://a.example.com/\n")
-    st.queue = [["domain"], "https://b.example.com, https://a.example.com"]
+    st.queue = ["domain", "https://b.example.com, https://a.example.com"]
     r = setup()
     assert r.exit_code == 0, r.output
     assert dotenv_values(st.env)["PUBLIC_URLS"] == "https://a.example.com/,https://b.example.com/"
@@ -115,7 +131,7 @@ def test_setup_keeps_existing_public_urls(st):
 
 def test_setup_serve_already_on_does_nothing(st):
     st.serve = OURS
-    st.queue = [["tailscale"]]
+    st.queue = ["tailscale"]
     r = setup()
     assert r.exit_code == 0, r.output
     assert st.enabled == []
@@ -125,7 +141,7 @@ def test_setup_serve_already_on_does_nothing(st):
 
 def test_setup_serve_enables_free_port(st):
     st.serve = {"TCP": {"443": {}}}  # 443 sirve otra cosa: 8443
-    st.queue = [["tailscale"], True]
+    st.queue = ["tailscale", True]
     r = setup()
     assert r.exit_code == 0, r.output
     assert st.enabled == [(8443, 8004)]
@@ -133,7 +149,7 @@ def test_setup_serve_enables_free_port(st):
 
 
 def test_setup_serve_declined_does_nothing(st):
-    st.queue = [["tailscale"], False]
+    st.queue = ["tailscale", False]
     r = setup()
     assert r.exit_code == 0, r.output
     assert st.enabled == []
@@ -141,7 +157,7 @@ def test_setup_serve_declined_does_nothing(st):
 
 def test_setup_serve_ports_taken(st):
     st.serve = {"TCP": {"443": {}, "8443": {}}}
-    st.queue = [["tailscale"], True]
+    st.queue = ["tailscale", True]
     r = setup()
     assert r.exit_code == 0, r.output
     assert "443 y 8443 ya sirven otra cosa: no lo toco" in r.output
@@ -151,7 +167,7 @@ def test_setup_serve_ports_taken(st):
 def test_setup_permission_offers_sudo_and_retries(st, monkeypatch):
     monkeypatch.setattr(cli_access.getpass, "getuser", lambda: "sito")
     st.enable = [("permiso", ""), ("ok", "")]
-    st.queue = [["tailscale"], True, "sudo"]
+    st.queue = ["tailscale", True, "sudo"]
     r = setup()
     assert r.exit_code == 0, r.output
     assert "sudo tailscale set --operator=$USER" in r.output
@@ -161,7 +177,7 @@ def test_setup_permission_offers_sudo_and_retries(st, monkeypatch):
 
 def test_setup_permission_retries_only_once(st):
     st.enable = [("permiso", ""), ("permiso", "")]
-    st.queue = [["tailscale"], True, "sudo"]
+    st.queue = ["tailscale", True, "sudo"]
     r = setup()
     assert r.exit_code == 0, r.output
     assert len(st.sudo) == 1 and len(st.enabled) == 2
@@ -169,7 +185,7 @@ def test_setup_permission_retries_only_once(st):
 
 def test_setup_permission_skip_runs_nothing(st):
     st.enable = [("permiso", "")]
-    st.queue = [["tailscale"], True, "skip"]
+    st.queue = ["tailscale", True, "skip"]
     r = setup()
     assert r.exit_code == 0, r.output
     assert st.sudo == [] and len(st.enabled) == 1
@@ -178,7 +194,7 @@ def test_setup_permission_skip_runs_nothing(st):
 def test_setup_https_off_shows_link_and_retries(st):
     link = "https://login.tailscale.com/f/serve?node=abc"
     st.enable = [("https_off", link), ("ok", "")]
-    st.queue = [["tailscale"], True, "retry"]
+    st.queue = ["tailscale", True, "retry"]
     r = setup()
     assert r.exit_code == 0, r.output
     assert link in r.output and len(st.enabled) == 2
@@ -186,7 +202,7 @@ def test_setup_https_off_shows_link_and_retries(st):
 
 def test_setup_tailscale_missing_shows_install_commands(st):
     st.status = None
-    st.queue = [["tailscale"], "skip"]
+    st.queue = ["tailscale", "skip"]
     r = setup()
     assert r.exit_code == 0, r.output
     assert "curl -fsSL https://tailscale.com/install.sh | sh" in r.output
@@ -196,8 +212,8 @@ def test_setup_tailscale_missing_shows_install_commands(st):
 
 def test_setup_tailscale_redetects_after_install(st, monkeypatch):
     st.serve = OURS
-    st.queue = [["tailscale"], "retry"]
-    seen = iter([None, RUNNING])
+    st.queue = ["tailscale", "retry"]
+    seen = iter([None, None, RUNNING])  # la 1.ª, al mirar qué hay ya
     monkeypatch.setattr(access_mod, "tailscale_status", lambda exe="tailscale": next(seen))
     r = setup()
     assert r.exit_code == 0, r.output
@@ -215,3 +231,13 @@ def test_setup_ctrl_c_aborts(st):
     st.queue = [None]
     r = setup()
     assert r.exit_code == 1 and "Aborted!" in r.output
+
+
+def test_setup_starts_from_what_is_already_there(st):
+    st.serve = OURS  # `tailscale serve` ya lleva al gateway
+    st.env.write_text(f"ADMIN_TOKEN={ADMIN}\nPUBLIC_URLS=https://a.example.com/\n")
+    st.queue = ["lan"]  # elegir «Desde casa» no quita nada: el resumen lo dice
+    r = setup()
+    assert r.exit_code == 0, r.output
+    assert st.asked[0][2]["default"] == "tailscale+domain"
+    assert "Acceso: desde casa, con Tailscale y con tu dominio." in r.output
