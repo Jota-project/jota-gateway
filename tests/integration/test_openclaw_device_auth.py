@@ -202,7 +202,7 @@ async def test_unusable_identity_file_connects_without_device(store, caplog):
 async def test_reconnecting_wrapper_reports_pairing_in_last_error(store):
     async with FakeOpenClawServer(token=SHARED, remote=True) as server:
         wrapper = ReconnectingOpenClawClient(make_client(server.port, store), "openclaw",
-                                             initial_backoff=60, max_duration=1)
+                                             initial_backoff=60)
         try:
             await wrapper.connect()
             assert wrapper.status().last_error == ORCHESTRATOR_PAIRING_REQUIRED_ERROR
