@@ -15,6 +15,7 @@ DEFAULT_URL = "http://127.0.0.1:8004"
 
 # nombre -> ("módulo:atributo", ayuda corta). La ayuda va aquí para no importar el módulo.
 COMMANDS: dict[str, tuple[str, str]] = {
+    "access": ("fogar_gateway.cli.access:access", "Desde dónde se llega al gateway."),
     "clients": ("fogar_gateway.cli.clients:clients", "Gestiona los clientes."),
     "config": ("fogar_gateway.cli.config:config", "Configuración: ver, validar y cambiar."),
     "doctor": ("fogar_gateway.cli.doctor:doctor", "Diagnostica la instalación."),

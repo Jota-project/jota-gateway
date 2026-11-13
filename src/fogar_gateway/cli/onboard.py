@@ -20,12 +20,15 @@ import stat
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import click
 
 from fogar_gateway import paths
+from fogar_gateway.access import _is_loopback, collect, configured_public_urls
 from fogar_gateway.cli import api
 from fogar_gateway.cli import config as cfg
+from fogar_gateway.cli.access import gateway_instance_id, show_routes
 from fogar_gateway.cli.output import ACCENT, MUTED, Out
 
 NO_OPENCLAW = "Sin OpenClaw no se instala el servicio. Vuelve a ejecutar `fogar-gw onboard`."
@@ -218,29 +221,6 @@ def _voice_step(out: Out, kind: Literal["stt", "tts"], answer: Any,
     verified.update((k, v) for k, v in values.items() if k == ELEVENLABS_KEY)
 
 
-def _lan_ip() -> str | None:
-    """La IP de la LAN: la de la ruta hacia 8.8.8.8 (`connect` en UDP no envía nada); None si
-    no hay ruta (una LAN sin salida): mejor decirlo que dar 127.0.0.1."""
-    import socket
-
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("8.8.8.8", 80))
-            ip: str = s.getsockname()[0]
-            return ip
-    except OSError:
-        return None
-
-
-def _is_loopback(host: str) -> bool:
-    import ipaddress
-
-    try:
-        return host == "localhost" or ipaddress.ip_address(host.strip("[]")).is_loopback
-    except ValueError:  # un nombre: se da tal cual
-        return False
-
-
 def _first_client(ctx: click.Context, out: Out, answers: Any) -> None:
     """Solo con --answers: el CI crea su cliente. Con terminal, se empareja desde el dashboard."""
     from fogar_gateway.cli import clients
@@ -293,22 +273,21 @@ def _dashboard(ctx: click.Context, out: Out, answers: Any, settings: Any) -> Non
 
     port = serve.PORT
     bind = settings.GATEWAY_HOST
-    url = host = None
-    if _is_loopback(bind):
+    routes = collect(bind, port, configured_public_urls(),
+                     gateway_instance_id(ctx.find_root().obj["url"]))
+    rec = next((r for r in routes if r.recommended), None)
+    url = rec.url if rec else None
+    lan = next((r for r in routes if r.kind == "lan"), None)
+    if routes:
+        show_routes(out, routes, "Tu dashboard")
+    elif _is_loopback(bind):
         out.message(f"El gateway solo escucha en este equipo (GATEWAY_HOST={bind}): desde otro "
                     f"aparato no se llega. Entra con un túnel SSH (`ssh -L {port}:127.0.0.1:{port}"
                     f" <este servidor>` y abre http://localhost:{port}/) o ábrelo a la LAN con "
                     "`fogar-gw config set GATEWAY_HOST 0.0.0.0` y `fogar-gw restart`.")
     else:
-        # Solo con el gateway escuchando en todas las interfaces se adivina la IP de la LAN.
-        host = _lan_ip() if bind in ("", "0.0.0.0", "::") else bind
-        if host:
-            host = f"[{host}]" if ":" in host and not host.startswith("[") else host
-            url = f"http://{host}:{port}/"
-            out.message(f"Tu dashboard: {url} (desde cualquier aparato de tu red)")
-        else:
-            out.message(f"Tu dashboard: http://<IP de este equipo>:{port}/ (no encuentro la IP "
-                        "de la LAN: mírala con `hostname -I`)")
+        out.message(f"Tu dashboard: http://<IP de este equipo>:{port}/ (no encuentro la IP "
+                    "de la LAN: mírala con `hostname -I`)")
     out.message("Para entrar, pega en él el token de administración.")
     if answers is None and not out.as_json and output._isatty():
         out.message(f"Token: {settings.ADMIN_TOKEN}", ACCENT)
@@ -316,8 +295,9 @@ def _dashboard(ctx: click.Context, out: Out, answers: Any, settings: Any) -> Non
                 "`fogar-gw token`.")
     out.message(WARNING, MUTED)
     out.message("Empareja tu primer aparato desde Clientes, en el dashboard.")
-    if host:
-        out.message(f"Los clientes se conectan a ws://{host}:{port}/ws/stream", MUTED)
+    if lan:
+        out.message(f"Los clientes se conectan a ws://{urlsplit(lan.url).netloc}"
+                    "/ws/stream", MUTED)
     if answers is None:
         _wait_dashboard(ctx, out, url)
 
@@ -328,7 +308,7 @@ def _read_answers(path: Path) -> Any:
     clave y el tipo de error, nunca el valor."""
     from typing import Annotated
 
-    from pydantic import BaseModel, ConfigDict, Field, ValidationError
+    from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
     from fogar_gateway.models.admin_schemas import ClientType, _Name
 
@@ -361,6 +341,20 @@ def _read_answers(path: Path) -> Any:
         name: _Name
         type: ClientType
 
+    class Access(Strict):
+        tailscale_serve: bool = False
+        public_urls: list[str] = Field(default_factory=list)
+
+        @field_validator("public_urls")
+        @classmethod
+        def _urls(cls, v: list[str]) -> list[str]:
+            from fogar_gateway.access import parse_public_urls
+
+            for url in v:  # ValueError -> value_error, sin el valor
+                if not parse_public_urls(url):  # "" o espacios: no es una URL
+                    raise ValueError("vacía")
+            return v
+
     class Answers(Strict):
         openclaw_host: str
         openclaw_port: int
@@ -368,6 +362,7 @@ def _read_answers(path: Path) -> Any:
         stt: Annotated[Fogar | ElevenLabs | Off, Field(discriminator="provider")]
         tts: Annotated[Fogar | ElevenLabs | Off, Field(discriminator="provider")]
         first_client: FirstClient | None = None  # el CI; con terminal, desde el dashboard
+        access: Access | None = None  # sin él, el paso no se ejecuta (el CI de siempre)
 
     try:
         answers = Answers.model_validate_json(raw)
@@ -393,6 +388,7 @@ def _run(ctx: click.Context, out: Out, answers: Any) -> None:
     if not paths.config_file().is_file() or (db is not None and not db.exists()):
         ctx.invoke(init_mod.init)
     settings, _ = cfg._load_or_fail(out)  # antes de preguntar nada: campo y tipo, sin traza
+    before = paths.config_file().read_bytes()  # para no reiniciar si el relanzamiento no cambia nada
     _openclaw(out, answers, settings)
     verified: dict[str, str] = {}
     # Solo un TTS `off` en el fichero se libra: su paso no falla. Con fogar o ElevenLabs, el paso
@@ -400,8 +396,16 @@ def _run(ctx: click.Context, out: Out, answers: Any) -> None:
     tts_stays = answers is None or answers.tts.provider != "off"
     _voice_step(out, "stt", answers and answers.stt, verified, tts_stays)
     _voice_step(out, "tts", answers and answers.tts, verified)
+    if answers is None or answers.access is not None:
+        from fogar_gateway.cli import access as cli_access
+
+        cli_access.access_step(out, answers and answers.access, settings)
     if not service.unit_path().exists():
         ctx.invoke(service.install)
+    elif paths.config_file().read_bytes() == before and service.is_active():
+        # Relanzar sin cambiar nada no corta las sesiones abiertas.
+        out.message("Sin cambios en la configuración: el servicio sigue en marcha, sin reiniciar.",
+                    MUTED)
     # Nunca el confirm() de `fogar-gw restart`: sin terminal saldría con 2 y config.env escrito.
     elif answers or _ask("confirm", "Reinicio el servicio para aplicarlo; se cortarán las "
                          "sesiones abiertas. ¿Sigo?", default=True):

@@ -22,6 +22,7 @@ Observabilidad:
   GET    /admin/tts/status
   GET    /admin/state                — instantánea viva (gateway con `dashboards`, servicios, totales, sesiones)
   GET    /admin/state/stream         — la misma instantánea por SSE cada STATE_STREAM_INTERVAL_S
+  GET    /admin/access               — vías para llegar al gateway, verificadas (caché 15 s)
 """
 
 import asyncio
@@ -448,3 +449,31 @@ async def get_state_stream(request: Request) -> StreamingResponse:
             _open_streams -= 1
 
     return StreamingResponse(state_stream(), media_type="text/event-stream")
+
+
+_ACCESS_TTL_S = 15.0
+_access_cache: tuple[float, dict] | None = None  # (monotonic, respuesta)
+
+
+@router.get("/access")
+async def get_access() -> dict:
+    """Vías de acceso verificadas; `collect` abre sockets y subprocesos, va a un hilo."""
+    global _access_cache
+    from starlette.concurrency import run_in_threadpool
+
+    from fogar_gateway import access
+    from fogar_gateway.api.pairing_routes import (
+        INSTANCE_ID,  # import tardío: ese módulo importa este
+    )
+    from fogar_gateway.cli.serve import PORT
+    from fogar_gateway.core.config import settings
+
+    now = time.monotonic()
+    if _access_cache and now - _access_cache[0] < _ACCESS_TTL_S:
+        return _access_cache[1]
+    routes = await run_in_threadpool(
+        access.collect, settings.GATEWAY_HOST, PORT, access.configured_public_urls(), INSTANCE_ID
+    )
+    body = {"docker": access.in_docker(), "routes": [r.as_dict() for r in routes]}
+    _access_cache = (now, body)
+    return body

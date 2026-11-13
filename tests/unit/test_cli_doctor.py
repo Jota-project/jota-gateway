@@ -247,6 +247,7 @@ def test_orchestrator_down_through_ready_is_a_failure(base, gateway):
 
 
 VOICE_OFF = "voz desactivada: configúrala con `fogar-gw onboard`"
+VOICE_OFF_STALE = "voz desactivada en el gateway en marcha; config.env ya la tiene: `fogar-gw restart`"
 
 
 VOICE_OFF_READY = (200, {"status": "ok", "services": {  # `off` no cuenta para `status`
@@ -288,7 +289,8 @@ def test_running_gateway_with_voice_off_is_info_whatever_the_config(base, gatewa
         "orchestrator": "ok", "transcriber": "unavailable", "tts": "ok"}})
     r = run_at(gateway, "--json", "doctor")
     found = checks(r)
-    assert found["STT"] == {"level": "info", "check": "STT", "detail": VOICE_OFF}
+    # config.env ya tiene la voz: falta reiniciar, no el onboard.
+    assert found["STT"] == {"level": "info", "check": "STT", "detail": VOICE_OFF_STALE}
     assert found["TTS"]["level"] == "ok"
     assert r.exit_code == 0
 

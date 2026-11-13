@@ -26,6 +26,8 @@ from fogar_gateway.cli.output import ACCENT, ERROR, MUTED, TEXT, Out
 MIGRATIONS = Path(__file__).resolve().parents[1] / "migrations" / "versions"
 TCP_TIMEOUT_S = 2.0
 VOICE_OFF = "voz desactivada: configúrala con `fogar-gw onboard`"
+# El proceso sigue en `off` pero config.env ya tiene un proveedor: falta reiniciar, no el onboard.
+VOICE_OFF_STALE = "voz desactivada en el gateway en marcha; config.env ya la tiene: `fogar-gw restart`"
 
 Check = dict[str, str]
 
@@ -166,14 +168,14 @@ def _services_offline(settings: Any) -> list[Check]:
     ]
 
 
-def _services_online(client: api.Api, off: set[str]) -> list[Check]:
+def _services_online(client: api.Api, off: set[str], configured_off: set[str]) -> list[Check]:
     ready = client.request("GET", "/ready", accept=(503,))
     services = ready.get("services", {})
     result = []
     for name, key, level in (("orquestador", "orchestrator", "fail"), ("STT", "transcriber", "warn"),
                              ("TTS", "tts", "warn")):
         if name in off:
-            result.append(_c("info", name, VOICE_OFF))
+            result.append(_c("info", name, VOICE_OFF if name in configured_off else VOICE_OFF_STALE))
             continue
         state = services.get(key, "?")
         ok = state == "ok"
@@ -231,7 +233,8 @@ def run_checks(url: str, token: str | None) -> list[Check]:
         out.append(_c("ok", "token", "El gateway acepta el token de administración."))
     except api.ApiError as e:
         out.append(_c("fail", "token", e.message))
-    out.extend(_services_online(client, _live_off(state, settings)))
+    configured_off = _voice_off(settings)
+    out.extend(_services_online(client, _live_off(state, settings), configured_off))
     return out
 
 

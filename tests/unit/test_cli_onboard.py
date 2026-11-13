@@ -15,6 +15,8 @@ import questionary
 from click.testing import CliRunner
 from dotenv import dotenv_values
 
+from fogar_gateway import access as access_mod
+from fogar_gateway.cli import access as cli_access
 from fogar_gateway.cli import app, doctor, menu, output, service, verify
 from fogar_gateway.cli import init as init_mod
 from fogar_gateway.cli import onboard as onboard_mod
@@ -34,6 +36,7 @@ ENV = ("ADMIN_TOKEN", "OPENCLAW_HOST", "OPENCLAW_PORT", "OPENCLAW_TOKEN", "STT_P
        "TTS_PROVIDER", "TRANSCRIBER_WS_URL", "TRANSCRIBER_TOKEN", "TTS_WS_URL", "TTS_TOKEN",
        "ELEVENLABS_API_KEY", "GATEWAY_HOST", "FOGAR_GW_TOKEN", "FOGAR_GW_URL")
 REAL_INIT = init_mod.init
+REAL_ACCESS_STEP = cli_access.access_step
 LAN_IP = "192.0.2.10"
 DEFAULT = object()  # en la cola de `tty`: acepta el valor por defecto de la pregunta
 
@@ -48,7 +51,7 @@ def gw(monkeypatch, tmp_path, use_api):
     for name in ENV:
         monkeypatch.delenv(name, raising=False)
     st = SimpleNamespace(calls=[], verdicts={}, detected=None, env=base / "config.env",
-                         db=base / "data" / "gateway.db")
+                         db=base / "data" / "gateway.db", active=True)
     st.db.parent.mkdir()
     st.db.touch()
 
@@ -88,7 +91,10 @@ def gw(monkeypatch, tmp_path, use_api):
     monkeypatch.setattr(service, "install", fake_install)
     monkeypatch.setattr(service, "_verb", fake_verb)
     monkeypatch.setattr(service, "require_systemd", lambda: None)
-    monkeypatch.setattr(onboard_mod, "_lan_ip", lambda: LAN_IP)  # sin socket real
+    monkeypatch.setattr(service, "is_active", lambda: st.active)
+    monkeypatch.setattr(access_mod, "lan_ip", lambda: LAN_IP)  # sin socket real
+    monkeypatch.setattr(access_mod, "tailscale_routes", lambda *a, **k: [])  # sin tailscale real
+    monkeypatch.setattr(onboard_mod, "gateway_instance_id", lambda url: None)  # sin red
     monkeypatch.setattr(doctor, "run_checks", lambda url, token: [
         {"level": "fail", "check": "orquestador", "detail": "aviso del doctor"}])
     for name in ("verify_openclaw", "verify_fogar_stt", "verify_fogar_tts", "verify_elevenlabs"):
@@ -99,6 +105,11 @@ def gw(monkeypatch, tmp_path, use_api):
                               ("POST", "/admin/clients"): {**CLIENT, "client_key": CLIENT_KEY},
                               ("GET", "/admin/state"): {"gateway": {"dashboards": 1}}}))
     monkeypatch.setattr(onboard_mod, "_enter_pressed", lambda timeout: True)  # nunca espera
+    # El paso de acceso tiene sus tests (test_cli_access_setup.py): aquí solo se anota, con
+    # lo que ya había pasado (para comprobar el orden).
+    st.access = []
+    monkeypatch.setattr(cli_access, "access_step",
+                        lambda out, answers, settings: st.access.append((answers, list(st.calls))))
     return st
 
 
@@ -453,6 +464,10 @@ def test_interactive_full_flow(gw, tty):
     assert [c for c in gw.api.calls if c[0] == "POST"] == []  # el primer cliente, en la web
     assert "Conectado: ya puedes seguir en el dashboard." in r.output
     assert installs(gw) == ["install"]
+    # El paso de acceso, una vez y preguntando (None): tras las voces y antes del servicio.
+    (access_answers, before), = gw.access
+    assert access_answers is None
+    assert ("verify_elevenlabs", "tts", EL_KEY) in before and "install" not in before
     for secret in SECRETS:
         assert secret not in r.output
     menus = asked(tty, "select", "¿Qué hago?")
@@ -698,11 +713,11 @@ def test_loopback_gateway_gives_no_lan_url(gw, tmp_path, host):
     r = onboard(write_answers(tmp_path))
     assert r.exit_code == 0, r.output
     assert "solo escucha en este equipo" in r.output and "ssh -L 8004:127.0.0.1:8004" in r.output
-    assert "Tu dashboard:" not in r.output and "ws://" not in r.output
+    assert "Tu dashboard: http" not in r.output and "ws://" not in r.output
 
 
 def test_without_lan_ip_never_prints_loopback(gw, tmp_path, monkeypatch):
-    monkeypatch.setattr(onboard_mod, "_lan_ip", lambda: None)
+    monkeypatch.setattr(access_mod, "lan_ip", lambda: None)
     r = onboard(write_answers(tmp_path))
     assert r.exit_code == 0, r.output
     assert "http://<IP de este equipo>:8004/" in r.output and "hostname -I" in r.output
@@ -794,7 +809,7 @@ def test_lan_ip_falls_back_to_loopback(monkeypatch):
             raise OSError("Network is unreachable")
 
     monkeypatch.setattr(socket, "socket", NoRoute)  # sin `gw`: `_lan_ip` sin parchear
-    assert onboard_mod._lan_ip() is None
+    assert access_mod.lan_ip() is None
 
 
 # --- ola final: init sin BD y «Dejar como está» -------------------------------------------
@@ -830,7 +845,7 @@ def _configured_rerun(gw, env=CONFIGURED):
 
 def test_interactive_rerun_keeps_everything_by_default(gw, tty):
     _configured_rerun(gw)
-    tty.queue.extend([DEFAULT, DEFAULT, DEFAULT, True])  # OpenClaw, STT, TTS y reinicio
+    tty.queue.extend([DEFAULT, DEFAULT, DEFAULT])  # OpenClaw, STT y TTS; sin cambios no pregunta
     r = run("onboard")
     assert r.exit_code == 0, r.output
     (oc,) = asked(tty, "select", "OpenClaw")
@@ -843,7 +858,29 @@ def test_interactive_rerun_keeps_everything_by_default(gw, tty):
     assert not any(isinstance(c, tuple) for c in gw.calls)  # ni verifica ni busca OpenClaw
     assert dotenv_values(gw.env) == dotenv_values(stream=io.StringIO(CONFIGURED))
     assert asked(tty, "password", "") == []  # no pide ningún token
+    assert asked(tty, "confirm", "sesiones abiertas") == []
+    assert installs(gw) == []  # sin cambios no reinicia: no corta las sesiones abiertas
+    assert "Sin cambios en la configuración" in r.output
+
+
+def test_interactive_rerun_without_changes_restarts_a_stopped_service(gw, tty):
+    _configured_rerun(gw)
+    gw.active = False
+    tty.queue.extend([DEFAULT, DEFAULT, DEFAULT, True])  # OpenClaw, STT, TTS y reinicio
+    r = run("onboard")
+    assert r.exit_code == 0, r.output
     assert installs(gw) == ["restart"]
+    assert "Sin cambios en la configuración" not in r.output
+
+
+def test_answers_rerun_without_changes_does_not_restart(gw, tty, tmp_path):
+    path = write_answers(tmp_path)
+    assert onboard(path).exit_code == 0
+    assert installs(gw) == ["install"]
+    r = onboard(path)  # mismas respuestas: config.env queda igual
+    assert r.exit_code == 0, r.output
+    assert installs(gw) == ["install"]
+    assert "Sin cambios en la configuración" in r.output
 
 
 def test_interactive_rerun_keeps_openclaw_and_changes_stt(gw, tty):
@@ -903,3 +940,116 @@ def test_new_tts_key_is_verified_for_a_kept_elevenlabs_stt(gw, tty):
     env = dotenv_values(gw.env)
     assert env["ELEVENLABS_API_KEY"] == OLD_KEY and env["TTS_PROVIDER"] == "off"
     assert NEW_KEY not in r.output and OLD_KEY not in r.output
+
+
+# --- el paso «¿Cómo vas a entrar a Fogar?» (Task 8) ----------------------------------------
+
+
+def test_onboard_answers_without_access_skips_step(gw, tmp_path):
+    r = onboard(write_answers(tmp_path))
+    assert r.exit_code == 0, r.output
+    assert gw.access == []  # el CI no cambia
+    assert "PUBLIC_URLS" not in dotenv_values(gw.env)
+
+
+def test_onboard_answers_with_public_urls(gw, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_access, "access_step", REAL_ACCESS_STEP)
+    monkeypatch.delenv("PUBLIC_URLS", raising=False)
+    path = write_answers(tmp_path, access={"public_urls": ["https://fogar.example.com"]})
+    r = onboard(path)
+    assert r.exit_code == 0, r.output
+    assert dotenv_values(gw.env)["PUBLIC_URLS"] == "https://fogar.example.com/"
+    assert "Haz que apunte a http://localhost:8004" in r.output
+    # tras las voces y antes del servicio
+    assert r.output.index("Haz que apunte") < r.output.index("aviso del doctor")
+
+
+def test_onboard_answers_access_step_runs_between_voice_and_service(gw, tmp_path, monkeypatch):
+    order = []
+    monkeypatch.setattr(cli_access, "access_step",
+                        lambda out, answers, settings: order.append(("access", list(gw.calls))))
+    r = onboard(write_answers(tmp_path, access={"tailscale_serve": True}))
+    assert r.exit_code == 0, r.output
+    (_, before), = order
+    assert ("verify_fogar_tts", "localhost:8005", TTS_TOKEN) in before
+    assert "install" not in before and "install" in gw.calls
+
+
+def test_onboard_answers_tailscale_permission_never_runs_sudo(gw, tmp_path, monkeypatch):
+    from fogar_gateway import access as access_mod
+
+    monkeypatch.setattr(cli_access, "access_step", REAL_ACCESS_STEP)
+    monkeypatch.setattr(access_mod, "tailscale_status",
+                        lambda exe="tailscale": {"BackendState": "Running", "Self": {}})
+    monkeypatch.setattr(access_mod, "serve_status", lambda exe="tailscale": {})
+    tried = []
+    monkeypatch.setattr(cli_access, "enable_serve",
+                        lambda port, gw_port, exe="tailscale": tried.append(port) or ("permiso", ""))
+    monkeypatch.setattr(cli_access.subprocess, "run",
+                        lambda *a, **k: pytest.fail("sudo sin terminal"))
+    r = onboard(write_answers(tmp_path, access={"tailscale_serve": True}))
+    assert r.exit_code == 0, r.output
+    assert tried == [443]
+    assert "sudo tailscale set --operator=$USER" in r.output
+
+
+@pytest.mark.parametrize("url", ["", "   "])
+def test_onboard_answers_rejects_empty_public_url(gw, tmp_path, url):
+    r = onboard(write_answers(tmp_path, access={"public_urls": [url]}))
+    assert r.exit_code == 2
+    assert "access.public_urls" in r.output and "value_error" in r.output
+    assert gw.calls == [] and gw.access == []
+
+
+def test_onboard_answers_rejects_http_public_url(gw, tmp_path):
+    url = "http://usuario:secreto@fogar.example.com"
+    r = onboard(write_answers(tmp_path, access={"public_urls": [url]}))
+    assert r.exit_code == 2
+    assert "access.public_urls" in r.output and "value_error" in r.output
+    assert "secreto" not in r.output and "fogar.example.com" not in r.output
+    assert gw.calls == []  # nada antes de validar el fichero entero
+
+
+def _routes(*specs):
+    from fogar_gateway.access import Route, recommend
+
+    return recommend([Route(*s) for s in specs])
+
+
+def test_dashboard_recommends_public_url(gw, tmp_path, monkeypatch):
+    routes = _routes(("public", "https://gw.example.com/", True, "ok"),
+                     ("lan", f"http://{LAN_IP}:8004/", False))
+    monkeypatch.setattr(onboard_mod, "collect", lambda *a, **k: routes)
+    r = onboard(write_answers(tmp_path))
+    assert r.exit_code == 0, r.output
+    assert r.output.index("Tu dashboard: https://gw.example.com/") < r.output.index(
+        f"http://{LAN_IP}:8004/")
+    assert f"ws://{LAN_IP}:8004/ws/stream" in r.output
+
+
+def test_dashboard_lan_only_shows_https_hint(gw, tmp_path):
+    r = onboard(write_answers(tmp_path))
+    assert r.exit_code == 0, r.output
+    assert "HTTPS" in r.output and "fogar-gw access setup" in r.output
+
+
+def test_dashboard_loopback_with_a_route_shows_it(gw, tmp_path, monkeypatch):
+    gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\nGATEWAY_HOST=127.0.0.1\n")
+    routes = _routes(("tailscale_https", "https://box.ts.net/", True, "ok"))
+    monkeypatch.setattr(onboard_mod, "collect", lambda *a, **k: routes)
+    r = onboard(write_answers(tmp_path))
+    assert "Tu dashboard: https://box.ts.net/" in r.output
+    assert "solo escucha en este equipo" not in r.output and "ws://" not in r.output
+
+
+@pytest.mark.parametrize(("status", "expected"),
+                         [("ok", "https://gw.example.com/"), ("inalcanzable", None)])
+def test_dashboard_waits_on_the_recommended_url_or_none(gw, tty, monkeypatch, status, expected):
+    seen = []
+    monkeypatch.setattr(onboard_mod, "_wait_dashboard", lambda ctx, out, url: seen.append(url))
+    routes = _routes(("public", "https://gw.example.com/", True, status))
+    monkeypatch.setattr(onboard_mod, "collect", lambda *a, **k: routes)
+    tty.queue.extend(["127.0.0.1", "18789", OC_TOKEN, "off", "off"])
+    r = run("onboard")
+    assert r.exit_code == 0, r.output
+    assert "gw.example.com" in r.output and seen == [expected]

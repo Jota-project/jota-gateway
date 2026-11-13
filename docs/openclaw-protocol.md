@@ -483,7 +483,7 @@ loggers; keep those at their default level in production.
 ## `runId`, `chat.abort` and a concurrent `chat.send` (2026-10-22/23, server 2026.10.5, issue #219)
 
 Observed live on green-house with throwaway session keys; structure only (no text recorded).
-Full notes in the vault (`JGW Observaciones 2026-10 - OpenClaw y cliente lento en Linux`).
+Full notes in the team's Obsidian vault (observations of 2026-10 on OpenClaw and the slow client on Linux).
 
 - **Every `chat` and `agent` event carries `runId`** (and `seq`), including `chat` `aborted`.
   The `chat.send` ack arrives in 30–60 ms as `res ok` with `payload {runId, status}`, so the
@@ -646,7 +646,7 @@ Read in the package source of 2026.11.1 and compared with 2026.10.5, not observe
   full field list) that there is no wire-level way to set a per-client system prompt today.
 - **2026-07-10**: added the issue #84 mitigation note — `FogarBridge` now collapses multiple
   OpenClaw agent start/end pairs into a single client-facing turn_start/turn_end. Previously
-  the bridge was emitting one pair per agent event, causing jota-voice (and any other client)
+  the bridge was emitting one pair per agent event, causing the voice client (and any other client)
   to log 2–4 duplicate `turn_start`/`turn_end` frames per user message during tool use.
 - **2026-07-03**: created. Documents the v2026.6.11 breaking changes (agents.list, chat
   completion signal), the `session.tool` event shape, and the multi-turn-per-message nuance —

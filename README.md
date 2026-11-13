@@ -1,28 +1,33 @@
-# fogar-gateway
+# Fogar Gateway
 
-BFF (Backend For Frontend) del ecosistema Fogar IA. Punto de entrada único para todos los clientes: Fogar TV (tele), jota-voice (Mac y Android), la app de iPhone (fase inicial) y Home Assistant. Un cliente ESP32 está planificado (*planned*) y sin desarrollar.
+La puerta de entrada de Fogar en casa. Un solo servicio que reconoce cada aparato del hogar, lo conecta con el asistente y con la voz, y se administra desde el navegador o la terminal.
+
+- **Aparatos**: Fogar TV, el cliente de voz (Mac y Android), la app de iPhone y Home Assistant. Un aparato nuevo **descubre el gateway y se empareja con un código de 6 cifras**, sin copiar claves.
+- **Asistente**: los turnos de voz y texto van a [OpenClaw](docs/openclaw-protocol.md), que elige el agente y sus herramientas. El gateway lleva el turno de principio a fin: streaming, interrupciones (barge-in) y avisos que llegan sin preguntar (push).
+- **Voz**: transcripción (STT) y síntesis (TTS) con los servicios propios de Fogar, con ElevenLabs o desactivadas. Sin voz, el texto sigue funcionando.
+- **Administración**: un panel web en `/` (estado en vivo, sesiones y clientes) y la CLI `fogar-gw` (diagnóstico, configuración, servicio, logs y emparejamiento).
+- **Instalación**: un comando instala, verifica OpenClaw y la voz contra los servicios reales, lo deja como servicio de usuario y te dice cómo llegar al panel: desde casa, por Tailscale o por tu propio dominio.
 
 ```
-Fogar TV / jota-voice / App iPhone / Home Assistant
-        │
-        ▼
-  fogar-gateway (FastAPI :8004)
-  ├── /ws/stream          WebSocket — sesión interactiva de voz/texto
-  ├── /healthz            Liveness probe
-  ├── /ready              Readiness probe
-  ├── /admin/*            Gestión y observabilidad (X-Admin-Token)
-  └── /v1/*               OpenAI-compatible (Home Assistant, Open WebUI)
-        │
-        ▼
-  ┌──────────────────────────────────────────┐
-  │             Microservicios               │
-  │  OpenClaw         WebSocket v4           │
-  │  fogar-transcriber WebSocket              │
-  │  fogar-speaker     WebSocket              │
-  └──────────────────────────────────────────┘
+  Aparatos de casa                    Fogar Gateway  :8004                     Servicios
+  ────────────────                    ────────────────────                     ─────────
+  Fogar TV           ──┐          ┌── /ws/stream      voz y texto en vivo  ──┐
+  Voz (Mac, Android) ──┤ descubren│   /.well-known    descubrimiento        │──► OpenClaw (agentes)
+  App iPhone         ──┤ y se     │   /pair           emparejamiento        │──► STT: propio · ElevenLabs · off
+  Home Assistant     ──┘ emparejan└── /v1/*           API compatible OpenAI ┘──► TTS: propio · ElevenLabs · off
+
+  Tú, desde casa, Tailscale o tu dominio:
+    navegador ──► /           panel web (estado, sesiones, clientes)
+    terminal  ──► fogar-gw    CLI sobre /admin/* (doctor, config, servicio, logs, pair)
 ```
 
-No hay dependencia de `jota-db` — la identidad y configuración de clientes viven en una base de datos SQLite local (`<base>/data/gateway.db`, con `<base>` = `~/.fogar-gateway` por defecto). Requiere OpenClaw **2026.6.11 o posterior** (detalles del protocolo en [`docs/openclaw-protocol.md`](docs/openclaw-protocol.md)).
+La identidad y la configuración de cada aparato viven en una base de datos SQLite local (`<base>/data/gateway.db`, con `<base>` = `~/.fogar-gateway` por defecto). Requiere OpenClaw **2026.6.11 o posterior**.
+
+```bash
+curl -fsSL https://github.com/fogarhome/fogar-gateway/releases/latest/download/install.sh | sh
+```
+
+Detalles en [Instalación](#instalación). Si integras un aparato nuevo, el protocolo está en [`docs/client-protocol.md`](docs/client-protocol.md).
 
 ---
 
@@ -63,7 +68,7 @@ Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la guía completa 
 
 | Endpoint | Método | Auth | Descripción |
 |----------|--------|------|-------------|
-| `/.well-known/fogar-gateway` | GET | ninguna | Identifica al gateway: `{"service": "fogar-gateway", "version", "name"}` (`name` = `GATEWAY_NAME` o el nombre del equipo) |
+| `/.well-known/fogar-gateway` | GET | ninguna | Identifica al gateway: `{"service": "fogar-gateway", "version", "name", "instance_id"}` (`name` = `GATEWAY_NAME` o el nombre del equipo; `instance_id` = identificador aleatorio por arranque del proceso) |
 | `/pair` | POST | un código de `fogar-gw pair` | El cliente canjea el código y recibe su `client_key`, la única vez que se ve. Ver [Emparejar un cliente](#emparejar-un-cliente) |
 
 Los dos son públicos: detrás de un proxy o un túnel también llegan desde internet. `/pair` solo acepta un código abierto por el administrador, y 5 códigos erróneos seguidos anulan todos los abiertos. El protocolo para clientes está en [`docs/client-protocol.md` §0](docs/client-protocol.md#0-descubrir-el-gateway-y-emparejarse).
@@ -91,6 +96,7 @@ Los dos son públicos: detrás de un proxy o un túnel también llegan desde int
 | `/admin/pairing/{id}` | DELETE | Anular un código abierto |
 | `/admin/state` | GET | Instantánea viva: versión, uptime, flujos `/admin/state/stream` abiertos (`gateway.dashboards`), estado de servicios, contadores y una fila por sesión |
 | `/admin/state/stream` | GET | La misma instantánea por SSE cada segundo; cada stream termina solo a los 25 s, el cliente debe reconectar (`EventSource` lo hace solo) |
+| `/admin/access` | GET | Vías para llegar al gateway (`public`, `tailscale_https`, `tailscale`, `lan`), cada una con su estado (`ok`, `protegida`, `otro_gateway`, `inalcanzable`, `sin_verificar`) y la recomendada; `{"docker": bool, "routes": [...]}`, en caché 15 s |
 
 Los tres endpoints `*/status` comparten la forma `{"name", "state", "connected_at", "reconnect_attempts", "last_error"}`; los de transcriber y TTS añaden `provider` y, con ElevenLabs, `counters`.
 
@@ -101,6 +107,8 @@ fogar-gw                        # en una terminal: menú interactivo; en un scri
 fogar-gw init                   # instalación nueva: <base>, config.env con ADMIN_TOKEN aleatorio y la BD
 fogar-gw onboard [--answers FICHERO]   # asistente: OpenClaw, voz, servicio y dashboard
 fogar-gw token                  # el token del dashboard (ADMIN_TOKEN), solo en una terminal
+fogar-gw access                 # desde dónde se llega al gateway, verificado, con la vía recomendada
+fogar-gw access setup           # elige cómo entrar (Tailscale o tu dominio) y después lista las vías
 fogar-gw serve [--create-db]    # arranca el gateway (puerto 8004, host GATEWAY_HOST)
 fogar-gw doctor                 # diagnóstico: configuración, BD, permisos, candado, gateway y servicios
 fogar-gw config show            # ajustes efectivos y su origen (entorno, config.env o por defecto)
@@ -205,9 +213,14 @@ Qué hace `install.sh`:
 1. Si falta `config.env` o la BD, prepara `<base>` como `fogar-gw init` (no toca lo que ya exista).
 2. OpenClaw: lo busca en este equipo (si no, pregunta host y puerto) y pide su token (`openclaw config get gateway.auth.token`). Solo en loopback: para un OpenClaw de otra máquina, un túnel SSH (`ssh -L 18789:127.0.0.1:18789 …`). Sin OpenClaw verificado no sigue.
 3. STT y TTS: servicio propio (`host:puerto` y, si la usa, su clave), ElevenLabs (una sola clave para los dos) o «ahora no» (`off`: sin STT no hay transcripción y sin TTS las respuestas llegan solo en texto).
-4. Instala el servicio, o lo reinicia si ya estaba instalado (con terminal pregunta antes, porque corta las sesiones abiertas), y pasa `fogar-gw doctor`.
-5. Termina en el dashboard:
-   - su URL desde otro aparato de tu red, `http://<IP de la LAN>:8004/` (o la de `GATEWAY_HOST` si escucha en una dirección concreta; si solo escucha en loopback, te dice cómo entrar con un túnel SSH);
+4. «¿Cómo vas a entrar a Fogar?»: desde casa (red local) siempre; además, si los marcas:
+   - **Con Tailscale:** si `tailscale serve` ya lleva al gateway, te da su `https://…` y no toca nada. Si no, pregunta antes de activarlo en 443 (o en 8443 si 443 ya sirve otra cosa; si los dos están ocupados, no lo toca). Si Tailscale pide permiso, te enseña `sudo tailscale set --operator=$USER` y lo ejecuta solo si eliges «Ejecutarlo ahora» (y reintenta una vez); si la tailnet no tiene HTTPS, te da el enlace para activarlo. Sin Tailscale te da los comandos oficiales para instalarlo (`curl -fsSL https://tailscale.com/install.sh | sh` y `sudo tailscale up`) y vuelve a mirar cuando quieras, o sigues sin él: nunca lo instala por ti.
+   - **Con mi propio dominio:** una URL `https://` (sin ruta, parámetros ni usuario) que tu proxy haga llegar a `http://localhost:8004`; se añade a `PUBLIC_URLS` sin quitar las que ya hay.
+
+   Lo mismo, en cualquier momento: `fogar-gw access setup`.
+5. Instala el servicio, o lo reinicia si ya estaba instalado (con terminal pregunta antes, porque corta las sesiones abiertas), y pasa `fogar-gw doctor`.
+6. Termina en el dashboard:
+   - las vías para llegar al dashboard desde otro aparato: la recomendada («Tu dashboard») y las demás, cada una con su estado (verificada, sin comprobar…). Por la LAN es `http://<IP de la LAN>:8004/` (o la de `GATEWAY_HOST` si escucha en una dirección concreta; si solo escucha en loopback y no hay otra vía, te dice cómo entrar con un túnel SSH). Para verlas o cambiarlas después: `fogar-gw access` y `fogar-gw access setup`;
    - el token de administración que se pega en él (solo en una terminal), dónde está (`<base>/config.env`, `ADMIN_TOKEN`) y cómo verlo otra vez: `fogar-gw token`;
    - el recordatorio de no compartirlo: quien lo tenga controla el gateway.
 
@@ -222,11 +235,12 @@ Si lo cortas a medias, `config.env` queda como estaba más lo ya verificado, y v
   "openclaw_host": "127.0.0.1", "openclaw_port": 18789, "openclaw_token": "…",
   "stt": {"provider": "off"},
   "tts": {"provider": "fogar", "url": "localhost:8005", "token": "…"},
-  "first_client": {"name": "salón", "type": "ha"}
+  "first_client": {"name": "salón", "type": "ha"},
+  "access": {"tailscale_serve": true, "public_urls": ["https://fogar.example.com"]}
 }
 ```
 
-`stt` y `tts`: `{"provider": "fogar", "url"?, "token"?}` (por defecto `localhost:9000` / `localhost:8005`, sin clave), `{"provider": "elevenlabs", "api_key"}` (la misma en los dos; si el TTS de `config.env` ya usa ElevenLabs con otra clave, la nueva del STT se verifica también para el TTS antes de guardarla, salvo con `"tts": {"provider": "off"}`) o `{"provider": "off"}`. `first_client` (opcional): `{"name", "type"}` (`ha`, `esp32`, `web`, `app` o `screen`) crea ese cliente si aún no hay ninguno; sin él o con `null`, no crea ninguno. Con `--answers` no espera al dashboard ni escribe el token. Un campo que sobre, u otro que falte, es un error.
+`stt` y `tts`: `{"provider": "fogar", "url"?, "token"?}` (por defecto `localhost:9000` / `localhost:8005`, sin clave), `{"provider": "elevenlabs", "api_key"}` (la misma en los dos; si el TTS de `config.env` ya usa ElevenLabs con otra clave, la nueva del STT se verifica también para el TTS antes de guardarla, salvo con `"tts": {"provider": "off"}`) o `{"provider": "off"}`. `first_client` (opcional): `{"name", "type"}` (`ha`, `esp32`, `web`, `app` o `screen`) crea ese cliente si aún no hay ninguno; sin él o con `null`, no crea ninguno. `access` (opcional): `tailscale_serve` (por defecto `false`) activa `tailscale serve` como arriba pero sin preguntar (si hace falta permiso o HTTPS, solo lo explica y sigue: nunca ejecuta sudo) y `public_urls` (por defecto `[]`) añade esas URLs a `PUBLIC_URLS`; una URL que no valga sale con 2. Sin `access`, el paso no se ejecuta. Con `--answers` no espera al dashboard ni escribe el token. Un campo que sobre, u otro que falte, es un error.
 
 #### Emparejar un cliente
 
@@ -324,7 +338,7 @@ Los datos (`config.env`, `data/gateway.db`) quedan en `<base>`; bórralos a mano
 
 ### Pasar de Docker a nativo
 
-`fogar-gw migrate --from-docker <carpeta de compose>` copia `.env` y `data/gateway.db` de una instalación Docker a `<base>`. Procedimiento, con la ventana de parada y la vuelta atrás:
+`fogar-gw migrate --from-docker <carpeta de compose>` copia `.env` y `data/gateway.db` de una instalación Docker a `<base>`. Solo vale para una instalación Docker de la v2.0.0 o posterior: las versiones 1.x no se migran, se instala desde cero. Procedimiento, con la ventana de parada y la vuelta atrás:
 
 1. **Misma versión a los dos lados.** Despliega la versión vN en Docker e instala la vN nativa **sin arrancarla**, con el instalador y `--no-onboard`:
    ```bash
@@ -389,6 +403,7 @@ Variables de entorno o, si no, de `<base>/config.env` (instalación nativa). En 
 | `DATABASE_URL` | `sqlite:///data/gateway.db` | Base de datos SQLite local (identidad y configuración de clientes). Una ruta relativa cuelga de `<base>` |
 | `GATEWAY_HOST` | `0.0.0.0` | Host de escucha de `fogar-gw serve` (`127.0.0.1` detrás de un proxy en el mismo host) |
 | `GATEWAY_NAME` | — | Nombre con el que se anuncia a los clientes (`/.well-known/fogar-gateway`). Vacío = nombre del equipo; en Docker conviene fijarlo |
+| `PUBLIC_URLS` | — | URLs `https://` propias por las que se llega al gateway (CSV, sin ruta, parámetros ni usuario), p. ej. `https://fogar.example.com`. Vacío = ninguna |
 | `TRANSCRIBER_WS_URL` | `localhost:9000` | fogar-transcriber |
 | `TTS_WS_URL` | `localhost:8005` | fogar-speaker |
 | `TTS_TOKEN` | — | Token de auth para fogar-speaker; vacío si el TTS no exige clave |
@@ -470,7 +485,7 @@ Antes de poder usarlo hace falta configurar, una sola vez, lo siguiente
 2. **Runner self-hosted dedicado**, separado del runner `green-house` existente
    (que sirve a otro repo). Registrar una segunda instancia de
    [`actions-runner`](https://github.com/actions/runner) en este servidor, con
-   label `jota-e2e`, contra este repo.
+   label `fogar-e2e`, contra este repo.
 3. **GitHub Environment `e2e-real-production`** (Settings → Environments):
    - *Required reviewers*: el usuario propietario del repo, explícitamente.
    - *Deployment branches*: restringido a `main`.
@@ -507,11 +522,15 @@ El gateway instancia un `FogarBridge` por cada sesión WebSocket. Los tres servi
 ```
 src/fogar_gateway/
 ├── paths.py                 directorio base, config.env y ruta de la BD (compartido con la CLI)
+├── access.py                vías para llegar al gateway: LAN, Tailscale, PUBLIC_URLS; verificación y recomendada
 ├── alembic.ini, migrations/ migraciones de Alembic, dentro del paquete instalado
+├── web/                     el panel compilado (lo mete el build en el wheel; no está en git)
 ├── api/
-│   ├── routes.py            WebSocket /ws/stream — handshake, ready, bridge lifecycle
-│   ├── admin_routes.py      /admin/* — CRUD de clientes + observabilidad (sesiones, orquestador, transcriptor, TTS)
+│   ├── routes.py            WebSocket /ws/stream — handshake, ready, ciclo de vida del bridge
+│   ├── pairing_routes.py    /.well-known/fogar-gateway, POST /pair y /admin/pairing
+│   ├── admin_routes.py      /admin/* — clientes, sesiones, servicios, voz, vías de acceso y estado en vivo (SSE)
 │   ├── openai_routes.py     /v1/models, /v1/chat/completions
+│   ├── web_routes.py        el panel en / (caché, CSP y vuelta a index.html)
 │   ├── health_routes.py     /healthz, /ready
 │   └── deps.py              get_admin_auth — dependencia de auth para admin
 ├── core/
@@ -519,16 +538,22 @@ src/fogar_gateway/
 │   ├── agent_policy.py      resolve_agent() — cascada y política de agentes
 │   ├── network.py           resolve_client_ip() / origen de confianza de /v1
 │   ├── startup_checks.py    lock de proceso único y comprobaciones de arranque
+│   ├── logging.py           formatos de log y fingerprint_key()
 │   └── session_key.py       make_session_key() — formato canónico de session key
 ├── db/
 │   ├── models.py            ClientRecord (SQLModel) — identidad y config por cliente
 │   └── database.py          get_engine() / run_migrations() / get_db_session()
-├── cli/                     fogar-gw — init, serve, menú, doctor, config, status, version, clients, service (servicio systemd), logs, migrate y onboard (onboard.py, el asistente; verify.py, que verifica cada proveedor contra el servicio real)
+├── cli/                     fogar-gw — init, serve, menú, onboard (el asistente; verify.py comprueba cada
+│                            proveedor contra el servicio real), access, token, pair, clients, doctor, config,
+│                            status, version, servicio systemd (install/start/stop/restart), logs y migrate
 └── services/
     ├── bridge.py            FogarBridge — coordinador de sesión WS
-    ├── db_client.py         DbClient — lee ClientRecord de SQLite local (singleton, sin caché)
+    ├── pairing.py           PairingStore — códigos de emparejamiento en memoria
+    ├── db_client.py         DbClient — lee ClientRecord de SQLite local (sin caché)
     ├── outbound.py          QueuedSender — salida serializada hacia cada cliente
+    ├── pacing.py            AudioPacer — el audio TTS a 1× con un pequeño adelanto
     ├── reconnection.py      ConnectionState / ServiceStatus / to_wire_state() — compartido por los 3 wrappers
+    ├── teardown.py          Teardown — cierre ordenado sin perder errores ni cancelaciones
     ├── transcriber_client.py       WebSocket → fogar-transcriber, protocolo puro (sin reconexión)
     ├── transcriber_reconnecting.py ReconnectingTranscriberClient — uno por sesión de audio, backoff en background
     ├── tts_client.py                WebSocket → fogar-speaker, protocolo puro, creado por turno

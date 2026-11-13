@@ -4,6 +4,7 @@ from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from fogar_gateway import paths
+from fogar_gateway.access import parse_public_urls
 
 
 class Settings(BaseSettings):
@@ -26,6 +27,16 @@ class Settings(BaseSettings):
     # Nombre con el que se anuncia en /.well-known/fogar-gateway (#317). Vacío = nombre del equipo;
     # en Docker conviene fijarlo, porque ahí el nombre del equipo suele ser el id del contenedor.
     GATEWAY_NAME: str = ""
+
+    # URLs https propias del usuario (CSV, sin ruta) por las que se llega al gateway: excepción
+    # a «host:port sin protocolo». Solo se valida; se guarda el texto original.
+    PUBLIC_URLS: str = ""
+
+    @field_validator("PUBLIC_URLS")
+    @classmethod
+    def _valid_public_urls(cls, v: str) -> str:
+        parse_public_urls(v)
+        return v
 
     # Un solo proceso por base de datos (M6f, #218): flock sobre <dir de la BD>/gateway.lock.
     # Estado en memoria (sesiones, cachés, registro de bridges) no se comparte entre workers.

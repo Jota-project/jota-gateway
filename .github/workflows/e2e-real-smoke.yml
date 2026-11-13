@@ -9,7 +9,7 @@ concurrency:
 
 jobs:
   e2e-real:
-    runs-on: [self-hosted, jota-e2e]
+    runs-on: [self-hosted, fogar-e2e]
     environment: e2e-real-production
     steps:
       - uses: actions/checkout@v7

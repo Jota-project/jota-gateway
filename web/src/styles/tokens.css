@@ -49,7 +49,7 @@
 }
 
 /* Lo propio del panel (M18). `vidrio-fino`: desviación de `vidrio` (70 %) para que el fondo vivo se vea
-   a través; pendiente de subir a fogar-brand (JGW Spec 2026-11-12 - Dashboard de Fogar). */
+   a través; pendiente de subir a fogar-brand (spec «Dashboard de Fogar» del 2026-11-12). */
 :root {
   --vidrio-fino: rgb(18 25 27 / 0.42);
   --vidrio-fino-borde: inset 0 1px 0 rgb(236 230 220 / 0.1), inset 0 0 0 1px rgb(236 230 220 / 0.07);

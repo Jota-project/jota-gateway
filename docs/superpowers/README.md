@@ -1,10 +1,8 @@
 # Specs y planes: movidos a Obsidian
 
-Los **specs de diseño y los planes de implementación** de fogar-gateway ya **no viven en este repositorio**. Se movieron el 2026-10-11 al vault privado de Obsidian del equipo (proyecto J), donde se mantienen a partir de ahora:
+Los **specs de diseño y los planes de implementación** de fogar-gateway **no viven en este repositorio**. Se movieron el 2026-10-11 al vault privado de Obsidian del equipo, a la carpeta del gateway (`Specs y planes/`, con su índice), donde se mantienen a partir de ahora.
 
-`Producto Jota/jota-gateway/Specs y planes/` — índice: `JGW Specs y planes - Índice`.
-
-Convención de nombres: `JGW Spec AAAA-MM-DD - tema` y `JGW Plan AAAA-MM-DD - tema`.
+Convención de nombres: `<prefijo> Spec AAAA-MM-DD - tema` y `<prefijo> Plan AAAA-MM-DD - tema`, con el prefijo de las notas del gateway en el vault.
 
 ## Qué hay que hacer
 - **Specs y planes nuevos:** escríbelos en Obsidian, no aquí. Las skills de superpowers escriben por defecto en `docs/superpowers/specs|plans/`; cámbiales la ruta al vault.
@@ -14,4 +12,4 @@ Convención de nombres: `JGW Spec AAAA-MM-DD - tema` y `JGW Plan AAAA-MM-DD - te
 - Los specs que estuvieron trackeados (hasta 2026-10-11) siguen disponibles en el historial de git: `git log --all -- docs/superpowers/specs/`.
 - Los planes nunca estuvieron en git; su única copia está en Obsidian.
 
-El estado vivo del proyecto está en GitHub (issues, milestones, releases) y la narrativa en Obsidian (`JGW Roadmap`). `docs/ROADMAP.md` ya no existe (archivado en el vault el 2026-10-11).
+El estado vivo del proyecto está en GitHub (issues, milestones, releases) y la narrativa en el roadmap del gateway en Obsidian. `docs/ROADMAP.md` ya no existe (archivado en el vault el 2026-10-11).

@@ -1,7 +1,7 @@
 """
 db_client.py
 ~~~~~~~~~~~~
-Cliente local SQLite. Reemplaza el cliente HTTP a jota-db.
+Cliente local SQLite: identidad y configuración de cada cliente, sin servicio externo.
 
 Interfaz pública invariante:
   db_client.get_session(client_key) → (Client, ClientConfig)
