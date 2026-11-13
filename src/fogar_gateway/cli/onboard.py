@@ -357,8 +357,9 @@ def _read_answers(path: Path) -> Any:
         def _urls(cls, v: list[str]) -> list[str]:
             from fogar_gateway.access import parse_public_urls
 
-            for url in v:
-                parse_public_urls(url)  # ValueError -> value_error, sin el valor
+            for url in v:  # ValueError -> value_error, sin el valor
+                if not parse_public_urls(url):  # "" o espacios: no es una URL
+                    raise ValueError("vacía")
             return v
 
     class Answers(Strict):

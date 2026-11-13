@@ -101,10 +101,11 @@ def gw(monkeypatch, tmp_path, use_api):
                               ("POST", "/admin/clients"): {**CLIENT, "client_key": CLIENT_KEY},
                               ("GET", "/admin/state"): {"gateway": {"dashboards": 1}}}))
     monkeypatch.setattr(onboard_mod, "_enter_pressed", lambda timeout: True)  # nunca espera
-    # El paso de acceso tiene sus tests (test_cli_access_setup.py): aquí solo se anota.
+    # El paso de acceso tiene sus tests (test_cli_access_setup.py): aquí solo se anota, con
+    # lo que ya había pasado (para comprobar el orden).
     st.access = []
     monkeypatch.setattr(cli_access, "access_step",
-                        lambda out, answers, settings: st.access.append(answers))
+                        lambda out, answers, settings: st.access.append((answers, list(st.calls))))
     return st
 
 
@@ -459,6 +460,10 @@ def test_interactive_full_flow(gw, tty):
     assert [c for c in gw.api.calls if c[0] == "POST"] == []  # el primer cliente, en la web
     assert "Conectado: ya puedes seguir en el dashboard." in r.output
     assert installs(gw) == ["install"]
+    # El paso de acceso, una vez y preguntando (None): tras las voces y antes del servicio.
+    (access_answers, before), = gw.access
+    assert access_answers is None
+    assert ("verify_elevenlabs", "tts", EL_KEY) in before and "install" not in before
     for secret in SECRETS:
         assert secret not in r.output
     menus = asked(tty, "select", "¿Qué hago?")
@@ -960,6 +965,14 @@ def test_onboard_answers_tailscale_permission_never_runs_sudo(gw, tmp_path, monk
     assert r.exit_code == 0, r.output
     assert tried == [443]
     assert "sudo tailscale set --operator=$USER" in r.output
+
+
+@pytest.mark.parametrize("url", ["", "   "])
+def test_onboard_answers_rejects_empty_public_url(gw, tmp_path, url):
+    r = onboard(write_answers(tmp_path, access={"public_urls": [url]}))
+    assert r.exit_code == 2
+    assert "access.public_urls" in r.output and "value_error" in r.output
+    assert gw.calls == [] and gw.access == []
 
 
 def test_onboard_answers_rejects_http_public_url(gw, tmp_path):
