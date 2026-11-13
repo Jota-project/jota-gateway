@@ -84,8 +84,9 @@ async function reconectar(): Promise<void> {
   if (reconectando.value) return
   reconectando.value = true
   try {
-    await reconnectOrchestrator()
-    toast('ok', 'Reconectando OpenClaw', 'Su estado cambia aquí en cuanto vuelva.')
+    const { accepted } = await reconnectOrchestrator()
+    if (accepted) toast('ok', 'Reconectando OpenClaw', 'Su estado cambia aquí en cuanto vuelva.')
+    else toast('ok', 'OpenClaw ya está conectado', 'No hacía falta reconectar.')
   } catch {
     toast('bad', 'No se pudo pedir la reconexión', 'Prueba otra vez en unos segundos.')
   } finally {
