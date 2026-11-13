@@ -103,6 +103,7 @@ fogar-gw init                   # instalación nueva: <base>, config.env con ADM
 fogar-gw onboard [--answers FICHERO]   # asistente: OpenClaw, voz, servicio y dashboard
 fogar-gw token                  # el token del dashboard (ADMIN_TOKEN), solo en una terminal
 fogar-gw access                 # desde dónde se llega al gateway, verificado, con la vía recomendada
+fogar-gw access setup           # elige cómo entrar (Tailscale o tu dominio) y después lista las vías
 fogar-gw serve [--create-db]    # arranca el gateway (puerto 8004, host GATEWAY_HOST)
 fogar-gw doctor                 # diagnóstico: configuración, BD, permisos, candado, gateway y servicios
 fogar-gw config show            # ajustes efectivos y su origen (entorno, config.env o por defecto)
@@ -207,8 +208,13 @@ Qué hace `install.sh`:
 1. Si falta `config.env` o la BD, prepara `<base>` como `fogar-gw init` (no toca lo que ya exista).
 2. OpenClaw: lo busca en este equipo (si no, pregunta host y puerto) y pide su token (`openclaw config get gateway.auth.token`). Solo en loopback: para un OpenClaw de otra máquina, un túnel SSH (`ssh -L 18789:127.0.0.1:18789 …`). Sin OpenClaw verificado no sigue.
 3. STT y TTS: servicio propio (`host:puerto` y, si la usa, su clave), ElevenLabs (una sola clave para los dos) o «ahora no» (`off`: sin STT no hay transcripción y sin TTS las respuestas llegan solo en texto).
-4. Instala el servicio, o lo reinicia si ya estaba instalado (con terminal pregunta antes, porque corta las sesiones abiertas), y pasa `fogar-gw doctor`.
-5. Termina en el dashboard:
+4. «¿Cómo vas a entrar a Fogar?»: desde casa (red local) siempre; además, si los marcas:
+   - **Con Tailscale:** si `tailscale serve` ya lleva al gateway, te da su `https://…` y no toca nada. Si no, pregunta antes de activarlo en 443 (o en 8443 si 443 ya sirve otra cosa; si los dos están ocupados, no lo toca). Si Tailscale pide permiso, te enseña `sudo tailscale set --operator=$USER` y lo ejecuta solo si eliges «Ejecutarlo ahora» (y reintenta una vez); si la tailnet no tiene HTTPS, te da el enlace para activarlo. Sin Tailscale te da los comandos oficiales para instalarlo (`curl -fsSL https://tailscale.com/install.sh | sh` y `sudo tailscale up`) y vuelve a mirar cuando quieras, o sigues sin él: nunca lo instala por ti.
+   - **Con mi propio dominio:** una URL `https://` (sin ruta, parámetros ni usuario) que tu proxy haga llegar a `http://localhost:8004`; se añade a `PUBLIC_URLS` sin quitar las que ya hay.
+
+   Lo mismo, en cualquier momento: `fogar-gw access setup`.
+5. Instala el servicio, o lo reinicia si ya estaba instalado (con terminal pregunta antes, porque corta las sesiones abiertas), y pasa `fogar-gw doctor`.
+6. Termina en el dashboard:
    - su URL desde otro aparato de tu red, `http://<IP de la LAN>:8004/` (o la de `GATEWAY_HOST` si escucha en una dirección concreta; si solo escucha en loopback, te dice cómo entrar con un túnel SSH);
    - el token de administración que se pega en él (solo en una terminal), dónde está (`<base>/config.env`, `ADMIN_TOKEN`) y cómo verlo otra vez: `fogar-gw token`;
    - el recordatorio de no compartirlo: quien lo tenga controla el gateway.
@@ -224,11 +230,12 @@ Si lo cortas a medias, `config.env` queda como estaba más lo ya verificado, y v
   "openclaw_host": "127.0.0.1", "openclaw_port": 18789, "openclaw_token": "…",
   "stt": {"provider": "off"},
   "tts": {"provider": "fogar", "url": "localhost:8005", "token": "…"},
-  "first_client": {"name": "salón", "type": "ha"}
+  "first_client": {"name": "salón", "type": "ha"},
+  "access": {"tailscale_serve": true, "public_urls": ["https://fogar.example.com"]}
 }
 ```
 
-`stt` y `tts`: `{"provider": "fogar", "url"?, "token"?}` (por defecto `localhost:9000` / `localhost:8005`, sin clave), `{"provider": "elevenlabs", "api_key"}` (la misma en los dos; si el TTS de `config.env` ya usa ElevenLabs con otra clave, la nueva del STT se verifica también para el TTS antes de guardarla, salvo con `"tts": {"provider": "off"}`) o `{"provider": "off"}`. `first_client` (opcional): `{"name", "type"}` (`ha`, `esp32`, `web`, `app` o `screen`) crea ese cliente si aún no hay ninguno; sin él o con `null`, no crea ninguno. Con `--answers` no espera al dashboard ni escribe el token. Un campo que sobre, u otro que falte, es un error.
+`stt` y `tts`: `{"provider": "fogar", "url"?, "token"?}` (por defecto `localhost:9000` / `localhost:8005`, sin clave), `{"provider": "elevenlabs", "api_key"}` (la misma en los dos; si el TTS de `config.env` ya usa ElevenLabs con otra clave, la nueva del STT se verifica también para el TTS antes de guardarla, salvo con `"tts": {"provider": "off"}`) o `{"provider": "off"}`. `first_client` (opcional): `{"name", "type"}` (`ha`, `esp32`, `web`, `app` o `screen`) crea ese cliente si aún no hay ninguno; sin él o con `null`, no crea ninguno. `access` (opcional): `tailscale_serve` (por defecto `false`) activa `tailscale serve` como arriba pero sin preguntar (si hace falta permiso o HTTPS, solo lo explica y sigue: nunca ejecuta sudo) y `public_urls` (por defecto `[]`) añade esas URLs a `PUBLIC_URLS`; una URL que no valga sale con 2. Sin `access`, el paso no se ejecuta. Con `--answers` no espera al dashboard ni escribe el token. Un campo que sobre, u otro que falte, es un error.
 
 #### Emparejar un cliente
 

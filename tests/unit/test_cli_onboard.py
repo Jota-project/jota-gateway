@@ -15,6 +15,7 @@ import questionary
 from click.testing import CliRunner
 from dotenv import dotenv_values
 
+from fogar_gateway.cli import access as cli_access
 from fogar_gateway.cli import app, doctor, menu, output, service, verify
 from fogar_gateway.cli import init as init_mod
 from fogar_gateway.cli import onboard as onboard_mod
@@ -34,6 +35,7 @@ ENV = ("ADMIN_TOKEN", "OPENCLAW_HOST", "OPENCLAW_PORT", "OPENCLAW_TOKEN", "STT_P
        "TTS_PROVIDER", "TRANSCRIBER_WS_URL", "TRANSCRIBER_TOKEN", "TTS_WS_URL", "TTS_TOKEN",
        "ELEVENLABS_API_KEY", "GATEWAY_HOST", "FOGAR_GW_TOKEN", "FOGAR_GW_URL")
 REAL_INIT = init_mod.init
+REAL_ACCESS_STEP = cli_access.access_step
 LAN_IP = "192.0.2.10"
 DEFAULT = object()  # en la cola de `tty`: acepta el valor por defecto de la pregunta
 
@@ -99,6 +101,10 @@ def gw(monkeypatch, tmp_path, use_api):
                               ("POST", "/admin/clients"): {**CLIENT, "client_key": CLIENT_KEY},
                               ("GET", "/admin/state"): {"gateway": {"dashboards": 1}}}))
     monkeypatch.setattr(onboard_mod, "_enter_pressed", lambda timeout: True)  # nunca espera
+    # El paso de acceso tiene sus tests (test_cli_access_setup.py): aquí solo se anota.
+    st.access = []
+    monkeypatch.setattr(cli_access, "access_step",
+                        lambda out, answers, settings: st.access.append(answers))
     return st
 
 
@@ -903,3 +909,63 @@ def test_new_tts_key_is_verified_for_a_kept_elevenlabs_stt(gw, tty):
     env = dotenv_values(gw.env)
     assert env["ELEVENLABS_API_KEY"] == OLD_KEY and env["TTS_PROVIDER"] == "off"
     assert NEW_KEY not in r.output and OLD_KEY not in r.output
+
+
+# --- el paso «¿Cómo vas a entrar a Fogar?» (Task 8) ----------------------------------------
+
+
+def test_onboard_answers_without_access_skips_step(gw, tmp_path):
+    r = onboard(write_answers(tmp_path))
+    assert r.exit_code == 0, r.output
+    assert gw.access == []  # el CI no cambia
+    assert "PUBLIC_URLS" not in dotenv_values(gw.env)
+
+
+def test_onboard_answers_with_public_urls(gw, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_access, "access_step", REAL_ACCESS_STEP)
+    monkeypatch.delenv("PUBLIC_URLS", raising=False)
+    path = write_answers(tmp_path, access={"public_urls": ["https://fogar.example.com"]})
+    r = onboard(path)
+    assert r.exit_code == 0, r.output
+    assert dotenv_values(gw.env)["PUBLIC_URLS"] == "https://fogar.example.com/"
+    assert "Haz que apunte a http://localhost:8004" in r.output
+    # tras las voces y antes del servicio
+    assert r.output.index("Haz que apunte") < r.output.index("aviso del doctor")
+
+
+def test_onboard_answers_access_step_runs_between_voice_and_service(gw, tmp_path, monkeypatch):
+    order = []
+    monkeypatch.setattr(cli_access, "access_step",
+                        lambda out, answers, settings: order.append(("access", list(gw.calls))))
+    r = onboard(write_answers(tmp_path, access={"tailscale_serve": True}))
+    assert r.exit_code == 0, r.output
+    (_, before), = order
+    assert ("verify_fogar_tts", "localhost:8005", TTS_TOKEN) in before
+    assert "install" not in before and "install" in gw.calls
+
+
+def test_onboard_answers_tailscale_permission_never_runs_sudo(gw, tmp_path, monkeypatch):
+    from fogar_gateway import access as access_mod
+
+    monkeypatch.setattr(cli_access, "access_step", REAL_ACCESS_STEP)
+    monkeypatch.setattr(access_mod, "tailscale_status",
+                        lambda exe="tailscale": {"BackendState": "Running", "Self": {}})
+    monkeypatch.setattr(access_mod, "serve_status", lambda exe="tailscale": {})
+    tried = []
+    monkeypatch.setattr(cli_access, "enable_serve",
+                        lambda port, gw_port, exe="tailscale": tried.append(port) or ("permiso", ""))
+    monkeypatch.setattr(cli_access.subprocess, "run",
+                        lambda *a, **k: pytest.fail("sudo sin terminal"))
+    r = onboard(write_answers(tmp_path, access={"tailscale_serve": True}))
+    assert r.exit_code == 0, r.output
+    assert tried == [443]
+    assert "sudo tailscale set --operator=$USER" in r.output
+
+
+def test_onboard_answers_rejects_http_public_url(gw, tmp_path):
+    url = "http://usuario:secreto@fogar.example.com"
+    r = onboard(write_answers(tmp_path, access={"public_urls": [url]}))
+    assert r.exit_code == 2
+    assert "access.public_urls" in r.output and "value_error" in r.output
+    assert "secreto" not in r.output and "fogar.example.com" not in r.output
+    assert gw.calls == []  # nada antes de validar el fichero entero

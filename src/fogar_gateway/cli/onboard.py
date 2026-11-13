@@ -315,7 +315,7 @@ def _read_answers(path: Path) -> Any:
     clave y el tipo de error, nunca el valor."""
     from typing import Annotated
 
-    from pydantic import BaseModel, ConfigDict, Field, ValidationError
+    from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
     from fogar_gateway.models.admin_schemas import ClientType, _Name
 
@@ -348,6 +348,19 @@ def _read_answers(path: Path) -> Any:
         name: _Name
         type: ClientType
 
+    class Access(Strict):
+        tailscale_serve: bool = False
+        public_urls: list[str] = Field(default_factory=list)
+
+        @field_validator("public_urls")
+        @classmethod
+        def _urls(cls, v: list[str]) -> list[str]:
+            from fogar_gateway.access import parse_public_urls
+
+            for url in v:
+                parse_public_urls(url)  # ValueError -> value_error, sin el valor
+            return v
+
     class Answers(Strict):
         openclaw_host: str
         openclaw_port: int
@@ -355,6 +368,7 @@ def _read_answers(path: Path) -> Any:
         stt: Annotated[Fogar | ElevenLabs | Off, Field(discriminator="provider")]
         tts: Annotated[Fogar | ElevenLabs | Off, Field(discriminator="provider")]
         first_client: FirstClient | None = None  # el CI; con terminal, desde el dashboard
+        access: Access | None = None  # sin él, el paso no se ejecuta (el CI de siempre)
 
     try:
         answers = Answers.model_validate_json(raw)
@@ -387,6 +401,10 @@ def _run(ctx: click.Context, out: Out, answers: Any) -> None:
     tts_stays = answers is None or answers.tts.provider != "off"
     _voice_step(out, "stt", answers and answers.stt, verified, tts_stays)
     _voice_step(out, "tts", answers and answers.tts, verified)
+    if answers is None or answers.access is not None:
+        from fogar_gateway.cli import access as cli_access
+
+        cli_access.access_step(out, answers and answers.access, settings)
     if not service.unit_path().exists():
         ctx.invoke(service.install)
     # Nunca el confirm() de `fogar-gw restart`: sin terminal saldría con 2 y config.env escrito.
