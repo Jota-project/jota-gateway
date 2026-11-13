@@ -24,9 +24,10 @@ from typing import Any, Literal
 import click
 
 from fogar_gateway import paths
-from fogar_gateway.access import lan_ip as _lan_ip
+from fogar_gateway.access import collect, configured_public_urls, lan_route
 from fogar_gateway.cli import api
 from fogar_gateway.cli import config as cfg
+from fogar_gateway.cli.access import gateway_instance_id, show_routes
 from fogar_gateway.cli.output import ACCENT, MUTED, Out
 
 NO_OPENCLAW = "Sin OpenClaw no se instala el servicio. Vuelve a ejecutar `fogar-gw onboard`."
@@ -280,22 +281,21 @@ def _dashboard(ctx: click.Context, out: Out, answers: Any, settings: Any) -> Non
 
     port = serve.PORT
     bind = settings.GATEWAY_HOST
-    url = host = None
-    if _is_loopback(bind):
+    routes = collect(bind, port, configured_public_urls(),
+                     gateway_instance_id(ctx.find_root().obj["url"]))
+    rec = next((r for r in routes if r.recommended), None)
+    url = rec.url if rec else None
+    lan = lan_route(bind, port)
+    if routes:
+        show_routes(out, routes)
+    elif _is_loopback(bind):
         out.message(f"El gateway solo escucha en este equipo (GATEWAY_HOST={bind}): desde otro "
                     f"aparato no se llega. Entra con un túnel SSH (`ssh -L {port}:127.0.0.1:{port}"
                     f" <este servidor>` y abre http://localhost:{port}/) o ábrelo a la LAN con "
                     "`fogar-gw config set GATEWAY_HOST 0.0.0.0` y `fogar-gw restart`.")
     else:
-        # Solo con el gateway escuchando en todas las interfaces se adivina la IP de la LAN.
-        host = _lan_ip() if bind in ("", "0.0.0.0", "::") else bind
-        if host:
-            host = f"[{host}]" if ":" in host and not host.startswith("[") else host
-            url = f"http://{host}:{port}/"
-            out.message(f"Tu dashboard: {url} (desde cualquier aparato de tu red)")
-        else:
-            out.message(f"Tu dashboard: http://<IP de este equipo>:{port}/ (no encuentro la IP "
-                        "de la LAN: mírala con `hostname -I`)")
+        out.message(f"Tu dashboard: http://<IP de este equipo>:{port}/ (no encuentro la IP "
+                    "de la LAN: mírala con `hostname -I`)")
     out.message("Para entrar, pega en él el token de administración.")
     if answers is None and not out.as_json and output._isatty():
         out.message(f"Token: {settings.ADMIN_TOKEN}", ACCENT)
@@ -303,8 +303,9 @@ def _dashboard(ctx: click.Context, out: Out, answers: Any, settings: Any) -> Non
                 "`fogar-gw token`.")
     out.message(WARNING, MUTED)
     out.message("Empareja tu primer aparato desde Clientes, en el dashboard.")
-    if host:
-        out.message(f"Los clientes se conectan a ws://{host}:{port}/ws/stream", MUTED)
+    if lan:
+        out.message(f"Los clientes se conectan a ws://{lan.url.split('//')[1].split('/')[0]}"
+                    "/ws/stream", MUTED)
     if answers is None:
         _wait_dashboard(ctx, out, url)
 

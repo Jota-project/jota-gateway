@@ -15,6 +15,7 @@ import questionary
 from click.testing import CliRunner
 from dotenv import dotenv_values
 
+from fogar_gateway import access as access_mod
 from fogar_gateway.cli import access as cli_access
 from fogar_gateway.cli import app, doctor, menu, output, service, verify
 from fogar_gateway.cli import init as init_mod
@@ -90,7 +91,9 @@ def gw(monkeypatch, tmp_path, use_api):
     monkeypatch.setattr(service, "install", fake_install)
     monkeypatch.setattr(service, "_verb", fake_verb)
     monkeypatch.setattr(service, "require_systemd", lambda: None)
-    monkeypatch.setattr(onboard_mod, "_lan_ip", lambda: LAN_IP)  # sin socket real
+    monkeypatch.setattr(access_mod, "lan_ip", lambda: LAN_IP)  # sin socket real
+    monkeypatch.setattr(access_mod, "tailscale_routes", lambda *a, **k: [])  # sin tailscale real
+    monkeypatch.setattr(onboard_mod, "gateway_instance_id", lambda url: None)  # sin red
     monkeypatch.setattr(doctor, "run_checks", lambda url, token: [
         {"level": "fail", "check": "orquestador", "detail": "aviso del doctor"}])
     for name in ("verify_openclaw", "verify_fogar_stt", "verify_fogar_tts", "verify_elevenlabs"):
@@ -699,7 +702,7 @@ def test_dashboard_and_client_address_follow_gateway_host(gw, tmp_path, host, sh
     gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\nGATEWAY_HOST={host}\n")
     r = onboard(write_answers(tmp_path))
     assert r.exit_code == 0, r.output
-    assert f"Tu dashboard: http://{shown}:8004/" in r.output
+    assert f"Recomendada: http://{shown}:8004/" in r.output
     assert f"ws://{shown}:8004/ws/stream" in r.output
 
 
@@ -709,11 +712,11 @@ def test_loopback_gateway_gives_no_lan_url(gw, tmp_path, host):
     r = onboard(write_answers(tmp_path))
     assert r.exit_code == 0, r.output
     assert "solo escucha en este equipo" in r.output and "ssh -L 8004:127.0.0.1:8004" in r.output
-    assert "Tu dashboard:" not in r.output and "ws://" not in r.output
+    assert "Recomendada:" not in r.output and "ws://" not in r.output
 
 
 def test_without_lan_ip_never_prints_loopback(gw, tmp_path, monkeypatch):
-    monkeypatch.setattr(onboard_mod, "_lan_ip", lambda: None)
+    monkeypatch.setattr(access_mod, "lan_ip", lambda: None)
     r = onboard(write_answers(tmp_path))
     assert r.exit_code == 0, r.output
     assert "http://<IP de este equipo>:8004/" in r.output and "hostname -I" in r.output
@@ -741,7 +744,7 @@ def test_interactive_shows_the_token_only_on_a_terminal(gw, tty, monkeypatch, te
     assert r.exit_code == 0, r.output
     assert (f"Token: {ADMIN}" in r.output) is terminal
     assert (ADMIN in r.output) is terminal
-    assert f"Tu dashboard: http://{LAN_IP}:8004/" in r.output and "`fogar-gw token`" in r.output
+    assert f"Recomendada: http://{LAN_IP}:8004/" in r.output and "`fogar-gw token`" in r.output
 
 
 @pytest.mark.parametrize("how", ["enter", "ctrl_c"])
@@ -805,7 +808,7 @@ def test_lan_ip_falls_back_to_loopback(monkeypatch):
             raise OSError("Network is unreachable")
 
     monkeypatch.setattr(socket, "socket", NoRoute)  # sin `gw`: `_lan_ip` sin parchear
-    assert onboard_mod._lan_ip() is None
+    assert access_mod.lan_ip() is None
 
 
 # --- ola final: init sin BD y «Dejar como está» -------------------------------------------
@@ -982,3 +985,48 @@ def test_onboard_answers_rejects_http_public_url(gw, tmp_path):
     assert "access.public_urls" in r.output and "value_error" in r.output
     assert "secreto" not in r.output and "fogar.example.com" not in r.output
     assert gw.calls == []  # nada antes de validar el fichero entero
+
+
+def _routes(*specs):
+    from fogar_gateway.access import Route, recommend
+
+    return recommend([Route(*s) for s in specs])
+
+
+def test_dashboard_recommends_public_url(gw, tmp_path, monkeypatch):
+    routes = _routes(("public", "https://gw.example.com/", True, "ok"),
+                     ("lan", f"http://{LAN_IP}:8004/", False))
+    monkeypatch.setattr(onboard_mod, "collect", lambda *a, **k: routes)
+    r = onboard(write_answers(tmp_path))
+    assert r.exit_code == 0, r.output
+    assert r.output.index("Recomendada: https://gw.example.com/") < r.output.index(
+        f"http://{LAN_IP}:8004/")
+    assert f"ws://{LAN_IP}:8004/ws/stream" in r.output
+
+
+def test_dashboard_lan_only_shows_https_hint(gw, tmp_path):
+    r = onboard(write_answers(tmp_path))
+    assert r.exit_code == 0, r.output
+    assert "HTTPS" in r.output and "fogar-gw access setup" in r.output
+
+
+def test_dashboard_loopback_with_a_route_shows_it(gw, tmp_path, monkeypatch):
+    gw.env.write_text(f"ADMIN_TOKEN={ADMIN}\nGATEWAY_HOST=127.0.0.1\n")
+    routes = _routes(("tailscale_https", "https://box.ts.net/", True, "ok"))
+    monkeypatch.setattr(onboard_mod, "collect", lambda *a, **k: routes)
+    r = onboard(write_answers(tmp_path))
+    assert "Recomendada: https://box.ts.net/" in r.output
+    assert "solo escucha en este equipo" not in r.output and "ws://" not in r.output
+
+
+@pytest.mark.parametrize(("status", "expected"),
+                         [("ok", "https://gw.example.com/"), ("inalcanzable", None)])
+def test_dashboard_waits_on_the_recommended_url_or_none(gw, tty, monkeypatch, status, expected):
+    seen = []
+    monkeypatch.setattr(onboard_mod, "_wait_dashboard", lambda ctx, out, url: seen.append(url))
+    routes = _routes(("public", "https://gw.example.com/", True, status))
+    monkeypatch.setattr(onboard_mod, "collect", lambda *a, **k: routes)
+    tty.queue.extend(["127.0.0.1", "18789", OC_TOKEN, "off", "off"])
+    r = run("onboard")
+    assert r.exit_code == 0, r.output
+    assert "gw.example.com" in r.output and seen == [expected]
