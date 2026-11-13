@@ -79,6 +79,12 @@ def test_x_forwarded_for_alone_never_grants_trust(live_url):
         assert _get(live_url, {"X-Forwarded-For": xff}).status_code == 401
 
 
+def test_tailscale_serve_headers_never_grant_trust(live_url):
+    h = {"X-Forwarded-For": "100.64.0.7", "Tailscale-User-Login": "a@b.c",
+         "Tailscale-User-Name": "A", "X-Forwarded-Proto": "https"}
+    assert _get(live_url, h).status_code == 401
+
+
 def test_proxy_vouching_for_loopback_client_is_trusted(live_url):
     assert _get(live_url, {"X-Real-IP": "127.0.0.1"}).status_code == 200
 
