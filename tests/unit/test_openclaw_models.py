@@ -17,6 +17,14 @@ def test_from_hello_ok_basic():
     assert info.max_payload == 26214400
     assert info.default_agent_id == "assistant"
     assert info.agents == []
+    assert info.scopes == ["operator.read", "operator.write"] and not info.admin
+
+
+def test_from_hello_ok_scopes_with_admin_and_junk():
+    payload = {**HELLO_OK_PAYLOAD, "auth": {"scopes": ["operator.admin", {"x": 1}, "bad scope"]}}
+    info = GatewayInfo.from_hello_ok(payload)
+    assert info.scopes == ["operator.admin"] and info.admin
+    assert GatewayInfo.from_hello_ok({**HELLO_OK_PAYLOAD, "auth": "nope"}).scopes == []
 
 
 def test_from_hello_ok_minimal():

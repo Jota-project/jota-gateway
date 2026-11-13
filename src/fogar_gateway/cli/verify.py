@@ -26,16 +26,19 @@ OPENCLAW_VERIFY_TIMEOUT_S = 35.0
 DETECT_TIMEOUT_S = 3.0
 
 NOT_LOOPBACK_DETAIL = (
-    "Conectar con un OpenClaw de otra máquina necesita emparejar el gateway como dispositivo, "
-    "y eso aún no existe. Usa un OpenClaw en este equipo o un túnel SSH "
-    "(`ssh -L 18789:127.0.0.1:18789 …`)."
+    "El asistente solo configura un OpenClaw en este equipo (o por un túnel SSH: "
+    "`ssh -L 18789:127.0.0.1:18789 …`). Para uno de otra máquina, a mano: "
+    "`fogar-gw config set OPENCLAW_HOST …` y, la primera vez, aprueba el gateway en OpenClaw "
+    "con el `openclaw devices approve …` que enseña `fogar-gw doctor`."
 )
 
 
 @dataclass(frozen=True)
 class Verdict:
     ok: bool
-    reason: Literal["ok", "unreachable", "rejected", "timeout", "not_loopback", "invalid"]
+    reason: Literal[
+        "ok", "unreachable", "rejected", "timeout", "not_loopback", "invalid", "pairing_required"
+    ]
     detail: str  # frase en español para el usuario, sin secretos
 
 
@@ -79,6 +82,14 @@ class _Unexpected(Exception):
     """El servicio contestó, pero no lo que dice su protocolo."""
 
 
+class _Pending(Exception):
+    """El servicio aceptó la clave, pero falta un paso del operador (aprobar el dispositivo)."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__()
+        self.detail = detail
+
+
 def _config_problem() -> Verdict | None:
     """`core.config` construye `Settings()` al importarse, y todo cliente lo importa: un
     config.env o una variable de entorno inválidos se convierten aquí en `invalid`, con el
@@ -114,9 +125,11 @@ async def _check(
     connect: Callable[[], Awaitable[object]],
     close: Callable[[], Awaitable[None]],
     rejected_detail: str,
+    ok_detail: Callable[[], str] | None = None,
 ) -> Verdict:
     """Un intento con plazo total. `connect` traduce los fallos de su cliente a `_Rejected`,
-    `_Unexpected` o `TimeoutError`; el resto es «no responde»."""
+    `_Unexpected`, `_Pending` o `TimeoutError`; el resto es «no responde». `ok_detail` da la
+    frase del éxito (por defecto, «responde en …»)."""
     from fogar_gateway.services.reconnection import describe_error
     from fogar_gateway.services.speech.elevenlabs.common import pin_websockets_logging
 
@@ -126,6 +139,8 @@ async def _check(
             await connect()
     except _Rejected:
         return Verdict(False, "rejected", rejected_detail)
+    except _Pending as e:
+        return Verdict(True, "pairing_required", e.detail)
     except _Unexpected:
         return Verdict(
             False,
@@ -139,7 +154,7 @@ async def _check(
         return Verdict(False, "unreachable", f"{name} no responde en {address}.")
     finally:
         await close()  # fuera del plazo: un cierre lento no convierte un «ok» en «timeout»
-    return Verdict(True, "ok", f"{name} responde en {address}.")
+    return Verdict(True, "ok", ok_detail() if ok_detail else f"{name} responde en {address}.")
 
 
 def _own_rejected(name: str, token: str) -> str:
@@ -162,8 +177,10 @@ async def verify_openclaw(host: str, port: int, token: str) -> Verdict:
     from fogar_gateway.services.openclaw.client import (
         OpenClawClient,
         OrchestratorHandshakeError,
+        OrchestratorPairingRequired,
         OrchestratorRejectedError,
         OrchestratorStartingError,
+        approve_command,
     )
     from fogar_gateway.services.openclaw.dispatcher import FrameDispatcher
     from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
@@ -182,10 +199,28 @@ async def verify_openclaw(host: str, port: int, token: str) -> Verdict:
             await client.connect()
         except OrchestratorStartingError:
             raise TimeoutError from None  # sigue arrancando: no es un token rechazado
+        except OrchestratorPairingRequired as e:  # OpenClaw comprueba el token antes del emparejamiento
+            raise _Pending(
+                "OpenClaw acepta el token, pero falta aprobar este gateway como dispositivo. En la "
+                f"máquina de OpenClaw ejecuta `{approve_command(e.request_id)}`: el gateway se "
+                "conecta solo en cuanto lo apruebes (míralo con `fogar-gw doctor`)."
+            ) from None
         except OrchestratorRejectedError:
             raise _Rejected from None  # `ok:false` a `connect`
         except OrchestratorHandshakeError:
             raise _Unexpected from None  # frame malformado o que no es el reto de OpenClaw
+
+    def granted() -> str:
+        access = client.access
+        how = " (emparejado como dispositivo)" if access.pairing == "paired" else ""
+        if access.admin:
+            return f"Conectado a OpenClaw en {host}:{port} con permisos de administración{how}."
+        scopes = ", ".join(access.scopes or []) or "ninguno"
+        return (
+            f"Conectado a OpenClaw en {host}:{port}{how}, pero sin permisos de administración "
+            f"(permisos: {scopes}). Hoy basta para hablar; las funciones de administración "
+            "no estarán disponibles."
+        )
 
     return await _check(
         "OpenClaw",
@@ -194,6 +229,7 @@ async def verify_openclaw(host: str, port: int, token: str) -> Verdict:
         connect,
         client.close,
         "OpenClaw rechazó el token.",
+        granted,
     )
 
 

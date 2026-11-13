@@ -610,7 +610,118 @@ Read in the package source of 2026.11.1 and compared with 2026.10.5, not observe
   not affected: every `sessionKey` it sends is agent-qualified (`agent:{agent}:{client.id}`, see
   "Session key carries the per-client identity") and `frames.chat_send` never sends `agentId`.
 
+## Device identity, pairing and `operator.admin` (2026-11-13, server 2026.10.5)
+
+Read in the npm package `openclaw@2026.10.5` (`dist/message-handler-*.mjs` ~1135–1290 and ~3081,
+`dist/node-connect-reconcile-*.mjs`, `dist/device-auth-*.mjs`, `dist/ed25519-signature-*.mjs`,
+`dist/connect-error-details-*.mjs`, `dist/core-method-policy-*.mjs`, `docs/gateway/protocol/auth.md`)
+and in the reference client `@openclaw/gateway-client@2026.8.1`; the local admin path was also
+**probed live** against a 2026.10.5 instance on loopback. Remote pairing was **not** observed live
+(no non-loopback port available where it was probed): it is read from the source.
+
+**Who the gateway is.** `connect` declares `client.id: "gateway-client"`, `client.mode: "backend"`,
+`role: "operator"`. That id/mode is also the default of OpenClaw's own reference client for external
+apps (`@openclaw/gateway-client`, only in its code, not its docs), so it stays. Since this date the
+gateway asks for `scopes: ["operator.read", "operator.write", "operator.admin"]` (no feature calls
+an admin method yet) and signs every `connect` with a device identity.
+
+**Local trust path (same host).** With `gateway-client`/`backend` on a loopback connection
+authenticated by the shared token (`resolvePairingLocality` → `direct_local` or
+`shared_secret_loopback_local`, no browser `Origin`, no proxy headers),
+`shouldSkipLocalBackendSelfPairing` is true: OpenClaw trusts it directly, **creates no pairing
+record, issues no device token and keeps the requested scopes**. Live probe: asking for read +
+write + admin → `hello-ok.auth.scopes` has all three and `sessions.reset`/`sessions.compact` answer
+`ok`; without admin they answer `FORBIDDEN: missing scope: operator.admin`. Same-host LAN or
+tailnet addresses, and OpenClaw in Docker behind a published port (the connection arrives from the
+bridge address), count as **remote**.
+
+**Remote: device identity and pairing.** From a non-loopback address a device identity is
+required; without it the scopes are cleared (`missing scope` on every call) or the connect fails
+with `NOT_PAIRED` / `DEVICE_IDENTITY_REQUIRED`. With it, the **shared token is checked first** (a
+wrong one is `INVALID_REQUEST` / `AUTH_TOKEN_MISMATCH`, never a pairing request), then an unpaired
+device gets:
+
+```json
+{"type": "res", "ok": false,
+ "error": {"code": "NOT_PAIRED", "message": "pairing required: device is not approved yet",
+           "details": {"code": "PAIRING_REQUIRED", "reason": "not-paired", "requestId": "...",
+                       "remediationHint": "...", "deviceId": "<hex>", "requestedRole": "operator",
+                       "requestedScopes": ["..."]}}}
+```
+
+and a close 1008. For an operator backend there is no `recommendedNextStep` (it is
+`wait_then_retry` only for bootstrap/Control UI/node waits). The operator approves once on the
+OpenClaw host with `openclaw devices approve <requestId>` (without an id, or with `--latest`, it
+only previews the newest request and prints the exact command). The next `connect` answers
+`hello-ok` with `auth: {method, role, scopes, deviceToken, issuedAtMs}`; a device that is already
+paired gets its token even on the local path. `reason` can also be `role-upgrade`,
+`scope-upgrade` or `metadata-upgrade` (e.g. a different `client.platform` than when it was paired).
+
+**Device auth v3.** Identity: an Ed25519 key. `device.id` = SHA-256 hex of the raw 32-byte public
+key (`deriveDeviceIdFromPublicKey`); `device.publicKey` = the raw key in base64url without padding
+(PEM is also accepted); `device.signature` = Ed25519 over the UTF-8 payload, base64url without
+padding; `device.signedAt` = `connect.challenge.payload.ts` (must be within ±120 s of the server
+clock); `device.nonce` = the challenge nonce. The payload (`buildDeviceAuthPayloadV3`; `v2` without
+the last two fields is still accepted):
+
+```
+v3|{deviceId}|{client.id}|{client.mode}|{role}|{scopes joined by ","}|{signedAt}|{token}|{nonce}|{platform}|{deviceFamily}
+```
+
+`token` is `auth.token ?? auth.deviceToken ?? auth.bootstrapToken ?? ""`; `platform` and
+`deviceFamily` are trimmed and lower-cased (ASCII A–Z only), `""` when absent. A bad proof is
+`INVALID_REQUEST` with `details.code` `DEVICE_AUTH_DEVICE_ID_MISMATCH`, `…_SIGNATURE_EXPIRED`,
+`…_NONCE_REQUIRED`, `…_NONCE_MISMATCH`, `…_SIGNATURE_INVALID` or `…_PUBLIC_KEY_INVALID`.
+
+**Device token.** The reference client sends a stored device token in **both** `auth.token` and
+`auth.deviceToken`, requests the scopes stored with it, and stores `hello-ok.auth.deviceToken` with
+`hello-ok.auth.scopes` when it is new or different (an identical token keeps its stored scopes).
+A token that no longer works (revoked, rotated, device removed) is `AUTH_DEVICE_TOKEN_MISMATCH`;
+one that does not cover the requested scopes is `AUTH_SCOPE_MISMATCH`.
+
+**How the gateway reacts** (`services/openclaw/device.py`, `client.py`): the identity lives in
+`<base>/data/openclaw-device.json` (0600, atomic writes; private key, public key, deviceId and, once
+paired, the device token with its scopes and the OpenClaw `host:port` it belongs to). Every
+challenge with a nonce is signed (a challenge without one, as in old fakes, connects without
+device). A stored token for the configured `OPENCLAW_HOST:OPENCLAW_PORT` is preferred over
+`OPENCLAW_TOKEN`; on `AUTH_DEVICE_TOKEN_MISMATCH`/`AUTH_SCOPE_MISMATCH` the gateway drops it and
+retries once, on a new socket, with the shared token. `PAIRING_REQUIRED` raises
+`OrchestratorPairingRequired` (stable code `orchestrator_pairing_required`, in `last_error`), logs
+the request id and the approval command once per request at WARNING, and the usual reconnect
+loop keeps retrying until the approval. `/admin/state` (`services.orchestrator`), `fogar-gw status`
+and `fogar-gw doctor` show the granted scopes, `admin`, `auth_method`
+(`shared_token`|`device_token`), `pairing` (`unknown`|`not_required`|`paired`|`pending`) with the
+request id, and the deviceId (public: `openclaw devices list` shows it).
+
+**Method → scope** (`core-method-policy`, 2026.10.5):
+
+| Method | Scope |
+|---|---|
+| `chat.send`, `chat.abort` | `operator.write` |
+| `chat.history`, `sessions.list`, `sessions.subscribe`, `sessions.preview`, `sessions.describe`, `agents.list`, `config.get`, `config.schema` | `operator.read` |
+| `sessions.reset`, `sessions.compact`, `config.set`, `config.apply`, `config.patch`, `agents.create`, `agents.update`, `agents.delete` | `operator.admin` |
+| `sessions.patch`, `sessions.delete` | dynamic (depends on the change) |
+
+`operator.write` and `operator.admin` also satisfy `operator.read`.
+
+**Session reset policy** (config, not a method): `session.reset: {mode: "daily" | "idle",
+atHour: 0–23, idleMinutes}` (host local time; per type/channel in `resetByType`/`resetByChannel`);
+the default is `none` (no automatic reset, compaction bounds the context). It is global to every
+OpenClaw channel and resets the session under the **same key**.
+
+**The shared token.** `openclaw config get gateway.auth.token` always prints it redacted (also with
+`--json`) and does not resolve SecretRefs. The command that shows it is
+**`openclaw gateway auth-token --show`** (resolves `gateway.auth.token`, `OPENCLAW_GATEWAY_TOKEN`
+and SecretRefs; prints only in an interactive terminal on the OpenClaw host). `fogar-gw onboard`
+says so.
+
 ## Change log of this file
+
+- **2026-11-13**: added "Device identity, pairing and `operator.admin`" (server 2026.10.5, read in
+  the package source; the local admin path probed live): the gateway asks for `operator.admin`,
+  signs every `connect` (device auth v3), stores and prefers the device token issued after a
+  remote pairing, falls back to the shared token when it is refused, and reports
+  `PAIRING_REQUIRED` with the approval command. The token hint is `openclaw gateway auth-token --show`.
 
 - **2026-11-06**: added "Connect deadline and `chat.send` session keys" (server 2026.11.1, read in
   the package source): the handshake deadline is now 30 s and `chat.send` rejects session keys

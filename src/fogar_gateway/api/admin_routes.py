@@ -20,7 +20,8 @@ Observabilidad:
   POST   /admin/orchestrators/{name}/reconnect  (202)
   GET    /admin/transcriber/status
   GET    /admin/tts/status
-  GET    /admin/state                — instantánea viva (gateway con `dashboards`, servicios, totales, sesiones)
+  GET    /admin/state                — instantánea viva (gateway con `dashboards`, servicios con el acceso
+                                        a OpenClaw: permisos, token y emparejamiento; totales, sesiones)
   GET    /admin/state/stream         — la misma instantánea por SSE cada STATE_STREAM_INTERVAL_S
   GET    /admin/access               — vías para llegar al gateway, verificadas (caché 15 s)
 """
@@ -48,6 +49,7 @@ from fogar_gateway.models.admin_schemas import (
     ClientUpdate,
     ClientWithKey,
 )
+from fogar_gateway.services.openclaw.models import OrchestratorAccess
 from fogar_gateway.services.reconnection import ServiceStatus
 from fogar_gateway.services.stats import gateway_stats
 
@@ -421,7 +423,11 @@ def _build_state(app: FastAPI) -> dict[str, Any]:
             "dashboards": _open_streams,
         },
         "services": {
-            "orchestrator": _service_state(app.state.openclaw.status()),
+            "orchestrator": {
+                **_service_state(app.state.openclaw.status()),
+                # Permisos concedidos, admin, token en uso y emparejamiento (M19); sin secretos.
+                **getattr(app.state, "openclaw_access", OrchestratorAccess()).as_dict(),
+            },
             "stt": {"provider": speech.stt.name, **_service_state(speech.stt.status())},
             "tts": {"provider": speech.tts.name, **_service_state(speech.tts.status())},
         },

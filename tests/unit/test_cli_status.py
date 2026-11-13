@@ -86,3 +86,34 @@ def test_version_distinguishes_no_version_from_no_answer(use_api):
     r = run("version")
     assert r.exit_code == 0
     assert "sin versión" in r.output and "no responde" not in r.output
+
+
+# --- acceso a OpenClaw (M19) ---
+
+
+def _with_access(**orch):
+    base = {"state": "CONNECTED", "last_error": None, "scopes": None, "admin": False,
+            "auth_method": None, "pairing": "unknown", "pairing_request_id": None}
+    return {**STATE, "services": {**STATE["services"], "orchestrator": {**base, **orch}}}
+
+
+def test_status_shows_openclaw_access(use_api):
+    state = _with_access(scopes=["operator.read", "operator.write", "operator.admin"], admin=True,
+                         auth_method="device_token", pairing="paired")
+    use_api(FakeApi({("GET", "/admin/state"): state}))
+    r = run("status")
+    assert r.exit_code == 0, r.output
+    assert "admin · token de dispositivo · emparejado" in r.output
+
+
+def test_status_shows_pending_pairing_with_the_command(use_api):
+    state = _with_access(state="RECONNECTING", last_error="orchestrator_pairing_required",
+                         pairing="pending", pairing_request_id="req-3")
+    use_api(FakeApi({("GET", "/admin/state"): state}))
+    r = run("status")
+    assert "openclaw devices approve req-3" in r.output
+
+
+def test_status_without_access_fields_has_no_access_line(use_api):
+    use_api(FakeApi({("GET", "/admin/state"): STATE}))
+    assert "acceso OpenClaw" not in run("status").output

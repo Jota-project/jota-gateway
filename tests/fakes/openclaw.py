@@ -1,13 +1,83 @@
 """OpenClaw falso con un servidor `websockets` real (handshake v4), compartido por los tests."""
 
 import asyncio
+import base64
+import hashlib
 import json
+import secrets
+import time
 from http import HTTPStatus
 
 import websockets
 
 MIB = 1024 * 1024
 _SK_B = "agent:main:client-b"  # sessionKey de los frames basura de `malformed`
+# Prefijo DER (SPKI) de una clave pública Ed25519 en bruto: `createEd25519PublicKey` del real.
+_ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
+_DEVICE_SIGNATURE_SKEW_MS = 120_000  # DEVICE_SIGNATURE_SKEW_MS del real (2026.10.5)
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def _b64url_decode(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def _lower_ascii(value) -> str:
+    return value.strip().translate(_ASCII_LOWER) if isinstance(value, str) else ""
+
+
+def server_v3_payload(params: dict, device: dict) -> str:
+    """El payload v3 tal como lo reconstruye el servidor (`resolveDeviceSignaturePayloadVersion`),
+    escrito aparte del cliente a propósito: así el test comprueba al cliente."""
+    auth = params.get("auth") or {}
+    token = next(
+        (auth[k] for k in ("token", "deviceToken", "bootstrapToken") if auth.get(k) is not None), None
+    )
+    client = params.get("client") or {}
+    return "|".join([
+        "v3", device["id"], client.get("id", ""), client.get("mode", ""), params.get("role", ""),
+        ",".join(params.get("scopes") or []), str(device["signedAt"]), token or "",
+        device["nonce"].strip(), _lower_ascii(client.get("platform")),
+        _lower_ascii(client.get("deviceFamily")),
+    ])
+
+
+def verify_device(params: dict, nonce: str) -> str | None:
+    """`verifyGatewayConnectDeviceProof` del real: None si vale, si no su `reason`."""
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.serialization import load_der_public_key
+
+    device = params["device"]
+    try:
+        raw = _b64url_decode(device["publicKey"])
+    except (KeyError, ValueError, TypeError):
+        return "device-public-key"
+    if hashlib.sha256(raw).hexdigest() != device.get("id"):
+        return "device-id-mismatch"
+    signed_at = device.get("signedAt")
+    if not isinstance(signed_at, int) or abs(time.time() * 1000 - signed_at) > _DEVICE_SIGNATURE_SKEW_MS:
+        return "device-signature-stale"
+    provided = device.get("nonce").strip() if isinstance(device.get("nonce"), str) else ""
+    if not provided:
+        return "device-nonce-missing"
+    if provided != nonce:
+        return "device-nonce-mismatch"
+    try:
+        key = load_der_public_key(_ED25519_SPKI_PREFIX + raw)
+        key.verify(_b64url_decode(device["signature"]), server_v3_payload(params, device).encode())
+    except (InvalidSignature, ValueError, TypeError, KeyError):
+        return "device-signature"
+    return None
+
+
+_DEVICE_AUTH_CODES = {
+    "device-id-mismatch": "DEVICE_AUTH_DEVICE_ID_MISMATCH",
+    "device-signature-stale": "DEVICE_AUTH_SIGNATURE_EXPIRED",
+    "device-nonce-missing": "DEVICE_AUTH_NONCE_REQUIRED",
+    "device-nonce-mismatch": "DEVICE_AUTH_NONCE_MISMATCH",
+    "device-signature": "DEVICE_AUTH_SIGNATURE_INVALID",
+    "device-public-key": "DEVICE_AUTH_PUBLIC_KEY_INVALID",
+}
 
 
 class FakeOpenClawServer:
@@ -40,18 +110,36 @@ class FakeOpenClawServer:
     `startup_pending=n`: los `n` primeros `connect` reciben el `UNAVAILABLE`/`startup-sidecars`
     de OpenClaw 2026.11.1 arrancando (`retryAfterMs = startup_retry_after_ms`) y cierre 1013.
 
-    `token`: si no es None, un `connect` con otro `auth.token` recibe el rechazo real
-    (`INVALID_REQUEST`, `details.authReason = token_mismatch`) y cierre 1008.
+    `token`: si no es None, un `connect` con otro `auth.token` (y sin un token de dispositivo
+    válido) recibe el rechazo real (`INVALID_REQUEST`, `details.code = AUTH_TOKEN_MISMATCH`,
+    `authReason = token_mismatch`) y cierre 1008.
+
+    Identidad de dispositivo (2026.10.5, docs/openclaw-protocol.md «2026-11-13»): el reto lleva
+    `nonce` y `ts` (salvo `challenge_nonce=False`, como los fakes de antes); un `device` se
+    valida como el real (deviceId, plazo, nonce y firma v3; si no, `DEVICE_AUTH_*` y 1008).
+    `remote=False` (por defecto): el camino local de gateway-client/backend, sin emparejar y con
+    los permisos pedidos. `remote=True`: exige identidad; un dispositivo sin emparejar recibe
+    `NOT_PAIRED`/`PAIRING_REQUIRED` con `requestId` hasta `approve()`; uno emparejado recibe
+    `hello-ok.auth.deviceToken`, que luego vale como credencial (`auth.deviceToken`) hasta
+    `revoke()` (`AUTH_DEVICE_TOKEN_MISMATCH`). Un dispositivo emparejado recibe su token también
+    en local, como el real. `connects` guarda los `params` de cada `connect`.
     `GET /healthz` -> 200 `{"ok":true,"status":"live"}`, como el real (sin versión).
     `port`: 0 = uno libre; el CI del instalador lo fija en el 18789 de OpenClaw.
     """
 
     def __init__(
         self, hello_payload=None, big_bytes=2 * MIB, startup_pending=0, startup_retry_after_ms=50, token=None,
-        port=0,
+        port=0, remote=False, challenge_nonce=True,
     ):
         self.connections = 0
         self.token = token
+        self.remote = remote
+        self.challenge_nonce = challenge_nonce
+        self.connects: list[dict] = []
+        self.paired: dict[str, list[str]] = {}  # deviceId -> permisos aprobados
+        self.device_tokens: dict[str, tuple[str, list[str]]] = {}  # deviceId -> (token, permisos)
+        self.pending: dict[str, tuple[str, list[str]]] = {}  # requestId -> (deviceId, permisos)
+        self._requests = 0
         self.release = asyncio.Event()
         self.big_bytes = big_bytes
         self.startup_pending = startup_pending
@@ -161,10 +249,91 @@ class FakeOpenClawServer:
         for w in pending:
             w.cancel()
 
+    def approve(self, request_id=None):
+        """`openclaw devices approve <requestId>` (sin id: la última petición)."""
+        request_id = request_id or list(self.pending)[-1]
+        device_id, scopes = self.pending.pop(request_id)
+        self.paired[device_id] = list(scopes)
+
+    def revoke(self, device_id):
+        """`openclaw devices remove`: el token de dispositivo deja de valer."""
+        self.paired.pop(device_id, None)
+        self.device_tokens.pop(device_id, None)
+
+    async def _reject(self, ws, rid, code, message, details):
+        error = {"code": code, "message": message, "details": details}
+        await ws.send(json.dumps({"type": "res", "id": rid, "ok": False, "error": error}))
+        await ws.close(1008, message)
+
+    async def _connect(self, ws, rid, params, nonce):
+        """Autenticación y emparejamiento de `connect`, en el orden del real: firma del
+        dispositivo, credencial (token compartido o de dispositivo) y emparejamiento."""
+        self.connects.append(params)
+        auth = params.get("auth") or {}
+        device = params.get("device")
+        scopes = list(params.get("scopes") or [])
+        if device is not None and (reason := verify_device(params, nonce)) is not None:
+            await self._reject(ws, rid, "INVALID_REQUEST", "device signature invalid",
+                               {"code": _DEVICE_AUTH_CODES[reason], "reason": reason})
+            return
+        method = "token"
+        if self.token is not None and auth.get("token") != self.token:
+            candidate = (auth.get("deviceToken") or auth.get("token")) if device else None
+            issued = self.device_tokens.get(device["id"]) if device else None
+            if candidate and issued and issued[0] == candidate:
+                if not set(scopes) <= set(issued[1]):
+                    await self._reject(ws, rid, "INVALID_REQUEST", "unauthorized: scope mismatch",
+                                       {"code": "AUTH_SCOPE_MISMATCH", "authReason": "scope_mismatch"})
+                    return
+                method = "device-token"
+            elif candidate and auth.get("deviceToken"):
+                await self._reject(ws, rid, "INVALID_REQUEST", "unauthorized: device token mismatch",
+                                   {"code": "AUTH_DEVICE_TOKEN_MISMATCH",
+                                    "authReason": "device_token_mismatch",
+                                    "recommendedNextStep": "update_auth_credentials"})
+                return
+            else:
+                # Forma real: sendHandshakeErrorResponse (dist/message-handler-*.mjs).
+                await self._reject(ws, rid, "INVALID_REQUEST", "unauthorized: gateway token mismatch",
+                                   {"code": "AUTH_TOKEN_MISMATCH", "authReason": "token_mismatch"})
+                return
+        if self.remote:
+            if device is None:
+                await self._reject(ws, rid, "NOT_PAIRED", "device identity required",
+                                   {"code": "DEVICE_IDENTITY_REQUIRED"})
+                return
+            if device["id"] not in self.paired:
+                request_id = next((r for r, (d, _) in self.pending.items() if d == device["id"]), None)
+                if request_id is None:
+                    self._requests += 1
+                    request_id = f"req-{self._requests}"
+                    self.pending[request_id] = (device["id"], scopes)
+                await self._reject(ws, rid, "NOT_PAIRED", "pairing required: device is not approved yet", {
+                    "code": "PAIRING_REQUIRED", "reason": "not-paired", "requestId": request_id,
+                    "remediationHint": "Approve this device from the pending pairing requests.",
+                    "deviceId": device["id"], "requestedRole": "operator", "requestedScopes": scopes,
+                })
+                return
+        device_token = None
+        if device is not None and device["id"] in self.paired:
+            token, granted = self.device_tokens.get(device["id"], (None, []))
+            if token is None or not set(scopes) <= set(granted):
+                token = f"devtok-{secrets.token_hex(8)}"
+                self.device_tokens[device["id"]] = (token, scopes)
+            device_token = token
+        payload = dict(self.hello_payload)
+        if "auth" not in payload:
+            payload["auth"] = {"method": method, "role": "operator", "scopes": scopes}
+            if device_token is not None:
+                payload["auth"]["deviceToken"] = device_token
+        await ws.send(self._res(rid, payload))
+
     async def _handler(self, ws):
         self.connections += 1
         self._conns.add(ws)
-        await ws.send(json.dumps({"type": "event", "event": "connect.challenge", "payload": {}}))
+        nonce = secrets.token_hex(16)
+        challenge = {"nonce": nonce, "ts": int(time.time() * 1000)} if self.challenge_nonce else {}
+        await ws.send(json.dumps({"type": "event", "event": "connect.challenge", "payload": challenge}))
         try:
             async for raw in ws:
                 frame = json.loads(raw)
@@ -181,17 +350,8 @@ class FakeOpenClawServer:
                     }
                     await ws.send(json.dumps({"type": "res", "id": rid, "ok": False, "error": error}))
                     await ws.close(1013, "gateway starting")
-                elif method == "connect" and self.token is not None and params.get("auth", {}).get("token") != self.token:
-                    # Forma real: sendHandshakeErrorResponse (dist/message-handler-*.mjs).
-                    error = {
-                        "code": "INVALID_REQUEST",
-                        "message": "unauthorized: gateway token mismatch",
-                        "details": {"authReason": "token_mismatch"},
-                    }
-                    await ws.send(json.dumps({"type": "res", "id": rid, "ok": False, "error": error}))
-                    await ws.close(1008, "unauthorized: gateway token mismatch")
                 elif method == "connect":
-                    await ws.send(self._res(rid, self.hello_payload))
+                    await self._connect(ws, rid, params, nonce)
                 elif method == "agents.list":
                     await ws.send(self._res(rid, {"defaultId": "main", "agents": [{"id": "main"}]}))
                 elif method == "sessions.subscribe":

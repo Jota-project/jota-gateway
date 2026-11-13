@@ -54,6 +54,18 @@ def test_connect_backend_operator_role():
     assert p["role"] == "operator"
     assert "operator.read" in p["scopes"]
     assert "operator.write" in p["scopes"]
+    assert "operator.admin" in p["scopes"]  # M19: se pide admin, aún sin usarlo
+    assert "device" not in p
+
+
+def test_connect_backend_device_token_goes_in_token_and_device_token():
+    """Como `buildGatewayConnectAuth` del cliente de referencia con un token guardado."""
+    device = {"id": "d", "publicKey": "k", "signature": "s", "signedAt": 1, "nonce": "n"}
+    p = frames.connect_backend("r1", "devtok", scopes=["operator.read"], device=device,
+                               device_token=True)["params"]
+    assert p["auth"] == {"token": "devtok", "deviceToken": "devtok"}
+    assert p["scopes"] == ["operator.read"]
+    assert p["device"] == device
 
 
 # ── sessions_subscribe ────────────────────────────────────────────

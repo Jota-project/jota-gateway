@@ -19,6 +19,20 @@ def _uptime(seconds: float) -> str:
     return f"{s // 86_400} d {s % 86_400 // 3600} h"
 
 
+def _access(orch: dict[str, Any]) -> str | None:
+    """Acceso a OpenClaw (M19); None con un gateway que no lo da."""
+    pairing = orch.get("pairing")
+    if pairing in (None, "unknown"):
+        return None
+    if pairing == "pending":
+        rid = orch.get("pairing_request_id") or "--latest"
+        return f"pendiente de aprobar: `openclaw devices approve {rid}` en la máquina de OpenClaw"
+    how = {"shared_token": "token compartido", "device_token": "token de dispositivo"}.get(
+        str(orch.get("auth_method")), "?")
+    paired = " · emparejado" if pairing == "paired" else ""
+    return f"{'admin' if orch.get('admin') else 'sin admin'} · {how}{paired}"
+
+
 def _service(svc: dict[str, Any]) -> str:
     text = " · ".join(str(v) for v in (svc.get("provider"), svc.get("state", "?")) if v)
     return f"{text} ({svc['last_error']})" if svc.get("last_error") else text
@@ -36,11 +50,14 @@ def status(ctx: click.Context) -> None:
     # .get con valores por defecto: un gateway de otra versión puede traer otra forma.
     gw, services = state.get("gateway", {}), state.get("services", {})
     uptime = gw.get("uptime_s")
+    orch = services.get("orchestrator", {})
+    access = _access(orch)
     out.pairs(
         [
             ("gateway", f"en marcha · v{gw.get('version', '?')}"),
             ("encendido", "?" if uptime is None else _uptime(uptime)),
-            ("orquestador", _service(services.get("orchestrator", {}))),
+            ("orquestador", _service(orch)),
+            *([("acceso OpenClaw", access)] if access else []),
             ("STT", _service(services.get("stt", {}))),
             ("TTS", _service(services.get("tts", {}))),
             ("sesiones", state.get("totals", {}).get("sessions_active", "?")),
