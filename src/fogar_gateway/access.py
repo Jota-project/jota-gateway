@@ -1,5 +1,6 @@
 """Vías de acceso al gateway. Solo stdlib arriba: lo importan `core/config.py` y el CLI."""
 
+import http.client
 import json
 import socket
 import ssl
@@ -48,7 +49,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 def _http_error(e: urllib.error.HTTPError) -> tuple[str, str]:
     location = urlsplit(e.headers.get("Location") or "").hostname or ""
     cf_header = any(k.lower().startswith("cf-access") for k in e.headers)
-    if (300 <= e.code < 400 and location.endswith("cloudflareaccess.com")) or (
+    if (300 <= e.code < 400 and (location == "cloudflareaccess.com" or location.endswith(".cloudflareaccess.com"))) or (
         e.code in (401, 403) and cf_header
     ):
         return "protegida", "cloudflare_access"
@@ -70,7 +71,7 @@ def verify(url: str, instance_id: str | None, timeout: float = 4.0) -> tuple[str
     """Comprueba que `url` (raíz con «/» final) llega a ESTE gateway. Nunca lanza por la red."""
     if instance_id is None:
         return "sin_verificar", "gateway_parado"
-    opener = urllib.request.build_opener(_NoRedirect)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
     try:
         with opener.open(f"{url}.well-known/fogar-gateway", timeout=timeout) as r:
             data = json.loads(r.read(65536))
@@ -78,6 +79,8 @@ def verify(url: str, instance_id: str | None, timeout: float = 4.0) -> tuple[str
         return _http_error(e)
     except ValueError:  # JSON roto o no UTF-8: algo que no es Fogar
         return "inalcanzable", "no_es_fogar"
+    except http.client.HTTPException:  # respuesta que no es HTTP válido
+        return "inalcanzable", "red"
     except (OSError, urllib.error.URLError) as e:  # frontera de red: DNS, TLS, timeout, conexión
         return "inalcanzable", _network_error(e)
     if not isinstance(data, dict) or data.get("service") != "fogar-gateway":

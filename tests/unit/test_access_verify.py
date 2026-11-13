@@ -1,4 +1,5 @@
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -118,3 +119,35 @@ def test_verify_dns():
 
 def test_verify_without_instance_id_does_not_connect():
     assert verify("https://nunca.invalid/", None) == ("sin_verificar", "gateway_parado")
+
+
+def test_verify_evil_cloudflare_lookalike_is_not_protected(fake):
+    fake.redirect("https://evilcloudflareaccess.com/x")
+    assert verify(fake.url, "abc") == ("inalcanzable", "http_302")
+
+
+def test_verify_ignores_proxy_env(fake, monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:1")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    fake.json({"service": "fogar-gateway", "instance_id": "abc"})
+    assert verify(fake.url, "abc") == ("ok", "")
+
+
+def test_verify_non_http_junk_does_not_raise():
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+
+    def serve():
+        c, _ = srv.accept()
+        c.recv(4096)
+        c.sendall(b"\x00garbage not http\r\n\r\n")
+        c.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    try:
+        assert verify(f"http://127.0.0.1:{srv.getsockname()[1]}/", "abc") == ("inalcanzable", "red")
+    finally:
+        srv.close()
