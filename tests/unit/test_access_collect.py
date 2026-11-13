@@ -88,3 +88,28 @@ def test_configured_public_urls_reads_config_env_fresh(monkeypatch, tmp_path):
     assert configured_public_urls() == []
     (tmp_path / "config.env").write_text("PUBLIC_URLS=https://file.example\n")
     assert configured_public_urls() == ["https://file.example/"]
+
+
+def test_verify_error_logs_only_type(monkeypatch, caplog):
+    def boom(url, iid):
+        raise RuntimeError("secreto-user:pass")
+
+    monkeypatch.setattr(access, "verify", boom)
+    r = Route("public", "https://u:pass@p/", True)
+    with caplog.at_level("WARNING", logger="fogar_gateway.access"):
+        access._verify_route(r, "iid")
+    assert "RuntimeError" in caplog.text
+    assert "secreto" not in caplog.text and "pass" not in caplog.text
+
+
+def test_configured_public_urls_unreadable_config(monkeypatch, tmp_path):
+    import dotenv
+
+    monkeypatch.setenv("FOGAR_GATEWAY_HOME", str(tmp_path))
+    monkeypatch.delenv("PUBLIC_URLS", raising=False)
+
+    def deny(*a, **k):
+        raise PermissionError("no")
+
+    monkeypatch.setattr(dotenv, "dotenv_values", deny)
+    assert configured_public_urls() == []

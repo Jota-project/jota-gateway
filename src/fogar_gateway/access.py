@@ -3,6 +3,7 @@
 import http.client
 import ipaddress
 import json
+import logging
 import os
 import shutil
 import socket
@@ -15,6 +16,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+log = logging.getLogger(__name__)
 
 # Sin eco del valor: podría llevar usuario:contraseña y los errores acaban en logs.
 _MSG = (
@@ -214,7 +217,10 @@ def configured_public_urls() -> list[str]:
 
         from fogar_gateway import paths
 
-        raw = dotenv_values(paths.config_file()).get("PUBLIC_URLS") or ""
+        try:
+            raw = dotenv_values(paths.config_file()).get("PUBLIC_URLS") or ""
+        except OSError:  # config.env ilegible: sin vías públicas, no un error
+            return []
     urls: list[str] = []
     for item in raw.split(","):
         try:
@@ -249,7 +255,8 @@ def recommend(routes: list[Route]) -> list[Route]:
 def _verify_route(r: Route, instance_id: str | None) -> None:
     try:
         r.status, r.detail = verify(r.url, instance_id)
-    except Exception:  # noqa: BLE001 — frontera: una vía rota no debe tumbar el resto
+    except Exception as e:  # noqa: BLE001 — frontera: una vía rota no debe tumbar el resto
+        log.warning("access: verify falló kind=%s error=%s", r.kind, type(e).__name__)
         r.status, r.detail = "inalcanzable", "red"
 
 
