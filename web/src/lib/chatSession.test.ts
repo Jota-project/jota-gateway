@@ -55,7 +55,7 @@ describe('createChatSession', () => {
 
   it('entra con el token de administrador en su conversación, sin pedir agente', () => {
     const s = session()
-    expect(last().sent[0]).toEqual({ admin_token: 'secreto', input_mode: 'text', output_mode: ['text'], conversation: 'c1' })
+    expect(last().sent[0]).toEqual({ admin_token: 'secreto', input_mode: 'text', output_mode: ['text', 'status'], conversation: 'c1' })
     expect(s.state.connection).toBe('ready')
     expect(s.state.agent).toBe('main')
   })
@@ -74,6 +74,17 @@ describe('createChatSession', () => {
       ['user', 'Hola', 'done'],
       ['assistant', '¡Hola!', 'cancelled'],
     ])
+  })
+
+  it('enseña en qué está la respuesta hasta el primer token; los pipeline_event no cambian nada', () => {
+    const s = session()
+    s.send('enciende la luz')
+    last().receive({ type: 'turn_start', turn_id: 't-1', turn_seq: 1, conversation: 'c1', origin: 'user' })
+    last().receive({ type: 'pipeline_event', stage: 'llm_start', elapsed_ms: 2, turn: 1 })
+    last().receive({ type: 'turn_progress', turn_id: 't-1', phase: 'tool', tool: 'ha_call_service' })
+    expect(s.state.log.lines[1]!.progress).toEqual({ phase: 'tool', tool: 'ha_call_service' })
+    last().receive({ type: 'token', turn_id: 't-1', text: 'Hecho.' })
+    expect(s.state.log.lines[1]).toMatchObject({ text: 'Hecho.', progress: null })
   })
 
   it('un push llega como Fogar hablando primero', () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { backoffMs, ChatLog, closeAction, endReasonText, stopText } from './chat'
+import { backoffMs, ChatLog, closeAction, endReasonText, progressText, stopText } from './chat'
 
 const start = (turn_id: string, extra: object = {}) => ({ type: 'turn_start', turn_id, turn_seq: 1, conversation: 'c1', origin: 'user', ...extra })
 
@@ -78,6 +78,70 @@ describe('ChatLog al volver a leer lo dicho', () => {
     expect(log.lines.map((l) => [l.role, l.state])).toEqual([['assistant', 'streaming']])
     log.apply({ type: 'token', turn_id: 't-2', text: 'sigue' })
     expect(log.lines[0]!.text).toBe('sigue')
+  })
+})
+
+describe('ChatLog con turn_progress', () => {
+  const progress = (turn_id: string, phase: string, tool: string | null = null) => ({ type: 'turn_progress', turn_id, phase, tool })
+
+  it('guarda en qué está la respuesta mientras no llega texto; cada uno sustituye al anterior', () => {
+    const log = new ChatLog('c1')
+    log.apply(start('t-1'))
+    expect(log.apply(progress('t-1', 'preparing'))).toBe(true)
+    expect(log.lines[0]!.progress).toEqual({ phase: 'preparing', tool: null })
+    log.apply(progress('t-1', 'tool', 'ha_call_service'))
+    expect(log.lines[0]!.progress).toEqual({ phase: 'tool', tool: 'ha_call_service' })
+  })
+
+  it('el primer token lo quita, y vuelve si usa otra herramienta a media respuesta', () => {
+    const log = new ChatLog('c1')
+    log.apply(start('t-1'))
+    log.apply(progress('t-1', 'thinking'))
+    log.apply({ type: 'token', turn_id: 't-1', text: 'Voy' })
+    expect(log.lines[0]!.progress).toBeNull()
+    log.apply(progress('t-1', 'tool', 'read'))
+    expect(log.lines[0]!.progress).toEqual({ phase: 'tool', tool: 'read' })
+  })
+
+  it('el turn_end lo quita, y el cierre del socket también', () => {
+    const log = new ChatLog('c1')
+    log.apply(start('t-1'))
+    log.apply(progress('t-1', 'thinking'))
+    log.apply({ type: 'turn_end', turn_id: 't-1', reason: 'done' })
+    expect(log.lines[0]!.progress).toBeNull()
+    log.apply(start('t-2'))
+    log.apply(progress('t-2', 'thinking'))
+    log.closeOpenTurns()
+    expect(log.lines[1]!.progress).toBeNull()
+  })
+
+  it('no acepta progreso de un turno cerrado ni de uno desconocido', () => {
+    const log = new ChatLog('c1')
+    log.apply(start('t-1'))
+    log.apply({ type: 'turn_end', turn_id: 't-1', reason: 'cancelled' })
+    expect(log.apply(progress('t-1', 'thinking'))).toBe(false)
+    expect(log.apply(progress('t-9', 'thinking'))).toBe(false)
+    expect(log.lines[0]!.progress).toBeNull()
+  })
+
+  it('pipeline_event no cambia nada de la conversación', () => {
+    const log = new ChatLog('c1')
+    log.apply(start('t-1'))
+    expect(log.apply({ type: 'pipeline_event', stage: 'llm_start', elapsed_ms: 3, turn: 1 })).toBe(false)
+  })
+})
+
+describe('progressText', () => {
+  it('dice cada fase en una frase corta', () => {
+    expect(progressText({ phase: 'preparing', tool: null })).toBe('Preparando…')
+    expect(progressText({ phase: 'thinking', tool: null })).toBe('Pensando…')
+    expect(progressText({ phase: 'tool', tool: 'ha_call_service' })).toBe('Usando ha_call_service…')
+  })
+  it('una herramienta sin nombre es «una herramienta»', () => {
+    expect(progressText({ phase: 'tool', tool: null })).toBe('Usando una herramienta…')
+  })
+  it('una fase que la web no conoce es un «trabajando» genérico', () => {
+    expect(progressText({ phase: 'compacting', tool: null })).toBe('Trabajando…')
   })
 })
 

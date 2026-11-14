@@ -67,7 +67,8 @@ export function createChatSession(options: ChatSessionOptions) {
         JSON.stringify({
           admin_token: options.token,
           input_mode: 'text',
-          output_mode: ['text'],
+          // `status`: el progreso del turno (`turn_progress`); llegan también los `pipeline_event`, que el chat ignora.
+          output_mode: ['text', 'status'],
           conversation: options.conversationId,
         }),
       )

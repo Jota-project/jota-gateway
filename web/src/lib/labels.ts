@@ -75,6 +75,12 @@ export const TURN_ERROR: Record<string, string> = {
   internal_error: 'Error interno del gateway',
 }
 
+/** En qué está un turno (`turn_progress`, docs/client-protocol.md §5); la herramienta va aparte. */
+export const TURN_PROGRESS: Record<string, string> = {
+  preparing: 'Preparando…',
+  thinking: 'Pensando…',
+}
+
 /** Modos de entrada y salida de una sesión. */
 export const MODE: Record<string, string> = {
   audio: 'Voz',

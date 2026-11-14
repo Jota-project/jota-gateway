@@ -10,6 +10,8 @@ defineProps<{
   /** Fogar habló sin que le preguntaran (push). */
   push?: boolean
   escribiendo?: boolean
+  /** En qué está mientras escribe (`turn_progress`), en una frase corta. */
+  progreso?: string | null
   /** Por qué no terminó (motivo de `turn_end`). */
   aviso?: string | null
 }>()
@@ -22,6 +24,7 @@ defineProps<{
     </p>
     <p v-if="texto || escribiendo" class="texto" :class="{ escribiendo }">{{ texto }}</p>
     <p v-else-if="!aviso" class="texto fg-tenue">(sin texto)</p>
+    <p v-if="escribiendo && progreso" class="progreso fg-meta" aria-live="polite">{{ progreso }}</p>
     <p v-if="aviso" class="aviso">{{ aviso }}</p>
   </article>
 </template>
@@ -79,6 +82,10 @@ defineProps<{
   to {
     visibility: hidden;
   }
+}
+/* En qué está Fogar antes de escribir: una línea tenue bajo el cursor, sin ocupar su sitio. */
+.progreso {
+  overflow-wrap: anywhere;
 }
 .aviso {
   margin: 0;

@@ -1,14 +1,15 @@
-import { label, TURN_ERROR } from './labels'
+import { label, TURN_ERROR, TURN_PROGRESS } from './labels'
 import { reconnectClass, type Reconnect } from './closeCodes'
 
 // El chat del panel por el WebSocket (docs/client-protocol.md): lo que llega, cómo queda en pantalla y
 // qué hacer cuando se cierra. Sin Vue ni sockets: lo usa `chatSession.ts` y se prueba solo.
 
-/** Lo que el gateway manda en una sesión de texto (`output_mode: ["text"]`) que el chat usa. */
+/** Lo que el gateway manda en una sesión de texto (`output_mode: ["text", "status"]`) que el chat usa. */
 export type ServerMessage =
   | { type: 'ready'; session_id: string; agent: string; conversation?: { id: string; agent: string } }
   | { type: 'turn_start'; turn_id: string; turn_seq: number; conversation?: string | null; origin?: 'user' | 'push' }
   | { type: 'token'; turn_id: string; text: string }
+  | { type: 'turn_progress'; turn_id: string; phase: string; tool?: string | null }
   | { type: 'turn_end'; turn_id: string; reason?: string }
   | { type: 'error'; code: string; message: string; fatal: boolean; turn_id?: string }
   | { type: 'status'; service: string; state: string }
@@ -24,6 +25,8 @@ export interface ChatLine {
   origin?: 'user' | 'push'
   /** `streaming` mientras llegan tokens; `ended` con su `turn_end` (motivo en `reason`). */
   state: 'streaming' | 'ended'
+  /** En qué está la respuesta mientras no llega texto (`turn_progress`); fuera con el primer token o al terminar. */
+  progress?: TurnProgress | null
   reason?: string
   /** El `message` del `error` de su turno (código estable, §9). */
   error?: string
@@ -31,6 +34,17 @@ export interface ChatLine {
   otherConversation?: string | null
   /** Solo en las tuyas: escrita con la conversación dormida y no llegó a salir (falló la reconexión). */
   unsent?: boolean
+}
+
+export interface TurnProgress {
+  phase: string
+  tool: string | null
+}
+
+/** El progreso en una frase corta: «Pensando…», «Usando ha_call_service…». Una fase nueva es «Trabajando…». */
+export function progressText(progress: TurnProgress): string {
+  if (progress.phase === 'tool') return progress.tool ? `Usando ${progress.tool}…` : 'Usando una herramienta…'
+  return TURN_PROGRESS[progress.phase] ?? 'Trabajando…'
 }
 
 /** Las líneas de la conversación en vivo, en el orden en que llegan (el orden total del gateway). */
@@ -93,6 +107,14 @@ export class ChatLog {
         const line = this.turn(m.turn_id)
         if (!line || line.state !== 'streaming') return false
         line.text += m.text
+        line.progress = null // el texto ya está llegando
+        return true
+      }
+      case 'turn_progress': {
+        const m = msg as Extract<ServerMessage, { type: 'turn_progress' }>
+        const line = this.turn(m.turn_id)
+        if (!line || line.state !== 'streaming' || typeof m.phase !== 'string') return false
+        line.progress = { phase: m.phase, tool: typeof m.tool === 'string' ? m.tool : null }
         return true
       }
       case 'error': {
@@ -108,6 +130,7 @@ export class ChatLog {
         if (!line || line.state !== 'streaming') return false
         line.state = 'ended'
         line.reason = m.reason ?? 'done'
+        line.progress = null
         return true
       }
       default:
@@ -121,6 +144,7 @@ export class ChatLog {
       if (line.state === 'streaming') {
         line.state = 'ended'
         line.reason = 'closed'
+        line.progress = null
       }
     }
   }

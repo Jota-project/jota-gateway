@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { endReasonText, type ChatLine } from '@/lib/chat'
+import { endReasonText, progressText, type ChatLine } from '@/lib/chat'
 import { formatClock } from '@/lib/format'
 import MensajeConversacion from './MensajeConversacion.vue'
 
@@ -14,6 +14,11 @@ const aviso = computed(() => {
   if (l.state !== 'ended') return null
   return [l.otherConversation ? 'Es de otra conversación del panel.' : null, endReasonText(l)].filter(Boolean).join(' ') || null
 })
+// Mientras Fogar no escribe: en qué está («Pensando…», «Usando …»).
+const progreso = computed(() => {
+  const l = props.linea
+  return l.state === 'streaming' && l.progress ? progressText(l.progress) : null
+})
 const hora = computed(() => (props.linea.at ? formatClock(props.linea.at, props.ahora) : null))
 </script>
 
@@ -25,6 +30,7 @@ const hora = computed(() => (props.linea.at ? formatClock(props.linea.at, props.
     :hora="hora"
     :push="linea.origin === 'push'"
     :escribiendo="linea.state === 'streaming'"
+    :progreso="progreso"
     :aviso="aviso"
   />
 </template>
