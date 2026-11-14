@@ -144,6 +144,39 @@ def test_create_validates_the_agent_like_the_handshake(client, admin_headers, db
     assert r.status_code == 422
 
 
+def test_agents_for_a_new_conversation_follow_the_panel_policy(
+    client, admin_headers, db_engine, mock_orchestrator, monkeypatch
+):
+    r = client.get("/admin/conversations/agents", headers=admin_headers)
+    assert (r.status_code, r.json()) == (200, {"agents": ["main", "a", "openclaw"], "default": "main"})
+    monkeypatch.setattr(settings, "DEFAULT_AGENT", "a")
+    assert client.get("/admin/conversations/agents", headers=admin_headers).json()["default"] == "a"
+    with Session(db_engine) as s:
+        panel = s.get(ClientRecord, "panel-web")
+        panel.allowed_agents = '["openclaw"]'
+        s.add(panel)
+        s.commit()
+    # El de la cascada ("a") no le está permitido al panel: no hay agente por defecto.
+    r = client.get("/admin/conversations/agents", headers=admin_headers)
+    assert r.json() == {"agents": ["openclaw"], "default": None}
+    mock_orchestrator.gateway_info = None  # OpenClaw sin conectar: sin roster
+    with Session(db_engine) as s:
+        panel = s.get(ClientRecord, "panel-web")
+        panel.allowed_agents = None
+        panel.is_active = False
+        s.add(panel)
+        s.commit()
+    r = client.get("/admin/conversations/agents", headers=admin_headers)
+    assert (r.status_code, r.json()) == (409, {"detail": "panel_client_inactive"})
+    with Session(db_engine) as s:
+        panel = s.get(ClientRecord, "panel-web")
+        panel.is_active = True
+        s.add(panel)
+        s.commit()
+    r = client.get("/admin/conversations/agents", headers=admin_headers)
+    assert r.json() == {"agents": [], "default": "a"}
+
+
 def test_create_with_the_panel_disabled_is_a_conflict(client, admin_headers, db_engine):
     client.post("/admin/conversations", headers=admin_headers, json={})
     with Session(db_engine) as s:

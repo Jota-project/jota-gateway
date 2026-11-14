@@ -5,7 +5,7 @@ La puerta de entrada de Fogar en casa. Un solo servicio que reconoce cada aparat
 - **Aparatos**: Fogar TV, el cliente de voz (Mac y Android), la app de iPhone y Home Assistant. Un aparato nuevo **descubre el gateway y se empareja con un código de 6 cifras**, sin copiar claves.
 - **Asistente**: los turnos de voz y texto van a [OpenClaw](docs/openclaw-protocol.md), que elige el agente y sus herramientas. El gateway lleva el turno de principio a fin: streaming, interrupciones (barge-in) y avisos que llegan sin preguntar (push).
 - **Voz**: transcripción (STT) y síntesis (TTS) con los servicios propios de Fogar, con ElevenLabs o desactivadas. Sin voz, el texto sigue funcionando.
-- **Administración**: un panel web en `/` (estado en vivo, sesiones y clientes) y la CLI `fogar-gw` (diagnóstico, configuración, servicio, logs y emparejamiento).
+- **Administración**: un panel web en `/` (estado en vivo, conversaciones y chat con Fogar, sesiones y clientes) y la CLI `fogar-gw` (diagnóstico, configuración, servicio, logs y emparejamiento).
 - **Instalación**: un comando instala, verifica OpenClaw y la voz contra los servicios reales, lo deja como servicio de usuario y te dice cómo llegar al panel: desde casa, por Tailscale o por tu propio dominio.
 
 ```
@@ -17,7 +17,7 @@ La puerta de entrada de Fogar en casa. Un solo servicio que reconoce cada aparat
   Home Assistant     ──┘ emparejan└── /v1/*           API compatible OpenAI ┘──► TTS: propio · ElevenLabs · off
 
   Tú, desde casa, Tailscale o tu dominio:
-    navegador ──► /           panel web (estado, sesiones, clientes)
+    navegador ──► /           panel web (estado, conversaciones, sesiones, clientes)
     terminal  ──► fogar-gw    CLI sobre /admin/* (doctor, config, servicio, logs, pair)
 ```
 
@@ -35,7 +35,7 @@ Detalles en [Instalación](#instalación). Si integras un aparato nuevo, el prot
 
 ### Web
 
-`http://<host>:8004/` es el panel de Fogar: se entra con el token de administrador (`ADMIN_TOKEN`) y desde ahí se ve el estado en vivo y las sesiones, y se emparejan, crean, editan, rotan y borran clientes. Lo sirve el propio gateway desde su paquete, sin Node en la máquina; las rutas de la API de abajo tienen siempre prioridad. Si el paquete no lleva la web compilada (un clon sin build), `/` da 404, el gateway funciona igual y lo avisa una vez en el log. Para desarrollarla, [`web/README.md`](web/README.md).
+`http://<host>:8004/` es el panel de Fogar: se entra con el token de administrador (`ADMIN_TOKEN`) y desde ahí se ve el estado en vivo (también con qué acceso está el gateway en OpenClaw), las conversaciones de toda la casa y las sesiones, se habla con Fogar por texto en conversaciones propias del panel, y se emparejan, crean, editan, rotan y borran clientes. Lo sirve el propio gateway desde su paquete, sin Node en la máquina; las rutas de la API de abajo tienen siempre prioridad. Si el paquete no lleva la web compilada (un clon sin build), `/` da 404, el gateway funciona igual y lo avisa una vez en el log. Para desarrollarla, [`web/README.md`](web/README.md).
 
 ### WebSocket
 
@@ -99,6 +99,7 @@ Los dos son públicos: detrás de un proxy o un túnel también llegan desde int
 | `/admin/conversations` | GET | Conversaciones de todos los clientes (filtro `?client_id=`), la última en hablarse primero: `id`, `client_id`, `client_name`, `agent`, `kind` (`default`, `created`, `legacy`), `day`, `created_at`, `last_turn_at`, `turn_count` y `title`, que se lee de OpenClaw (`sessions.list`, en caché 20 s, y un fallo, 5 s; `null` si no lo tiene o no responde; la lista nunca falla por eso). No salen las del día en las que nunca se habló (un cliente que conectó y calló) |
 | `/admin/conversations/{id}/messages` | GET | Lo dicho, de OpenClaw (`chat.history`), normalizado a `{role, text, timestamp}` (solo `user` y `assistant`); `?limit=` 1–1000 (200). `503 orchestrator_unavailable` con OpenClaw caído, `502 orchestrator_error` si lo rechaza |
 | `/admin/conversations` | POST | Conversación nueva del panel web (`{"agent"?}`; sin agente, el de la cascada). El agente se valida como en el handshake (`422 agent_not_permitted`/`agent_not_available`) |
+| `/admin/conversations/agents` | GET | Para el selector del panel: `{"agents", "default"}`, los agentes del roster de OpenClaw que el panel web puede usar (su `allowed_agents`; `[]` sin roster) y el que le tocaría sin elegir (`null` si ese no le está permitido). `409 panel_client_inactive` con el panel desactivado |
 | `/admin/access` | GET | Vías para llegar al gateway (`public`, `tailscale_https`, `tailscale`, `lan`), cada una con su estado (`ok`, `protegida`, `otro_gateway`, `inalcanzable`, `sin_verificar`) y la recomendada; `{"docker": bool, "routes": [...]}`, en caché 15 s |
 
 Los tres endpoints `*/status` comparten la forma `{"name", "state", "connected_at", "reconnect_attempts", "last_error"}`; los de transcriber y TTS añaden `provider` y, con ElevenLabs, `counters`.

@@ -228,6 +228,14 @@ class ConversationResponse(BaseModel):
     title: str | None = None
 
 
+class ConversationAgents(BaseModel):
+    """`GET /admin/conversations/agents`: con qué agentes puede empezar el panel una conversación
+    y cuál tocaría sin elegir (None si el de la cascada no le está permitido)."""
+
+    agents: list[str]
+    default: str | None
+
+
 class ConversationMessage(BaseModel):
     role: Literal["user", "assistant"]
     text: str

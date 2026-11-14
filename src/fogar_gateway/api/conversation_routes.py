@@ -10,6 +10,8 @@ conversation_routes.py
                                              503 `orchestrator_unavailable` sin OpenClaw
   POST /admin/conversations                — conversación nueva del panel web (agente validado
                                              como en el handshake)
+  GET  /admin/conversations/agents         — los agentes con los que el panel puede empezar una
+                                             y el que tocaría sin elegir (para su selector)
 
 El gateway no guarda texto: títulos y mensajes se leen de OpenClaw en cada petición y nunca se
 registran en el log.
@@ -25,6 +27,7 @@ from fogar_gateway.core.agent_policy import AgentPolicyError, resolve_agent
 from fogar_gateway.core.exceptions import ClientInactive, ClientNotFound
 from fogar_gateway.models.admin_schemas import (
     ClientIdFilter,
+    ConversationAgents,
     ConversationCreate,
     ConversationIdPath,
     ConversationMessage,
@@ -71,6 +74,24 @@ async def list_conversations(
     cache = request.app.state.conversation_titles
     titles = await cache.get(request.app.state.openclaw) if rows else {}
     return [_response(row, titles.get(row.record.session_key)) for row in rows]
+
+
+@router.get("/agents", response_model=ConversationAgents)
+async def get_conversation_agents(request: Request) -> ConversationAgents:
+    """Los del roster de OpenClaw que el panel puede usar (`allowed_agents`) y el de la cascada;
+    sin roster (OpenClaw sin conectar), solo el de la cascada. Mismas reglas que el POST."""
+    try:
+        _, config = await panel_session()
+    except (ClientNotFound, ClientInactive):
+        raise HTTPException(status_code=409, detail="panel_client_inactive") from None
+    info = request.app.state.openclaw.gateway_info
+    allowed = config.allowed_agents
+    agents = [a for a in (info.agents if info is not None else []) if allowed is None or a in allowed]
+    try:
+        default: str | None = resolve_agent(requested=None, client_config=config, gateway_info=info)
+    except AgentPolicyError:
+        default = None  # el de la cascada no está permitido: hay que elegir
+    return ConversationAgents(agents=agents, default=default)
 
 
 @router.get("/{conversation_id}/messages", response_model=ConversationMessages)
