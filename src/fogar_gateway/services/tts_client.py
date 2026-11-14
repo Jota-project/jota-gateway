@@ -29,7 +29,7 @@ class TTSClient:
     Client for fogar-speaker TTS service (port 8005).
 
     One instance = one WebSocket session: auth → tokens → end → audio → done.
-    Create a fresh instance per _call_orchestrator invocation.
+    Create a fresh instance per turn (one `TurnTts` per turn, services/turns.py).
     """
 
     def __init__(self, url: str, token: str, client_id: str) -> None:

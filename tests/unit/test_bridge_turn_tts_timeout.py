@@ -11,7 +11,7 @@ import websockets
 from fogar_gateway.core.config import settings
 from fogar_gateway.services.protocol import OrchestratorEvent
 from fogar_gateway.services.tts_client import TTSClient
-from tests.fakes.bridge import sent, tokens
+from tests.fakes.bridge import sent, start_turn, tokens
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ def make_tts_bridge(make_bridge):
 
 async def _run_bounded(bridge, timeout):
     """Run the turn; FAIL (not hang) if it doesn't finish in `timeout` (no fix)."""
-    task = asyncio.create_task(bridge._call_orchestrator("x"))
+    task = await start_turn(bridge, "x")
     done, _ = await asyncio.wait({task}, timeout=timeout)
     if not done:
         task.cancel()
@@ -133,7 +133,7 @@ async def _cancel_turn_during(make_tts_bridge, monkeypatch, *, tokens_block):
 
     bridge.orchestrator.stream_response = stream
     before = asyncio.all_tasks()
-    task = asyncio.create_task(bridge._call_orchestrator("x"))
+    task = await start_turn(bridge, "x")
     if tokens_block:
         await asyncio.wait_for(entered.wait(), 2.0)
     else:

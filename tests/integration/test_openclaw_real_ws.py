@@ -313,7 +313,7 @@ async def test_push_reaches_registered_bridge_in_order(server):
         def __init__(self):
             self.calls = []
 
-        def enqueue_push(self, kind, payload):
+        def enqueue_push(self, kind, payload, run_id=None):
             self.calls.append((kind, payload))
 
     client, _ = make_client(server.port)
@@ -417,7 +417,7 @@ async def test_diverging_final_emits_full_final_and_warns_without_content(script
     assert "Voy a buscar" not in caplog.text
 
 
-# ── 7e: chat.abort se queda con su propio `aborted` (G-14, sin filtro por runId) ──
+# ── 7e: chat.abort se queda con su propio `aborted` (G-14) ──
 
 
 async def test_abort_absorbs_its_aborted_frame(server):
@@ -425,7 +425,7 @@ async def test_abort_absorbs_its_aborted_frame(server):
         def __init__(self):
             self.calls = []
 
-        def enqueue_push(self, kind, payload):
+        def enqueue_push(self, kind, payload, run_id=None):
             self.calls.append((kind, payload))
 
     client, turns = make_client(server.port)
@@ -444,5 +444,52 @@ async def test_abort_absorbs_its_aborted_frame(server):
         assert not [p for k, p in bridge.calls if k == "chat" and p.get("state") == "aborted"]
         events = await asyncio.wait_for(run_turn(client, SK_A, "hola"), 5)
         assert tokens(events) == "reply-hola" and not errors(events)
+        # #285: the answer named the aborted run; its late frames are dropped from now on
+        assert turns.is_run_aborted("run-1")
+    finally:
+        await client.close()
+
+
+# ── #285: correlación por runId ──
+
+
+async def test_aborted_turn_frames_never_reach_the_next_turn(server):
+    """A turn cancelled mid-run (barge-in) is aborted; the reply of its run that was
+    already on its way is dropped instead of closing the next turn (G-14)."""
+    client, turns = make_client(server.port)
+    await client.connect()
+    try:
+        first = asyncio.create_task(run_turn(client, SK_A, "wait"))
+        await server.wait_held(1)
+        await asyncio.sleep(0.05)  # the ack (with run-1) arrived
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        second = asyncio.create_task(run_turn(client, SK_A, "wait again"))
+        await server.wait_held(2)
+        await server.finish_next()  # the reply of the aborted run arrives late
+        await server.finish_next()
+        events = await asyncio.wait_for(second, 5)
+        assert tokens(events) == "reply-wait again" and not errors(events)
+        assert turns.is_run_aborted("run-1") and not turns.is_run_aborted("run-2")
+    finally:
+        await client.close()
+
+
+async def test_terminal_chat_of_another_run_does_not_end_the_turn(server):
+    """#285: once the turn knows its run (from the ack), a `final` of another run on the
+    same session key does not close it; its own `final` does."""
+    client, turns = make_client(server.port)
+    await client.connect()
+    try:
+        task = asyncio.create_task(run_turn(client, SK_A, "wait"))
+        await server.wait_held(1)
+        await asyncio.sleep(0.05)
+        other = {"sessionKey": SK_A, "runId": "run-other", "state": "final", "deltaText": "x"}
+        await client._dispatcher.dispatch({"type": "event", "event": "chat", "payload": other})
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        await server.finish_next()
+        events = await asyncio.wait_for(task, 5)
+        assert tokens(events) == "reply-wait" and not errors(events)
     finally:
         await client.close()

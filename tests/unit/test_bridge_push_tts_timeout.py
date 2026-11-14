@@ -1,127 +1,127 @@
-"""#199 / #204: topes de tiempo del TTS de push y endurecimiento del worker."""
+"""#199 / #204 / #271: topes de tiempo del TTS de push (el mismo `TurnTts` que el turno
+normal), endurecimiento del worker y métricas."""
 
 import asyncio
 import logging
-import time
 from unittest.mock import AsyncMock
 
 import pytest
 
 from fogar_gateway.core.config import settings
-from tests.fakes.bridge import sent
+from tests.fakes.bridge import push, push_reply, run_turn, sent, tokens
+
+SK = "agent:main:hab_sito"
 
 
 @pytest.fixture
 def make_push_bridge(make_bridge):
-    def _make(output_mode=("audio", "text")):
-        return make_bridge(client_id="hab_sito", output_mode=output_mode)[0]
+    def _make(output_mode=("audio", "text"), tts=None):
+        provider = None
+        if tts is not None:
+            provider = AsyncMock()
+            provider.connect = AsyncMock(return_value=tts)
+            provider.resolve_voice = lambda v: v
+        return make_bridge(client_id="hab_sito", output_mode=output_mode, tts=provider)[0]
 
     return _make
-
-
-def _open_turn(bridge, tts):
-    bridge._push_tts = tts
-    bridge._push_turn_id = "t-1"
-    bridge._push_turn_open = True
 
 
 async def _hang(*_a):
     await asyncio.sleep(3600)
 
 
+def _stream(*, audio=None):
+    stream = AsyncMock()
+
+    async def no_audio():
+        return
+        yield
+
+    stream.get_audio_stream = audio or no_audio
+    return stream
+
+
 async def _tokens(bridge):
     return [m["text"] for m in await sent(bridge) if isinstance(m, dict) and m["type"] == "token"]
 
 
+async def _turn_end(bridge):
+    return [m for m in await sent(bridge) if isinstance(m, dict) and m["type"] == "turn_end"]
+
+
 async def test_hung_send_text_chunk_drops_tts_and_continues_text_only(make_push_bridge, monkeypatch, caplog):
     monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 0.05)
-    bridge = make_push_bridge()
-    tts = AsyncMock()
+    audio_cancelled = asyncio.Event()
+
+    async def audio():
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            audio_cancelled.set()
+            raise
+        yield b""  # pragma: no cover
+
+    tts = _stream(audio=audio)
     tts.send_text_chunk = AsyncMock(side_effect=_hang)
-    _open_turn(bridge, tts)
-    stuck = asyncio.create_task(asyncio.sleep(3600))
-    bridge._push_audio_task = stuck
+    bridge = make_push_bridge(tts=tts)
 
     with caplog.at_level(logging.WARNING):
-        await asyncio.wait_for(bridge.deliver_push({"deltaText": "a"}), timeout=2.0)
-        await bridge.deliver_push({"deltaText": "b"})
-        await bridge.deliver_push({"deltaText": "c"})
+        await asyncio.wait_for(push(bridge, *push_reply("a", "b", "c", sk=SK)), timeout=2.0)
 
-    assert bridge._push_tts is None
-    assert stuck.cancelled()
+    assert audio_cancelled.is_set()
     tts.close.assert_awaited_once()
     tts.send_text_chunk.assert_awaited_once()
     assert await _tokens(bridge) == ["a", "b", "c"]
-    assert len([r for r in caplog.records if "TTS de push" in r.getMessage()]) == 1
+    assert await _turn_end(bridge) == [{"type": "turn_end", "turn_id": "t-1"}]
+    assert len([r for r in caplog.records if "TTS del turno" in r.getMessage()]) == 1
 
 
 async def test_failing_tts_logs_once_per_turn(make_push_bridge, caplog):
-    bridge = make_push_bridge()
-    tts = AsyncMock()
+    tts = _stream()
     tts.send_text_chunk = AsyncMock(side_effect=ConnectionError("boom"))
-    _open_turn(bridge, tts)
+    bridge = make_push_bridge(tts=tts)
 
     with caplog.at_level(logging.WARNING):
-        for d in "abc":
-            await bridge.deliver_push({"deltaText": d})
+        await push(bridge, *push_reply("a", "b", "c", sk=SK))
 
     assert tts.send_text_chunk.await_count == 1
-    assert bridge._push_tts is None
     assert await _tokens(bridge) == ["a", "b", "c"]
     assert len([r for r in caplog.records if r.levelno >= logging.WARNING]) == 1
 
 
 async def test_hung_tts_end_still_sends_turn_end(make_push_bridge, monkeypatch):
     monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 0.05)
-    bridge = make_push_bridge()
-    tts = AsyncMock()
+
+    async def audio():
+        await asyncio.sleep(3600)
+        yield b""  # pragma: no cover
+
+    tts = _stream(audio=audio)
     tts.end = AsyncMock(side_effect=_hang)
-    _open_turn(bridge, tts)
-    stuck = asyncio.create_task(asyncio.sleep(3600))
-    bridge._push_audio_task = stuck
+    bridge = make_push_bridge(tts=tts)
 
-    await asyncio.wait_for(bridge.on_push_turn_end("sk"), timeout=2.0)
+    await asyncio.wait_for(push(bridge, *push_reply("a", sk=SK)), timeout=2.0)
 
-    assert stuck.cancelled()
     tts.close.assert_awaited_once()
-    assert {"type": "turn_end", "turn_id": "t-1"} in await sent(bridge)
-    assert bridge._push_tts is None
-    assert bridge._push_turn_open is False
+    assert await _turn_end(bridge) == [{"type": "turn_end", "turn_id": "t-1"}]
+    assert bridge.turns.snapshot(0.0)["turn"]["kind"] == "idle"
 
 
 async def test_hung_tts_close_is_bounded(make_push_bridge, monkeypatch):
     monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 0.05)
-    bridge = make_push_bridge()
-    tts = AsyncMock()
+    tts = _stream()
     tts.send_text_chunk = AsyncMock(side_effect=_hang)
     tts.close = AsyncMock(side_effect=_hang)
-    _open_turn(bridge, tts)
+    bridge = make_push_bridge(tts=tts)
 
-    await asyncio.wait_for(bridge.deliver_push({"deltaText": "a"}), timeout=2.0)
+    await asyncio.wait_for(push(bridge, *push_reply("a", sk=SK)), timeout=2.0)
 
-    assert bridge._push_tts is None
+    assert await _turn_end(bridge) == [{"type": "turn_end", "turn_id": "t-1"}]
 
 
-async def test_hung_tts_does_not_wedge_worker(make_push_bridge, monkeypatch):
+async def test_audio_ignoring_cancellation_does_not_hang_the_push(make_push_bridge, monkeypatch):
+    """#204: un audio que ignora la cancelación no cuelga el fin del push."""
     monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 0.05)
-    bridge = make_push_bridge(output_mode=("text",))
-    tts = AsyncMock()
-    tts.send_text_chunk = AsyncMock(side_effect=_hang)
-    _open_turn(bridge, tts)
-
-    bridge.enqueue_push("chat", {"deltaText": "a"})
-    bridge.enqueue_push("turn_end", "sk")
-    await asyncio.wait_for(bridge.push_idle(), timeout=2.0)
-
-    assert {"type": "turn_end", "turn_id": "t-1"} in await sent(bridge)
-    await bridge.close_all()
-
-
-async def test_on_push_turn_end_bounds_gather_after_cancel(make_push_bridge, monkeypatch):
-    """#204: un audio que ignora la cancelación no cuelga on_push_turn_end."""
-    monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 0.05)
-    bridge = make_push_bridge()
-    _open_turn(bridge, AsyncMock())
     release = asyncio.Event()
 
     async def stubborn():
@@ -130,46 +130,30 @@ async def test_on_push_turn_end_bounds_gather_after_cancel(make_push_bridge, mon
                 await release.wait()
             except asyncio.CancelledError:
                 pass
+        return
+        yield  # pragma: no cover
 
-    task = asyncio.create_task(stubborn())
-    bridge._push_audio_task = task
+    bridge = make_push_bridge(tts=_stream(audio=stubborn))
     try:
-        await asyncio.wait_for(bridge.on_push_turn_end("sk"), timeout=2.0)
-        assert {"type": "turn_end", "turn_id": "t-1"} in await sent(bridge)
+        await asyncio.wait_for(push(bridge, *push_reply("a", sk=SK)), timeout=2.0)
+        assert await _turn_end(bridge) == [{"type": "turn_end", "turn_id": "t-1"}]
     finally:
         release.set()
-        await task
+        await asyncio.sleep(0)
 
 
 async def test_enqueue_push_respawns_a_dead_worker(make_push_bridge):
     bridge = make_push_bridge(output_mode=("text",))
-    _open_turn(bridge, None)
-    bridge._push_tts = None
-    bridge.enqueue_push("chat", {"deltaText": "a"})
-    await bridge.push_idle()
-    first = bridge._push_worker
+    await push(bridge, ("turn_start", SK), ("chat", {"deltaText": "a"}))
+    (first,) = [t for t in bridge.tasks if t.get_name() == "push_worker"]
     first.cancel()
     await asyncio.gather(first, return_exceptions=True)
-    assert first.done()
 
-    bridge.enqueue_push("chat", {"deltaText": "b"})
-    await asyncio.wait_for(bridge.push_idle(), timeout=2.0)
+    await asyncio.wait_for(push(bridge, ("chat", {"deltaText": "b"})), timeout=2.0)
 
-    assert bridge._push_worker is not first
+    workers = [t for t in bridge.tasks if t.get_name() == "push_worker"]
+    assert len(workers) == 2 and not workers[1].done()
     assert await _tokens(bridge) == ["a", "b"]
-    await bridge.close_all()
-
-
-async def test_worker_exits_when_not_accepting(make_push_bridge):
-    bridge = make_push_bridge(output_mode=("text",))
-
-    async def end_and_stop(sk):
-        bridge._closing = True
-
-    bridge.on_push_turn_end = end_and_stop
-    bridge.enqueue_push("turn_end", "sk")
-    await asyncio.wait_for(bridge._push_worker, timeout=2.0)
-    assert bridge._push_worker.done()
     await bridge.close_all()
 
 
@@ -177,30 +161,15 @@ def _push_events(bridge):
     return [c for c in bridge.tracker.record.await_args_list if c.args[0] == "push_tts"]
 
 
-async def _open_push(bridge, tts):
-    bridge.tts.connect = AsyncMock(return_value=tts)
-    bridge.tts.resolve_voice = lambda v: v
-    await bridge.on_push_turn_start("sk")
-
-
 async def test_push_tts_event_records_durations(make_push_bridge):
-    bridge = make_push_bridge()
-    tts = AsyncMock()
+    tts = _stream()
 
     async def slow_end():
         await asyncio.sleep(0.05)
 
     tts.end = slow_end
-
-    async def no_audio():
-        return
-        yield
-
-    tts.get_audio_stream = no_audio
-    await _open_push(bridge, tts)
-    await bridge.deliver_push({"deltaText": "hola "})
-    await bridge.deliver_push({"deltaText": "mundo"})
-    await bridge.on_push_turn_end("sk")
+    bridge = make_push_bridge(tts=tts)
+    await push(bridge, *push_reply("hola ", "mundo", sk=SK))
 
     (ev,) = _push_events(bridge)
     meta = ev.kwargs
@@ -211,12 +180,10 @@ async def test_push_tts_event_records_durations(make_push_bridge):
 
 
 async def test_push_tts_event_marks_dropped(make_push_bridge):
-    bridge = make_push_bridge()
-    tts = AsyncMock()
+    tts = _stream()
     tts.send_text_chunk = AsyncMock(side_effect=ConnectionError("boom"))
-    await _open_push(bridge, tts)
-    await bridge.deliver_push({"deltaText": "a"})
-    await bridge.on_push_turn_end("sk")
+    bridge = make_push_bridge(tts=tts)
+    await push(bridge, *push_reply("a", sk=SK))
 
     (ev,) = _push_events(bridge)
     assert ev.kwargs["dropped"] is True
@@ -224,9 +191,74 @@ async def test_push_tts_event_marks_dropped(make_push_bridge):
 
 async def test_no_push_tts_event_without_tts(make_push_bridge):
     bridge = make_push_bridge()
-    await _open_push(bridge, None)
-    await bridge.on_push_turn_end("sk")
+    bridge.tts.connect = AsyncMock(return_value=None)  # the TTS is down: no stream
+    await push(bridge, *push_reply("a", sk=SK))
     assert _push_events(bridge) == []
+
+
+async def test_push_records_the_same_tts_metrics_as_a_normal_turn(make_push_bridge):
+    """#271: tts_start, tts_first_chunk and tts_done for both origins (the push's tagged)."""
+
+    async def audio():
+        yield b"\x01\x02"
+
+    bridge = make_push_bridge(tts=_stream(audio=audio))
+    bridge.orchestrator.stream_response = tokens("a")
+    await run_turn(bridge)
+    await push(bridge, *push_reply("b", sk=SK))
+
+    stages = [
+        (c.args[0], c.kwargs.get("origin"))
+        for c in bridge.tracker.record.await_args_list
+        if c.args[0] in ("tts_start", "tts_first_chunk", "tts_done")
+    ]
+    assert stages == [
+        ("tts_start", None), ("tts_first_chunk", None), ("tts_done", None),
+        ("tts_start", "push"), ("tts_first_chunk", "push"), ("tts_done", "push"),
+    ]  # fmt: skip
+
+
+async def test_long_push_reply_is_not_cut_by_the_inactivity_cap(make_push_bridge, monkeypatch):
+    """#271: a push that keeps producing audio for longer than the cap (with no pause
+    longer than it) is delivered in full, ending included."""
+    monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 0.3)
+    total = 12
+
+    async def audio():
+        for i in range(total):
+            await asyncio.sleep(0.05)
+            yield bytes([i])
+
+    bridge = make_push_bridge(tts=_stream(audio=audio))
+    await asyncio.wait_for(push(bridge, *push_reply("una respuesta larga", sk=SK)), timeout=5.0)
+
+    msgs = await sent(bridge)
+    assert [m[3] for m in msgs if isinstance(m, bytes)] == list(range(total))
+    assert msgs[-1] == {"type": "turn_end", "turn_id": "t-1"}
+
+
+async def test_push_drain_window_restarts_at_drain_start(make_push_bridge, monkeypatch):
+    """7e: tras una pausa larga del agente, el sello de progreso es viejo; el audio que
+    llega poco después del `end` no se corta."""
+    monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 0.3)
+    ended = asyncio.Event()
+
+    async def late_audio():
+        await ended.wait()
+        for _ in range(3):
+            await asyncio.sleep(0.05)
+            yield b"\x00" * 10
+
+    tts = _stream(audio=late_audio)
+    tts.end = AsyncMock(side_effect=lambda: ended.set())
+    bridge = make_push_bridge(tts=tts)
+    await push(bridge, ("turn_start", SK), ("chat", {"deltaText": "a"}))
+    await asyncio.sleep(0.4)  # longer than the cap: the progress stamp is now stale
+    await asyncio.wait_for(push(bridge, ("turn_end", SK)), timeout=2.0)
+
+    msgs = await sent(bridge)
+    assert len([m for m in msgs if isinstance(m, bytes)]) == 3
+    assert msgs[-1] == {"type": "turn_end", "turn_id": "t-1"}
 
 
 async def test_turn_counters(make_push_bridge, monkeypatch):
@@ -234,14 +266,13 @@ async def test_turn_counters(make_push_bridge, monkeypatch):
     from fogar_gateway.services.stats import gateway_stats
 
     bridge = make_push_bridge(output_mode=("text",))
-    bridge.tracker.start_turn = lambda: None
     monkeypatch.setattr(orchestration, "call_orchestrator", AsyncMock())
-    await bridge._call_orchestrator("hola")
-    await _open_push(bridge, None)
+    await run_turn(bridge, "hola")
+    await push(bridge, *push_reply("x", sk=SK))
     monkeypatch.setattr(
         orchestration, "call_orchestrator", AsyncMock(side_effect=orchestration.OrchestratorError("orchestrator_error"))
     )
-    await bridge._call_orchestrator("otra")
+    await run_turn(bridge, "otra")
 
     snap = gateway_stats.snapshot()
     assert snap["turns"] == {"normal": 2, "push": 1}
@@ -253,11 +284,10 @@ async def test_plain_runtime_error_counts_as_internal_error(make_push_bridge, mo
     from fogar_gateway.services.stats import gateway_stats
 
     bridge = make_push_bridge(output_mode=("text",))
-    bridge.tracker.start_turn = lambda: None
     monkeypatch.setattr(
         orchestration, "call_orchestrator", AsyncMock(side_effect=RuntimeError("texto-arbitrario"))
     )
-    await bridge._call_orchestrator("hola")
+    await run_turn(bridge, "hola")
 
     errors = gateway_stats.snapshot()["turn_errors"]
     assert errors == {"internal_error": 1}
@@ -269,31 +299,8 @@ async def test_unexpected_exception_counts_as_internal_error(make_push_bridge, m
     from fogar_gateway.services.stats import gateway_stats
 
     bridge = make_push_bridge(output_mode=("text",))
-    bridge.tracker.start_turn = lambda: None
     monkeypatch.setattr(
         orchestration, "call_orchestrator", AsyncMock(side_effect=ValueError("x"))
     )
-    await bridge._call_orchestrator("hola")
+    await run_turn(bridge, "hola")
     assert gateway_stats.snapshot()["turn_errors"] == {"internal_error": 1}
-
-
-async def test_push_drain_window_restarts_at_drain_start(make_push_bridge, monkeypatch):
-    """7e: tras una pausa larga del agente, el sello de progreso es viejo; el audio que
-    llega poco después del `end` no se corta."""
-    monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 0.3)
-    bridge = make_push_bridge()
-    _open_turn(bridge, AsyncMock())
-
-    async def late_audio():
-        for _ in range(3):
-            await asyncio.sleep(0.05)
-            bridge._push_audio_progress_at = time.monotonic()
-            await bridge._sender.send_bytes(b"\xa1\x00\x01" + b"\x00" * 10)
-
-    bridge._push_audio_progress_at = time.monotonic() - 10
-    bridge._push_audio_task = asyncio.create_task(late_audio())
-    await asyncio.wait_for(bridge.on_push_turn_end("sk"), timeout=2.0)
-
-    msgs = await sent(bridge)
-    assert len([m for m in msgs if isinstance(m, bytes)]) == 3
-    assert {"type": "turn_end", "turn_id": "t-1"} in msgs

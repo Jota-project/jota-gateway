@@ -24,7 +24,7 @@ from fogar_gateway.services.speech.ports import SttCallbacks, SttParams
 from fogar_gateway.services.transcriber_client import TranscriberClient
 from fogar_gateway.services.transcriber_reconnecting import ReconnectingTranscriberClient
 from fogar_gateway.services.tts_client import TTSClient
-from tests.fakes.bridge import sent
+from tests.fakes.bridge import run_turn, sent
 
 SECRET = "SECRET-INTERNAL"
 
@@ -44,7 +44,7 @@ async def test_turn_error_from_raw_runtime_error_is_internal_error(make_bridge, 
         yield  # pragma: no cover
 
     bridge.orchestrator.stream_response = s
-    await bridge._call_orchestrator("x")
+    await run_turn(bridge, "x")
     await sent(bridge)
 
     err = ws.of("error")[0]
@@ -61,7 +61,7 @@ async def test_turn_error_relays_orchestrator_error_code(make_bridge):
         yield OrchestratorEvent(type="error", content="turn_timeout")
 
     bridge.orchestrator.stream_response = s
-    await bridge._call_orchestrator("x")
+    await run_turn(bridge, "x")
     await sent(bridge)
 
     assert ws.of("error")[0]["message"] == "turn_timeout"
@@ -236,12 +236,19 @@ async def test_bridge_failed_client_sends_log_type_only(make_bridge, caplog):
 async def test_bridge_close_all_failed_active_turn_logs_type_only(make_bridge, caplog):
     caplog.set_level(logging.DEBUG)
     bridge, _ = make_bridge()
+    started = asyncio.Event()
 
-    async def _turn():
-        await asyncio.sleep(0.01)
-        raise RuntimeError(SECRET)
+    async def _turn(*a, **k):
+        started.set()
+        try:
+            await asyncio.sleep(3600)
+        finally:
+            raise RuntimeError(SECRET)
+        yield  # pragma: no cover
 
-    bridge._active_turn = asyncio.create_task(_turn())
+    bridge.orchestrator.stream_response = _turn
+    await bridge.turns.start_user_turn("x")
+    await asyncio.wait_for(started.wait(), 2)
     await bridge.close_all()
     assert SECRET not in _logged(caplog)
 

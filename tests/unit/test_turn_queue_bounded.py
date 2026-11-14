@@ -161,4 +161,4 @@ async def test_late_frames_of_aborted_turn_are_not_rerouted_as_push():
             "payload": {"sessionKey": SK, "data": {"phase": "end"}},
         }
     )
-    bridge.enqueue_push.assert_called_once_with("turn_end", SK)
+    bridge.enqueue_push.assert_called_once_with("turn_end", SK, run_id=None)

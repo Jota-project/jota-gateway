@@ -14,12 +14,20 @@ def _as_dict(value: object) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _run_id(payload: dict) -> str | None:
+    run_id = payload.get("runId")
+    return run_id if isinstance(run_id, str) else None
+
+
 class FrameDispatcher:
     """Routes incoming OpenClaw frames to the correct queue or bridge.
 
     Knows about TurnRegistry and ClientRegistry. Does not touch WebSocket or TTS.
 
     Turn queues are bounded and fed with non-blocking puts (issue #130 S3b).
+
+    Frames of a run the gateway aborted (`runId` tombstoned in TurnRegistry, #285) are
+    dropped before any routing: they never reach the next turn nor come back as a push.
 
     Push handlers are never awaited here: this runs inside OpenClaw's _listen loop,
     so anything slow would stall every session sharing the connection (issue #130
@@ -62,6 +70,20 @@ class FrameDispatcher:
         # event with state "final" (server 2026.6.11+, the minimum supported).
         if frame.get("ok") is False:
             self._turns.deliver_by_req(frame.get("id", ""), ("done", frame))
+            return
+        # #285: the `chat.send` ack names the run of the turn; a `chat.abort` answer, the
+        # runs it aborted. Both feed the runId tombstones.
+        payload = _as_dict(frame.get("payload"))
+        run_id = payload.get("runId")
+        if isinstance(run_id, str):
+            self._turns.note_run(str(frame.get("id", "")), run_id)
+        self._turns.note_abort_result(payload)
+
+    def _of_aborted_run(self, payload: dict) -> bool:
+        if self._turns.is_run_aborted(payload.get("runId")):
+            logger.debug("frame of an aborted run dropped (sk=%s)", payload.get("sessionKey"))
+            return True
+        return False
 
     async def _handle_event(self, frame: dict) -> None:
         event = frame.get("event", "")
@@ -77,7 +99,7 @@ class FrameDispatcher:
 
     async def _handle_chat(self, payload: dict) -> None:
         sk = payload.get("sessionKey")
-        if sk is None:
+        if sk is None or self._of_aborted_run(payload):
             return
         if self._turns.deliver_by_session(sk, ("chat", payload)):
             return
@@ -86,11 +108,11 @@ class FrameDispatcher:
         client_id = client_id_from_session_key(sk)
         bridge = self._clients.get(client_id)
         if bridge is not None:
-            bridge.enqueue_push("chat", payload)
+            bridge.enqueue_push("chat", payload, run_id=_run_id(payload))
 
     async def _handle_agent_lifecycle(self, payload: dict) -> None:
         sk = payload.get("sessionKey")
-        if sk is None:
+        if sk is None or self._of_aborted_run(payload):
             return
         phase = _as_dict(payload.get("data")).get("phase")
         client_id = client_id_from_session_key(sk)
@@ -114,24 +136,25 @@ class FrameDispatcher:
             if self._turns.is_aborted(sk):
                 logger.debug("agent start suppressed: turn aborted for overflow sk=%s", sk)
                 return
-            bridge.enqueue_push("turn_start", sk)
+            bridge.enqueue_push("turn_start", sk, run_id=_run_id(payload))
         elif phase in ("end", "error"):
             # "error" (#300): a failed run ends with it instead of "end".
-            # Always forwarded, never suppressed: on_push_turn_end() already
+            # Always forwarded, never suppressed: the push end already
             # no-ops when no push turn is open (issue #84's orphan-end
             # branch), so a start suppressed above never produces a
             # client-visible turn_end here. Suppressing "end" too — as this
             # guard originally did — could orphan a push turn that was
             # already open *before* a normal turn started for the same
             # session_key: its own "end" would be dropped, leaving
-            # _push_turn_open stuck True, its TTS connection never closed,
+            # the push open forever, its TTS connection never closed,
             # and the push path permanently dead for the rest of the session
             # (caught in final review, 2026-08-04).
-            bridge.enqueue_push("turn_end", sk)
+            kind = "turn_error" if phase == "error" else "turn_end"
+            bridge.enqueue_push(kind, sk, run_id=_run_id(payload))
 
     async def _handle_session_tool(self, payload: dict) -> None:
         sk = payload.get("sessionKey")
-        if sk is None:
+        if sk is None or self._of_aborted_run(payload):
             return
         data = _as_dict(payload.get("data"))
         if data.get("phase") not in ("start", "result"):
@@ -143,4 +166,4 @@ class FrameDispatcher:
         client_id = client_id_from_session_key(sk)
         bridge = self._clients.get(client_id)
         if bridge is not None:
-            bridge.enqueue_push("tool", data)
+            bridge.enqueue_push("tool", data, run_id=_run_id(payload))

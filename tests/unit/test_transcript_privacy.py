@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from fogar_gateway.models.schemas import ClientConfig, Handshake
+from tests.fakes.bridge import blocking
 
 _SECRET = "TOP-SECRET-PHRASE"
 
@@ -50,14 +51,16 @@ async def test_send_message_is_not_logged_at_info(bridge, caplog):
 
     with caplog.at_level(logging.INFO):
         await bridge._client_input_loop()
-    bridge._active_turn.cancel()
+    await asyncio.wait({bridge.turns.user_task}, timeout=2)
 
     assert not any(_SECRET in m for m in _info_messages(caplog))
 
 
 async def test_barge_in_partial_is_not_logged_at_info(bridge, caplog):
-    bridge._active_turn = asyncio.create_task(asyncio.sleep(60))
-    await asyncio.sleep(0)
+    started = asyncio.Event()
+    bridge.orchestrator.stream_response = blocking(started)
+    await bridge.turns.start_user_turn("x")
+    await asyncio.wait_for(started.wait(), 2)
 
     with caplog.at_level(logging.INFO):
         await bridge._on_transcription(_SECRET, False)

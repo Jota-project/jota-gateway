@@ -10,12 +10,8 @@ from fogar_gateway.core.config import settings
 from fogar_gateway.core.exceptions import ClientInactive, ClientNotFound
 from fogar_gateway.models.schemas import Client, ClientConfig, Handshake
 from fogar_gateway.services.db_client import db_client
-from fogar_gateway.services.openclaw.chat_text import ChatTextTracker
-from fogar_gateway.services.openclaw.models import ToolCallEvent
 from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
-from fogar_gateway.services.orchestration import OrchestratorError
-from fogar_gateway.services.outbound import ClientGone, OutboundSender
-from fogar_gateway.services.pacing import AudioPacer
+from fogar_gateway.services.outbound import OutboundSender
 from fogar_gateway.services.pipeline_tracker import PipelineTracker
 from fogar_gateway.services.protocol import OrchestratorProtocol
 from fogar_gateway.services.reconnection import (
@@ -31,11 +27,11 @@ from fogar_gateway.services.speech.ports import (
     SttParams,
     SttSession,
     TextToSpeechProvider,
-    TtsStream,
 )
 from fogar_gateway.services.speech.registry import SpeechProviders
 from fogar_gateway.services.stats import CloseReason, gateway_stats
 from fogar_gateway.services.teardown import Teardown, cancel_requested
+from fogar_gateway.services.turns import TurnController
 
 logger = logging.getLogger(__name__)
 
@@ -47,19 +43,6 @@ _WATCHDOG_POLL_S = 2
 _sleep = asyncio.sleep
 
 
-def _tool_call_message(turn_id: str | None, tool_call: ToolCallEvent) -> dict:
-    return {
-        "type": "tool_call",
-        "turn_id": turn_id,
-        "phase": tool_call.phase,
-        "name": tool_call.name,
-        "tool_call_id": tool_call.tool_call_id,
-        "args": tool_call.args,
-        "result": tool_call.result,
-        "is_error": tool_call.is_error,
-    }
-
-
 _REASON_BY_STATUS: dict[str, CloseReason] = {
     "revoked": "revoked",
     "error": "error",
@@ -67,9 +50,10 @@ _REASON_BY_STATUS: dict[str, CloseReason] = {
 
 
 class FogarBridge:
-    """
-    Titiritero principal. Gestiona la conexión de un cliente físico
-    y enruta asincrónicamente los mensajes utilizando los adaptadores de microservicio.
+    """Una sesión de cliente: bucle de entrada, STT, watchdogs, revalidación y cierre.
+
+    Los turnos (normal y push: abrir, alimentar, TTS, cortar, cerrar) son de
+    `TurnController` (`self.turns`, services/turns.py).
     """
 
     def __init__(
@@ -102,15 +86,10 @@ class FogarBridge:
         self._stt: SpeechToTextProvider = speech.stt
         self.tracker: PipelineTracker = tracker
         self._client_registry = client_registry
-        self._turn_registry = turn_registry  # solo para el máximo de la cola de turno (#219)
+        # Máximo de la cola de turno (#219) y lápidas de los runs de push cortados (#285).
+        self._turn_registry = turn_registry
         self._default_agent = default_agent
         self.transcriber: SttSession | None = None
-        self._push_tts: TtsStream | None = None
-        # Tiempos del TTS del push en curso (ms); None si el turno no tuvo TTS.
-        self._push_tts_stats: dict[str, Any] | None = None
-        self._push_audio_task: asyncio.Task | None = None
-        # Último trozo recibido del TTS del push; el drenado se acota por inactividad (7e).
-        self._push_audio_progress_at: float | None = None
 
         self.tasks: list[asyncio.Task] = []
         # Fire-and-forget tasks (status notifications, the idle-watchdog closer) are not
@@ -118,41 +97,10 @@ class FogarBridge:
         # short-lived and self-cleaning. Kept here only so the event loop's weak
         # reference doesn't let them get GC'd mid-flight.
         self._background_tasks: set[asyncio.Task] = set()
-        self._active_turn: asyncio.Task | None = None
-        self._active_turn_started_at: float | None = None  # para snapshot() (#219)
         # True while the transcriber reports `status busy` (GPU saturated, #143).
         self._transcriber_busy: bool = False
         self._session_start: float = 0.0
         self._last_client_activity: float = 0.0
-        self._turn_seq: int = 0
-        self._push_turn_id: str | None = None
-        self._push_session_key: str | None = None  # 7e: chat.abort only on our own session_key
-        # Issue #84: OpenClaw emits multiple agent start/end pairs during a single
-        # LLM response (tool use, multi-step reasoning). Track whether a push turn
-        # is already open so we emit exactly one turn_start/turn_end to the client
-        # for the whole multi-step reply, not one per agent event.
-        self._push_turn_open: bool = False
-        self._push_text = ChatTextTracker()  # #241: text already emitted in the push reply
-        # Bounds how long an open push turn can gate _idle_watchdog() (issue #115
-        # follow-up): a push has no timeout of its own the way _active_turn does
-        # via stream_response()'s TURN_TIMEOUT_S, so an orphaned push (agent
-        # start with no matching agent end — OpenClaw crash, reconnect mid-push)
-        # combined with a silent client would otherwise block the idle watchdog
-        # from ever calling close_all() and leak the session indefinitely.
-        self._push_turn_opened_at: float | None = None
-        # Push worker (issue #130 S3a): the dispatcher no longer awaits push handlers
-        # inside OpenClaw's _listen loop. It calls enqueue_push(); a single worker per
-        # bridge runs the handlers, so one session's slow TTS can't stall every other
-        # session multiplexed on the same connection, and the total order
-        # start -> deltas -> tool -> end the _push_turn_open logic relies on is kept.
-        # Unbounded on purpose in S3a (bounding it is S3b).
-        self._push_queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
-        self._push_worker: asyncio.Task | None = None
-        # Events enqueued and not yet finished, and since when the backlog is
-        # non-empty: _idle_watchdog() counts a bounded pending backlog as in flight.
-        self._push_pending: int = 0
-        self._push_pending_peak: int = 0
-        self._push_pending_since: float | None = None
         # Guards close_all() so it's safe to call more than once (issue #101):
         # routes.py's outer try/finally always calls it on the way out, even
         # when bridge.run() already called it from its own internal finally.
@@ -160,28 +108,27 @@ class FogarBridge:
         # cancelled meanwhile, #221); _close_lock serializes concurrent callers.
         self._closed: bool = False
         self._close_lock = asyncio.Lock()
-        # Set on entry to close_all() and never reset: from then on no new turn may
-        # start (G-09, #215) and no push event is accepted. Distinct from `_closed`,
-        # which only flips once every teardown step ran.
-        self._closing: bool = False
         # Motivo de cierre (#219): la primera nota gana; se fija en session_end una vez.
         self._close_reason: CloseReason | None = None
         self._turn_in_flight_at_close: bool | None = None
         self._close_counted: bool = False
-        # Serializes turn cancel/start (G-08, #201).
-        self._turn_lock = asyncio.Lock()
-        # Id of the turn currently running (set after its turn_start is enqueued).
-        self._active_turn_id: str | None = None
-        # Turn whose turn_end close_all() already sent because it abandoned the turn
-        # at SESSION_TEARDOWN_S: its own finally must not send it again.
-        self._turn_end_sent_at_close: str | None = None
-        # True once the client is known to be gone (disconnect seen by the input loop,
-        # or ClientGone from the sender): its turn stops sending (G-18).
-        self._client_gone: bool = False
         # Audio activity, for the silence watchdog (#227): last audio frame, and the
         # first frame of the current burst (a frame after an idle gap starts a new one).
         self._last_audio_at: float | None = None
         self._audio_burst_start: float | None = None
+        self.turns = TurnController(
+            client_id=self.client_id,
+            config=config,
+            handshake=handshake,
+            orchestrator=orchestrator,
+            tts=self.tts,
+            tracker=tracker,
+            sender=sender,
+            session_key=self._session_key,
+            spawn=self._spawn,
+            supervise=self._supervise,
+            turn_registry=turn_registry,
+        )
 
     async def connect_internal_services(self):
         """Inicializa clientes de microservicios dependiendo del handshake."""
@@ -220,11 +167,7 @@ class FogarBridge:
         IDs, nunca texto ni client_key. `started_at` y `last_latencies` los añade la ruta
         desde el SessionRecord (aquí van a None)."""
         now = time.monotonic()
-        kind, since = "idle", None
-        if self._active_turn is not None and not self._active_turn.done():
-            kind, since = "normal", self._active_turn_started_at
-        elif self._push_turn_open:
-            kind, since = "push", self._push_turn_opened_at
+        turns = self.turns.snapshot(now)
         depth, peak = (
             self._turn_registry.depth(self._session_key())
             if self._turn_registry is not None
@@ -238,11 +181,11 @@ class FogarBridge:
             "output_mode": list(self.handshake.output_mode),
             "started_at": None,
             "age_s": round(now - self._session_start, 3) if self._session_start else 0.0,
-            "turn": {"kind": kind, "since_s": round(now - since, 3) if since else None},
+            "turn": turns["turn"],
             "turn_count": self.tracker.turn_count,
             "sender": self._sender.queue_stats(),
             "turn_queue": {"depth": depth, "peak": peak},
-            "push_backlog": {"pending": self._push_pending, "peak": self._push_pending_peak},
+            "push_backlog": turns["push_backlog"],
             "last_activity_s": (
                 round(now - self._last_client_activity, 3) if self._last_client_activity else None
             ),
@@ -264,7 +207,7 @@ class FogarBridge:
             "sender_peak_msgs": 0,
             "sender_peak_bytes": 0,
             "turn_queue_peak": 0,
-            "push_backlog_peak": self._push_pending_peak,
+            "push_backlog_peak": self.turns.push_backlog_peak,
         }
         # Una métrica nunca debe impedir el cierre.
         try:
@@ -300,10 +243,10 @@ class FogarBridge:
         """
         # Before taking the lock, so a `send` arriving while another close_all() is
         # running is already refused (G-09), and push intake stops.
-        self._closing = True
+        self.turns.stop_intake()
         self.note_close_reason(reason)
         if self._turn_in_flight_at_close is None:
-            self._turn_in_flight_at_close = self._turn_in_flight()
+            self._turn_in_flight_at_close = self.turns.in_flight()
         async with self._close_lock:
             if self._closed:
                 return
@@ -313,37 +256,9 @@ class FogarBridge:
             self._client_registry.unregister(self.client_id, self)
             limit = settings.SESSION_TEARDOWN_S
             async with Teardown(f"[{self.client_id}] close_all") as td:
-                # 7d / G-23: the turn in flight is cancelled, never drained. Its own
-                # finally sends its turn_end while the socket is still open (G-10), and
-                # the orchestrator stream's aclose sends chat.abort.
-                turn = self._active_turn
-                await td.cancel(turn, "turno activo", limit)
-                if turn is not None and not turn.done() and self._active_turn_id:
-                    # Abandoned at the limit (slow TTS cleanup): its finally would send
-                    # turn_end after session_end, into a closed sender. Send it now.
-                    turn_id = self._active_turn_id
-                    self._turn_end_sent_at_close = turn_id
-                    try:
-                        await self._sender.send_json({"type": "turn_end", "turn_id": turn_id})
-                    except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-                        self._log_send_failed("turn_end al cerrar", e)
-
-                # The push worker before the _push_tts / audio task it may be driving
-                # (issue #130 S3a). It is also in self.tasks, cancelled later.
-                await td.cancel(self._push_worker, "push worker", limit)
-                while not self._push_queue.empty():
-                    self._push_queue.get_nowait()
-                    self._push_queue.task_done()
-                self._push_pending = 0
-                self._push_pending_since = None
-                await td.cancel(self._push_audio_task, "audio del push", limit)
-                if self._push_tts:
-                    await td.step(self._push_tts.close(), "cierre del TTS del push", limit)
-                    self._push_tts = None
-                # A push turn left open (agent start without its end) still gets
-                # its turn_end, after its last audio frame: never a lone turn_start.
-                if self._push_turn_id is not None:
-                    await self._close_push_turn(self._push_turn_id)
+                # The turns first: the one in flight is cancelled (never drained) and every
+                # open turn gets its turn_end while the socket is still open (G-10, G-23).
+                await self.turns.close(td, limit)
 
                 # Never the calling task: the watchdogs call close_all() on themselves.
                 # Cancel them all first, then wait them under one shared limit.
@@ -409,80 +324,6 @@ class FogarBridge:
             "transcriber": transcriber_live,
         }
 
-    async def _cancel_turn(self) -> tuple[bool, str | None]:
-        """Cancel the turn running *now*. Returns (cancelled, its turn_id).
-
-        G-08 (#201): the target is captured on entry, calls are serialized, and
-        `_active_turn` is only cleared if it is still that same task. Two concurrent
-        callers therefore cancel the turn once (the second gets False) and neither
-        can wipe the reference to a turn started in between.
-        """
-        turn, turn_id = self._active_turn, self._active_turn_id
-        if turn is None or turn.done():
-            return False, None
-        async with self._turn_lock:
-            if turn.done():  # another caller cancelled it while we waited for the lock
-                return False, None
-            await self._cancel_and_wait(turn)
-            return True, turn_id
-
-    async def _cancel_active_turn(self) -> bool:
-        """Cancel the active orchestrator turn if one is running. Returns True if cancelled."""
-        return (await self._cancel_turn())[0]
-
-    async def _cancel_and_wait(self, turn: asyncio.Task) -> None:
-        # Sin tope, como antes: el turno nuevo no arranca hasta que el viejo terminó.
-        # Si cancelan a quien llama, se termina de esperar y se relanza (#221). Solo esa
-        # cancelación: una heredada (cancelling() > 0) no debe tumbar el STT en un barge-in.
-        td = Teardown(f"[{self.client_id}] cancelar turno")
-        await td.cancel(turn, "turno anterior")
-        if self._active_turn is turn:
-            self._active_turn = None
-        td.raise_if_cancelled()
-
-    async def _start_turn(self, text: str) -> None:
-        """Replace the active turn (if any) with a new one for `text`.
-
-        Refused once the session is closing (G-09): the input loop is still reading
-        while close_all() runs, and a turn created then would survive the teardown.
-        """
-        if self._closing:
-            logger.info(f"[{self.client_id}] send ignorado: la sesión se está cerrando.")
-            return
-        async with self._turn_lock:
-            if self._closing:
-                return
-            current = self._active_turn
-            if current is not None and not current.done():
-                await self._cancel_and_wait(current)
-            # Inside the lock: the abort ends before the user's chat.send goes out.
-            await self._cut_push()
-            if self._closing:  # close_all() may have started during the cancel wait
-                return
-            task = asyncio.create_task(self._call_orchestrator(text), name="turn")
-            self._supervise(task)
-            self._active_turn = task
-            self._active_turn_started_at = time.monotonic()
-
-    def _turn_in_flight(self) -> bool:
-        """A normal turn is running, or a push turn is open (bounded by TURN_TIMEOUT_S
-        like the idle watchdog's check, so an orphaned push can't pause silence
-        monitoring forever). With paced audio a push keeps sounding past that bound,
-        so a live push audio task also counts."""
-        if self._active_turn is not None and not self._active_turn.done():
-            return True
-        if (
-            self._push_audio_task is not None
-            and not self._push_audio_task.done()
-            and time.monotonic() - (self._push_audio_progress_at or 0)
-            < settings.PUSH_TTS_DRAIN_TIMEOUT_S
-        ):
-            return True
-        return self._push_turn_open and (
-            self._push_turn_opened_at is None
-            or time.monotonic() - self._push_turn_opened_at < settings.TURN_TIMEOUT_S
-        )
-
     async def _transcription_watchdog(self):
         """Notifica al cliente si hay silencio prolongado; cierra tras max_silence_turns consecutivos."""
         # Esperar a que el cliente empiece a enviar audio antes de vigilar
@@ -526,7 +367,7 @@ class FogarBridge:
             was_connected = True
 
             now = time.monotonic()
-            if self._turn_in_flight():
+            if self.turns.in_flight():
                 # Decision of Sito (#215): a turn in progress is activity, not silence.
                 # Strikes reset and the window restarts from now, so the first window
                 # after the turn is a fresh one (no strike on the first tick after it).
@@ -573,54 +414,25 @@ class FogarBridge:
                     return
 
     async def _idle_watchdog(self):
-        """Cierra la sesión si el cliente no manda ningún mensaje (audio o
-        texto) durante IDLE_TIMEOUT_S (issue #115). Sin aviso previo al
-        cliente — a diferencia del silence watchdog, que sí notifica
-        degradación progresiva de la transcripción.
+        """Cierra la sesión si el cliente no manda ningún mensaje (audio o texto) durante
+        IDLE_TIMEOUT_S (issue #115). Sin aviso previo al cliente — a diferencia del silence
+        watchdog, que sí notifica degradación progresiva de la transcripción.
 
-        Gated on activity actually in flight (issue #115 follow-up): a client
-        that goes quiet while the orchestrator is mid-turn, or a push-only
-        session that never sends anything by design, must not be cut off just
-        because IDLE_TIMEOUT_S has elapsed since the client's *last inbound
-        message*. When the idle window has expired but `_active_turn` or
-        `_push_turn_open` shows something is actively in flight, this skips
-        the close for this tick and re-checks shortly after — it does not
-        reset the idle window, it just defers the decision until nothing is
-        in flight anymore. A third signal is a non-empty push backlog
-        (`_push_pending > 0`, issue #130 S3a: queued push events the worker
-        has not processed yet); like `_push_turn_open` it only counts for
-        TURN_TIMEOUT_S from `_push_pending_since`, so a wedged worker cannot
-        gate this watchdog forever.
-
-        `_active_turn` is safe to trust indefinitely because it's implicitly
-        bounded — the orchestrator call underneath it is capped by
-        TURN_TIMEOUT_S inside stream_response(). `_push_turn_open` has no
-        such bound of its own (it's just a flag toggled by on_push_turn_start/
-        on_push_turn_end), so an orphaned push — OpenClaw crashes or a
-        reconnect happens between an agent start and its matching agent end —
-        would otherwise gate this watchdog forever, leaking the session. A
-        push only counts as "in flight" here while it's within its own
-        TURN_TIMEOUT_S grace period since it opened (`_push_turn_opened_at`),
-        or while its paced audio progressed within PUSH_TTS_DRAIN_TIMEOUT_S
-        (see `_turn_in_flight`); past that, close_all()'s existing defensive
-        reset handles clearing the stale flag.
+        Gated on activity actually in flight (issue #115 follow-up): a client that goes
+        quiet while the orchestrator is mid-turn, or a push-only session that never sends
+        anything by design, must not be cut off just because IDLE_TIMEOUT_S has elapsed
+        since the client's *last inbound message*. While `turns.in_flight()` (a turn, an
+        open push, push audio still progressing or a queued push backlog, each bounded so
+        an orphan can't gate this forever) the close is deferred and re-checked shortly
+        after; the idle window is not reset.
         """
         while True:
             remaining = settings.IDLE_TIMEOUT_S - (
                 time.monotonic() - self._last_client_activity
             )
             if remaining <= 0:
-                # Issue #130 S3a: queued-but-unprocessed push events are in flight too,
-                # bounded the same way as an open push turn so a wedged worker can't
-                # gate this watchdog forever.
-                push_backlog_in_flight = self._push_pending > 0 and (
-                    self._push_pending_since is None
-                    or time.monotonic() - self._push_pending_since < settings.TURN_TIMEOUT_S
-                )
-                # A turn, an open push (bounded) or push audio still progressing (7e).
-                if self._turn_in_flight() or push_backlog_in_flight:
-                    # Not idle — a turn/push is actively in flight. Re-check
-                    # shortly rather than closing or resetting the full window.
+                if self.turns.in_flight():
+                    # Not idle — re-check shortly rather than closing or resetting the window.
                     await _sleep(2)
                     continue
                 logger.info(f"[{self.client_id}] Idle timeout — cerrando sesión.")
@@ -662,7 +474,7 @@ class FogarBridge:
         logger.warning(f"[{self.client_id}] Cliente revocado (borrado/desactivado/clave rotada).")
         await self.tracker.record("session_revoked")
         # Nadie autorizado escucha ya: close_all cancela el turno en curso (G-18).
-        self._client_gone = True
+        self.turns.client_gone = True
         try:
             await asyncio.wait_for(
                 self.client_ws.close(code=1008, reason="revoked"),
@@ -772,7 +584,7 @@ class FogarBridge:
 
                 if message.get("type") == "websocket.disconnect":
                     logger.info(f"[{self.client_id}] Cliente físico desconectado.")
-                    self._client_gone = True
+                    self.turns.client_gone = True
                     self._note_disconnect_code(message.get("code"))
                     break
 
@@ -803,7 +615,7 @@ class FogarBridge:
                     if not parsed:
                         if self.handshake.input_mode == "text":
                             # Texto plano en modo texto — compatibilidad con clientes de texto puro
-                            await self._start_turn(text_data)
+                            await self.turns.start_user_turn(text_data)
                     elif not isinstance(json_msg, dict):
                         # G-20: a JSON scalar/list (`42`, `[1]`, `"s"`, `true`, `null`)
                         # is not a protocol message. Non-fatal error, session goes on.
@@ -815,11 +627,7 @@ class FogarBridge:
 
                     elif json_msg.get("type") == "cancel":
                         # Cliente cancela el turn activo (o el push que suena) sin lanzar uno nuevo
-                        push_id = self._push_turn_id if self._push_turn_open else None
-                        await self._cancel_active_turn()
-                        if push_id:
-                            async with self._turn_lock:
-                                await self._cut_push(push_id)
+                        await self.turns.cancel("cancelled")
 
                     elif json_msg.get("type") == "send":
                         # Cliente confirma/edita la transcripción y la envía al orquestador
@@ -830,11 +638,11 @@ class FogarBridge:
                             text = raw_text.strip()
                             if text:
                                 logger.info(f"[{self.client_id}] send recibido: len={len(text)}")
-                                await self._start_turn(text)
+                                await self.turns.start_user_turn(text)
 
         except WebSocketDisconnect as e:
             logger.info(f"[{self.client_id}] Cliente físico desconectado.")
-            self._client_gone = True
+            self.turns.client_gone = True
             self._note_disconnect_code(e.code)
         except Exception as e:  # noqa: BLE001 — frontera: el bucle de entrada termina la sesión
             self.note_close_reason("error")
@@ -939,13 +747,8 @@ class FogarBridge:
 
             # Barge-in: interrupt active turn if enabled and partial is substantial enough
             if self.config.barge_in_enabled and len(text) >= self.config.barge_in_min_chars:
-                # Only the push open now: one the worker opens after the cancel stays.
-                push_id = self._push_turn_id if self._push_turn_open else None
-                cancelled, cancelled_turn_id = await self._cancel_turn()
-                if push_id and not cancelled:
-                    async with self._turn_lock:
-                        if await self._cut_push(push_id):
-                            cancelled, cancelled_turn_id = True, push_id
+                # The turn or the push open now: one the worker opens after the cancel stays.
+                cancelled, cancelled_turn_id = await self.turns.cancel("interrupted")
                 if cancelled:
                     logger.info(
                         f"[{self.client_id}] Barge-in: turno cancelado por parcial len={len(text)}"
@@ -963,9 +766,9 @@ class FogarBridge:
 
         await self.tracker.record("transcription_final", text_len=len(text))
 
-        # Final: cancel any running turn, notify client.
-        # El orquestador se llama cuando el cliente envíe {"type": "send", "text": "..."}.
-        await self._cancel_active_turn()
+        # Final: cancel any running turn (not a push: the `send` that follows cuts it),
+        # notify client. El orquestador se llama cuando el cliente envíe {"type": "send"}.
+        await self.turns.cancel("interrupted", push=False)
         logger.debug(f"[{self.client_id}] Transcripción final: '{text[:40]}'")
         try:
             await self._sender.send_json({"type": "transcription", "text": text})
@@ -974,563 +777,10 @@ class FogarBridge:
                 f"[{self.client_id}] send_json(transcription) falló: {describe_error(e)}"
             )
 
-    async def _call_orchestrator(self, text: str):
-        """
-        Envía texto al Orchestrator y despacha tokens/eventos al cliente y al TTS.
-
-        Si el cliente pidió audio, crea un TTSClient por petición y corre
-        pipe_tokens + pipe_audio concurrentemente (pipe_audio como tarea; todas las
-        esperas del TTS acotadas, #214).
-        """
-        self._turn_seq += 1
-        # `turn_id` keeps the full counter; `turn_seq` is the uint16 the audio header
-        # carries (G-11), sent as the same value in `turn_start` so clients can match.
-        turn_id = f"t-{self._turn_seq}"
-        turn_seq = self._turn_seq & 0xFFFF
-
-        self.tracker.start_turn()
-
-        try:
-            await self._sender.send_json(
-                {"type": "turn_start", "turn_id": turn_id, "turn_seq": turn_seq}
-            )
-        except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-            self._log_send_failed("turn_start", e)
-            return
-        gateway_stats.turn_started("normal")
-
-        # From here a client has seen `turn_start`: exactly one `turn_end` must follow
-        # on every path — normal, error, cancel, barge-in, override (G-10).
-        self._active_turn_id = turn_id
-        try:
-            await self._run_turn(text, turn_id, turn_seq)
-        except Exception as e:  # noqa: BLE001 — frontera: un turno roto no cierra la sesión
-            if not isinstance(e, ClientGone):
-                # Type name only: the message may carry user text.
-                logger.error(f"[{self.client_id}] Turno falló: {type(e).__name__}")
-                gateway_stats.turn_error("internal_error")
-                try:
-                    await self._sender.send_json(
-                        {
-                            "type": "error",
-                            "code": "TURN_ERROR",
-                            "message": "internal_error",
-                            "fatal": False,
-                            "turn_id": turn_id,
-                        }
-                    )
-                except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-                    self._log_send_failed("TURN_ERROR", e)
-        finally:
-            if self._active_turn_id == turn_id:
-                self._active_turn_id = None
-            if self._turn_end_sent_at_close != turn_id:
-                try:
-                    await self._sender.send_json({"type": "turn_end", "turn_id": turn_id})
-                except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-                    self._log_send_failed("turn_end", e)
-
-    async def _run_turn(self, text: str, turn_id: str, turn_seq: int) -> None:
-        from fogar_gateway.services.orchestration import call_orchestrator
-
-        needs_audio = "audio" in self.handshake.output_mode
-
-        tts: TtsStream | None = None
-        if needs_audio:
-            tts = await self.tts.connect(
-                voice=self.tts.resolve_voice(self.config.tts_voice),
-                speed=self.config.tts_speed,
-                client_id=self.client_id,
-            )
-            if tts:
-                try:
-                    await self.tracker.record("tts_start", voice=self.config.tts_voice or "")
-                except BaseException:
-                    # Cancelado (barge-in) antes de llegar al try/finally que cierra el TTS:
-                    # sin esto el stream (y su hueco del semáforo) quedaría huérfano.
-                    try:
-                        await asyncio.wait_for(
-                            tts.close(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
-                        )
-                    except Exception as e:  # noqa: BLE001 — limpieza: el fallo se registra
-                        logger.debug(
-                            f"[{self.client_id}] cierre del TTS del turno cancelado: "
-                            f"{describe_error(e)}"
-                        )
-                    raise
-
-        session_key = self._session_key()
-
-        # Issue #214 (G-02): every TTS wait of the turn is bounded by
-        # PUSH_TTS_DRAIN_TIMEOUT_S, same mechanism as push (#199). A dead/hung TTS is
-        # dropped once (one WARNING) and the turn goes on text-only.
-        audio_task: asyncio.Task | None = None
-        tts_live = tts
-
-        async def _drop_tts(reason: str) -> None:
-            nonlocal tts_live
-            if tts_live is None:
-                return
-            tts_live = None
-            logger.warning(
-                f"[{self.client_id}] TTS del turno abandonado ({reason}); "
-                f"el turno sigue solo con texto."
-            )
-            if audio_task is not None and not audio_task.done():
-                audio_task.cancel()
-                await asyncio.wait({audio_task}, timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
-
-        async def _on_token(token_text: str):
-            # G-18: a gone client aborts the turn (raising unwinds call_orchestrator's
-            # aclosing(), whose stream finally sends chat.abort) instead of letting it
-            # stream into the void until close_all() cancels it.
-            if self._client_gone:
-                raise ClientGone("cliente no disponible")
-            try:
-                if "text" in self.handshake.output_mode:
-                    await self._sender.send_json(
-                        {"type": "token", "turn_id": turn_id, "text": token_text}
-                    )
-            except ClientGone:
-                self._client_gone = True
-                raise
-            except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-                self._log_send_failed("token", e)
-            if tts_live:
-                try:
-                    await asyncio.wait_for(
-                        tts_live.send_text_chunk(token_text),
-                        timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S,
-                    )
-                except Exception as e:  # noqa: BLE001 — frontera: el TTS caído no rompe el turno
-                    await _drop_tts(f"send_text_chunk {type(e).__name__}")
-
-        async def _on_tool_call(tool_call: ToolCallEvent):
-            if self._client_gone:
-                raise ClientGone("cliente no disponible")
-            if not self.config.tool_calls_enabled:
-                return
-            try:
-                await self._sender.send_json(_tool_call_message(turn_id, tool_call))
-            except ClientGone:
-                self._client_gone = True
-                raise
-            except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-                self._log_send_failed("tool_call", e)
-
-        async def pipe_tokens():
-            try:
-                await call_orchestrator(
-                    self.orchestrator,
-                    text,
-                    session_key,
-                    tracker=self.tracker,
-                    on_token=_on_token,
-                    on_tool_call=_on_tool_call,
-                )
-            except ClientGone:
-                logger.info(f"[{self.client_id}] Cliente no disponible: turno abortado.")
-            except RuntimeError as e:
-                # Solo OrchestratorError lleva un código estable; cualquier otro texto de
-                # excepción puede llevar detalle interno y no sale del proceso (#238).
-                code = str(e) if isinstance(e, OrchestratorError) else "internal_error"
-                logger.error(
-                    f"[{self.client_id}] Orchestrator error: {code} ({type(e).__name__})"
-                )
-                gateway_stats.turn_error(code)
-                if not isinstance(e, OrchestratorError):
-                    logger.debug(f"[{self.client_id}] turno: {traceback_no_message(e)}")
-                try:
-                    await self._sender.send_json(
-                        {
-                            "type": "error",
-                            "code": "TURN_ERROR",
-                            "message": code,
-                            "fatal": False,
-                            "turn_id": turn_id,
-                        }
-                    )
-                except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-                    self._log_send_failed("TURN_ERROR", e)
-            finally:
-                if tts_live:
-                    try:
-                        await asyncio.wait_for(
-                            tts_live.end(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
-                        )
-                    except Exception as e:  # noqa: BLE001 — frontera: el TTS caído no rompe el turno
-                        await _drop_tts(f"end {type(e).__name__}")
-
-        async def pipe_audio():
-            nonlocal audio_progress_at
-            header = bytes([0xA1]) + turn_seq.to_bytes(2, "big")
-            _first_chunk = True
-            pacer = AudioPacer(settings.AUDIO_LEAD_S, settings.AUDIO_PACING_ENABLED)
-            async for chunk in tts.get_audio_stream():
-                audio_progress_at = time.monotonic()
-                if not chunk:
-                    continue
-                if _first_chunk:
-                    await self.tracker.record("tts_first_chunk")
-                    _first_chunk = False
-                async for frame in pacer.frames(chunk):
-                    if self._turn_end_sent_at_close == turn_id:
-                        return  # close_all() already ended this turn: nothing after its turn_end
-                    try:
-                        await self._sender.send_bytes(header + frame)
-                    except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-                        if isinstance(e, ClientGone):
-                            self._client_gone = True
-                        self._log_send_failed("audio", e)
-                        return
-                    audio_progress_at = time.monotonic()  # each paced frame is progress
-            await self.tracker.record("tts_done")
-
-        if tts:
-            audio_task = asyncio.create_task(pipe_audio())
-            try:
-                await pipe_tokens()
-                if self._client_gone:
-                    audio_task.cancel()  # G-18: nobody to play it to
-                # Cap by INACTIVITY, not absolute: the window restarts with every audio
-                # chunk, so a long healthy reply is never truncated. asyncio.wait (not
-                # wait_for): an external cancellation (barge-in) propagates instead of
-                # being mistaken for the audio task's own.
-                audio_progress_at = time.monotonic()
-                while not audio_task.done():
-                    idle_left = settings.PUSH_TTS_DRAIN_TIMEOUT_S - (
-                        time.monotonic() - audio_progress_at
-                    )
-                    if idle_left <= 0:
-                        await _drop_tts("el audio no progresa (sin done)")
-                        break
-                    await asyncio.wait({audio_task}, timeout=idle_left)
-            finally:
-                if not audio_task.done():
-                    audio_task.cancel()
-                    await asyncio.wait({audio_task}, timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
-                if audio_task.done() and not audio_task.cancelled() and audio_task.exception():
-                    logger.warning(
-                        f"[{self.client_id}] pipe_audio falló ({type(audio_task.exception()).__name__})"
-                    )
-                try:
-                    await asyncio.wait_for(tts.close(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
-                except Exception as e:  # noqa: BLE001 — limpieza: el fallo se registra
-                    logger.warning(
-                        f"[{self.client_id}] TTS close del turno falló ({type(e).__name__})"
-                    )
-        else:
-            await pipe_tokens()
-
-    def _push_allowed(self) -> bool:
-        """Single decision point for whether an unsolicited (orchestrator-pushed)
-        frame may reach the client (issue #109): the client must have push
-        enabled AND a push turn must currently be open. Used by deliver_push
-        and deliver_push_tool_call so the check isn't duplicated/inconsistent
-        across the start vs. payload code paths — on_push_turn_start is the
-        only place that sets _push_turn_open True, and it already gates on
-        push_enabled before doing so.
-        """
-        return self.config.push_enabled and self._push_turn_open
-
-    async def on_push_turn_start(self, session_key: str) -> None:
-        if not self.config.push_enabled:
-            # Intentionally do NOT set _push_turn_open here — push_enabled=False
-            # means the whole push reply is dropped. The matching agent end will
-            # then hit the orphan-end branch in on_push_turn_end and be ignored too.
-            return
-        # Issue #84: if a push turn is already open, intermediate agent starts
-        # (tool-use, multi-step reasoning) must not open a new logical turn.
-        # The turn is already open; tokens/audio continue arriving via deliver_push.
-        if self._push_turn_open:
-            logger.debug(
-                f"[{self.client_id}] push_turn_start ignored: a push turn is already open "
-                f"({self._push_turn_id})"
-            )
-            return
-
-        self._turn_seq += 1
-        turn_seq = self._turn_seq & 0xFFFF  # uint16 on the wire (G-11)
-        turn_id = self._push_turn_id = f"t-{self._turn_seq}"
-        self._push_session_key = session_key
-        self._push_turn_open = True
-        self._push_text.reset()
-        self._push_turn_opened_at = time.monotonic()
-        self._push_tts_stats = None
-        gateway_stats.turn_started("push")
-
-        try:
-            await self._sender.send_json(
-                {
-                    "type": "turn_start",
-                    "turn_id": self._push_turn_id,
-                    "turn_seq": turn_seq,
-                }
-            )
-        except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-            self._log_send_failed("turn_start del push", e)
-
-        if "audio" not in self.handshake.output_mode:
-            return
-        tts = await self.tts.connect(
-            voice=self.tts.resolve_voice(self.config.tts_voice),
-            speed=self.config.tts_speed,
-            client_id=self.client_id,
-        )
-        if tts is None:
-            return
-        if not (self._push_turn_open and self._push_turn_id == turn_id):
-            # Cut (_cut_push) while connecting: this TTS belongs to a closed push.
-            try:
-                await asyncio.wait_for(tts.close(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
-            except Exception as e:  # noqa: BLE001 — limpieza: el fallo se registra
-                logger.debug(f"[{self.client_id}] cierre del TTS de push cortado: {describe_error(e)}")
-            return
-        self._push_tts = tts
-        self._push_tts_stats = {
-            "send_ms": 0.0, "end_ms": 0.0, "drain_ms": 0.0, "close_ms": 0.0,
-            "dropped": False, "chars": 0,
-        }  # fmt: skip
-
-        async def _pipe_push_audio():
-            header = bytes([0xA1]) + turn_seq.to_bytes(2, "big")
-            pacer = AudioPacer(settings.AUDIO_LEAD_S, settings.AUDIO_PACING_ENABLED)
-            async for chunk in tts.get_audio_stream():
-                # Progress: every chunk pulled from the TTS and every paced frame sent.
-                self._push_audio_progress_at = time.monotonic()
-                if not chunk:
-                    continue
-                async for frame in pacer.frames(chunk):
-                    try:
-                        await self._sender.send_bytes(header + frame)
-                    except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-                        self._log_send_failed("audio del push", e)
-                        return
-                    self._push_audio_progress_at = time.monotonic()  # each paced frame is progress
-
-        # Supervisada: _drop_push_tts puede abandonarla sin recoger su resultado (#221).
-        self._push_audio_progress_at = time.monotonic()
-        self._push_audio_task = asyncio.create_task(_pipe_push_audio(), name="push_audio")
-        self._supervise(self._push_audio_task)
-
-    async def deliver_push(self, payload: dict) -> None:
-        if not self._push_allowed():
-            return
-        # #241: `final` carries the full text without deltaText (OpenClaw 2026.10.5).
-        delta = self._push_text.feed(payload)
-        if not delta:
-            return
-        if "text" in self.handshake.output_mode:
-            try:
-                await self._sender.send_json(
-                    {
-                        "type": "token",
-                        "turn_id": self._push_turn_id,
-                        "text": delta,
-                    }
-                )
-            except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-                self._log_send_failed("token del push", e)
-        tts = self._push_tts
-        if tts:
-            t0 = time.monotonic()
-            try:
-                if self._push_tts_stats is not None:
-                    self._push_tts_stats["chars"] += len(delta)
-                await asyncio.wait_for(
-                    tts.send_text_chunk(delta), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
-                )
-            except Exception as e:  # noqa: BLE001 — frontera: el TTS caído no rompe el push
-                # Issue #199: a hung/failed push TTS must not wedge the worker nor
-                # log one warning per token. Drop it; the turn continues text-only.
-                await self._drop_push_tts(f"send_text_chunk {type(e).__name__}")
-            finally:
-                self._add_push_ms("send_ms", t0)
-
-    def _add_push_ms(self, key: str, t0: float) -> None:
-        if self._push_tts_stats is not None:
-            self._push_tts_stats[key] += (time.monotonic() - t0) * 1000
-
-    async def _drop_push_tts(self, reason: str, level: int = logging.WARNING) -> None:
-        """Abandon this turn's push TTS (issue #199). Every wait is bounded by
-        PUSH_TTS_DRAIN_TIMEOUT_S; logs once per turn (a later call is a no-op)."""
-        tts = self._push_tts
-        if tts is None:
-            return
-        self._push_tts = None
-        if self._push_tts_stats is not None:
-            self._push_tts_stats["dropped"] = True
-        rest = "; el turno sigue solo con texto." if level >= logging.WARNING else "."
-        logger.log(level, f"[{self.client_id}] TTS de push abandonado ({reason}){rest}")
-        audio_task, self._push_audio_task = self._push_audio_task, None
-        if audio_task is not None and not audio_task.done():
-            audio_task.cancel()
-            await asyncio.wait({audio_task}, timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
-        try:
-            await asyncio.wait_for(tts.close(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
-        except Exception as e:  # noqa: BLE001 — limpieza: el fallo se registra
-            logger.debug(f"[{self.client_id}] cierre del TTS de push abandonado: {describe_error(e)}")
-
-    async def deliver_push_tool_call(self, data: dict) -> None:
-        if not self._push_allowed():
-            return
-        if not self.config.tool_calls_enabled:
-            return
-        tool_call = ToolCallEvent.from_session_tool_payload(data)
-        if tool_call is None:
-            return
-        try:
-            await self._sender.send_json(_tool_call_message(self._push_turn_id, tool_call))
-        except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-            self._log_send_failed("tool_call del push", e)
-
-    async def on_push_turn_end(self, session_key: str) -> None:
-        # Issue #84: if no push turn is open, this agent end has no matching
-        # turn_start on the client side. Ignoring it avoids orphan turn_end frames.
-        if not self._push_turn_open:
-            logger.debug(f"[{self.client_id}] push_turn_end ignored: no push turn open")
-            return
-        turn_id = self._push_turn_id  # a cut (_cut_push) may close it while we wait
-
-        tts = self._push_tts
-        if tts:
-            t0 = time.monotonic()
-            try:
-                await asyncio.wait_for(tts.end(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
-            except Exception as e:  # noqa: BLE001 — frontera: el TTS caído no rompe el push
-                # Issue #199: end() hung or failed — no audio to wait for.
-                await self._drop_push_tts(f"end {type(e).__name__}")
-            finally:
-                self._add_push_ms("end_ms", t0)
-        t0 = time.monotonic()
-        audio_task = self._push_audio_task
-        if self._push_tts is not None and audio_task is not None:
-            if not audio_task.done():
-                # asyncio.wait (not wait_for) on purpose: it never re-raises the
-                # task's own outcome, so an *external* cancellation of this
-                # coroutine (close_all() cancelling the push worker, #130 S3a)
-                # propagates instead of being mistaken for the audio task's.
-                # Bounded by INACTIVITY (paced audio of a long push outlasts any absolute cap);
-                # the window restarts at drain start, like _run_turn does.
-                self._push_audio_progress_at = time.monotonic()
-                while not audio_task.done():
-                    idle_left = settings.PUSH_TTS_DRAIN_TIMEOUT_S - (
-                        time.monotonic() - (self._push_audio_progress_at or t0)
-                    )
-                    if idle_left <= 0:
-                        break
-                    await asyncio.wait({audio_task}, timeout=idle_left)
-                if not audio_task.done():
-                    logger.warning(
-                        f"[{self.client_id}] push audio sin progreso en "
-                        f"PUSH_TTS_DRAIN_TIMEOUT_S={settings.PUSH_TTS_DRAIN_TIMEOUT_S}s "
-                        f"— cancelando."
-                    )
-                    audio_task.cancel()
-                    # Issue #204: bounded, an audio ignoring cancellation can't hang us.
-                    await asyncio.wait({audio_task}, timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S)
-        self._push_audio_task = None
-        self._add_push_ms("drain_ms", t0)
-        if self._push_tts is not None:
-            t0 = time.monotonic()
-            try:
-                await asyncio.wait_for(
-                    self._push_tts.close(), timeout=settings.PUSH_TTS_DRAIN_TIMEOUT_S
-                )
-            except Exception as e:  # noqa: BLE001 — limpieza: el fallo se registra
-                logger.debug(f"[{self.client_id}] cierre del TTS del push: {describe_error(e)}")
-            self._push_tts = None
-            self._add_push_ms("close_ms", t0)
-
-        stats, self._push_tts_stats = self._push_tts_stats, None
-        if stats is not None:
-            await self.tracker.record(
-                "push_tts",
-                **{k: round(v, 1) if isinstance(v, float) else v for k, v in stats.items()},
-            )
-        if turn_id is not None:
-            await self._close_push_turn(turn_id)
-
-    async def _close_push_turn(self, turn_id: str) -> bool:
-        """The only sender of a push's turn_end: exactly one, whoever gets here first
-        (its own end, a cut by the user or close_all). Flags drop before any await."""
-        if not (self._push_turn_open and self._push_turn_id == turn_id):
-            return False
-        self._push_turn_open = False
-        self._push_turn_opened_at = None
-        try:
-            await self._sender.send_json({"type": "turn_end", "turn_id": turn_id})
-        except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-            self._log_send_failed("turn_end del push", e)
-        return True
-
-    async def _cut_push(self, expected: str | None = None) -> str | None:
-        """The user speaks over a push (7e): stop its audio and TTS, chat.abort it if it
-        runs on our session_key, close it. Returns its turn_id, or None if none was open.
-        With `expected`, only that push: one opened meanwhile is left alone."""
-        if not self._push_turn_open or self._push_turn_id is None:
-            return None
-        turn_id = self._push_turn_id
-        if expected is not None and expected != turn_id:
-            return None
-        await self._drop_push_tts("cortado por el usuario", logging.INFO)
-        if self._push_session_key == self._session_key():
-            await self.orchestrator.abort(self._push_session_key)
-        await self._close_push_turn(turn_id)
-        return turn_id
-
-    def enqueue_push(self, kind: str, arg: Any) -> None:
-        """Queue a push event for this bridge's worker (issue #130 S3a).
-
-        Synchronous and never blocks: it is called from OpenClaw's _listen loop via
-        FrameDispatcher. `kind` is "turn_start" | "chat" | "tool" | "turn_end" and
-        `arg` is what the matching handler takes (session_key for turn_*, the frame
-        payload for chat/tool). No-op once the bridge is closing.
-        """
-        if self._closing:
-            return
-        if self._push_worker is None or self._push_worker.done():
-            self._push_worker = self._spawn(self._push_worker_loop(), "push_worker")
-        if self._push_pending == 0:
-            self._push_pending_since = time.monotonic()
-        self._push_pending += 1
-        self._push_pending_peak = max(self._push_pending_peak, self._push_pending)
-        self._push_queue.put_nowait((kind, arg))
+    def enqueue_push(self, kind: str, arg: Any, run_id: str | None = None) -> None:
+        """Entry point of FrameDispatcher for push events (synchronous, never blocks)."""
+        self.turns.enqueue_push(kind, arg, run_id)
 
     async def push_idle(self) -> None:
-        """Wait until the worker has finished every queued push event (for tests)."""
-        await self._push_queue.join()
-
-    async def _push_worker_loop(self) -> None:
-        while not self._closing:
-            kind, arg = await self._push_queue.get()
-            try:
-                if kind == "turn_start":
-                    # A normal turn lives until its audio is sent: don't open a push over it.
-                    # asyncio.wait (not await): our own cancellation propagates, the turn's is not ours.
-                    # Then through _turn_lock: a turn being replaced (_start_turn) is seen as
-                    # the new one, so the user wins and the push waits again.
-                    while True:
-                        while self._active_turn is not None and not self._active_turn.done():
-                            await asyncio.wait({self._active_turn})
-                        async with self._turn_lock:
-                            pass
-                        if self._active_turn is None or self._active_turn.done():
-                            break
-                    await self.on_push_turn_start(arg)
-                elif kind == "chat":
-                    await self.deliver_push(arg)
-                elif kind == "tool":
-                    await self.deliver_push_tool_call(arg)
-                elif kind == "turn_end":
-                    await self.on_push_turn_end(arg)
-                else:
-                    logger.warning(f"[{self.client_id}] push event desconocido: {kind!r}")
-            except Exception as e:  # noqa: BLE001 — frontera: un evento roto no para el worker
-                # Type name only: the payload may carry user text.
-                logger.warning(f"[{self.client_id}] push {kind} falló: {type(e).__name__}")
-            finally:
-                self._push_pending = max(0, self._push_pending - 1)
-                if self._push_pending == 0:
-                    self._push_pending_since = None
-                self._push_queue.task_done()
+        """Wait until every queued push event has been handled (for tests)."""
+        await self.turns.push_idle()

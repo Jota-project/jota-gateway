@@ -12,6 +12,7 @@ from fogar_gateway.core.session_key import make_session_key
 from fogar_gateway.models.schemas import ClientConfig
 from fogar_gateway.services.openclaw.registry import TurnRegistry
 from fogar_gateway.services.pipeline_tracker import PipelineTracker
+from fogar_gateway.services.protocol import OrchestratorEvent
 from fogar_gateway.services.reconnection import ConnectionState
 from fogar_gateway.services.stats import gateway_stats
 from tests.fakes.bridge import DirectSender
@@ -156,9 +157,16 @@ async def test_session_closed_counted_once_when_tracker_close_fails(make_reason_
 
 async def test_turn_in_flight_flag(make_reason_bridge):
     bridge = make_reason_bridge()
-    gate = asyncio.Event()
-    bridge._active_turn = asyncio.create_task(gate.wait())
-    bridge._client_gone = True  # cancela el turno en vez de drenarlo
+    started = asyncio.Event()
+
+    async def forever(*a, **k):
+        started.set()
+        await asyncio.sleep(3600)
+        yield OrchestratorEvent(type="token", content="x")  # pragma: no cover
+
+    bridge.orchestrator.stream_response = forever
+    await bridge.turns.start_user_turn("x")
+    await asyncio.wait_for(started.wait(), 2)
     await bridge.close_all()
     assert _end_meta(bridge)["turn_in_flight"] is True
 
@@ -176,8 +184,12 @@ async def test_queue_peaks_in_session_end(make_reason_bridge):
     turns.deliver_by_session(sk, ("token", "b"))
     turns.unregister(sk, "req-1")
     assert q.qsize() == 2
-    bridge._push_pending_peak = 3
+    await bridge.turns._lock.acquire()  # a turn being replaced: the push worker waits
+    for kind in ("turn_start", "chat", "chat"):
+        bridge.enqueue_push(kind, {})
+    await asyncio.sleep(0.01)
     await bridge.close_all()
+    bridge.turns._lock.release()
     meta = _end_meta(bridge)
     assert meta["turn_queue_peak"] == 2
     assert meta["push_backlog_peak"] == 3

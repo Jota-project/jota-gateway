@@ -16,7 +16,7 @@ import pytest
 
 from fogar_gateway.services.openclaw.registry import ClientRegistry
 from fogar_gateway.services.protocol import OrchestratorEvent
-from tests.fakes.bridge import sent
+from tests.fakes.bridge import push, sent, start_turn
 
 
 @pytest.fixture
@@ -69,16 +69,29 @@ async def test_close_all_second_call_status_does_not_override_first(bridge):
     assert call_args.args[1] == "completed"
 
 
-async def test_close_all_step_that_raises_cancelled_error_does_not_abort_teardown(bridge):
+async def test_close_all_step_that_raises_cancelled_error_does_not_abort_teardown(make_bridge, mock_tracker):
     """#101/#221: a teardown step failing with its own CancelledError (here the push
     TTS close) is a cleanup failure, not a cancellation of the caller: close_all()
     finishes (tracker closed, `_closed`) and does not raise. A later call is a no-op."""
-    bridge._push_tts = AsyncMock()
-    bridge._push_tts.close.side_effect = asyncio.CancelledError()
+    stream = AsyncMock()
+    stream.close.side_effect = asyncio.CancelledError()
+
+    async def no_audio():
+        return
+        yield
+
+    stream.get_audio_stream = no_audio
+    tts = AsyncMock()
+    tts.connect = AsyncMock(return_value=stream)
+    tts.resolve_voice = lambda v: v
+    bridge, ws = make_bridge(tracker=mock_tracker, output_mode=("audio", "text"), tts=tts)
+    await push(bridge, ("turn_start", "sk"))
 
     await bridge.close_all()
 
+    stream.close.assert_awaited_once()
     assert bridge._closed is True
+    assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1"}]
     await bridge.close_all()
     bridge.tracker._registry.close.assert_called_once()
 
@@ -120,24 +133,28 @@ async def test_close_all_bounds_wait_on_a_turn_that_ignores_cancellation(bridge,
 
     monkeypatch.setattr(settings, "SESSION_TEARDOWN_S", 0.05)
     release = asyncio.Event()
+    started = asyncio.Event()
 
-    async def _stubborn():
+    async def _stubborn(*a, **k):
+        started.set()
         while not release.is_set():
             try:
                 await release.wait()
             except asyncio.CancelledError:
                 continue  # ignores the cancellation
+        yield OrchestratorEvent(type="token", content="x")
 
-    turn = asyncio.create_task(_stubborn())
-    await asyncio.sleep(0)
-    bridge._active_turn = turn
+    bridge.orchestrator.stream_response = _stubborn
+    turn = await start_turn(bridge)
+    await asyncio.wait_for(started.wait(), 2)
 
     start = time.monotonic()
     await asyncio.wait_for(bridge.close_all(), timeout=2.0)
     assert time.monotonic() - start < 0.5
     assert bridge._closed is True
     release.set()
-    await turn
+    await asyncio.wait({turn}, timeout=2)
+    assert turn.done()
 
 
 async def test_close_all_cancels_the_turn_in_flight_instead_of_waiting(bridge, monkeypatch):
@@ -146,9 +163,16 @@ async def test_close_all_cancels_the_turn_in_flight_instead_of_waiting(bridge, m
     from fogar_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "SESSION_TEARDOWN_S", 30.0)
-    turn = asyncio.create_task(asyncio.sleep(3600))
-    await asyncio.sleep(0)
-    bridge._active_turn = turn
+    started = asyncio.Event()
+
+    async def forever(*a, **k):
+        started.set()
+        await asyncio.sleep(3600)
+        yield OrchestratorEvent(type="token", content="x")  # pragma: no cover
+
+    bridge.orchestrator.stream_response = forever
+    turn = await start_turn(bridge)
+    await asyncio.wait_for(started.wait(), 2)
 
     start = time.monotonic()
     await asyncio.wait_for(bridge.close_all(), timeout=2.0)
@@ -256,7 +280,7 @@ async def test_turn_cancelled_by_close_all_still_sends_its_turn_end(make_bridge)
         await asyncio.sleep(3600)
 
     b.orchestrator.stream_response = stream
-    b._active_turn = asyncio.create_task(b._call_orchestrator("x"))
+    await start_turn(b)
     await asyncio.wait_for(started.wait(), 2)
 
     await asyncio.wait_for(b.close_all(), timeout=2.0)
@@ -269,15 +293,14 @@ async def test_turn_cancelled_by_close_all_still_sends_its_turn_end(make_bridge)
 async def test_close_all_sends_turn_end_of_an_open_push_turn(make_bridge):
     """A push turn left open (agent start without its end) gets its turn_end on close."""
     b, ws = make_bridge()
-    b.config.push_enabled = True
-    await b.on_push_turn_start("sk")
+    await push(b, ("turn_start", "sk"))
 
     await b.close_all()
     await sent(b)
 
     assert [m["turn_id"] for m in ws.of("turn_start")] == ["t-1"]
     assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1"}]
-    assert b._push_turn_open is False
+    assert b.turns.last_ended.end_reason == "closed"
 
 
 async def test_input_loop_crash_closes_the_session_as_error(make_bridge):
@@ -381,11 +404,10 @@ async def test_turn_abandoned_by_close_all_keeps_one_turn_end_before_session_end
         await asyncio.sleep(3600)
 
     b.orchestrator.stream_response = stream
-    b._active_turn = asyncio.create_task(b._call_orchestrator("x"))
+    turn = await start_turn(b)
     await asyncio.wait_for(started.wait(), 2)
 
     await b.close_all()
-    turn = b._active_turn
     # The abandoned turn finishes its cleanup while routes.py's sender is still open:
     # its finally must not send a second turn_end.
     await asyncio.wait({turn}, timeout=close_s + 1.0)
@@ -449,7 +471,7 @@ async def test_abandoned_turn_sends_no_audio_after_its_turn_end(make_bridge, mon
         await asyncio.sleep(3600)
 
     b.orchestrator.stream_response = stream
-    b._active_turn = asyncio.create_task(b._call_orchestrator("x"))
+    await start_turn(b)
     await asyncio.wait_for(started.wait(), 2)
     await asyncio.sleep(0.05)
 
@@ -481,7 +503,7 @@ async def test_close_all_during_paced_audio_ends_promptly(make_bridge, monkeypat
     tts.connect = AsyncMock(return_value=tts_client)
     b, ws = make_bridge(output_mode=("text", "audio"), tts=tts)
     b.orchestrator.stream_response = tokens("hi")
-    b._active_turn = asyncio.create_task(b._call_orchestrator("x"))
+    await start_turn(b)
     while not any(isinstance(m, bytes) for m in ws.sent):
         await asyncio.sleep(0.01)
 

@@ -5,7 +5,7 @@ from pydantic import SecretStr
 from fogar_gateway.core.config import settings
 from fogar_gateway.models.schemas import ClientConfig
 from fogar_gateway.services.speech.elevenlabs.tts import ElevenLabsTtsProvider
-from tests.fakes.bridge import make_bridge, sent, tokens
+from tests.fakes.bridge import make_bridge, run_turn, sent, tokens
 from tests.fakes.elevenlabs_tts import FakeElevenLabsTts
 
 
@@ -29,7 +29,7 @@ async def test_bridge_turn_with_elevenlabs_tts_streams_audio_frames():
             tts=provider,
         )
         bridge.orchestrator.stream_response = tokens("Hola, ", "esto es una prueba. ", "Adiós.")
-        await bridge._call_orchestrator("x")
+        await run_turn(bridge, "x")
 
         frames = [m for m in await sent(bridge) if isinstance(m, bytes)]
         assert frames, "el cliente no recibió audio"

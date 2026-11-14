@@ -34,6 +34,12 @@ TURN_OVERFLOW_ERROR = "turn_overflow"
 # chat.abort is sent.
 TURN_ABORT_TOMBSTONE_S = 5.0
 
+# How long, after the gateway aborts a run (barge-in, a replacing `send`, cancel, timeout,
+# overflow, a cut push), frames carrying that `runId` are dropped (#285). A runId is never
+# reused, so a long tombstone drops nothing else: it covers frames already in flight when
+# chat.abort went out and a run that keeps streaming for a while after it.
+RUN_ABORT_TOMBSTONE_S = 300.0
+
 
 class TurnInProgress(Exception):
     """Raised when register() is called for a session_key with an active turn."""
@@ -61,6 +67,12 @@ class TurnRegistry:
         self._overflowed: set[str] = set()
         # session_key -> monotonic deadline; see TURN_ABORT_TOMBSTONE_S.
         self._tombstones: dict[str, float] = {}
+        # runId correlation (#285): the `chat.send` ack carries the run id of the turn.
+        self._run_of_req: dict[str, str] = {}  # req_id -> runId
+        # req_id -> deadline: turns aborted before their ack arrived; the ack tombstones it.
+        self._abandoned_reqs: dict[str, float] = {}
+        # runId -> deadline; see RUN_ABORT_TOMBSTONE_S.
+        self._aborted_runs: dict[str, float] = {}
         self._sessions: dict[str, asyncio.Queue] = {}
         # session_key -> max queue depth seen; not cleared by unregister (the bridge
         # reads it after the turn and calls pop_peak) (#219).
@@ -91,6 +103,56 @@ class TurnRegistry:
             self._session_owner.pop(session_key, None)
             self._overflowed.discard(session_key)
         self._req_to_session.pop(req_id, None)
+        self._run_of_req.pop(req_id, None)
+
+    # ── runId (#285) ──────────────────────────────────────────────────────
+
+    def note_run(self, req_id: str, run_id: str) -> None:
+        """The `chat.send` ack of `req_id` names its run. A turn already aborted before its
+        ack arrived gets its run tombstoned right away."""
+        if self._abandoned_reqs.pop(req_id, None) is not None:
+            self.abort_run(run_id)
+        elif req_id in self._req_to_session:
+            self._run_of_req[req_id] = run_id
+
+    def run_of(self, req_id: str) -> str | None:
+        return self._run_of_req.get(req_id)
+
+    def abandon(self, req_id: str) -> None:
+        """The turn of `req_id` is being aborted: from now on the frames of its run are
+        dropped, also when its ack (with the run id) has not arrived yet."""
+        run_id = self._run_of_req.get(req_id)
+        if run_id is not None:
+            self.abort_run(run_id)
+        else:
+            _prune(self._abandoned_reqs)
+            self._abandoned_reqs[req_id] = time.monotonic() + RUN_ABORT_TOMBSTONE_S
+
+    def abort_run(self, run_id: str) -> None:
+        _prune(self._aborted_runs)
+        self._aborted_runs[run_id] = time.monotonic() + RUN_ABORT_TOMBSTONE_S
+
+    def note_abort_result(self, payload: object) -> None:
+        """A `chat.abort` answer (`{ok, aborted, runIds}`) names the runs it aborted."""
+        if not isinstance(payload, dict) or payload.get("aborted") is not True:
+            return
+        run_ids = payload.get("runIds")
+        if isinstance(run_ids, list):
+            for run_id in run_ids:
+                if isinstance(run_id, str):
+                    self.abort_run(run_id)
+
+    def is_run_aborted(self, run_id: object) -> bool:
+        """True while frames of this run (aborted by the gateway) must be dropped."""
+        if not isinstance(run_id, str):
+            return False
+        deadline = self._aborted_runs.get(run_id)
+        if deadline is None:
+            return False
+        if deadline <= time.monotonic():
+            del self._aborted_runs[run_id]
+            return False
+        return True
 
     def depth(self, session_key: str) -> tuple[int, int]:
         """(current qsize or 0, max seen)."""
@@ -162,6 +224,13 @@ class TurnRegistry:
         self._sessions.clear()
         self._req_to_session.clear()
         self._session_owner.clear()
+        self._run_of_req.clear()
+
+
+def _prune(deadlines: dict[str, float]) -> None:
+    now = time.monotonic()
+    for key in [k for k, deadline in deadlines.items() if deadline <= now]:
+        del deadlines[key]
 
 
 class ClientRegistry:

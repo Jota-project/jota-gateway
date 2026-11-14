@@ -7,7 +7,7 @@ import pytest
 
 from fogar_gateway.services.outbound import ClientGone, QueuedSender
 from fogar_gateway.services.pipeline_tracker import PipelineTracker
-from tests.fakes.bridge import GoneSender, RecWS, tokens
+from tests.fakes.bridge import GoneSender, RecWS, push, run_turn, tokens
 
 
 class BytesFailWS(RecWS):
@@ -43,7 +43,7 @@ async def test_turn_messages_leave_through_sender_in_order(make):
     bridge, sender = make(ws)
     bridge.orchestrator.stream_response = tokens("a", "b")
 
-    await bridge._call_orchestrator("hola")
+    await run_turn(bridge, "hola")
     await sender.aclose(1.0)
 
     types = ws.types()
@@ -60,7 +60,7 @@ async def test_turn_end_queued_before_close_is_delivered(make):
     bridge, sender = make(ws)
     bridge.orchestrator.stream_response = tokens("a")
 
-    await bridge._call_orchestrator("hola")
+    await run_turn(bridge, "hola")
     await bridge.close_all()  # enqueues session_end via tracker.close()
     await sender.aclose(1.0)
 
@@ -89,7 +89,7 @@ async def test_broken_sender_stops_pipe_audio_and_turn_still_finishes(make):
     bridge, sender = make(ws, output_mode=("text", "audio"), tts=tts)
     bridge.orchestrator.stream_response = tokens("a")
 
-    await asyncio.wait_for(bridge._call_orchestrator("hola"), timeout=2.0)
+    await run_turn(bridge, "hola", timeout=2.0)
 
     assert pulled >= 1  # pipe_audio really ran
     assert pulled < total  # ...and stopped once the sender broke
@@ -142,11 +142,16 @@ async def test_broken_sender_stops_push_audio_and_push_turn_end_completes(make):
     tts.connect = AsyncMock(return_value=tts_client)
     bridge, sender = make(ws, output_mode=("text", "audio"), tts=tts)
 
-    await bridge.on_push_turn_start("agent:main:test-uuid")
-    await asyncio.wait_for(bridge._push_audio_task, timeout=2.0)
+    sk = "agent:main:test-uuid"
+    await asyncio.wait_for(push(bridge, ("turn_start", sk)), timeout=2.0)
+    for _ in range(100):  # until the audio pipe gave up
+        if not [t for t in asyncio.all_tasks() if t.get_name() == "push_audio"]:
+            break
+        await asyncio.sleep(0.01)
 
-    assert pulled >= 1  # _pipe_push_audio really ran
+    assert pulled >= 1  # the push audio pipe really ran
     assert pulled < total  # ...and stopped once the sender broke
     assert not any(isinstance(m, bytes) for m in ws.sent)
-    await asyncio.wait_for(bridge.on_push_turn_end("agent:main:test-uuid"), timeout=2.0)
+    await asyncio.wait_for(push(bridge, ("turn_end", sk)), timeout=2.0)
+    assert bridge.turns.client_gone  # #271: the push marks the gone client, like a turn
     await sender.aclose(1.0)

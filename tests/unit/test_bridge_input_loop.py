@@ -7,7 +7,23 @@ import pytest
 import fogar_gateway.services.bridge as bridge_module
 from fogar_gateway.services.pipeline_tracker import PipelineTracker
 from fogar_gateway.services.reconnection import ConnectionState
-from tests.fakes.bridge import sent
+from tests.fakes.bridge import blocking, sent, start_turn
+
+
+async def _turns(bridge):
+    """(type, turn_id) of every turn_start/turn_end the client got."""
+    return [
+        (m["type"], m["turn_id"])
+        for m in await sent(bridge)
+        if isinstance(m, dict) and m["type"] in ("turn_start", "turn_end")
+    ]
+
+
+async def _stop(bridge):
+    task = bridge.turns.user_task
+    if task is not None:
+        task.cancel()
+        await asyncio.wait({task})
 
 
 def _audio_transcriber():
@@ -38,6 +54,7 @@ def make_loop_bridge(make_bridge):
         bridge, ws = make_bridge(
             client_id="hab_sito", input_mode=input_mode, tracker=tracker, transcriber=transcriber
         )
+        bridge.orchestrator.stream_response = blocking()  # every turn stays in flight
         return bridge, ws, transcriber
 
     return _make
@@ -71,7 +88,6 @@ async def test_end_message_ignored_in_text_mode(make_loop_bridge):
 
 async def test_send_message_dispatches_to_orchestrator(make_loop_bridge):
     bridge, ws, transcriber = make_loop_bridge(input_mode="audio")
-    bridge._active_turn = None
 
     ws.receive = AsyncMock(
         side_effect=[
@@ -80,16 +96,16 @@ async def test_send_message_dispatches_to_orchestrator(make_loop_bridge):
         ]
     )
     await bridge._client_input_loop()
-    # _active_turn should have been created
-    assert bridge._active_turn is not None
-    bridge._active_turn.cancel()
+    await asyncio.sleep(0.01)
+    # the disconnect that ends the loop also ends the new turn (G-18)
+    assert await _turns(bridge) == [("turn_start", "t-1"), ("turn_end", "t-1")]
+    await _stop(bridge)
 
 
-async def test_plain_text_sets_active_turn(make_loop_bridge):
-    """En modo texto, texto plano debe crear un task y asignarlo a _active_turn."""
+async def test_plain_text_starts_a_turn(make_loop_bridge):
+    """En modo texto, texto plano arranca un turno sin bloquear el bucle de entrada."""
     bridge, ws, _ = make_loop_bridge(input_mode="text")
     bridge.transcriber = None
-    bridge._active_turn = None
 
     ws.receive = AsyncMock(
         side_effect=[
@@ -98,12 +114,12 @@ async def test_plain_text_sets_active_turn(make_loop_bridge):
         ]
     )
 
-    await bridge._client_input_loop()
+    await asyncio.wait_for(bridge._client_input_loop(), 2.0)  # the loop did not block on it
+    await asyncio.sleep(0.01)
 
-    assert bridge._active_turn is not None, (
-        "El texto plano debe asignar _active_turn (actualmente es None — loop bloqueante)"
-    )
-    bridge._active_turn.cancel()
+    # the disconnect that ends the loop also ends the new turn (G-18)
+    assert await _turns(bridge) == [("turn_start", "t-1"), ("turn_end", "t-1")]
+    await _stop(bridge)
 
 
 async def test_receiving_message_updates_last_client_activity(make_loop_bridge):
@@ -123,21 +139,15 @@ async def test_receiving_message_updates_last_client_activity(make_loop_bridge):
     await bridge._client_input_loop()
 
     assert bridge._last_client_activity > 0.0
-    bridge._active_turn.cancel()
+    await _stop(bridge)
 
 
 async def test_plain_text_cancels_previous_active_turn(make_loop_bridge):
     """En modo texto, un segundo mensaje plano debe cancelar el turn en vuelo."""
     bridge, ws, _ = make_loop_bridge(input_mode="text")
     bridge.transcriber = None
-
-    gate = asyncio.Event()
-
-    async def _blocking():
-        await gate.wait()
-
-    first_task = asyncio.create_task(_blocking())
-    bridge._active_turn = first_task
+    first_task = await start_turn(bridge, "primero")
+    await asyncio.sleep(0.01)
 
     ws.receive = AsyncMock(
         side_effect=[
@@ -147,24 +157,20 @@ async def test_plain_text_cancels_previous_active_turn(make_loop_bridge):
     )
 
     await bridge._client_input_loop()
+    await asyncio.sleep(0.01)
 
     assert first_task.cancelled(), "El turn anterior debe cancelarse al llegar texto plano nuevo"
-    assert bridge._active_turn is not None
-    assert bridge._active_turn is not first_task
-    bridge._active_turn.cancel()
+    assert await _turns(bridge) == [
+        ("turn_start", "t-1"), ("turn_end", "t-1"), ("turn_start", "t-2"), ("turn_end", "t-2"),
+    ]  # fmt: skip
+    await _stop(bridge)
 
 
 async def test_cancel_message_cancels_active_turn_without_new_turn(make_loop_bridge):
     """Un {type:'cancel'} debe cancelar el turn en vuelo y NO lanzar uno nuevo."""
     bridge, ws, _ = make_loop_bridge(input_mode="audio")
-
-    gate = asyncio.Event()
-
-    async def _blocking():
-        await gate.wait()
-
-    active = asyncio.create_task(_blocking())
-    bridge._active_turn = active
+    active = await start_turn(bridge)
+    await asyncio.sleep(0.01)
 
     ws.receive = AsyncMock(
         side_effect=[
@@ -176,13 +182,13 @@ async def test_cancel_message_cancels_active_turn_without_new_turn(make_loop_bri
     await bridge._client_input_loop()
 
     assert active.cancelled(), "El turn activo debe cancelarse al recibir {type:'cancel'}"
-    assert bridge._active_turn is None, "No debe crearse un nuevo turn tras cancel"
+    assert bridge.turns.user_task is None, "No debe crearse un nuevo turn tras cancel"
+    assert await _turns(bridge) == [("turn_start", "t-1"), ("turn_end", "t-1")]
 
 
 async def test_cancel_message_with_no_active_turn_is_harmless(make_loop_bridge):
     """Un {type:'cancel'} sin turn activo no debe crashear."""
     bridge, ws, _ = make_loop_bridge(input_mode="audio")
-    bridge._active_turn = None
 
     ws.receive = AsyncMock(
         side_effect=[
@@ -192,20 +198,16 @@ async def test_cancel_message_with_no_active_turn_is_harmless(make_loop_bridge):
     )
 
     await bridge._client_input_loop()  # no debe lanzar
+    assert await sent(bridge) == []
 
 
 async def test_second_send_cancels_first_active_turn(make_loop_bridge):
     """Un segundo {type:'send'} debe cancelar el turn en vuelo antes de crear uno nuevo."""
     bridge, ws, _ = make_loop_bridge(input_mode="audio")
 
-    # Simular un turn en vuelo que bloquea indefinidamente
-    gate = asyncio.Event()
-
-    async def _blocking():
-        await gate.wait()
-
-    first_task = asyncio.create_task(_blocking())
-    bridge._active_turn = first_task
+    # Un turn en vuelo que bloquea indefinidamente
+    first_task = await start_turn(bridge, "primero")
+    await asyncio.sleep(0.01)
 
     ws.receive = AsyncMock(
         side_effect=[
@@ -217,11 +219,14 @@ async def test_second_send_cancels_first_active_turn(make_loop_bridge):
     await bridge._client_input_loop()
 
     assert first_task.cancelled(), (
-        "El primer _active_turn debe cancelarse cuando llega un segundo {type:'send'}"
+        "El primer turno debe cancelarse cuando llega un segundo {type:'send'}"
     )
-    assert bridge._active_turn is not None
-    assert bridge._active_turn is not first_task
-    bridge._active_turn.cancel()
+    assert bridge.turns.user_task is not first_task
+    await asyncio.sleep(0.01)
+    assert await _turns(bridge) == [
+        ("turn_start", "t-1"), ("turn_end", "t-1"), ("turn_start", "t-2"), ("turn_end", "t-2"),
+    ]  # fmt: skip
+    await _stop(bridge)
 
 
 # ── G-20 (#215): validación de mensajes del cliente ─────────────────────────
@@ -249,11 +254,11 @@ async def test_deeply_nested_json_is_treated_as_unparsed_text(make_bridge):
     # json.loads raises RecursionError (not ValueError): the payload stays non-JSON
     # and the session goes on, same as any other unparseable text.
     bridge, ws = make_bridge(input_mode="text")
-    bridge._start_turn = AsyncMock()
+    bridge.turns.start_user_turn = AsyncMock()
     ws.inbox.put_nowait(_text("[" * 100_000))
     ws.inbox.put_nowait({"type": "websocket.disconnect"})
     await asyncio.wait_for(bridge._client_input_loop(), 2.0)
-    bridge._start_turn.assert_awaited_once()
+    bridge.turns.start_user_turn.assert_awaited_once()
     assert bridge._close_reason is None
 
 
@@ -261,11 +266,11 @@ async def test_a_parser_bug_is_not_mistaken_for_plain_text(make_bridge, monkeypa
     # #221: only decoding errors mean "not JSON"; any other failure is a bug and
     # ends the input loop as an error instead of becoming a turn.
     bridge, ws = make_bridge(input_mode="text")
-    bridge._start_turn = AsyncMock()
+    bridge.turns.start_user_turn = AsyncMock()
     monkeypatch.setattr(bridge_module.json, "loads", MagicMock(side_effect=TypeError("x")))
     ws.inbox.put_nowait(_text({"type": "send", "text": "hola"}))
     await asyncio.wait_for(bridge._client_input_loop(), 2.0)
-    bridge._start_turn.assert_not_awaited()
+    bridge.turns.start_user_turn.assert_not_awaited()
     assert bridge._close_reason == "error"
 
 
@@ -274,9 +279,10 @@ async def test_non_string_send_text_never_reaches_the_orchestrator(make_bridge):
     ws.inbox.put_nowait(_text({"type": "send", "text": ["x"]}))
     ws.inbox.put_nowait({"type": "websocket.disconnect"})
     await asyncio.wait_for(bridge._client_input_loop(), 2.0)
-    assert bridge._active_turn is None
+    assert bridge.turns.user_task is None
     await sent(bridge)
     assert len(ws.of("error")) == 1
+    assert ws.of("turn_start") == []
 
 
 async def test_keepalive_and_unknown_dict_messages_stay_silent(make_bridge):

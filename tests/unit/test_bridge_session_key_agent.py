@@ -2,6 +2,7 @@
 
 from fogar_gateway.models.schemas import Handshake
 from fogar_gateway.services.protocol import OrchestratorEvent
+from tests.fakes.bridge import run_turn
 
 
 async def test_session_key_uses_stripped_resolved_agent(make_bridge):
@@ -16,6 +17,6 @@ async def test_session_key_uses_stripped_resolved_agent(make_bridge):
         yield OrchestratorEvent(type="token", content="a")
 
     bridge.orchestrator.stream_response = s
-    await bridge._call_orchestrator("x")
+    await run_turn(bridge, "x")
 
     assert captured["sk"] == "agent:main:u"

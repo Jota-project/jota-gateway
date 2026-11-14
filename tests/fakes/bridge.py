@@ -96,6 +96,40 @@ async def sent(bridge) -> list:
     return bridge.client_ws.sent
 
 
+async def start_turn(bridge, text: str = "x") -> asyncio.Task:
+    """Start a user turn as a `send` does (replacing the one in flight); return its task."""
+    await bridge.turns.start_user_turn(text)
+    task = bridge.turns.user_task
+    assert task is not None, "the turn did not start"
+    return task
+
+
+async def run_turn(bridge, text: str = "x", timeout: float = 5.0) -> None:
+    """Run one user turn to its end (its turn_end included)."""
+    task = await start_turn(bridge, text)
+    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if not done:
+        task.cancel()
+        raise AssertionError(f"the turn did not end in {timeout}s")
+
+
+async def push(bridge, *events) -> None:
+    """Feed OpenClaw push events `(kind, arg)` through the bridge's push worker and wait
+    until it handled them all (what FrameDispatcher does with `enqueue_push`)."""
+    for kind, arg in events:
+        bridge.enqueue_push(kind, arg)
+    await bridge.push_idle()
+
+
+def push_reply(*deltas: str, sk: str = "sk", end: bool = True) -> list[tuple[str, object]]:
+    """The events of a push reply: agent start, one `chat` per delta and (if `end`) agent end."""
+    events: list[tuple[str, object]] = [("turn_start", sk)]
+    events += [("chat", {"sessionKey": sk, "deltaText": d}) for d in deltas]
+    if end:
+        events.append(("turn_end", sk))
+    return events
+
+
 def tokens(*tokens):
     """An orchestrator `stream_response` that yields these tokens and ends."""
 

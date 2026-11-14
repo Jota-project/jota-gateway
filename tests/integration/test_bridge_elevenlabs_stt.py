@@ -81,7 +81,7 @@ async def test_barge_in_on_partial_still_works():
         bridge, ws, runner = await _session(fake)
         started = asyncio.Event()
         bridge.orchestrator.stream_response = blocking(started)
-        await bridge._start_turn("x")
+        await bridge.turns.start_user_turn("x")
         await asyncio.wait_for(started.wait(), 2)
         for _ in range(5):
             await ws.inbox.put({"bytes": _speech()})

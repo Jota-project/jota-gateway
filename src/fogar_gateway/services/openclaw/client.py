@@ -687,9 +687,10 @@ class OpenClawClient:
     async def abort(self, session_key: str, timeout: float = 1.0) -> None:
         """Abort the run in flight on `session_key` and swallow its own `aborted`.
 
-        Frames are routed by session_key, not runId (G-14): holding the key until the
-        terminal `chat` arrives keeps it from closing the next turn empty. No-op if a
-        normal turn owns the key. Never raises an Exception.
+        The run is not known here (a push): holding the key until the terminal `chat`
+        arrives keeps it from closing the next turn empty, and the answer's `runIds` are
+        tombstoned so later frames of that run are dropped (#285). No-op if a normal turn
+        owns the key. Never raises an Exception.
         """
         if not self._ws:
             return
@@ -702,6 +703,7 @@ class OpenClawClient:
         # ok:false): catch it by id, as ping() does.
         res: asyncio.Future = asyncio.get_running_loop().create_future()
         self._health_futures[req_id] = res
+        payload: object = None
         try:
             await self._ws.send(json.dumps(frames.chat_abort(req_id, session_key)))
             async with asyncio.timeout(timeout):
@@ -719,6 +721,9 @@ class OpenClawClient:
         finally:
             self._health_futures.pop(req_id, None)
             self._turn_registry.unregister(session_key, req_id)
+            # After swallowing its `aborted` (a tombstone first would drop it): the runs it
+            # names are tombstoned for whatever of them is still in flight.
+            self._turn_registry.note_abort_result(payload)
 
     async def stream_response(
         self,
@@ -764,6 +769,16 @@ class OpenClawClient:
                     yield OrchestratorEvent(type="error", content="turn_timeout")
                     break
                 if kind == "chat":
+                    run_id, own_run = data.get("runId"), self._turn_registry.run_of(req_id)
+                    if (
+                        own_run is not None
+                        and run_id is not None
+                        and run_id != own_run
+                        and data.get("state") in _TERMINAL
+                    ):
+                        # #285: the end of another run on this session never ends this turn.
+                        logger.debug("terminal chat of another run ignored")
+                        continue
                     # #241: OpenClaw 2026.10.5 sends the full text only in `final`
                     # (no deltaText); emit just what the deltas did not cover.
                     delta = text_tracker.feed(data)
@@ -812,6 +827,10 @@ class OpenClawClient:
                     yield OrchestratorEvent(type="error", content=str(data))
                     break
         finally:
+            if _sent and not _finished:
+                # #285: whatever of this run is still in flight never reaches the next turn
+                # nor comes back as a push (also if its ack has not arrived yet).
+                self._turn_registry.abandon(req_id)
             self._turn_registry.unregister(session_key, req_id)
             if _sent and not _finished and self._ws:
                 try:

@@ -8,7 +8,11 @@ from fogar_gateway.models.schemas import ClientConfig
 from fogar_gateway.services.openclaw.dispatcher import FrameDispatcher
 from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
 from fogar_gateway.services.reconnection import ConnectionState, ServiceStatus
-from tests.fakes.bridge import sent
+from tests.fakes.bridge import push, sent
+
+
+def push_open(bridge) -> bool:
+    return bridge.turns.snapshot(0.0)["turn"]["kind"] == "push"
 
 
 def make_dispatcher():
@@ -30,8 +34,8 @@ def _connected_status() -> ServiceStatus:
 
 @pytest.fixture
 def make_real_bridge(make_bridge):
-    """A real FogarBridge (not AsyncMock) so dispatcher tests can exercise
-    _push_allowed() gating (issue #109)."""
+    """A real FogarBridge (not AsyncMock) so dispatcher tests can exercise the push
+    gating (issue #109)."""
 
     def _make(push_enabled=True, tool_calls_enabled=False):
         config = ClientConfig(push_enabled=push_enabled, tool_calls_enabled=tool_calls_enabled)
@@ -114,7 +118,7 @@ async def test_chat_event_no_active_turn_routes_to_client_registry():
     }
     frame = {"type": "event", "event": "chat", "payload": payload}
     await dispatcher.dispatch(frame)
-    bridge.enqueue_push.assert_called_once_with("chat", payload)
+    bridge.enqueue_push.assert_called_once_with("chat", payload, run_id="r1")
 
 
 @pytest.mark.asyncio
@@ -137,7 +141,7 @@ async def test_agent_lifecycle_start_calls_on_push_turn_start():
     }
     frame = {"type": "event", "event": "agent", "payload": payload}
     await dispatcher.dispatch(frame)
-    bridge.enqueue_push.assert_called_once_with("turn_start", "agent:main:client-a")
+    bridge.enqueue_push.assert_called_once_with("turn_start", "agent:main:client-a", run_id="r1")
 
 
 @pytest.mark.asyncio
@@ -153,7 +157,7 @@ async def test_agent_lifecycle_end_calls_on_push_turn_end():
     }
     frame = {"type": "event", "event": "agent", "payload": payload}
     await dispatcher.dispatch(frame)
-    bridge.enqueue_push.assert_called_once_with("turn_end", "agent:main:client-a")
+    bridge.enqueue_push.assert_called_once_with("turn_end", "agent:main:client-a", run_id="r1")
 
 
 @pytest.mark.asyncio
@@ -195,7 +199,7 @@ async def test_agent_lifecycle_end_always_forwarded_regardless_of_normal_turn():
     }
     frame = {"type": "event", "event": "agent", "payload": payload}
     await dispatcher.dispatch(frame)
-    bridge.enqueue_push.assert_called_once_with("turn_end", "agent:main:client-a")
+    bridge.enqueue_push.assert_called_once_with("turn_end", "agent:main:client-a", run_id="r1")
 
 
 @pytest.mark.asyncio
@@ -273,7 +277,7 @@ async def test_session_tool_no_active_turn_routes_to_client_registry():
     }
     frame = {"type": "event", "event": "session.tool", "payload": payload}
     await dispatcher.dispatch(frame)
-    bridge.enqueue_push.assert_called_once_with("tool", payload["data"])
+    bridge.enqueue_push.assert_called_once_with("tool", payload["data"], run_id=None)
 
 
 @pytest.mark.asyncio
@@ -376,7 +380,7 @@ async def test_dispatcher_full_push_lifecycle_disabled_client_receives_nothing(m
     await bridge.push_idle()
 
     assert await sent(bridge) == []
-    assert bridge._push_turn_open is False
+    assert not push_open(bridge)
     await bridge.close_all()
 
 
@@ -453,7 +457,7 @@ async def test_dispatcher_agent_lifecycle_suppressed_full_sequence_with_active_t
     assert q.empty()
 
     await bridge.push_idle()
-    assert bridge._push_turn_open is False
+    assert not push_open(bridge)
     assert await sent(bridge) == []
     await bridge.close_all()
 
@@ -478,8 +482,9 @@ async def test_agent_lifecycle_end_closes_push_turn_opened_before_normal_turn(ma
         }
     )
     await bridge.push_idle()
-    assert bridge._push_turn_open is True
-    push_turn_id = bridge._push_turn_id
+    assert push_open(bridge)
+    (push_turn_start,) = [m for m in await sent(bridge) if m["type"] == "turn_start"]
+    push_turn_id = push_turn_start["turn_id"]
 
     # A normal turn now registers for the same session_key while the push
     # turn is still open (e.g. the user replies mid-push).
@@ -495,26 +500,36 @@ async def test_agent_lifecycle_end_closes_push_turn_opened_before_normal_turn(ma
     )
 
     await bridge.push_idle()
-    assert bridge._push_turn_open is False
+    assert not push_open(bridge)
     assert {"type": "turn_end", "turn_id": push_turn_id} in await sent(bridge)
     await bridge.close_all()
 
 
 @pytest.mark.asyncio
-async def test_dispatch_agent_end_does_not_wait_for_slow_tts_drain(make_real_bridge, monkeypatch):
+async def test_dispatch_agent_end_does_not_wait_for_slow_tts_drain(make_bridge, monkeypatch):
     """#130 S3a — el motivo de todo el cambio: un push cuyo audio TTS tarda en
     drenar no debe retener a dispatch() (y por tanto a _listen y al resto de
     sesiones multiplexadas)."""
     # Pinned so the proof does not depend on the default drain timeout.
     monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 30)
     dispatcher, _, client_reg = make_dispatcher()
-    bridge, _ = make_real_bridge(push_enabled=True)
+    audio_cancelled = asyncio.Event()
+
+    async def stuck_audio():
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            audio_cancelled.set()
+            raise
+        yield b""  # pragma: no cover
+
+    stream = AsyncMock()
+    stream.get_audio_stream = stuck_audio
+    tts = AsyncMock()
+    tts.connect = AsyncMock(return_value=stream)
+    bridge, _ = make_bridge(client_id="hab_sito", output_mode=("audio", "text"), tts=tts)
     client_reg.register("hab_sito", bridge)
-    stuck = asyncio.create_task(asyncio.sleep(3600))
-    bridge._push_tts = AsyncMock()
-    bridge._push_audio_task = stuck
-    bridge._push_turn_open = True
-    bridge._push_turn_id = "t-1"
+    await push(bridge, ("turn_start", "agent:main:hab_sito"))
 
     await asyncio.wait_for(
         dispatcher.dispatch(
@@ -528,12 +543,12 @@ async def test_dispatch_agent_end_does_not_wait_for_slow_tts_drain(make_real_bri
     )
     # What is proven: dispatch() returned within the 0.5s wait_for although the
     # drain it enqueued would take PUSH_TTS_DRAIN_TIMEOUT_S (30s) — dispatch did
-    # not wait for the handler. (_push_pending == 1 only shows the event is queued.)
-    assert bridge._push_pending == 1
+    # not wait for the handler. (pending == 1 only shows the event is queued.)
+    assert bridge.turns.snapshot(0.0)["push_backlog"]["pending"] == 1
 
     # Cleanup: close_all() must not hang on the stuck audio task.
     await asyncio.wait_for(bridge.close_all(), timeout=2.0)
-    assert stuck.cancelled()
+    assert audio_cancelled.is_set()
 
 
 @pytest.mark.asyncio
@@ -555,7 +570,7 @@ async def test_dispatch_keeps_the_112_decision_synchronous_in_listen(make_real_b
     turn_reg.register("req-1", "agent:main:hab_sito")  # registered after the frame
     await bridge.push_idle()
 
-    assert bridge._push_turn_open is True
+    assert push_open(bridge)
     await bridge.close_all()
 
 
@@ -605,3 +620,107 @@ async def test_known_events_are_not_reported_as_unknown(caplog):
         await dispatcher.dispatch({"type": "res", "id": "x", "payload": {}})
 
     assert [r for r in caplog.records if r.levelno >= logging.INFO] == []
+
+
+# --- #285: frames of a run the gateway aborted are dropped by runId ----------
+
+SK = "agent:main:client-a"
+
+
+def _ack(req_id, run_id):
+    return {"type": "res", "id": req_id, "ok": True, "payload": {"runId": run_id, "status": "started"}}
+
+
+def _chat(run_id, state="delta", text="late"):
+    payload = {"sessionKey": SK, "runId": run_id, "state": state, "deltaText": text}
+    return {"type": "event", "event": "chat", "payload": payload}
+
+
+def _agent(run_id, phase):
+    payload = {"sessionKey": SK, "runId": run_id, "data": {"phase": phase}}
+    return {"type": "event", "event": "agent", "payload": payload}
+
+
+def _tool(run_id):
+    data = {"phase": "start", "name": "exec", "toolCallId": "c1", "args": {}}
+    return {"type": "event", "event": "session.tool", "payload": {"sessionKey": SK, "runId": run_id, "data": data}}
+
+
+async def test_ack_names_the_run_of_the_turn():
+    dispatcher, turn_reg, _ = make_dispatcher()
+    turn_reg.register("req-1", SK)
+    await dispatcher.dispatch(_ack("req-1", "run-1"))
+    assert turn_reg.run_of("req-1") == "run-1"
+    turn_reg.unregister(SK, "req-1")
+    assert turn_reg.run_of("req-1") is None
+
+
+async def test_frames_of_an_abandoned_turn_never_reach_the_next_turn_nor_a_push():
+    dispatcher, turn_reg, client_reg = make_dispatcher()
+    bridge = MagicMock()
+    client_reg.register("client-a", bridge)
+    turn_reg.register("req-1", SK)
+    await dispatcher.dispatch(_ack("req-1", "run-1"))
+    turn_reg.abandon("req-1")  # barge-in: the turn is aborted
+    turn_reg.unregister(SK, "req-1")
+    q = turn_reg.register("req-2", SK)  # the next turn
+    await dispatcher.dispatch(_ack("req-2", "run-2"))
+
+    for frame in (_agent("run-1", "start"), _chat("run-1"), _tool("run-1"), _chat("run-1", "final"),
+                  _agent("run-1", "end")):  # fmt: skip
+        await dispatcher.dispatch(frame)
+    assert q.empty()
+    turn_reg.unregister(SK, "req-2")
+    for frame in (_agent("run-1", "start"), _chat("run-1"), _agent("run-1", "end")):
+        await dispatcher.dispatch(frame)
+    bridge.enqueue_push.assert_not_called()
+
+    await dispatcher.dispatch(_agent("run-3", "start"))  # another run still gets through
+    bridge.enqueue_push.assert_called_once_with("turn_start", SK, run_id="run-3")
+
+
+async def test_a_turn_aborted_before_its_ack_gets_its_run_tombstoned_by_the_late_ack():
+    dispatcher, turn_reg, client_reg = make_dispatcher()
+    bridge = MagicMock()
+    client_reg.register("client-a", bridge)
+    turn_reg.register("req-1", SK)
+    turn_reg.abandon("req-1")
+    turn_reg.unregister(SK, "req-1")
+    await dispatcher.dispatch(_ack("req-1", "run-1"))  # the ack arrives after the abort
+    await dispatcher.dispatch(_chat("run-1"))
+    bridge.enqueue_push.assert_not_called()
+
+
+async def test_chat_abort_answer_tombstones_the_runs_it_aborted():
+    dispatcher, turn_reg, client_reg = make_dispatcher()
+    bridge = MagicMock()
+    client_reg.register("client-a", bridge)
+    res = {"type": "res", "id": "abort-1", "ok": True, "payload": {"ok": True, "aborted": True, "runIds": ["run-9"]}}
+    await dispatcher.dispatch(res)
+    await dispatcher.dispatch(_agent("run-9", "start"))
+    bridge.enqueue_push.assert_not_called()
+    assert turn_reg.is_run_aborted("run-9")
+    assert not turn_reg.is_run_aborted("run-8")
+    assert not turn_reg.is_run_aborted(None)
+
+
+async def test_run_tombstone_expires(monkeypatch):
+    import fogar_gateway.services.openclaw.registry as registry
+
+    turn_reg = TurnRegistry()
+    now = [1000.0]
+    monkeypatch.setattr(registry.time, "monotonic", lambda: now[0])
+    turn_reg.abort_run("run-1")
+    now[0] += registry.RUN_ABORT_TOMBSTONE_S - 1
+    assert turn_reg.is_run_aborted("run-1")
+    now[0] += 2
+    assert not turn_reg.is_run_aborted("run-1")
+
+
+async def test_agent_error_phase_is_forwarded_as_turn_error():
+    """#300: a failed push run ends with `error`; the bridge closes it with reason error."""
+    dispatcher, _, client_reg = make_dispatcher()
+    bridge = MagicMock()
+    client_reg.register("client-a", bridge)
+    await dispatcher.dispatch(_agent("run-1", "error"))
+    bridge.enqueue_push.assert_called_once_with("turn_error", SK, run_id="run-1")

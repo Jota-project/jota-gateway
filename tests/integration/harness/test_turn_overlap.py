@@ -1,10 +1,9 @@
 """Turnos que se pisan, vistos desde el cliente (arnés e2e, M7a).
 
-Bugs conocidos de la auditoría, para M10 (TurnController) salvo #202, que arregló 7e: el
-gateway enruta los frames de OpenClaw por `sessionKey` y no por `runId`, y no garantiza un solo
-turno abierto por sesión.
-Cada test asierta el comportamiento correcto según docs/client-protocol.md (xfail estricto:
-empezará a pasar cuando se arregle).
+Bugs de la auditoría: #202 (arreglado en 7e) y G-14/G-15 (#285, #286, arreglados en M19 con
+`TurnController`): los frames de un run abortado se descartan por su `runId`, y un push sin
+progreso se cierra como cualquier otro turno. Cada test asierta el comportamiento correcto
+según docs/client-protocol.md.
 
 Límite de realismo de los dos tests tras `chat.abort`: con OpenClaw 2026.10.5 solo se observó
 `chat aborted` + `agent end` tras el abort. El falso reproduce frames que ya iban en camino
@@ -14,13 +13,11 @@ Barrera de orden: el socket de OpenClaw se procesa en orden y los push pasan por
 worker FIFO, así que un push "fin" posterior llega al cliente detrás de cualquier turno fantasma.
 """
 
-import pytest
 
 from fogar_gateway.core.config import settings
 from tests.integration.harness.conftest import assert_turns_paired, of_type, turn_ended
 
 AUDIO_FRAME = b"\x00" * 3200  # 50 ms de PCM Float32 a 16 kHz
-M10 = "se arregla en M10 (TurnController)"
 
 
 def tokens(messages, turn_id):
@@ -56,12 +53,6 @@ async def _barge_in(harness, text):
     return client
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="G-14: la respuesta tardía (ya en camino al abortar) del turno interrumpido cierra "
-    f"el turno nuevo; {M10}",
-)
 async def test_late_reply_of_an_interrupted_turn_does_not_leak_into_the_next(harness):
     client = await _barge_in(harness, "wait")
     await client.send({"type": "send", "text": "wait again"})
@@ -79,12 +70,6 @@ async def test_late_reply_of_an_interrupted_turn_does_not_leak_into_the_next(har
     assert_turns_paired(msgs)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="G-14/G-15: el turno interrumpido (frames ya en camino al abortar) reaparece como "
-    f"un push fantasma; {M10}",
-)
 async def test_an_interrupted_turn_does_not_come_back_as_a_push(harness):
     client = await _barge_in(harness, "wait")
     await harness.openclaw.finish_next()  # el run interrumpido termina igualmente
@@ -97,11 +82,6 @@ async def test_an_interrupted_turn_does_not_come_back_as_a_push(harness):
     assert_turns_paired(msgs)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=f"G-15: un push sin `end` nunca recibe su turn_end; {M10}",
-)
 async def test_a_silent_push_is_closed_like_any_other_turn(harness, monkeypatch):
     monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.3)
     client = await harness.connect()
@@ -110,12 +90,15 @@ async def test_a_silent_push_is_closed_like_any_other_turn(harness, monkeypatch)
     msgs = await client.collect(timeout=1.0)
     (first,) = of_type(msgs, "turn_start")
     assert of_type(msgs, "turn_end"), f"G-15: {first['turn_id']} sigue abierto sin progreso"
+    # Mismo trato que un turno normal colgado (§13): TURN_ERROR turn_timeout antes del fin.
+    (error,) = of_type(msgs, "error")
+    assert (error["message"], error["turn_id"]) == ("turn_timeout", first["turn_id"])
 
     await harness.push("segundo aviso")
-    msgs = await client.collect(lambda m: len(of_type(m, "turn_start")) == 2)
+    msgs = await client.collect(lambda m: len(of_type(m, "turn_start")) == 2 and turn_ended(m))
     second = of_type(msgs, "turn_start")[1]
     assert tokens(msgs, second["turn_id"]) == "segundo aviso"
-    assert_turns_paired(await client.collect(turn_ended))
+    assert_turns_paired(msgs)
 
 
 async def test_a_push_and_a_normal_turn_never_overlap(harness):
@@ -124,7 +107,7 @@ async def test_a_push_and_a_normal_turn_never_overlap(harness):
     await harness.push("tienes una reunión", end=False)
     await client.collect(lambda m: bool(of_type(m, "token")))
     await client.send({"type": "send", "text": "hola"})
-    try:  # barrera: el turno normal arranca; si M10 lo difiere, no llega nada y se sigue
+    try:  # barrera: el turno normal arranca; si se difiriera, no llegaría nada y se sigue
         await client.collect(lambda m: len(of_type(m, "turn_start")) == 2, timeout=5.0)
     except AssertionError:
         pass

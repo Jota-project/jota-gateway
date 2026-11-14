@@ -510,7 +510,31 @@ Full notes in the team's Obsidian vault (observations of 2026-10 on OpenClaw and
 `chat` `final` of its `sessionKey` and its queue receives every `chat` event of that key,
 regardless of `runId`. With a push in flight, a user `send` therefore receives the push's
 deltas and is closed by whichever `final` comes first, and the rest of the other run is
-lost. Fix belongs to M9 (correlate by `runId`; issue #202).
+lost. Fix belongs to M9 (correlate by `runId`; issue #202). Since 7e a `send` aborts the
+open push before its `chat.send`; since M19 the gateway correlates by `runId` (next section).
+
+### How the gateway uses `runId` (2026-11-14, M19, issues #285/#286)
+
+No server change; this records how the gateway reacts. Frames are still routed by
+`sessionKey` (a normal turn owns its key in `TurnRegistry`), and `runId` filters on top:
+
+- **The ack names the run.** The `res ok` of `chat.send` (`payload {runId, status}`) is
+  recorded for its turn (`TurnRegistry.note_run`). A terminal `chat` (`final`, `aborted`,
+  `error`) of **another** run on the same key does not end the turn; its own does.
+- **Aborted runs are tombstoned** (`RUN_ABORT_TOMBSTONE_S`, 300 s; run ids are never reused)
+  on every abort path: a turn that ends without its terminal `chat` (barge-in, a replacing
+  `send`, `cancel`, the client gone, `turn_timeout`, `turn_overflow`) tombstones its run;
+  if its ack had not arrived yet, the late ack does it. The answer to `chat.abort`
+  (`{ok, aborted: true, runIds}`) tombstones the runs it names, and a push the gateway cuts
+  or times out has the `runId` of its `agent start` tombstoned too (also on another agent's
+  session key, where it is not aborted). `FrameDispatcher` drops every `chat`, `agent` and
+  `session.tool` frame of a tombstoned run before routing it, so the late reply of an
+  interrupted turn neither closes the next turn nor comes back as a push (G-14); the push
+  worker drops what was already queued for it.
+- **A push has the same budget as a normal turn:** `TURN_TIMEOUT_S` without any event of it
+  (idle-reset) closes it with `turn_timeout` and, on our own session key, `chat.abort` (G-15).
+- `agent` `phase: "error"` reaches the bridge as its own push event (`turn_error`), so the
+  push ends with reason `error` instead of `done` (internal; the wire is unchanged).
 
 ---
 
@@ -752,6 +776,8 @@ says so.
   identity file is locked (`flock`) and copied by `migrate`. Signature verified live against a
   2026.10.5 on loopback (hello-ok read/write/admin, `shared_token`/`not_required`).
 
+- **2026-11-14**: added "How the gateway uses `runId`" (M19, issues #285/#286): `runId`
+  correlation of turns, tombstones for every aborted run, push turn budget. No server change.
 - **2026-11-06**: added "Connect deadline and `chat.send` session keys" (server 2026.11.1, read in
   the package source): the handshake deadline is now 30 s and `chat.send` rejects session keys
   that do not identify an agent; no gateway change needed.

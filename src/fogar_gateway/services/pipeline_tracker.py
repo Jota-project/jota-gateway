@@ -107,9 +107,16 @@ class PipelineTracker:
             self._registry_closed = True
             self._registry.close(self.session_id, status)
 
-    def _find_last(self, stage: str, turn: int | None = None) -> PipelineEvent | None:
+    def _find_last(
+        self, stage: str, turn: int | None = None, origin_of: PipelineEvent | None = None
+    ) -> PipelineEvent | None:
+        """Last `stage` event (of `turn`; with `origin_of`, of the same origin as it)."""
         for e in reversed(self.events):
-            if e.stage == stage and (turn is None or e.turn == turn):
+            if (
+                e.stage == stage
+                and (turn is None or e.turn == turn)
+                and (origin_of is None or e.meta.get("origin") == origin_of.meta.get("origin"))
+            ):
                 return e
         return None
 
@@ -126,7 +133,9 @@ class PipelineTracker:
         first_chunk = self._find_last("tts_first_chunk")
         if first_chunk is None:
             return None
-        start = self._find_last("tts_start", turn=first_chunk.turn)
+        # A push's TTS events carry origin="push" and share the counter of the last turn
+        # (#271): pair each first chunk with the start of its own TTS.
+        start = self._find_last("tts_start", turn=first_chunk.turn, origin_of=first_chunk)
         if start is None:
             return None
         return round(first_chunk.ts_ms - start.ts_ms, 1)
@@ -142,7 +151,8 @@ class PipelineTracker:
         for e in self.events:
             if e.stage == "transcription_final":
                 finals[e.turn + 1] = e
-            elif e.stage == "tts_done":
+            elif e.stage == "tts_done" and "origin" not in e.meta:
+                # A push's tts_done (origin="push") answers no utterance of the user.
                 dones[e.turn] = e
         return {
             turn: round(done.ts_ms - finals[turn].ts_ms, 1)
@@ -151,7 +161,10 @@ class PipelineTracker:
         }
 
     def turn_e2e_ms(self) -> float | None:
-        done = self._find_last("tts_done")
+        done = next(
+            (e for e in reversed(self.events) if e.stage == "tts_done" and "origin" not in e.meta),
+            None,
+        )
         if done is None:
             return None
         return self.turn_e2e_latencies().get(done.turn)

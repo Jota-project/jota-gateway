@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from fogar_gateway.models.schemas import ClientConfig, Handshake
+from fogar_gateway.models.schemas import ClientConfig
 from fogar_gateway.services.reconnection import ConnectionState
 
 
@@ -78,11 +78,10 @@ async def test_idle_watchdog_closer_failure_is_logged(bridge, caplog):
     assert not any("kaboom" in m for m in msgs)
 
 
-async def test_push_audio_failure_is_logged(bridge, caplog):
-    # #221: the push audio task can be dropped (_drop_push_tts) without anyone
+async def test_push_audio_failure_is_logged(make_bridge, caplog):
+    # #221: the push audio task can be dropped (TurnTts.drop) without anyone
     # retrieving its outcome; its failure must still be logged.
-    bridge.config = ClientConfig(push_enabled=True)
-    bridge.handshake = Handshake(client_key="k", input_mode="text", output_mode=["audio"])
+    bridge, _ = make_bridge(config=ClientConfig(push_enabled=True), output_mode=("audio",))
     tts = AsyncMock()
 
     async def broken_stream():
@@ -92,7 +91,8 @@ async def test_push_audio_failure_is_logged(bridge, caplog):
     tts.get_audio_stream = broken_stream
     bridge.tts.connect = AsyncMock(return_value=tts)
     with caplog.at_level(logging.WARNING, logger="fogar_gateway.services.bridge"):
-        await bridge.on_push_turn_start("sk")
+        bridge.enqueue_push("turn_start", "sk")
+        await bridge.push_idle()
         await _settle()
     msgs = [r.getMessage() for r in caplog.records]
     assert any("RuntimeError" in m for m in msgs)

@@ -10,8 +10,10 @@ import pytest
 import fogar_gateway.services.bridge as bridge_module
 from fogar_gateway.models.schemas import ClientConfig
 from fogar_gateway.services.pipeline_tracker import PipelineTracker
+from fogar_gateway.services.protocol import OrchestratorEvent
 from fogar_gateway.services.reconnection import ConnectionState
-from tests.fakes.bridge import sent
+from fogar_gateway.services.teardown import Teardown
+from tests.fakes.bridge import push, sent
 
 _CONFIG = ClientConfig(silence_timeout_s=1, max_silence_turns=3)
 
@@ -282,9 +284,7 @@ async def test_idle_watchdog_does_not_close_during_active_turn(make_wd_bridge, m
     bridge, ws, _ = make_wd_bridge()
     bridge._last_client_activity = time.monotonic() - 10  # idle-timeout would fire
 
-    active_turn = MagicMock()
-    active_turn.done.return_value = False
-    bridge._active_turn = active_turn
+    bridge.turns.in_flight = lambda: True  # the orchestrator keeps streaming
 
     close_called = []
 
@@ -323,9 +323,8 @@ async def test_idle_watchdog_closes_once_active_turn_finishes_and_idle_elapses(m
     bridge, ws, _ = make_wd_bridge()
     bridge._last_client_activity = time.monotonic() - 10  # stale from the start
 
-    active_turn = MagicMock()
-    active_turn.done.return_value = False
-    bridge._active_turn = active_turn
+    in_flight = {"v": True}
+    bridge.turns.in_flight = lambda: in_flight["v"]
 
     close_called = []
 
@@ -340,7 +339,7 @@ async def test_idle_watchdog_closes_once_active_turn_finishes_and_idle_elapses(m
         ticks["n"] += 1
         if ticks["n"] == 1:
             assert not close_called, "must not close on the first tick — turn still active"
-            active_turn.done.return_value = True  # turn finishes between checks
+            in_flight["v"] = False  # turn finishes between checks
 
     with patch("fogar_gateway.services.bridge._sleep", new=_controlled_sleep):
         await asyncio.wait_for(bridge._idle_watchdog(), timeout=2.0)
@@ -360,8 +359,7 @@ async def test_idle_watchdog_does_not_close_while_push_within_grace_period(make_
     bridge, ws, _ = make_wd_bridge()
     bridge._last_client_activity = time.monotonic() - 10  # idle-timeout would fire
 
-    bridge._push_turn_open = True
-    bridge._push_turn_opened_at = time.monotonic()  # just opened
+    await push(bridge, ("turn_start", "sk"))  # just opened, no end
 
     close_called = []
 
@@ -380,15 +378,16 @@ async def test_idle_watchdog_does_not_close_while_push_within_grace_period(make_
         await task
     except asyncio.CancelledError:
         pass
+    await bridge.turns.close(Teardown("test"), 1.0)
 
 
 @pytest.mark.asyncio
 async def test_idle_watchdog_closes_when_push_exceeds_grace_period(make_wd_bridge, monkeypatch):
     """Regression test for the orphaned-push leak: a push turn left open
     (agent-start with no matching agent-end) past TURN_TIMEOUT_S must no
-    longer block the idle watchdog from calling close_all() — without the
-    fix, `_push_turn_open` alone gates the close forever and this test
-    fails because close_all() is never called."""
+    longer block the idle watchdog from calling close_all(). Since #286 the push
+    closes itself at TURN_TIMEOUT_S without progress; the watchdog's bound is the
+    safety net for a wedged worker (here the worker cannot run its timeout)."""
     from fogar_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
@@ -396,8 +395,11 @@ async def test_idle_watchdog_closes_when_push_exceeds_grace_period(make_wd_bridg
     bridge, ws, _ = make_wd_bridge()
     bridge._last_client_activity = time.monotonic() - 10  # idle-timeout would fire
 
-    bridge._push_turn_open = True
-    bridge._push_turn_opened_at = time.monotonic() - 5  # opened long ago, past grace period
+    await push(bridge, ("turn_start", "sk"))
+    (worker,) = [t for t in bridge.tasks if t.get_name() == "push_worker"]
+    worker.cancel()  # wedged: nobody closes the push on its budget
+    await asyncio.wait({worker})
+    await asyncio.sleep(0.1)  # past TURN_TIMEOUT_S without progress
 
     close_called = []
 
@@ -411,6 +413,19 @@ async def test_idle_watchdog_closes_when_push_exceeds_grace_period(make_wd_bridg
     assert close_called, "watchdog must close once the orphaned push exceeds TURN_TIMEOUT_S"
 
 
+async def _wedged_backlog(bridge):
+    """A push event queued that the worker cannot handle yet: a turn being replaced holds
+    the turn lock, so only the backlog keeps the session busy."""
+    await bridge.turns._lock.acquire()
+    bridge.enqueue_push("turn_start", "sk")
+    await asyncio.sleep(0.01)
+
+
+async def _release(bridge):
+    bridge.turns._lock.release()
+    await bridge.turns.close(Teardown("test"), 1.0)
+
+
 @pytest.mark.asyncio
 async def test_idle_watchdog_does_not_close_while_push_backlog_within_grace(make_wd_bridge, monkeypatch):
     """#130 S3a: a push event queued but not yet processed is activity in flight."""
@@ -421,8 +436,7 @@ async def test_idle_watchdog_does_not_close_while_push_backlog_within_grace(make
     bridge, ws, _ = make_wd_bridge()
     bridge._last_client_activity = time.monotonic() - 10
 
-    bridge._push_pending = 1
-    bridge._push_pending_since = time.monotonic()
+    await _wedged_backlog(bridge)
 
     close_called = []
 
@@ -441,6 +455,7 @@ async def test_idle_watchdog_does_not_close_while_push_backlog_within_grace(make
         await task
     except asyncio.CancelledError:
         pass
+    await _release(bridge)
 
 
 @pytest.mark.asyncio
@@ -454,8 +469,8 @@ async def test_idle_watchdog_closes_when_push_backlog_exceeds_grace(make_wd_brid
     bridge, ws, _ = make_wd_bridge()
     bridge._last_client_activity = time.monotonic() - 10
 
-    bridge._push_pending = 1
-    bridge._push_pending_since = time.monotonic() - 5
+    await _wedged_backlog(bridge)
+    await asyncio.sleep(0.1)  # the backlog is older than TURN_TIMEOUT_S
 
     close_called = []
 
@@ -467,6 +482,7 @@ async def test_idle_watchdog_closes_when_push_backlog_exceeds_grace(make_wd_brid
     await asyncio.wait_for(bridge._idle_watchdog(), timeout=2.0)
 
     assert close_called
+    await _release(bridge)
 
 
 @pytest.mark.asyncio
@@ -608,11 +624,13 @@ async def test_watchdog_does_not_close_during_a_20s_turn_with_2s_timeout_3_strik
 
     bridge.notify_service_status = spy
 
-    async def turn():
+    async def turn(*a, **k):
         while clock.t < start + 20:
             await asyncio.sleep(0)
+        yield OrchestratorEvent(type="token", content="x")
 
-    bridge._active_turn = asyncio.create_task(turn())
+    bridge.orchestrator.stream_response = turn
+    await bridge.turns.start_user_turn("x")
 
     async def streamer():
         while True:
@@ -639,44 +657,66 @@ async def _until(pred):
         await asyncio.sleep(0)
 
 
-async def test_push_with_audio_playing_counts_as_in_flight(make_wd_bridge, monkeypatch):
+async def test_push_with_audio_playing_counts_as_in_flight(make_bridge, monkeypatch):
     """Con pacing el audio de un push suena más allá de TURN_TIMEOUT_S: mientras su
-    tarea de audio viva, el push cuenta como turno en curso."""
+    audio avance, el push cuenta como turno en curso; un audio parado, no."""
     from fogar_gateway.core.config import settings
 
-    monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.1)
-    bridge, _, _ = make_wd_bridge()
-    bridge._push_turn_open = True
-    bridge._push_turn_opened_at = time.monotonic() - 1  # abierto hace más de TURN_TIMEOUT_S
+    monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(settings, "PUSH_TTS_DRAIN_TIMEOUT_S", 0.2)
+    flowing = asyncio.Event()
+    flowing.set()
 
-    bridge._push_audio_task = asyncio.create_task(asyncio.sleep(3600))
+    async def audio():
+        while True:
+            await asyncio.sleep(0.02)
+            if flowing.is_set():
+                yield b"\x00" * 10
+
+    stream = AsyncMock()
+    stream.get_audio_stream = audio
+    tts = AsyncMock()
+    tts.connect = AsyncMock(return_value=stream)
+    tts.resolve_voice = lambda v: v
+    bridge, _ = make_bridge(output_mode=("audio", "text"), tts=tts)
+    bridge.enqueue_push("turn_start", "sk")
+    bridge.enqueue_push("turn_end", "sk")  # the worker now drains its audio
     try:
-        bridge._push_audio_progress_at = time.monotonic()
-        assert bridge._turn_in_flight() is True
-        # orphaned push: a live audio task with no recent progress no longer counts
-        bridge._push_audio_progress_at = time.monotonic() - settings.PUSH_TTS_DRAIN_TIMEOUT_S - 1
-        assert bridge._turn_in_flight() is False
+        await asyncio.sleep(0.15)  # past TURN_TIMEOUT_S since the last event
+        assert bridge.turns.in_flight() is True
+        flowing.clear()  # the audio stops progressing
+        await asyncio.sleep(0.25)
+        assert bridge.turns.in_flight() is False
     finally:
-        bridge._push_audio_task.cancel()
-        await asyncio.wait({bridge._push_audio_task})
+        await bridge.close_all()
+    assert bridge.turns.in_flight() is False
 
-    assert bridge._turn_in_flight() is False
+
+async def test_in_flight_is_one_computation_for_both_watchdogs(make_wd_bridge, monkeypatch):
+    """#271: both watchdogs ask `turns.in_flight()`; nothing else decides it."""
+    bridge, _, _ = make_wd_bridge()
+    calls = []
+    bridge.turns.in_flight = lambda: calls.append(1) or False
+    monkeypatch.setattr(bridge_module.settings, "IDLE_TIMEOUT_S", 0)
+
+    async def close():
+        pass
+
+    bridge.close_all = close
+    await asyncio.wait_for(bridge._idle_watchdog(), 1)
+    assert calls == [1]
 
 
 @pytest.mark.asyncio
 async def test_idle_watchdog_does_not_close_while_push_audio_progresses(make_wd_bridge, monkeypatch):
-    """7e: a paced push sounds past TURN_TIMEOUT_S; while its audio progresses it is in flight."""
+    """7e: a paced push sounds past TURN_TIMEOUT_S; while it is in flight the idle
+    watchdog waits."""
     from fogar_gateway.core.config import settings
 
     monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.05)
     bridge, ws, _ = make_wd_bridge()
     bridge._last_client_activity = time.monotonic() - 10
-    bridge._push_turn_open = True
-    bridge._push_turn_opened_at = time.monotonic() - 5  # past TURN_TIMEOUT_S
-    audio = asyncio.create_task(asyncio.sleep(3600))
-    bridge._push_audio_task = audio
-    bridge._push_audio_progress_at = time.monotonic()
+    bridge.turns.in_flight = lambda: True  # see the test above for the push audio case
 
     close_called = []
 
@@ -688,14 +728,10 @@ async def test_idle_watchdog_does_not_close_while_push_audio_progresses(make_wd_
 
     async def _controlled_sleep(n):
         ticks["n"] += 1
-        bridge._push_audio_progress_at = time.monotonic()  # audio keeps flowing
         if ticks["n"] >= 3:
             raise RuntimeError("stop-test")
 
-    try:
-        with patch("fogar_gateway.services.bridge._sleep", new=_controlled_sleep):
-            with pytest.raises(RuntimeError, match="stop-test"):
-                await asyncio.wait_for(bridge._idle_watchdog(), timeout=2.0)
-    finally:
-        audio.cancel()
+    with patch("fogar_gateway.services.bridge._sleep", new=_controlled_sleep):
+        with pytest.raises(RuntimeError, match="stop-test"):
+            await asyncio.wait_for(bridge._idle_watchdog(), timeout=2.0)
     assert not close_called

@@ -452,6 +452,8 @@ El gateway detecta la parcial de transcripción y cancela el turno activo si el 
 
 **Un push que está sonando también se corta** (§10): el barge-in, un `send` y un `cancel` lo cierran igual que a un turno normal. Recibes su `turn_end` (exactamente uno) antes de cualquier otra cosa del turno nuevo; en el barge-in, `interrupted` lleva el `turn_id` del push. Su audio deja de llegar. La transcripción final por sí sola no lo corta: lo corta el `send` que la sigue.
 
+Nada del turno cancelado llega después de su `turn_end`: ni tokens ni audio, tampoco la respuesta que OpenClaw ya tuviera en camino al abortarlo, que no cierra tu turno siguiente ni vuelve como un push (#285).
+
 Tras `interrupted`:
 - Limpia la UI de la respuesta en curso
 - Descarta audio con `turn_seq` del turno cancelado (ya no llegará más)
@@ -546,7 +548,7 @@ El `message` de un `TURN_ERROR` es siempre uno de estos códigos fijos, nunca el
 | `orchestrator_send_failed` | El gateway no pudo escribir la petición del turno al orquestador (conexión rota) |
 | `orchestrator_error` | OpenClaw rechazó el turno (`res` con `ok:false`), el agente falló después de aceptarlo, o falló algo interno en el camino hacia él |
 | `orchestrator_disconnected` | La conexión con el orquestador se cerró con el turno en vuelo |
-| `turn_timeout` | El orquestador no mandó nada durante `TURN_TIMEOUT_S` (§13) |
+| `turn_timeout` | El orquestador no mandó nada durante `TURN_TIMEOUT_S` (§13); también en un push (§10) |
 | `turn_overflow` | El gateway no pudo procesar los eventos del turno al ritmo de llegada (§13) |
 | `turn_in_progress` | Ya hay un turno en curso para esa sesión (`/v1`: HTTP 409) |
 
@@ -570,6 +572,8 @@ OpenClaw puede iniciar turnos proactivamente sin que el usuario haya enviado nad
 Un push que llega mientras suena una respuesta tuya se entrega después del `turn_end` de esa respuesta, nunca encima (los pushes siguientes esperan en orden).
 
 Al revés, hablar corta el push: si el usuario hace barge-in, envía un `send` o un `cancel` mientras un push está abierto, el gateway para su audio, te envía su `turn_end` y, si el push es de tu misma sesión de agente, lo aborta en OpenClaw. Solo después arranca el turno del usuario, así que nunca hay dos turnos abiertos a la vez (#202). Lo que quedara de ese push no llega.
+
+Un push tiene el mismo tope que un turno normal: si OpenClaw lo abre y deja de mandar nada durante `TURN_TIMEOUT_S` (sin su fin), el gateway lo cierra con `{"type":"error","code":"TURN_ERROR","message":"turn_timeout","fatal":false,"turn_id":...}` y su `turn_end`, y lo aborta en OpenClaw si es de tu sesión de agente (#286). El siguiente push abre su propio `turn_start`.
 
 El cliente no necesita distinguirlos de los turnos normales — el `turn_id` y `turn_seq` siguen la misma secuencia. Si `tool_calls_enabled` está activo, también pueden llegar mensajes `tool_call` (§5) intercalados.
 
@@ -681,7 +685,7 @@ Llegan entrelazados con los mensajes JSON. Identifica audio por el magic byte `0
 | Deadline | Valor por defecto | Qué provoca | Cómo lo ves |
 |---|---|---|---|
 | `HANDSHAKE_TIMEOUT_S` | 5s | No mandas el JSON de handshake a tiempo | Cierre WS 1008, `"Handshake timeout"` (ver §1) |
-| `TURN_TIMEOUT_S` | 120s, **idle-reset** | El orquestador deja de mandar nada durante un turno ya en marcha (cuelgue real, no duración total) | `{"type":"error","code":"TURN_ERROR","message":"turn_timeout","fatal":false,"turn_id":"..."}` (ver §9) — la sesión sigue viva, solo ese turno se aborta |
+| `TURN_TIMEOUT_S` | 120s, **idle-reset** | El orquestador deja de mandar nada durante un turno ya en marcha, normal o push (cuelgue real, no duración total) | `{"type":"error","code":"TURN_ERROR","message":"turn_timeout","fatal":false,"turn_id":"..."}` (ver §9) — la sesión sigue viva, solo ese turno se aborta |
 | `TURN_QUEUE_MAX` | 1000 eventos por turno | El gateway no consigue procesar los eventos del orquestador al ritmo al que llegan para ese turno (consumidor atascado); es un fallo interno raro, no depende de tu lectura del socket | `{"type":"error","code":"TURN_ERROR","message":"turn_overflow","fatal":false,"turn_id":"..."}` — la sesión sigue viva, solo ese turno se aborta (los tokens pendientes se descartan); mismo tratamiento en el cliente que `turn_timeout` |
 | `IDLE_TIMEOUT_S` | 300s (5 min) | No mandas **ningún** mensaje (ni audio ni texto) durante ese tiempo | Cierre WS con código 1000, **sin ningún mensaje de error o aviso previo** |
 | `silence_timeout_s` / `max_silence_turns` (por cliente, defaults 2 s y 3) | ~6 s con los defaults | Mientras envías audio, el transcriptor no devuelve nada: cada sondeo de 2 s pasado `silence_timeout_s` cuenta un aviso (`status` `transcriber` `degraded`); con `max_silence_turns` avisos seguidos se cierra la sesión. No cuenta con un turno en curso ni sin audio entrante | Avisos `degraded` y después cierre WS con código 1000 |
@@ -717,7 +721,7 @@ Esta es la novedad más relevante para clientes de larga duración (dispositivos
 
 No requiere ningún cambio de cliente si ya reconectas tras un cierre inesperado.
 
-- **Turno en curso:** si el gateway cierra la sesión con un turno abierto, el turno se **cancela**, no se espera a que termine, y recibes igualmente su `turn_end` antes del cierre si el socket sigue abierto. Nunca queda un `turn_start` sin su `turn_end` mientras puedas recibirlo. La inactividad (`IDLE_TIMEOUT_S`) y el silencio no cortan un turno en curso; lo único abierto que pueden cerrar es un push huérfano (abierto más de `TURN_TIMEOUT_S` sin su fin), que también recibe su `turn_end`.
+- **Turno en curso:** si el gateway cierra la sesión con un turno abierto, el turno se **cancela**, no se espera a que termine, y recibes igualmente su `turn_end` antes del cierre si el socket sigue abierto. Nunca queda un `turn_start` sin su `turn_end` mientras puedas recibirlo. La inactividad (`IDLE_TIMEOUT_S`) y el silencio no cortan un turno en curso. Un push huérfano (abierto sin su fin) no la retiene: a los `TURN_TIMEOUT_S` sin progreso se cierra solo, con su `turn_end` (§10).
 - **Reinicio o parada del gateway:** el servidor cierra cada WebSocket con el código **1012** (*service restart*) en cuanto empieza a apagarse; un turno en curso se corta en ese momento y su `turn_end` ya no te llega (el socket está cerrado). No hay ventana de gracia para terminar el turno. Trata el 1012 como un cierre esperado: reconecta (con una pequeña espera y reintentos, el gateway tarda unos segundos en volver) y abre una sesión nueva con handshake completo.
 - **Revocación:** se cierra con 1008 `"revoked"` antes de cancelar el turno, así que tampoco recibes su `turn_end`.
 
