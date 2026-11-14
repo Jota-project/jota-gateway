@@ -402,18 +402,26 @@ dedicated OpenClaw plugin becomes worth building.
 
 ---
 
-## Session key carries the per-client identity (fogar-gateway convention)
+## Session key carries the conversation (fogar-gateway convention)
 
-Every turn fogar-gateway sends over `chat.send` uses `sessionKey = "agent:{agent}:{client.id}"`,
-where `client.id` is the `ClientRecord` UUID of the authenticated caller (WS handshake or REST
-`/v1/*` with a Bearer key), not a shared global key. This is a fogar-gateway convention layered on
-OpenClaw's opaque `sessionKey` string, not something the OpenClaw server enforces or validates.
-Consequences observable on the wire:
+**Since M19 (2026-11-14):** every turn fogar-gateway sends over `chat.send` uses
+`sessionKey = "agent:{agent}:fogar-{conversation.id}"`, where the conversation is a row of the
+gateway's `conversations` table (its own index: client, agent, kind, day; no text). This is a
+fogar-gateway convention layered on OpenClaw's opaque `sessionKey` string, not something the
+OpenClaw server enforces or validates. Consequences observable on the wire:
 
-- Two clients talking to the same agent get independent OpenClaw sessions (separate history).
-- Events come back tagged with that same `sessionKey`; the gateway recovers the client with
-  `sk.rsplit(":", 1)[-1]` (safe for agent names or keys containing extra colons).
-- The REST trusted-origin legacy path (no Bearer) has no client row, so it uses the fixed id `ha`.
+- A client gets a new OpenClaw session per agent and day (its default conversation, the day
+  starting at `CONVERSATION_DAY_START_HOUR`), or the one it picks in the handshake. The gateway
+  never resets a session: OpenClaw's own `session.reset` (daily/idle, global to every channel)
+  would reset a conversation under the same key, so the gateway does the daily cut itself.
+- Push events come back tagged with that `sessionKey`; the gateway routes them through an
+  in-memory index `sessionKey → conversation → live session` (`ClientRegistry.route`). A key
+  missing from the index falls back to the pre-M19 rule (`sk.rsplit(":", 1)[-1]` = client id).
+- **Before M19** the key was `agent:{agent}:{client.id}` (one session per client and agent,
+  forever). The gateway imports those sessions once (`sessions.list`, see below) as `legacy`
+  conversations of their client and keeps their key, so pushes scheduled on them still arrive.
+- The REST trusted-origin legacy path (no Bearer) has no client row, so it keeps the fixed id
+  `ha` (`agent:{agent}:ha`) and is not a conversation.
 - Since server 2026.11.1, `chat.send` rejects session keys that do not identify an agent; ours
   always do (see "Connect deadline and `chat.send` session keys" below).
 
@@ -648,8 +656,8 @@ Read in the package source of 2026.11.1 and compared with 2026.10.5, not observe
 - **`chat.send` rejects ambiguous session keys** with `INVALID_REQUEST`: malformed keys, an
   `agentId` that conflicts with an agent-qualified key, and unqualified keys that do not identify
   an agent (`docs/gateway/protocol/rpc-session-control.md:14`, absent in 2026.10.5). The gateway is
-  not affected: every `sessionKey` it sends is agent-qualified (`agent:{agent}:{client.id}`, see
-  "Session key carries the per-client identity") and `frames.chat_send` never sends `agentId`.
+  not affected: every `sessionKey` it sends is agent-qualified (`agent:{agent}:fogar-{conversation}`, see
+  "Session key carries the conversation") and `frames.chat_send` never sends `agentId`.
 
 ## Device identity, pairing and `operator.admin` (2026-11-13, server 2026.10.5)
 
@@ -790,6 +798,67 @@ OpenClaw channel and resets the session under the **same key**.
 and SecretRefs; prints only in an interactive terminal on the OpenClaw host). `fogar-gw onboard`
 says so.
 
+## Reading sessions: `sessions.list` and `chat.history` (2026-11-14, server 2026.10.5)
+
+**Observed live** against a 2026.10.5 on loopback (`gateway run --dev --auth token --bind
+loopback`, connected as `gateway-client`/`backend` with `operator.read`), after creating two
+sessions with `chat.send` (no model credentials, so each run failed with `chat` `state:"error"`),
+and **read** in the package source (`SessionsListParamsSchema`, `ChatHistoryParamsSchema`,
+`deriveSessionTitle`, `docs/gateway/protocol/rpc-session-control.md`). Both are `operator.read`.
+The gateway uses them only through `OpenClawClient.request`, which refuses any method outside
+`READ_METHODS` (`sessions.list`, `chat.history`): no admin method is called in M19.
+
+**`sessions.list`** — params (closed schema): `limit` (≥1; default bounded, 100 observed as
+`limitApplied`), `offset`, `archived` (`false`/omitted = active only, `true`, `"all"`),
+`rowMode: "compact"` (drops detail-only fields), `includeDerivedTitles`, `includeLastMessage`,
+`agentId`, `search`, and many filters the gateway does not use. Answer:
+
+```json
+{"ts": 1794665075306, "count": 2, "totalCount": 2, "limitApplied": 100,
+ "hasMore": false, "nextOffset": null, "owners": [], "defaults": {...},
+ "sessions": [{"key": "agent:dev:fogar-probe-0001", "agentId": "dev", "kind": "direct",
+               "sessionId": "a460a678-…", "createdAt": 1794665068411, "updatedAt": 1794665071133,
+               "lastInteractionAt": 1794665068405, "lastActivityAt": 1794665071055,
+               "archived": false, "status": "failed", "lastRunId": "5c629a99-…",
+               "hasActiveRun": false, "activeRunIds": [], ...}]}
+```
+
+- Timestamps are epoch **ms**. Rows carry no title by default; with `includeDerivedTitles: true`
+  a row gets `derivedTitle` = `label` ?? external `displayName` ?? `displayName` ?? `subject` ??
+  a title derived from the first user message (empty for a short greeting: our probe sessions had
+  none). The gateway shows `derivedTitle` ?? `displayName` ?? `label` (the order OpenClaw's own UI
+  uses) and `null` when none; the title is user-derived text: it goes to `/admin` only, never to a
+  log. `includeLastMessage` adds `lastMessagePreview` (user text too; the gateway does not ask).
+- Archived sessions (OpenClaw archives old ones) are **not** listed unless `archived` is `true` or
+  `"all"`; the gateway always sends `"all"` and pages with `offset` while `hasMore`.
+- `search` matched a substring of the key (`"fogar-"` found only the M19-style key).
+
+**`chat.history`** — params (closed schema): `sessionKey` (required), `limit` (1–1000),
+`offset`, `cursor`, `maxBytes`, `maxChars`, … Answer, oldest first, the last `limit` messages:
+
+```json
+{"sessionKey": "agent:dev:3f2b…", "sessionId": "4de1a9e5-…", "hasMore": false,
+ "totalMessages": 2, "deltaCursor": "…", "pendingInputs": {...}, "defaults": {...},
+ "sessionInfo": {"key": "…", "agentId": "dev", "hasActiveRun": false, ...},
+ "messages": [
+   {"role": "user", "content": "hola 556666", "timestamp": 1794665071190,
+    "idempotencyKey": "c285c151-…:user", "__openclaw": {"id": "…", "seq": 1, ...}},
+   {"role": "custom", "customType": "run-failed-before-reply", "display": true,
+    "content": "Your request couldn't be completed: …", "timestamp": 1794665071823,
+    "__openclaw": {"runId": "c285c151-…", "seq": 2, ...}}]}
+```
+
+- `content` is a string for a user message; an assistant message carries parts
+  (`[{"type":"text","text":…}, …]`, the same shape as `chat` `message`). The history is
+  display-normalised by OpenClaw (directive tags, tool-call XML and silent `NO_REPLY` rows
+  stripped). Other roles appear (`custom` notices like the failed run above, tool rows): the
+  gateway keeps only `user`/`assistant` with text, as `{role, text, timestamp}`.
+- **A key with no session is not an error:** `ok:true` with `messages: []`, `totalMessages: 0` and
+  a `sessionInfo` for that key (`updatedAt: null`). An unknown conversation is the gateway's 404,
+  never OpenClaw's.
+- Not checked live: an archived session's history (OpenClaw's docs say requesting history restores
+  it from cold storage) and the `deltaCursor` catch-up. The gateway does not use the cursor.
+
 ## Change log of this file
 
 - **2026-11-13**: added "Device identity, pairing and `operator.admin`" (server 2026.10.5, read in
@@ -803,6 +872,10 @@ says so.
   identity file is locked (`flock`) and copied by `migrate`. Signature verified live against a
   2026.10.5 on loopback (hello-ok read/write/admin, `shared_token`/`not_required`).
 
+- **2026-11-14**: added "Reading sessions: `sessions.list` and `chat.history`" (server 2026.10.5,
+  observed live on loopback and read in the package source); "Session key carries the
+  conversation" replaces "…per-client identity": the key is now `agent:{agent}:fogar-{conversation}`,
+  pre-M19 keys are imported as `legacy` conversations, push is routed by an in-memory index.
 - **2026-11-14**: added "How the gateway uses `runId`" (M19, issues #285/#286): `runId`
   correlation of turns, tombstones for every aborted run, push turn budget. No server change.
 - **2026-11-06**: added "Connect deadline and `chat.send` session keys" (server 2026.11.1, read in

@@ -96,9 +96,14 @@ Los dos son públicos: detrás de un proxy o un túnel también llegan desde int
 | `/admin/pairing/{id}` | DELETE | Anular un código abierto |
 | `/admin/state` | GET | Instantánea viva: versión, uptime, flujos `/admin/state/stream` abiertos (`gateway.dashboards`), estado de servicios, contadores y una fila por sesión |
 | `/admin/state/stream` | GET | La misma instantánea por SSE cada segundo; cada stream termina solo a los 25 s, el cliente debe reconectar (`EventSource` lo hace solo) |
+| `/admin/conversations` | GET | Conversaciones de todos los clientes (filtro `?client_id=`), la última en hablarse primero: `id`, `client_id`, `client_name`, `agent`, `kind` (`default`, `created`, `legacy`), `day`, `created_at`, `last_turn_at`, `turn_count` y `title`, que se lee de OpenClaw (`null` si no lo tiene o no responde; la lista nunca falla por eso) |
+| `/admin/conversations/{id}/messages` | GET | Lo dicho, de OpenClaw (`chat.history`), normalizado a `{role, text, timestamp}` (solo `user` y `assistant`); `?limit=` 1–1000 (200). `503 orchestrator_unavailable` con OpenClaw caído, `502 orchestrator_error` si lo rechaza |
+| `/admin/conversations` | POST | Conversación nueva del panel web (`{"agent"?}`; sin agente, el de la cascada). El agente se valida como en el handshake (`422 agent_not_permitted`/`agent_not_available`) |
 | `/admin/access` | GET | Vías para llegar al gateway (`public`, `tailscale_https`, `tailscale`, `lan`), cada una con su estado (`ok`, `protegida`, `otro_gateway`, `inalcanzable`, `sin_verificar`) y la recomendada; `{"docker": bool, "routes": [...]}`, en caché 15 s |
 
 Los tres endpoints `*/status` comparten la forma `{"name", "state", "connected_at", "reconnect_attempts", "last_error"}`; los de transcriber y TTS añaden `provider` y, con ElevenLabs, `counters`.
+
+**Conversaciones (M19).** Cada sesión habla en una conversación, que es una sesión de OpenClaw (`agent:{agente}:fogar-{id}`). Quien no elige cae en la del día (una por cliente, agente y día; el día empieza a las `CONVERSATION_DAY_START_HOUR`, y una sesión abierta días pasa a la nueva en su primer turno tras el corte); un cliente puede elegir una de las suyas o crear una (`conversation` en el handshake). El gateway solo guarda el índice (tabla `conversations`, sin texto): lo dicho y el título viven en OpenClaw. Las sesiones de antes de M19 (`agent:{agente}:{client.id}`) se importan una vez como `legacy` al conectar con OpenClaw. El panel web entra en el WebSocket con `admin_token` como el cliente «Panel web» (id `panel-web`, una ficha normal que se crea sola la primera vez). Borrar un cliente borra sus conversaciones del gateway, no de OpenClaw. Protocolo: [`docs/client-protocol.md` §14](docs/client-protocol.md#14-conversaciones).
 
 Los campos de un cliente (`POST`/`PATCH /admin/clients`) están en `src/fogar_gateway/models/admin_schemas.py` y sus defaults en `src/fogar_gateway/db/models.py`. Desde la terminal, `fogar-gw`. Los comandos de clientes y de estado necesitan el gateway en marcha y pasan por esta API (la CLI nunca escribe en la BD); `doctor` y `config` funcionan también con el gateway parado:
 
@@ -159,7 +164,8 @@ Auth: header `X-Admin-Token`. Sin header → 422. Token incorrecto → 401. `ADM
 - Host de escucha de `fogar-gw serve` (también en Docker): `GATEWAY_HOST` (default `0.0.0.0`); detrás de un proxy en el mismo host usa `GATEWAY_HOST=127.0.0.1`.
 - `TRUSTED_NETWORKS` vacío = fail-closed: solo loopback puede quedar exento (sujeto al matiz de `TRUSTED_PROXIES` de arriba).
 - `HANDSHAKE_MAX_BYTES` mide **caracteres**, no bytes (con caracteres multibyte el tope real puede ser hasta 4x mayor). El tope de 1 MiB por mensaje WebSocket lo pone `fogar-gw serve`: con `uvicorn` a mano rige el de uvicorn (16 MiB).
-- Con Bearer válido, `model` selecciona el agente y se aplican `default_agent`/`allowed_agents` del cliente (violación → `403`).
+- Con Bearer válido, `model` selecciona el agente y se aplican `default_agent`/`allowed_agents` del cliente (violación → `403`). Sin `model`, la cascada: `default_agent` del cliente, `DEFAULT_AGENT`, el agente por defecto de OpenClaw y `main`.
+- Con Bearer, cada petición va a la **conversación por defecto del día** del cliente para ese agente (M19), como un cliente WebSocket que no elige conversación. El origen de confianza sin Bearer no tiene ficha de cliente: conserva su sesión `agent:{agente}:ha` y no sale en `/admin/conversations`.
 
 | Endpoint | Método | Descripción |
 |----------|--------|-------------|
@@ -174,10 +180,10 @@ El cliente envía un handshake JSON como primer mensaje. Si es válido, el gatew
 
 **Cada turno de respuesta:**
 ```
-← {"type":"turn_start","turn_id":"t-1","turn_seq":1}
+← {"type":"turn_start","turn_id":"t-1","turn_seq":1,"conversation":"<id>","origin":"user"}
 ← {"type":"token","turn_id":"t-1","text":"Hola,"}
 ← [0xA1][0x00][0x01][PCM16 24kHz...]   ← audio binario con header
-← {"type":"turn_end","turn_id":"t-1"}
+← {"type":"turn_end","turn_id":"t-1","reason":"done"}
 ```
 
 Ver [`docs/client-protocol.md`](docs/client-protocol.md) para la referencia completa incluyendo barge-in, transcripción, push turns y manejo de errores.
@@ -420,7 +426,9 @@ Variables de entorno o, si no, de `<base>/config.env` (instalación nativa). En 
 | `OPENCLAW_PORT` | `18789` | Puerto de OpenClaw |
 | `OPENCLAW_TLS` | `false` | `true` = conecta por `wss://` (OpenClaw de otra máquina tras TLS, p. ej. Tailscale) |
 | `OPENCLAW_TOKEN` | — | Token de OpenClaw. Sin él el gateway arranca con un aviso, pero OpenClaw rechaza la conexión (`/ready` 503) |
-| `ADMIN_TOKEN` | — | Token para endpoints `/admin/*`; vacío deshabilita el admin API |
+| `ADMIN_TOKEN` | — | Token para endpoints `/admin/*` y para el panel web en el WebSocket (`admin_token`); vacío deshabilita los dos |
+| `DEFAULT_AGENT` | — | Agente por defecto de la instalación (#245): en la cascada, después del `default_agent` del cliente y antes del de OpenClaw; también el de una conversación nueva. Vacío = el de OpenClaw. Si no está en OpenClaw, avisa al conectar |
+| `CONVERSATION_DAY_START_HOUR` | `5` | Hora local (0–23) a la que empieza el día de las conversaciones por defecto |
 | `ORCHESTRATOR_RECONNECT_INITIAL_BACKOFF` | `1.0` | Backoff inicial en reconexión del orquestador (s) |
 | `ORCHESTRATOR_RECONNECT_MAX_BACKOFF` | `60.0` | Backoff máximo en reconexión del orquestador (s) (el gateway reintenta sin parar, sin tope de duración) |
 | `SINGLE_PROCESS_LOCK` | `true` | `flock` sobre `gateway.lock` junto a la BD: un segundo proceso (p. ej. `--workers 2`) no arranca. Multi-worker no está soportado |
@@ -537,7 +545,8 @@ src/fogar_gateway/
 ├── api/
 │   ├── routes.py            WebSocket /ws/stream — handshake, ready, ciclo de vida del bridge
 │   ├── pairing_routes.py    /.well-known/fogar-gateway, POST /pair y /admin/pairing
-│   ├── admin_routes.py      /admin/* — clientes, sesiones, servicios, voz, vías de acceso y estado en vivo (SSE)
+│   ├── admin_routes.py      /admin/* — clientes (y el «Panel web»), sesiones, servicios, voz, vías de acceso y estado en vivo (SSE)
+│   ├── conversation_routes.py /admin/conversations — lista, mensajes (chat.history) y alta del panel
 │   ├── openai_routes.py     /v1/models, /v1/chat/completions
 │   ├── web_routes.py        el panel en / (caché, CSP y vuelta a index.html)
 │   ├── health_routes.py     /healthz, /ready
@@ -548,15 +557,17 @@ src/fogar_gateway/
 │   ├── network.py           resolve_client_ip() / origen de confianza de /v1
 │   ├── startup_checks.py    lock de proceso único y comprobaciones de arranque
 │   ├── logging.py           formatos de log y fingerprint_key()
-│   └── session_key.py       make_session_key() — formato canónico de session key
+│   └── session_key.py       make_session_key() — la clave de antes de M19 (`agent:{agente}:{client.id}`)
 ├── db/
-│   ├── models.py            ClientRecord (SQLModel) — identidad y config por cliente
+│   ├── models.py            ClientRecord (identidad y config por cliente), ConversationRecord (índice de conversaciones)
 │   └── database.py          get_engine() / run_migrations() / get_db_session()
 ├── cli/                     fogar-gw — init, serve, menú, onboard (el asistente; verify.py comprueba cada
 │                            proveedor contra el servicio real), access, token, pair, clients, doctor, config,
 │                            status, version, servicio systemd (install/start/stop/restart), logs y migrate
 └── services/
     ├── bridge.py            FogarBridge — coordinador de sesión WS
+    ├── turns.py             TurnController — los turnos de una sesión (user y push), su TTS y su fin
+    ├── conversations.py     conversaciones: reglas del día, tabla, índice, importación legacy
     ├── pairing.py           PairingStore — códigos de emparejamiento en memoria
     ├── db_client.py         DbClient — lee ClientRecord de SQLite local (sin caché)
     ├── outbound.py          QueuedSender — salida serializada hacia cada cliente
@@ -576,7 +587,7 @@ src/fogar_gateway/
         ├── device.py        identidad de dispositivo (Ed25519, firma v3) y token de dispositivo
         ├── reconnecting.py  ReconnectingOpenClawClient — backoff + DEGRADED
         ├── dispatcher.py    FrameDispatcher — enruta frames a turn/client registry
-        ├── registry.py      TurnRegistry + ClientRegistry (+ broadcast_status a todas las sesiones)
+        ├── registry.py      TurnRegistry + ClientRegistry (sesiones vivas por conversación, reparto del push, broadcast_status)
         └── models.py        GatewayInfo, OrchestratorAccess (permisos y emparejamiento)
 ```
 

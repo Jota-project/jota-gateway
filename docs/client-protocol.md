@@ -22,6 +22,7 @@ Guía completa para implementar clientes que se conecten a fogar-gateway. Cubre 
 11. [Modos de operación](#11-modos-de-operación)
 12. [Referencia completa de mensajes](#12-referencia-completa-de-mensajes)
 13. [Timeouts y cierre de sesión](#13-timeouts-y-cierre-de-sesión)
+14. [Conversaciones](#14-conversaciones)
 
 ---
 
@@ -89,7 +90,7 @@ Después abre la sesión normal (§1) con esa `client_key`.
 
 ### Cuando la clave deja de valer
 
-Si al abrir la sesión el gateway cierra con 1008 `"Clave de cliente invalida o inactiva."`, o una sesión abierta se cierra con 1008 `"revoked"` (§13), el administrador ha borrado, desactivado o rotado tu cliente. Estos dos textos son estables: compáralos tal cual. Borra la clave guardada y vuelve a la pantalla de emparejamiento. Cualquier otro cierre 1008 (handshake mal formado, agente no permitido) es un fallo de tu cliente y no invalida la clave. No reintentes en bucle con la misma clave.
+Si al abrir la sesión el gateway cierra con 1008 `"Clave de cliente invalida o inactiva."`, o una sesión abierta se cierra con 1008 `"revoked"` (§13), el administrador ha borrado, desactivado o rotado tu cliente. Estos dos textos son estables: compáralos tal cual. Borra la clave guardada y vuelve a la pantalla de emparejamiento. Cualquier otro cierre 1008 (handshake mal formado, agente no permitido, conversación no encontrada, `"conversation opened elsewhere"`) no invalida la clave. No reintentes en bucle con la misma clave.
 
 ---
 
@@ -110,17 +111,20 @@ El **primer mensaje** que envíes DEBE ser el handshake. Es el único mensaje si
 
 | Campo | Tipo | Requerido | Descripción |
 |-------|------|-----------|-------------|
-| `client_key` | string | ✓ | Clave de autenticación del cliente |
+| `client_key` | string | ✓ (o `admin_token`) | Clave de autenticación del cliente |
+| `admin_token` | string | — | Solo el panel web del gateway: el `ADMIN_TOKEN` en lugar de `client_key` (una de las dos, nunca las dos). Entra como el cliente «Panel web» (`panel-web`), una ficha normal que el gateway crea la primera vez. Tiene la misma potencia que el `X-Admin-Token` de `/admin`: no lo guardes en un aparato |
 | `input_mode` | `"audio"` \| `"text"` | ✓ | Cómo enviará datos este cliente |
 | `output_mode` | array | ✓ | Qué quiere recibir: `"text"` (mensajes `token`), `"audio"` (frames TTS), `"status"` (mensajes `pipeline_event`, §12). Los `status` de servicios, `error`, `transcription*` y el control de turnos llegan siempre |
 | `agent` | string | — | Agente OpenClaw a usar; omitir para usar el agente por defecto (ver "Selección de agente" abajo) |
+| `conversation` | string (1–64) | — | La conversación de la sesión (§14): el id de una conversación **de este cliente** para retomarla, o `"new"` para empezar una. Sin él, la conversación del día. Nuevo en M19 |
 
 ### Selección de agente
 
-El agente efectivo de la sesión no es simplemente "el que pediste o el global": el gateway resuelve una cascada server-side (`agent` del handshake si no está vacío → `default_agent` configurado por el admin para tu `client_key` → default global de OpenClaw → `"main"`) y aplica dos comprobaciones de política antes de aceptar la conexión: si tu cliente tiene una lista `allowed_agents`, el agente resultante debe estar en ella (una lista vacía lo deniega todo); y si pediste el agente explícitamente, debe existir en el roster de OpenClaw (`src/fogar_gateway/core/agent_policy.py`). Como cliente solo necesitas saber dos cosas:
+El agente efectivo de la sesión no es simplemente "el que pediste o el global": el gateway resuelve una cascada server-side (`agent` del handshake si no está vacío → `default_agent` configurado por el admin para tu `client_key` → `DEFAULT_AGENT`, el de la instalación (#245) → default global de OpenClaw → `"main"`) y aplica dos comprobaciones de política antes de aceptar la conexión: si tu cliente tiene una lista `allowed_agents`, el agente resultante debe estar en ella (una lista vacía lo deniega todo); y si pediste el agente explícitamente, debe existir en el roster de OpenClaw (`src/fogar_gateway/core/agent_policy.py`). Como cliente necesitas saber tres cosas:
 
 1. Si omites `agent` en el handshake, el que acabes usando puede venir de una configuración por-cliente que un admin te haya asignado (no siempre el default global) — comprueba siempre `ready.agent`, no asumas cuál será.
 2. Pedir explícitamente un `agent` puede fallar de dos formas distintas (ver tabla siguiente): que ese agente no esté permitido para tu cliente, o que no exista en OpenClaw.
+3. Una conversación existente (`conversation` con un id) ya tiene su agente: es el de la sesión. No hace falta mandar `agent`; si lo mandas y es otro, el gateway cierra con 1008 `"conversation agent mismatch"`. A ese agente se le aplican las mismas comprobaciones (lista permitida y roster).
 
 ### Errores de handshake (el servidor cierra la conexión)
 
@@ -133,7 +137,11 @@ El agente efectivo de la sesión no es simplemente "el que pediste o el global":
 | `client_key` inválida o cliente inactivo | 1008 | `"Clave de cliente invalida o inactiva."` |
 | Agente solicitado no está en la lista permitida para este cliente (`allowed_agents`) | 1008 | `"Agent '{name}' not permitted for this client."` |
 | Agente solicitado no existe en OpenClaw | 1008 | `"Agent '{name}' not available."` |
-| Fallo al abrir los servicios internos de la sesión | 1011 | `"Problema estableciendo microservicios internos del hub."` |
+| `client_key` y `admin_token` a la vez, o ninguna de las dos | 1008 | `"Handshake invalido. Se esperaba JSON de configuración."` |
+| `admin_token` que no es el `ADMIN_TOKEN` (o el gateway no tiene ninguno), o el cliente «Panel web» desactivado | 1008 | `"Clave de cliente invalida o inactiva."` |
+| `conversation` no existe o es de otro cliente (no se distingue) | 1008 | `"conversation not found"` |
+| `agent` distinto del de la conversación pedida | 1008 | `"conversation agent mismatch"` |
+| Fallo al abrir los servicios internos de la sesión (también al abrir la conversación) | 1011 | `"Problema estableciendo microservicios internos del hub."` |
 | Orquestador no disponible tras health check | 1011 | `"Servicio crítico no disponible."` |
 
 > **El orquestador (OpenClaw) es el único servicio que puede cerrar la conexión en el handshake.** Transcriber y TTS ya **no** son críticos: si cualquiera de los dos no responde al arrancar la sesión, el gateway la abre igualmente en modo degradado y te lo notifica vía `status` (ver §8) — nunca cierra el WebSocket por esto. Antes de la versión que introdujo la reconexión automática (issue #46), un fallo de Transcriber en este punto sí cerraba la conexión con 1011; ya no es el caso.
@@ -151,6 +159,7 @@ Si el handshake es válido y todos los servicios críticos responden, el gateway
   "type": "ready",
   "session_id": "hab_sito:1751289600000",
   "agent": "main",
+  "conversation": {"id": "0b9d6c1e-5f3a-4c2e-9d8b-2a7c1e4f6a90", "agent": "main"},
   "input_mode": "audio",
   "output_mode": ["audio", "text"],
   "requested_capabilities": {
@@ -169,7 +178,8 @@ Si el handshake es válido y todos los servicios críticos responden, el gateway
 | Campo | Descripción |
 |-------|-------------|
 | `session_id` | Identificador único de esta sesión (`client_id:timestamp_ms`) |
-| `agent` | Agente OpenClaw activo (el solicitado o el por defecto) |
+| `agent` | Agente OpenClaw activo (el solicitado o el por defecto; el de la conversación) |
+| `conversation` | La conversación de la sesión (§14): `id` (guárdalo para retomarla con `conversation` en el handshake) y `agent`. Nuevo en M19. En una sesión sin conversación elegida puede cambiar a mitad de sesión con el día: mira `turn_start.conversation` |
 | `input_mode` | Modo de entrada confirmado |
 | `output_mode` | Modos de salida activos |
 | `requested_capabilities.barge_in` | Si el barge-in está habilitado para este cliente |
@@ -214,12 +224,12 @@ Cliente                          Gateway
   │◄── {"type":"transcription","text":"enciende la luz"} ────────│
   │                              │   ← cliente muestra texto para revisión
   │─── {"type":"send","text":"enciende la luz"} ───────────────►│
-  │◄── {"type":"turn_start","turn_id":"t-1","turn_seq":1} ───────│
+  │◄── {"type":"turn_start","turn_id":"t-1","turn_seq":1,"conversation":"…","origin":"user"} ─│
   │◄── {"type":"token","turn_id":"t-1","text":"Vale,"} ──────────│
   │◄── [0xA1][0x00][0x01][PCM16...] ────────────────────────────│
   │◄── {"type":"token","turn_id":"t-1","text":" encendida."} ────│
   │◄── [0xA1][0x00][0x01][PCM16...] ────────────────────────────│
-  │◄── {"type":"turn_end","turn_id":"t-1"} ──────────────────────│
+  │◄── {"type":"turn_end","turn_id":"t-1","reason":"done"} ──────│
 ```
 
 ### Señal de fin de audio
@@ -267,13 +277,15 @@ Cada turno consiste en tres mensajes en este orden:
 ### `turn_start` — inicio de turno
 
 ```json
-{ "type": "turn_start", "turn_id": "t-1", "turn_seq": 1 }
+{ "type": "turn_start", "turn_id": "t-1", "turn_seq": 1, "conversation": "0b9d6c1e-…", "origin": "user" }
 ```
 
 | Campo | Descripción |
 |-------|-------------|
 | `turn_id` | Identificador del turno (`t-{N}`, secuencial por sesión desde 1) |
 | `turn_seq` | N módulo 65 536 (uint16, no monótono tras el desbordamiento; compáralo por igualdad, no por orden) — es el mismo valor que lleva el header de los frames de audio |
+| `conversation` | La conversación del turno (§14). En un turno tuyo, la de la sesión en ese momento (cambia con el día si no elegiste conversación); en un push, la del push, que puede no ser la de la sesión (un recordatorio de la conversación de ayer). `null` en un push de una sesión de OpenClaw que el gateway no conoce. Nuevo en M19 |
+| `origin` | `"user"` (lo abrió un `send` tuyo) o `"push"` (lo abrió el agente, §10). Nuevo en M19 |
 
 ### `token` — texto en streaming
 
@@ -288,10 +300,24 @@ Los tokens llegan en orden; concaténalos para reconstruir la respuesta completa
 ### `turn_end` — fin de turno
 
 ```json
-{ "type": "turn_end", "turn_id": "t-1" }
+{ "type": "turn_end", "turn_id": "t-1", "reason": "done" }
 ```
 
 Señala que el turno terminó. **Todo turno con `turn_start` recibe exactamente un `turn_end`** — también si falla (tras un `error`), si se cancela (`cancel`, barge-in, transcripción final, un `send` que lo sustituye) o si el cierre de sesión lo corta. Después del `turn_end` no se envía más audio de ese turno; lo que sigue es la reproducción del audio que ya recibiste (como mucho `AUDIO_LEAD_S`, unos 2 s, por delante del tiempo real).
+
+`reason` (nuevo en M19) dice por qué terminó:
+
+| `reason` | Cuándo |
+|---|---|
+| `done` | Terminó solo: la respuesta completa (o el push, con su fin) |
+| `error` | Falló: va precedido de su `error` `TURN_ERROR` (§9), salvo un push cuyo agente falla |
+| `cancelled` | Tu `cancel` |
+| `interrupted` | Hablaste encima: un barge-in (§7) o una transcripción final con el turno en curso. Sustituye al antiguo mensaje `interrupted` |
+| `replaced` | Un `send` nuevo lo sustituyó (también corta un push que sonaba) |
+| `timeout` | `TURN_TIMEOUT_S` sin progreso del orquestador (§13), tras su `error` `turn_timeout` |
+| `closed` | La sesión se cierra (o te fuiste) con el turno abierto |
+
+Trata cualquier otro valor como `error`: la lista puede crecer.
 
 ### `tool_call` — uso de herramientas del agente (opt-in)
 
@@ -340,7 +366,11 @@ async for msg in ws:
 
             case "turn_end":
                 turn_id = data["turn_id"]
-                on_turn_complete(current_buffer.pop(turn_id, ""))
+                text = current_buffer.pop(turn_id, "")
+                if data["reason"] == "interrupted":
+                    clear_current_response_ui()  # antes: el mensaje `interrupted`
+                else:
+                    on_turn_complete(text)
 
             case "tool_call":
                 # Solo llega si tool_calls_enabled=True para este cliente
@@ -351,9 +381,6 @@ async for msg in ws:
 
             case "transcription":
                 show_final_transcription_for_review(data["text"])
-
-            case "interrupted":
-                clear_current_response_ui()
 
             case "status":
                 handle_service_status(data["service"], data["state"])
@@ -430,7 +457,7 @@ async for msg in ws:
         if data["type"] == "turn_start":
             current_turn_seq = data["turn_seq"]
             audio_player.prepare_for_new_turn()
-        elif data["type"] == "interrupted":
+        elif data["type"] == "turn_end" and data["reason"] == "interrupted":
             audio_player.stop()
 ```
 
@@ -442,24 +469,27 @@ async for msg in ws:
 
 El barge-in ocurre cuando el usuario empieza a hablar mientras el orquestador aún está respondiendo.
 
-El gateway detecta la parcial de transcripción y cancela el turno activo si el barge-in está habilitado (`requested_capabilities.barge_in`; `live_capabilities.barge_in` indica si está operativo) y la parcial supera el umbral mínimo de caracteres. El cliente recibe:
+El gateway detecta la parcial de transcripción y cancela el turno activo si el barge-in está habilitado (`requested_capabilities.barge_in`; `live_capabilities.barge_in` indica si está operativo) y la parcial supera el umbral mínimo de caracteres. El cliente recibe el `turn_end` del turno cancelado con su motivo:
 
 ```json
-{ "type": "interrupted", "turn_id": "t-1" }
+{ "type": "turn_end", "turn_id": "t-1", "reason": "interrupted" }
 ```
 
-`turn_id` es el turno cancelado (puede faltar si el turno aún no había enviado su `turn_start`). El gateway cierra todo turno cancelado con su propio `turn_end` **antes** de `interrupted`: el orden es `turn_end` (t-1) → `interrupted` (t-1) → `turn_start` (t-2).
+El orden es `turn_end` (t-1, `interrupted`) → `turn_start` (t-2). Un turno cancelado antes de enviar su `turn_start` no manda nada.
 
-**Un push que está sonando también se corta** (§10): el barge-in, un `send` y un `cancel` lo cierran igual que a un turno normal. Recibes su `turn_end` (exactamente uno) antes de cualquier otra cosa del turno nuevo; en el barge-in, `interrupted` lleva el `turn_id` del push. Su audio deja de llegar. La transcripción final por sí sola no lo corta: lo corta el `send` que la sigue.
+> **Incompatibilidad de protocolo — M19**
+> El mensaje `{"type":"interrupted","turn_id":...}` **ya no existe**: lo sustituye `turn_end.reason: "interrupted"` del mismo turno. Un cliente que esperaba `interrupted` para parar el audio o limpiar la respuesta debe mirar `reason` en el `turn_end`.
+
+**Un push que está sonando también se corta** (§10): el barge-in, un `send` y un `cancel` lo cierran igual que a un turno normal. Recibes su `turn_end` (exactamente uno) antes de cualquier otra cosa del turno nuevo, con `reason` `interrupted`, `replaced` o `cancelled`. Su audio deja de llegar. La transcripción final por sí sola no lo corta: lo corta el `send` que la sigue.
 
 Nada del turno cancelado llega después de su `turn_end`: ni tokens ni audio, tampoco la respuesta que OpenClaw ya tuviera en camino al abortarlo, que no cierra tu turno siguiente ni vuelve como un push (#285).
 
-Tras `interrupted`:
+Tras un `turn_end` con `reason: "interrupted"`:
 - Limpia la UI de la respuesta en curso
 - Descarta audio con `turn_seq` del turno cancelado (ya no llegará más)
 - El flujo reinicia normalmente — sigue enviando audio
 
-El nuevo turno llegará con un `turn_start` con un `turn_seq` distinto (módulo 65 536, no necesariamente mayor), lo que también activa el descarte de audio del turno anterior a nivel de frame (por igualdad de `turn_seq`) sin necesitar el mensaje `interrupted`.
+El nuevo turno llegará con un `turn_start` con un `turn_seq` distinto (módulo 65 536, no necesariamente mayor), lo que también activa el descarte de audio del turno anterior a nivel de frame (por igualdad de `turn_seq`).
 
 ---
 
@@ -556,6 +586,16 @@ El `message` de un `TURN_ERROR` es siempre uno de estos códigos fijos, nunca el
 
 Si `fatal: true`, no envíes más mensajes — el servidor cerrará la conexión WS inmediatamente.
 
+### Cierres por conversación (M19)
+
+Los fallos de conversación no llegan como `error`: el gateway cierra el WebSocket con 1008 y uno de estos `reason`, estables (compáralos tal cual). Ninguno invalida la `client_key`.
+
+| `reason` | Cuándo | Qué hacer |
+|---|---|---|
+| `conversation not found` | En el handshake: el id de `conversation` no existe o es de otro cliente | Olvida ese id; conecta sin `conversation` (la del día) o con `"new"` |
+| `conversation agent mismatch` | En el handshake: `agent` no es el de la conversación pedida | No mandes `agent` al retomar una conversación |
+| `conversation opened elsewhere` | Con la sesión abierta: otra sesión abrió la misma conversación (§14) y esta se cierra | No reconectes en bucle: otra sesión tuya (p. ej. una reconexión que ganó la carrera) tiene ya la conversación |
+
 ---
 
 ## 10. Turns iniciados por el agente (push)
@@ -563,11 +603,13 @@ Si `fatal: true`, no envíes más mensajes — el servidor cerrará la conexión
 OpenClaw puede iniciar turnos proactivamente sin que el usuario haya enviado nada (notificaciones, recordatorios, alertas). El gateway los entrega al cliente con el mismo protocolo que un turno normal:
 
 ```json
-{ "type": "turn_start", "turn_id": "t-3", "turn_seq": 3 }
+{ "type": "turn_start", "turn_id": "t-3", "turn_seq": 3, "conversation": "0b9d6c1e-…", "origin": "push" }
 { "type": "token", "turn_id": "t-3", "text": "Recuerda que tienes una reunión en 5 minutos." }
 // Si audio en output_mode: [0xA1][0x00][0x03][PCM16...]
-{ "type": "turn_end", "turn_id": "t-3" }
+{ "type": "turn_end", "turn_id": "t-3", "reason": "done" }
 ```
+
+`origin: "push"` lo distingue de un turno tuyo, y `conversation` dice de qué conversación es: un push llega a la sesión que tiene abierta su conversación o, si ninguna la tiene, a la sesión más reciente de su cliente (§14). Así un recordatorio puesto ayer llega a la tele aunque esta ya esté en la conversación de hoy; su `turn_start.conversation` es la de ayer.
 
 Un push que llega mientras suena una respuesta tuya se entrega después del `turn_end` de esa respuesta, nunca encima (los pushes siguientes esperan en orden).
 
@@ -575,7 +617,7 @@ Al revés, hablar corta el push: si el usuario hace barge-in, envía un `send` o
 
 Un push tiene el mismo tope que un turno normal: si OpenClaw lo abre y deja de mandar nada durante `TURN_TIMEOUT_S` (sin su fin), el gateway lo cierra con `{"type":"error","code":"TURN_ERROR","message":"turn_timeout","fatal":false,"turn_id":...}` y su `turn_end`, y lo aborta en OpenClaw si es de tu sesión de agente (#286). El siguiente push abre su propio `turn_start`.
 
-El cliente no necesita distinguirlos de los turnos normales — el `turn_id` y `turn_seq` siguen la misma secuencia. Si `tool_calls_enabled` está activo, también pueden llegar mensajes `tool_call` (§5) intercalados.
+El cliente no necesita distinguirlos de los turnos normales — el `turn_id` y `turn_seq` siguen la misma secuencia (si quiere, `origin` lo dice). Si `tool_calls_enabled` está activo, también pueden llegar mensajes `tool_call` (§5) intercalados.
 
 > **`push_enabled` (por defecto `True`, configurable por admin):** si tu `client_key` tiene este flag desactivado, no recibirás **ningún** mensaje de un turno iniciado por el agente — ni `turn_start`, ni `token`, ni audio, ni `tool_call` — para esa sesión. No hay ninguna señal explícita de que se haya suprimido un push; es indistinguible de que OpenClaw simplemente no haya iniciado ninguno. Si tu integración depende de notificaciones proactivas, confirma con el admin que `push_enabled=True` para tu cliente. Un `send` tuyo aborta en OpenClaw el push que estuviera en curso en tu sesión de agente aunque no lo recibas, para que tu respuesta no se mezcle con él.
 
@@ -643,7 +685,7 @@ El cliente escribe; el gateway sintetiza audio con el texto de la respuesta.
 
 | Mensaje | Formato | Cuándo |
 |---------|---------|--------|
-| Handshake | `{"client_key":"...","input_mode":"...","output_mode":[...],"agent":"..."}` | Primer mensaje, obligatorio |
+| Handshake | `{"client_key":"...","input_mode":"...","output_mode":[...],"agent":"...","conversation":"..."}` (o `admin_token` en lugar de `client_key`, solo el panel web) | Primer mensaje, obligatorio |
 | Fin de audio | `{"type":"end"}` | `input_mode="audio"` — usuario termina de hablar |
 | Enviar texto | `{"type":"send","text":"..."}` | Envía texto al orquestador |
 | Cancelar turno | `{"type":"cancel"}` | Cancela turno activo (o el push que suena, §10) sin iniciar uno nuevo |
@@ -656,14 +698,13 @@ El cliente escribe; el gateway sintetiza audio con el texto de la respuesta.
 
 | Tipo | Formato | Cuándo |
 |------|---------|--------|
-| `ready` | `{"type":"ready","session_id":"...","agent":"...","input_mode":"...","output_mode":[...],"requested_capabilities":{...},"live_capabilities":{...}}` | Tras handshake exitoso; puede ir precedido de `status` |
-| `turn_start` | `{"type":"turn_start","turn_id":"t-N","turn_seq":N mod 65536}` | Inicio de cada turno |
+| `ready` | `{"type":"ready","session_id":"...","agent":"...","conversation":{"id":"...","agent":"..."},"input_mode":"...","output_mode":[...],"requested_capabilities":{...},"live_capabilities":{...}}` | Tras handshake exitoso; puede ir precedido de `status` |
+| `turn_start` | `{"type":"turn_start","turn_id":"t-N","turn_seq":N mod 65536,"conversation":"..."\|null,"origin":"user"\|"push"}` | Inicio de cada turno |
 | `token` | `{"type":"token","turn_id":"t-N","text":"..."}` | `"text"` en `output_mode` — tokens en streaming |
-| `turn_end` | `{"type":"turn_end","turn_id":"t-N"}` | Fin de cada turno |
+| `turn_end` | `{"type":"turn_end","turn_id":"t-N","reason":"done"\|"error"\|"cancelled"\|"interrupted"\|"replaced"\|"timeout"\|"closed"}` | Fin de cada turno (§5) |
 | `tool_call` | `{"type":"tool_call","turn_id":"t-N","phase":"start"\|"result","name":"...","tool_call_id":"...","args":{...}\|null,"result":"..."\|null,"is_error":bool\|null}` | Solo si `tool_calls_enabled=True` para el cliente — uso de herramientas del agente |
 | `transcription_partial` | `{"type":"transcription_partial","text":"..."}` | `input_mode="audio"` — parciales en tiempo real |
 | `transcription` | `{"type":"transcription","text":"..."}` | `input_mode="audio"` — transcripción final, espera `send` |
-| `interrupted` | `{"type":"interrupted","turn_id":"t-N"}` | Barge-in confirmado, turno anterior cancelado (`turn_id` puede faltar si el turno aún no había enviado su `turn_start`; ver §7) |
 | `status` | `{"type":"status","service":"...","state":"..."}` | Cambio de estado de un microservicio |
 | `error` | `{"type":"error","code":"...","message":"...","fatal":bool,"turn_id":"..."}` | Error (turno o sesión) |
 | `pipeline_event` | `{"type":"pipeline_event","stage":"...","elapsed_ms":N,"turn":N}` | Solo con `"status"` en `output_mode`: cada etapa del pipeline (p. ej. `llm_start`, `llm_first_token`, `tts_first_chunk`, `transcription_final`, `session_end`) con los ms desde la etapa anterior. Diagnóstico; no lleva texto |
@@ -690,6 +731,7 @@ Llegan entrelazados con los mensajes JSON. Identifica audio por el magic byte `0
 | `IDLE_TIMEOUT_S` | 300s (5 min) | No mandas **ningún** mensaje (ni audio ni texto) durante ese tiempo | Cierre WS con código 1000, **sin ningún mensaje de error o aviso previo** |
 | `silence_timeout_s` / `max_silence_turns` (por cliente, defaults 2 s y 3) | ~6 s con los defaults | Mientras envías audio, el transcriptor no devuelve nada: cada sondeo de 2 s pasado `silence_timeout_s` cuenta un aviso (`status` `transcriber` `degraded`); con `max_silence_turns` avisos seguidos se cierra la sesión. No cuenta con un turno en curso ni sin audio entrante | Avisos `degraded` y después cierre WS con código 1000 |
 | `SESSION_REVALIDATE_INTERVAL_S` | 10s | Tu cliente se borra, se desactiva o se le rota la `client_key` con la sesión abierta | Cierre WS 1008 `"revoked"` en la siguiente revalidación; el turno en curso se cancela |
+| — (inmediato) | — | Otra sesión abre la conversación de esta (§14) | Cierre WS 1008 `"conversation opened elsewhere"`; el turno en curso se cancela |
 | `SESSION_TEARDOWN_S` | 5s | Interno — tope de cada paso cuando el gateway cierra una sesión (cancelar el turno en curso, cerrar servicios, mandarte los últimos mensajes). Sustituye a `SHUTDOWN_DRAIN_S`, que ya no se usa | Ninguno directo. Un turno en curso **no se espera**: se cancela, y recibes su `turn_end` si el socket sigue abierto (ver «Cierre de la sesión por el gateway» abajo) |
 | `PUSH_TTS_DRAIN_TIMEOUT_S` | 30s, **sin progreso** | El TTS de un turno de push (iniciado por el agente) lleva 30s sin producir audio tras el `end` del agente (se reinicia con cada trozo, así que un push largo sonando a ritmo no se corta) | El audio restante de ese push se corta, el TTS se cierra y el `turn_end` se envía igualmente — la sesión sigue viva. Con el mismo tope se acotan las escrituras de texto al TTS de push y su `end()`: si vencen, el resto de ese push llega solo como `token` de texto, sin más audio, y el `turn_end` se envía igualmente. En los turnos normales el mismo tope acota cada operación con el TTS, y la espera del audio cuenta como tiempo **sin progreso** (se reinicia con cada chunk): si vence, el turno sigue solo con texto y también recibe su `turn_end` |
 | `CLIENT_SEND_TIMEOUT_S` | 10s, **por envío** | El gateway no consigue escribirte un mensaje durante ese tiempo porque tu socket **drena por debajo del ritmo al que el gateway escribe**: o has dejado de leer, o lees muy por debajo del caudal de salida (el audio TTS PCM16 a 24 kHz son 48 KB/s). Es un umbral de caudal de drenado, del orden de unos pocos KB/s (teoría) a unas pocas decenas de KB/s (medidas de laboratorio en macOS), según kernel y tasa de producción, y **solo cuando hay más datos en vuelo que los buffers del sistema** (varios MB); con respuestas de tamaño normal y un cliente que lee, no se activa; un cliente que lee a un ritmo razonable no se corta | Cierre WS con código **1013** (`client too slow`) (mejor esfuerzo) si reanudas la lectura en los 2 s siguientes; si no, o si el close frame se pierde, la conexión se corta sin close frame (1006). Los mensajes pendientes se descartan; reconecta y abre una sesión nueva |
@@ -723,6 +765,26 @@ No requiere ningún cambio de cliente si ya reconectas tras un cierre inesperado
 
 - **Turno en curso:** si el gateway cierra la sesión con un turno abierto, el turno se **cancela**, no se espera a que termine, y recibes igualmente su `turn_end` antes del cierre si el socket sigue abierto. Nunca queda un `turn_start` sin su `turn_end` mientras puedas recibirlo. La inactividad (`IDLE_TIMEOUT_S`) y el silencio no cortan un turno en curso. Un push huérfano (abierto sin su fin) no la retiene: a los `TURN_TIMEOUT_S` sin progreso se cierra solo, con su `turn_end` (§10).
 - **Reinicio o parada del gateway:** el servidor cierra cada WebSocket con el código **1012** (*service restart*) en cuanto empieza a apagarse; un turno en curso se corta en ese momento y su `turn_end` ya no te llega (el socket está cerrado). No hay ventana de gracia para terminar el turno. Trata el 1012 como un cierre esperado: reconecta (con una pequeña espera y reintentos, el gateway tarda unos segundos en volver) y abre una sesión nueva con handshake completo.
-- **Revocación:** se cierra con 1008 `"revoked"` antes de cancelar el turno, así que tampoco recibes su `turn_end`.
+- **Revocación y conversación abierta en otra sesión:** se cierra con 1008 (`"revoked"` o `"conversation opened elsewhere"`) antes de cancelar el turno, así que tampoco recibes su `turn_end`.
 
 `SHUTDOWN_DRAIN_S` (antes 30 s) prometía esperar al turno en curso en un reinicio; en la práctica eso no ocurría (el servidor ya había cerrado el socket). Desde #221 ya no se usa: el gateway lo ignora y avisa en el log si sigue en su `.env`.
+
+---
+
+## 14. Conversaciones
+
+**Nuevo en M19.** Cada sesión habla en una **conversación**: una sesión de OpenClaw con su historial, que se puede retomar otro día. El gateway solo guarda su índice (de qué cliente es, con qué agente, cuándo se habló); lo dicho y el título viven en OpenClaw. El administrador las ve todas en `/admin/conversations` (ver el [README](../README.md#admin-requiere-x-admin-token)).
+
+Las reglas son las mismas para todos los clientes; el gateway no mira el tipo de cliente. Que tu cliente use una conversación del día o elija las suyas es una decisión de diseño de tu cliente:
+
+- **Sin `conversation` en el handshake**, la sesión cae en la **conversación del día**: una por cliente, agente y día. El día empieza a las `CONVERSATION_DAY_START_HOUR` (5:00 por defecto, hora local del gateway). Se evalúa **al empezar cada turno tuyo**: una sesión que sigue abierta al pasar el corte (una tele con el socket abierto días) pasa a la conversación del día nuevo en su primer turno después, y lo verás en `turn_start.conversation`. `ready.conversation` es la del momento de conectar. Un push no cambia la conversación de la sesión.
+- **Con `"conversation": "new"`**, el gateway crea una conversación nueva para tu cliente; **con el `id` de una de tus conversaciones** (el que te dio `ready.conversation.id`), la retomas: OpenClaw sigue el hilo. Una sesión que eligió conversación **no cambia nunca de día** por sí sola. Solo puedes pedir conversaciones de tu propio cliente: cualquier otro id cierra con 1008 `"conversation not found"`. Una conversación fija su agente (§1).
+- **Una conversación, una sesión.** Si una sesión nueva abre una conversación que otra sesión tiene abierta (la misma del día, o el mismo id), la vieja se cierra con 1008 `"conversation opened elsewhere"` (§9). Un cliente que reconecta antes de que caiga su socket viejo no queda con dos sesiones vivas.
+- **Push:** llega a la sesión que tiene abierta su conversación; si ninguna la tiene, a la sesión más reciente de su cliente (§10).
+- **Conversaciones de antes de M19.** Antes, cada cliente tenía una única sesión de OpenClaw por agente. El gateway las importa una vez como conversaciones `legacy` de su cliente (se pueden leer y retomar por su id); desde M19 un cliente sin `conversation` empieza cada día una conversación nueva en vez de seguir en aquella.
+- **Home Assistant (`/v1`)** sigue la misma regla del día para su cliente (con `Authorization: Bearer`).
+
+> **Incompatibilidad de protocolo — M19**
+> La sesión de OpenClaw ya no es una por cliente y agente para siempre: es la de la conversación. Un cliente que no manda `conversation` empieza conversación (y contexto) nuevo cada día a las `CONVERSATION_DAY_START_HOUR`, y abrir dos sesiones del mismo cliente en la misma conversación cierra la primera con 1008 `"conversation opened elsewhere"`. Un cliente que necesite dos sesiones a la vez debe abrirlas en conversaciones distintas (`"new"` o ids distintos).
+
+**El panel web** entra con `admin_token` (§1) como el cliente «Panel web»: crea sus conversaciones con `POST /admin/conversations` (o `"conversation": "new"`) y las retoma por su id. Escribir en la conversación de otro cliente no está permitido.
