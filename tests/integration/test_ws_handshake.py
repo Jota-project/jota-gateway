@@ -39,7 +39,7 @@ def test_malformed_json_closes_ws(client):
 
 
 def test_handshake_timeout_closes_ws(client, monkeypatch):
-    """Cliente conecta pero nunca manda el JSON de handshake → cierre 4003
+    """Cliente conecta pero nunca manda el JSON de handshake → cierre 4900
     tras HANDSHAKE_TIMEOUT_S (issue #115).
 
     Bounded via a daemon worker thread + queue.get(timeout=...), not
@@ -80,7 +80,7 @@ def test_handshake_timeout_closes_ws(client, monkeypatch):
                 "connection on handshake timeout, but it returned normally"
             )
     assert isinstance(exc, WebSocketDisconnect)
-    assert (exc.code, exc.reason) == (4003, "handshake timeout")
+    assert (exc.code, exc.reason) == (4900, "handshake timeout")
 
 
 def test_invalid_client_key_log_is_safe_and_correlatable(client, caplog, monkeypatch):

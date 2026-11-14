@@ -8,13 +8,13 @@ from pydantic import ValidationError
 
 from fogar_gateway.api.admin_routes import panel_session
 from fogar_gateway.api.deps import admin_token_matches
-from fogar_gateway.core.agent_policy import AgentPolicyError, resolve_agent
+from fogar_gateway.core.agent_policy import AgentPolicyError, AgentPolicyKind, resolve_agent
 from fogar_gateway.core.config import settings
 from fogar_gateway.core.exceptions import ClientInactive, ClientNotFound
 from fogar_gateway.core.logging import fingerprint_key
 from fogar_gateway.core.network import resolve_client_ip
 from fogar_gateway.core.transport import drop_slow_client
-from fogar_gateway.models.close_codes import Close, CloseFrame
+from fogar_gateway.models.close_codes import Close, CloseFrame, close_sent, send_close
 from fogar_gateway.models.schemas import Client, ClientConfig, Handshake
 from fogar_gateway.services.bridge import FogarBridge
 from fogar_gateway.services.conversations import (
@@ -36,15 +36,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_AGENT_CLOSE = {
+# Una clave por cada `AgentPolicyKind`: un tipo nuevo sin su cierre lo detectan mypy y los tests.
+AGENT_CLOSE: dict[AgentPolicyKind, CloseFrame] = {
     "not_permitted": Close.AGENT_NOT_PERMITTED,
     "not_available": Close.AGENT_NOT_AVAILABLE,
 }
-
-
-async def _close(websocket: WebSocket, frame: CloseFrame) -> None:
-    """Todo cierre de `/ws/stream` en este módulo: código y texto de la tabla (§13)."""
-    await websocket.close(code=frame.code, reason=frame.reason)
 
 
 class _Rejected(Exception):
@@ -101,8 +97,7 @@ async def _open_conversation(
             gateway_info=gateway_info,
         )
     except AgentPolicyError as e:
-        close = _AGENT_CLOSE.get(e.kind, Close.AGENT_NOT_PERMITTED)
-        raise _Rejected(f"agent {e.kind}", close, "agent") from None
+        raise _Rejected(f"agent {e.kind}", AGENT_CLOSE[e.kind], "agent") from None
     if existing is not None:
         conversation = existing
     elif requested == NEW:
@@ -127,7 +122,7 @@ async def gateway_websocket(websocket: WebSocket):
                 f"Handshake rechazado: {len(raw_msg)} caracteres > HANDSHAKE_MAX_BYTES."
             )
             gateway_stats.handshake_rejected("too_large")
-            await _close(websocket, Close.HANDSHAKE_TOO_LARGE)
+            await send_close(websocket, Close.HANDSHAKE_TOO_LARGE)
             return
         msg_data = json.loads(raw_msg)
         handshake = Handshake(**msg_data)
@@ -144,19 +139,19 @@ async def gateway_websocket(websocket: WebSocket):
             detail = f"JSON inválido ({e.msg})"
         logger.error(f"Payload inicial inválido de handshake. {detail}")
         gateway_stats.handshake_rejected("invalid")
-        await _close(websocket, Close.HANDSHAKE_INVALID)
+        await send_close(websocket, Close.HANDSHAKE_INVALID)
         return
     except TimeoutError:
         logger.warning("Handshake no recibido dentro de HANDSHAKE_TIMEOUT_S.")
         gateway_stats.handshake_rejected("timeout")
-        await _close(websocket, Close.HANDSHAKE_TIMEOUT)
+        await send_close(websocket, Close.HANDSHAKE_TIMEOUT)
         return
     except KeyError:
         # #232: starlette's receive_text() lee message["text"]; un primer frame binario
         # (o cualquier mensaje sin "text") lanza KeyError. Sin contenido en el log.
         logger.warning("Handshake rechazado: el primer mensaje no es texto.")
         gateway_stats.handshake_rejected("not_text")
-        await _close(websocket, Close.HANDSHAKE_NOT_TEXT)
+        await send_close(websocket, Close.HANDSHAKE_NOT_TEXT)
         return
     except WebSocketDisconnect:
         logger.info("Cliente desconectado antes o durante el handshake.")
@@ -174,7 +169,7 @@ async def gateway_websocket(websocket: WebSocket):
             f"{who} Handshake rechazado: credencial inválida o cliente inactivo."
         )
         gateway_stats.handshake_rejected("invalid_key")
-        await _close(websocket, Close.INVALID_CREDENTIAL)
+        await send_close(websocket, Close.INVALID_CREDENTIAL)
         return
     # La credencial ya no hace falta: la sesión guarda el handshake sin el admin_token.
     handshake = handshake.model_copy(update={"admin_token": None})
@@ -194,18 +189,18 @@ async def gateway_websocket(websocket: WebSocket):
     except _Rejected as e:
         logger.warning(f"[{client.id}] Handshake rechazado: {e.kind}")
         gateway_stats.handshake_rejected(e.stat)
-        await _close(websocket, e.close)
+        await send_close(websocket, e.close)
         return
     except ConversationClientMissing:
         # Borrado entre la autenticación y el alta de la conversación: su clave ya no vale.
         logger.warning(f"[{client.id}] Handshake rechazado: el cliente ya no existe.")
         gateway_stats.handshake_rejected("invalid_key")
-        await _close(websocket, Close.INVALID_CREDENTIAL)
+        await send_close(websocket, Close.INVALID_CREDENTIAL)
         return
     except Exception as e:  # noqa: BLE001 — frontera: sin conversación no hay sesión (1011)
         logger.error(f"[{client.id}] Fallo al abrir la conversación: {describe_error(e)}")
         logger.debug(f"[{client.id}] conversación: {traceback_no_message(e)}")
-        await _close(websocket, Close.SETUP_FAILED)
+        await send_close(websocket, Close.SETUP_FAILED)
         return
     resolved_agent = conversation.current.agent
 
@@ -257,7 +252,7 @@ async def gateway_websocket(websocket: WebSocket):
             session_registry.close(session_id, "error")  # no-op si no llegó a registrarse
             await td.step(sender.aclose(settings.SESSION_TEARDOWN_S), "cierre de la salida")
             await td.step(
-                _close(websocket, Close.SETUP_FAILED),
+                send_close(websocket, Close.SETUP_FAILED),
                 "cierre del WebSocket",
                 settings.SESSION_TEARDOWN_S,
             )
@@ -271,6 +266,9 @@ async def gateway_websocket(websocket: WebSocket):
     # bridge.run() already calls close_all() itself in its own finally on
     # the normal-completion path, so this always runs it a second time —
     # close_all() is idempotent, the first call's status wins.
+    # `clean`: bridge.run() volvió sin excepción. Cualquier otra salida (una excepción en el
+    # arranque, `ready` sin enviar) que no haya mandado ya su cierre de la tabla cierra con 1011.
+    clean = False
     try:
         try:
             await bridge.connect_internal_services()
@@ -279,7 +277,7 @@ async def gateway_websocket(websocket: WebSocket):
                 f"[{client.id}] Fallo al inicializar puentes internos: {describe_error(e)}"
             )
             logger.debug(f"[{client.id}] puentes internos: {traceback_no_message(e)}")
-            await _close(websocket, Close.SETUP_FAILED)
+            await send_close(websocket, Close.SETUP_FAILED)
             return
 
         # 3.5 HEALTH CHECK — verifica disponibilidad de servicios antes de abrir la sesión
@@ -298,7 +296,7 @@ async def gateway_websocket(websocket: WebSocket):
                 await sender.flush()  # deliver the queued `status` before the 1011 close
             except ClientGone:
                 pass
-            await _close(websocket, Close.ORCHESTRATOR_UNAVAILABLE)
+            await send_close(websocket, Close.ORCHESTRATOR_UNAVAILABLE)
             return
 
         # 3.55 CONVERSACIÓN (M19): solo una sesión que pasó el health check la abre; la que la
@@ -340,6 +338,8 @@ async def gateway_websocket(websocket: WebSocket):
             )
             logger.debug(f"[{client.id}] puente principal: {traceback_no_message(e)}")
             bridge.note_close_reason("error")
+        else:
+            clean = True
     finally:
         # Each step runs even if this handler is cancelled; the cancellation is
         # re-raised at the end (#221). close_all() bounds each of its own steps.
@@ -347,10 +347,13 @@ async def gateway_websocket(websocket: WebSocket):
             await td.step(bridge.close_all(status="error"), "close_all")
             # close_all() queued session_end; drain it before the socket goes away.
             await td.step(sender.aclose(settings.SESSION_TEARDOWN_S), "drenado de la salida")
-            if "DISCONNECTED" not in websocket.client_state.name:
+            # Un solo cierre por sesión: si ya salió uno de la tabla (4200, 4102, 1011 del
+            # arranque, 1013…), ese es el que vale.
+            if close_sent(websocket) is None and "DISCONNECTED" not in websocket.client_state.name:
                 # 1000 si la sesión acabó bien (inactividad, silencio); 1011 si fue un fallo.
-                frame = Close.INTERNAL_ERROR if bridge.ended_in_error else Close.NORMAL
+                ok = clean and not bridge.ended_in_error
+                frame = Close.NORMAL if ok else Close.INTERNAL_ERROR
                 await td.step(
-                    _close(websocket, frame), "cierre del WebSocket", settings.SESSION_TEARDOWN_S
+                    send_close(websocket, frame), "cierre del WebSocket", settings.SESSION_TEARDOWN_S
                 )
             logger.info(f"[{client.id}] --- Sesión de entrada WebSocket Concluida ---")

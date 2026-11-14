@@ -8,7 +8,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from fogar_gateway.core.config import settings
 from fogar_gateway.core.exceptions import ClientInactive, ClientNotFound
-from fogar_gateway.models.close_codes import Close, CloseFrame
+from fogar_gateway.models.close_codes import Close, CloseFrame, send_close
 from fogar_gateway.models.schemas import Client, ClientConfig, Handshake
 from fogar_gateway.services.conversations import Conversation, SessionConversation
 from fogar_gateway.services.db_client import db_client
@@ -589,7 +589,7 @@ class FogarBridge:
             await td.step(self._sender.flush(), "turn_end antes del cierre", limit)
         try:
             await asyncio.wait_for(
-                self.client_ws.close(code=frame.code, reason=frame.reason),
+                send_close(self.client_ws, frame),
                 timeout=settings.CLIENT_SEND_TIMEOUT_S,
             )
         except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido

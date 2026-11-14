@@ -6,7 +6,7 @@ FastAPI, no WebSocket. Translation of AgentPolicyError into wire formats
 (close 4020/4021 / 403 JSON body) happens at the call sites.
 """
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Literal, Optional
 
 from fogar_gateway.core.config import settings
 
@@ -32,6 +32,9 @@ def agent_from_model(model: str | None) -> str | None:
     return name
 
 
+AgentPolicyKind = Literal["not_permitted", "not_available"]
+
+
 class AgentPolicyError(Exception):
     """Raised when the requested agent violates per-client policy or the
     OpenClaw global roster.
@@ -42,7 +45,7 @@ class AgentPolicyError(Exception):
         agent_name: the offending agent, or None if no name is meaningful.
     """
 
-    def __init__(self, kind: str, agent_name: str | None, message: str):
+    def __init__(self, kind: AgentPolicyKind, agent_name: str | None, message: str):
         super().__init__(message)
         self.kind = kind
         self.agent_name = agent_name

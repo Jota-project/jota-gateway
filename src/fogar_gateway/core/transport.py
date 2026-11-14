@@ -14,7 +14,7 @@ from typing import Any
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from fogar_gateway.models.close_codes import Close
+from fogar_gateway.models.close_codes import Close, send_close
 
 logger = logging.getLogger(__name__)
 
@@ -69,10 +69,9 @@ async def drop_slow_client(
                 await record()
             except Exception as e:  # noqa: BLE001 — frontera: el abort va igual
                 logger.warning("drop_slow_client: record falló (%s).", type(e).__name__)
-        frame = Close.CLIENT_TOO_SLOW
         try:
             await asyncio.wait_for(
-                websocket.close(code=frame.code, reason=frame.reason), timeout=SLOW_CLOSE_GRACE_S
+                send_close(websocket, Close.CLIENT_TOO_SLOW), timeout=SLOW_CLOSE_GRACE_S
             )
         except Exception as e:  # noqa: BLE001 — cortesía: el abort de abajo es la salida real
             # TimeoutError (close stuck behind the unread data), WebSocketDisconnect,

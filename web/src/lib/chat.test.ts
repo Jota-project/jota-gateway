@@ -100,8 +100,8 @@ describe('closeAction', () => {
   it('«conversation opened elsewhere» (4102) nunca reconecta solo', () => {
     expect(closeAction(4102)).toBe('elsewhere')
   })
-  it('para con los 4xxx que no se arreglan reconectando, sin mirar el texto', () => {
-    for (const code of [4000, 4001, 4002, 4010, 4020, 4021, 4100, 4101, 4200, 4999]) {
+  it('para con 4000–4899 (también los que no conoce) y 1008, sin mirar el texto', () => {
+    for (const code of [4000, 4001, 4002, 4010, 4020, 4021, 4100, 4101, 4200, 4350, 4899, 1008]) {
       expect(closeAction(code)).toBe('stop')
     }
     expect(stopText(4100)).toMatch(/ya no existe/)
@@ -110,7 +110,7 @@ describe('closeAction', () => {
     expect(stopText(4321)).toBe('El gateway no aceptó la conexión del chat.')
   })
   it('reintenta tras caídas, fallos, reinicios, lentitud y un handshake a destiempo', () => {
-    for (const code of [1006, 1011, 1012, 1013, 4003]) expect(closeAction(code)).toBe('retry')
+    for (const code of [1006, 1011, 1012, 1013, 4900, 4950]) expect(closeAction(code)).toBe('retry')
   })
   it('con el acceso retirado (4200) para y lo dice: lo decide la persona', () => {
     expect(closeAction(4200)).toBe('stop')

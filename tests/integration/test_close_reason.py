@@ -4,13 +4,16 @@ import time
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlmodel import Session
+from starlette.websockets import WebSocket as StarletteWebSocket
 from starlette.websockets import WebSocketDisconnect
 
 from fogar_gateway.api import routes
 from fogar_gateway.core.config import settings
+from fogar_gateway.db.models import ClientRecord
 from fogar_gateway.main import app
 from fogar_gateway.services.stats import gateway_stats
-from tests.integration.conftest import VALID_KEY
+from tests.integration.conftest import CLIENT_ID, VALID_KEY
 
 HANDSHAKE = {"client_key": VALID_KEY, "input_mode": "text", "output_mode": ["text"]}
 
@@ -150,7 +153,7 @@ def test_handshake_rejections_counted(client, monkeypatch):
     with client.websocket_connect("/ws/stream") as ws:
         with pytest.raises(WebSocketDisconnect) as exc:
             ws.receive_text()
-    assert (exc.value.code, exc.value.reason) == (4003, "handshake timeout")
+    assert (exc.value.code, exc.value.reason) == (4900, "handshake timeout")
 
     assert gateway_stats.snapshot()["handshake_rejected"] == {
         "invalid_key": 1,
@@ -161,3 +164,78 @@ def test_handshake_rejections_counted(client, monkeypatch):
         "timeout": 1,
     }
     assert gateway_stats.snapshot()["sessions_closed"] == {}
+
+
+# --- Un solo cierre por sesión, y nunca un 1000 tras un fallo --------------------------------
+
+
+@pytest.fixture
+def closes(monkeypatch):
+    """Cada close que el gateway intenta mandar, también los que Starlette rechazaría."""
+    sent: list = []
+    real = StarletteWebSocket.close
+
+    async def spy(self, code=1000, reason=None):
+        sent.append((code, reason))
+        await real(self, code=code, reason=reason)
+
+    monkeypatch.setattr(StarletteWebSocket, "close", spy)
+    return sent
+
+
+def test_a_setup_failure_without_its_own_close_is_1011_not_1000(client, monkeypatch, closes):
+    """Una excepción en el arranque que no manda su cierre (aquí, al tomar la conversación) sale
+    como 1011: sin `ready`, la sesión no acabó bien."""
+
+    async def broken_claim(self):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(routes.FogarBridge, "claim_conversation", broken_claim)
+    # La excepción sigue su camino hasta uvicorn (que la registra); el TestClient la relanza al
+    # salir. Antes, el cliente ya recibió su cierre.
+    with pytest.raises(RuntimeError), client.websocket_connect("/ws/stream") as ws:
+        ws.send_json(HANDSHAKE)
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+    assert (exc.value.code, exc.value.reason) == (1011, "internal error")
+    assert closes == [(1011, "internal error")]
+
+
+def test_a_table_close_is_the_only_close(client, mock_orchestrator, closes):
+    """Tras el 1011 del health check, el fin de sesión no intenta un segundo cierre."""
+    mock_orchestrator.ping = AsyncMock(return_value=False)
+    with client.websocket_connect("/ws/stream") as ws:
+        ws.send_json(HANDSHAKE)
+        assert ws.receive_json()["type"] == "status"
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_text()
+    assert closes == [(1011, "orchestrator unavailable")]
+
+
+def test_a_revocation_sends_one_close(client, db_engine, monkeypatch, closes):
+    monkeypatch.setattr(settings, "SESSION_REVALIDATE_INTERVAL_S", 0.05)
+    with client.websocket_connect("/ws/stream") as ws:
+        ws.send_json(HANDSHAKE)
+        assert ws.receive_json()["type"] == "ready"
+        with Session(db_engine) as s:
+            rec = s.get(ClientRecord, CLIENT_ID)
+            rec.is_active = False
+            s.add(rec)
+            s.commit()
+        with pytest.raises(WebSocketDisconnect) as exc:
+            while True:
+                ws.receive_json()
+    assert (exc.value.code, exc.value.reason) == (4200, "credential revoked")
+    assert _wait_for(lambda: _session_end_meta() is not None)
+    assert closes == [(4200, "credential revoked")]
+
+
+def test_an_idle_close_is_the_only_close(client, monkeypatch, closes):
+    monkeypatch.setattr(settings, "IDLE_TIMEOUT_S", 0.1)
+    with client.websocket_connect("/ws/stream") as ws:
+        ws.send_json(HANDSHAKE)
+        assert ws.receive_json()["type"] == "ready"
+        with pytest.raises(WebSocketDisconnect):
+            while True:
+                ws.receive_json()
+    assert closes == [(1000, "session ended")]
