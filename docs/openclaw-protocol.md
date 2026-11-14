@@ -856,6 +856,11 @@ The gateway uses them only through `OpenClawClient.request`, which refuses any m
 - **A key with no session is not an error:** `ok:true` with `messages: []`, `totalMessages: 0` and
   a `sessionInfo` for that key (`updatedAt: null`). An unknown conversation is the gateway's 404,
   never OpenClaw's.
+- **Agent ids** (read in `dist/agent-id-*.mjs`, 2026.10.5): `VALID_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i`,
+  canonical form lower-case; anything else is normalised (invalid runs → `-`) or falls back to
+  `main`. The gateway validates `DEFAULT_AGENT` and a client's `default_agent`/`allowed_agents`
+  with the same pattern (`core/session_key.AGENT_ID_PATTERN`): a `:` or a space would also break
+  the `agent:{agent}:fogar-{id}` key.
 - Not checked live: an archived session's history (OpenClaw's docs say requesting history restores
   it from cold storage) and the `deltaCursor` catch-up. The gateway does not use the cursor.
 

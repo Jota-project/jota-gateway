@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from fogar_gateway import paths
 from fogar_gateway.access import parse_public_urls
+from fogar_gateway.core.session_key import AGENT_ID_PATTERN
 
 _logger = logging.getLogger(__name__)
 
@@ -113,9 +114,11 @@ class Settings(BaseSettings):
     OPENCLAW_TOKEN: str = ""
     # Agente por defecto de la instalación (#245): entra en la cascada de resolve_agent() entre
     # el `default_agent` del cliente y el agente por defecto de OpenClaw. Vacío = el de OpenClaw.
-    # Misma regla que el `default_agent` de un cliente (admin_schemas.AgentName): sin espacios
-    # alrededor y hasta 200 caracteres; vacío = sin agente de instalación.
-    DEFAULT_AGENT: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] = ""
+    # Misma regla que el `default_agent` de un cliente (admin_schemas.AgentName), la de un id de
+    # agente de OpenClaw (AGENT_ID_PATTERN); vacío = sin agente de instalación.
+    DEFAULT_AGENT: Annotated[
+        str, StringConstraints(strip_whitespace=True, pattern=f"^$|{AGENT_ID_PATTERN}")
+    ] = ""
 
     # Hora local del host (0-23) a la que empieza el día de las conversaciones por defecto (M19):
     # una por cliente, agente y día. Un turno que empieza tras el corte pasa a la del día nuevo.

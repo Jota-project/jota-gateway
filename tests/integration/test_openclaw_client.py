@@ -836,6 +836,9 @@ async def test_terminal_event_then_generator_close_does_not_send_spurious_chat_a
 
     async def drive_and_close():
         event = await stream.__anext__()
+        if event.type == "status":  # M19: the ack announces the turn as accepted first
+            assert event.content == "accepted"
+            event = await stream.__anext__()
         assert event.type == "error"
         await stream.aclose()
 

@@ -44,15 +44,24 @@ def run_migrations_online() -> None:
     # memoria monkeypatcheado por la fixture `db_engine` de integración).
     connectable = get_engine()
     with connectable.connect() as connection:
-        if connection.dialect.name == "sqlite":
+        sqlite = connection.dialect.name == "sqlite"
+        if sqlite:
             # Las conexiones abren con foreign_keys=ON (db/database.py); una migración por lotes
             # recrea tablas (copia, borra, renombra) y, con ellas activas, borrar `clients`
             # borraría en cascada sus conversaciones. Fuera de transacción, o SQLite lo ignora.
             connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
             connection.commit()
-        context.configure(connection=connection, target_metadata=target_metadata)
-        with context.begin_transaction():
-            context.run_migrations()
+        try:
+            context.configure(connection=connection, target_metadata=target_metadata)
+            with context.begin_transaction():
+                context.run_migrations()
+        finally:
+            if sqlite:
+                # La conexión vuelve al pool del engine compartido: el listener de `connect` no
+                # corre al reusarla, así que se deja como la recibió (ON).
+                connection.rollback()
+                connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+                connection.commit()
 
 
 if context.is_offline_mode():

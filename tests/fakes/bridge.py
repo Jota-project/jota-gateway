@@ -202,6 +202,9 @@ class GoneSender:
     def queue_stats(self) -> dict:
         return {"pending_msgs": 0, "pending_bytes": 0, "peak_msgs": 0, "peak_bytes": 0}
 
+    def restrict(self, allowed: frozenset[str]) -> None:
+        return None
+
 
 class DirectSender:
     """Passthrough: writes straight to the socket, no queue. For tests of the
@@ -224,3 +227,6 @@ class DirectSender:
 
     def queue_stats(self) -> dict:
         return {"pending_msgs": 0, "pending_bytes": 0, "peak_msgs": 0, "peak_bytes": 0}
+
+    def restrict(self, allowed: frozenset[str]) -> None:
+        return None

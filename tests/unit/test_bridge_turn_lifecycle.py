@@ -568,6 +568,9 @@ class _YieldingSender:
     def queue_stats(self):
         return self._inner.queue_stats()
 
+    def restrict(self, allowed):
+        self._inner.restrict(allowed)
+
 
 async def test_a_send_while_a_push_opens_never_leaves_two_turns_open(make_bridge):
     """#202: the push is registered and opened under the turn lock; a `send` that arrives

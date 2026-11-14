@@ -265,29 +265,38 @@ class ConversationService:
         return len(imported)
 
     def _import_legacy(self, rows: list[dict]) -> list[Conversation]:
+        """Un commit por cliente: uno borrado a mitad (la clave foránea rechaza sus filas) no
+        tumba la importación de los demás; las suyas, simplemente, no se importan."""
         with Session(self._get_engine()) as s:
             client_ids = set(s.exec(select(ClientRecord.id)).all())
             known = set(s.exec(select(ConversationRecord.session_key)).all())
-            imported = []
-            for row in rows:
-                parsed = _legacy_key(row.get("key"), client_ids)
-                if parsed is None or row["key"] in known:
+        by_client: dict[str, list[ConversationRecord]] = {}
+        for row in rows:
+            parsed = _legacy_key(row.get("key"), client_ids)
+            if parsed is None or row["key"] in known:
+                continue
+            agent, client_id = parsed
+            record = _new_record(client_id, agent, "legacy", None, session_key=row["key"])
+            created = _ms_to_datetime(row.get("createdAt"))
+            if created is not None:
+                record.created_at = created
+            record.last_turn_at = _ms_to_datetime(row.get("lastInteractionAt") or row.get("updatedAt"))
+            known.add(record.session_key)
+            by_client.setdefault(client_id, []).append(record)
+        imported: list[Conversation] = []
+        for client_id, records in by_client.items():
+            with Session(self._get_engine()) as s:
+                s.add_all(records)
+                try:
+                    s.commit()
+                except IntegrityError:
+                    s.rollback()
+                    logger.info(f"Importación legacy: el cliente {client_id} ya no existe; se omite")
                     continue
-                agent, client_id = parsed
-                record = _new_record(client_id, agent, "legacy", None, session_key=row["key"])
-                created = _ms_to_datetime(row.get("createdAt"))
-                if created is not None:
-                    record.created_at = created
-                record.last_turn_at = _ms_to_datetime(
-                    row.get("lastInteractionAt") or row.get("updatedAt")
-                )
-                s.add(record)
-                known.add(record.session_key)
-                imported.append(record)
-            s.commit()
-            for record in imported:
-                s.refresh(record)
-            return [Conversation.from_record(r) for r in imported]
+                for record in records:
+                    s.refresh(record)
+                imported.extend(Conversation.from_record(r) for r in records)
+        return imported
 
 
 def _require_client(s: Session, client_id: str) -> None:
@@ -358,32 +367,47 @@ async def list_openclaw_sessions(orchestrator: _Requester, *, compact: bool = Fa
 # Vida de los títulos leídos de OpenClaw (como la caché de /admin/access): la lista de
 # conversaciones no recorre `sessions.list` entero en cada petición.
 TITLES_TTL_S = 20.0
+# Lo que se recuerda un fallo al leerlos (OpenClaw caído o colgado).
+TITLES_FAILURE_TTL_S = 5.0
 
 
 class TitleCache:
     """`sessionKey` → título, de `sessions.list` (con títulos derivados), cacheado TITLES_TTL_S.
 
-    Las peticiones a la vez comparten una sola lectura. Un fallo no se cachea: devuelve {}
-    (la lista sale sin títulos) y la siguiente petición vuelve a preguntar."""
+    Las peticiones a la vez esperan la misma lectura (una tarea compartida: si una petición se
+    cancela, la lectura sigue para las demás). Un fallo se recuerda TITLES_FAILURE_TTL_S: con
+    OpenClaw colgado, las listas salen enseguida sin títulos en vez de esperar cada una su tope."""
 
     def __init__(self) -> None:
         self._titles: dict[str, str] = {}
         self._at: float | None = None
-        self._lock = asyncio.Lock()
+        self._failed_at: float | None = None
+        self._fetch: asyncio.Task | None = None
 
     async def get(self, orchestrator: _Requester) -> dict[str, str]:
-        async with self._lock:
-            now = time.monotonic()
-            if self._at is not None and now - self._at < TITLES_TTL_S:
-                return self._titles
-            try:
-                rows = await list_openclaw_sessions(orchestrator)
-            except Exception as e:  # noqa: BLE001 — frontera: sin OpenClaw la lista sale sin títulos
-                logger.info(f"Conversaciones sin títulos: OpenClaw no responde ({describe_error(e)})")
-                return {}
-            self._titles = {r["key"]: t for r in rows if (t := session_title(r)) is not None}
-            self._at = now
+        now = time.monotonic()
+        if self._at is not None and now - self._at < TITLES_TTL_S:
             return self._titles
+        if self._failed_at is not None and now - self._failed_at < TITLES_FAILURE_TTL_S:
+            return {}
+        if self._fetch is None or self._fetch.done():
+            self._fetch = asyncio.create_task(self._read(orchestrator), name="conversation_titles")
+        return await asyncio.shield(self._fetch)
+
+    async def _read(self, orchestrator: _Requester) -> dict[str, str]:
+        try:
+            rows = await list_openclaw_sessions(orchestrator)
+        except Exception as e:  # noqa: BLE001 — frontera: sin OpenClaw la lista sale sin títulos
+            logger.info(f"Conversaciones sin títulos: OpenClaw no responde ({describe_error(e)})")
+            self._failed_at = time.monotonic()
+            return {}
+        self._titles = {r["key"]: t for r in rows if (t := session_title(r)) is not None}
+        self._at, self._failed_at = time.monotonic(), None
+        return self._titles
+
+    async def aclose(self) -> None:
+        async with Teardown("títulos de conversaciones") as td:
+            await td.cancel(self._fetch, "lectura de títulos", 5.0)
 
 
 def session_title(row: dict) -> str | None:

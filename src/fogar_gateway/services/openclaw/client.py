@@ -37,7 +37,7 @@ from fogar_gateway.services.openclaw.registry import (
     TurnInProgress,
     TurnRegistry,
 )
-from fogar_gateway.services.protocol import OrchestratorEvent
+from fogar_gateway.services.protocol import ACCEPTED, OrchestratorEvent
 from fogar_gateway.services.reconnection import describe_error, traceback_no_message
 from fogar_gateway.services.teardown import Teardown
 
@@ -794,7 +794,7 @@ class OpenClawClient:
 
         req_id = str(uuid.uuid4())
         try:
-            queue = self._turn_registry.register(req_id, session_key)
+            queue = self._turn_registry.register(req_id, session_key, announce=True)
         except TurnInProgress:
             yield OrchestratorEvent(type="error", content=TURN_IN_PROGRESS_ERROR)
             return
@@ -850,6 +850,8 @@ class OpenClawClient:
                         logger.warning("OpenClaw agent failed mid-turn (chat state=error)")
                         yield OrchestratorEvent(type="error", content=ORCHESTRATOR_ERROR)
                         break
+                elif kind == "accepted":
+                    yield OrchestratorEvent(type="status", content=ACCEPTED)
                 elif kind == "tool":
                     tool_call = ToolCallEvent.from_session_tool_payload(data)
                     if tool_call is not None:

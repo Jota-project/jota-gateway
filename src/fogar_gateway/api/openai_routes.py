@@ -20,11 +20,7 @@ from fogar_gateway.core.session_key import make_session_key
 from fogar_gateway.models.schemas import Client, ClientConfig
 from fogar_gateway.services.conversations import ConversationClientMissing, note_turn_safely
 from fogar_gateway.services.db_client import db_client
-from fogar_gateway.services.openclaw.client import (
-    ORCHESTRATOR_SEND_FAILED_ERROR,
-    ORCHESTRATOR_UNAVAILABLE_ERROR,
-    _traceback_no_message,
-)
+from fogar_gateway.services.openclaw.client import _traceback_no_message
 from fogar_gateway.services.openclaw.registry import TURN_IN_PROGRESS_ERROR
 from fogar_gateway.services.orchestration import OrchestratorError, call_orchestrator
 from fogar_gateway.services.pipeline_tracker import PipelineTracker
@@ -34,11 +30,6 @@ from fogar_gateway.services.session_registry import SessionStatus
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1")
-
-# Errores de un turno que no llegó a empezar en OpenClaw: no cuenta en su conversación (M19).
-_NOT_STARTED = frozenset(
-    {TURN_IN_PROGRESS_ERROR, ORCHESTRATOR_UNAVAILABLE_ERROR, ORCHESTRATOR_SEND_FAILED_ERROR}
-)
 
 
 def _log_unexpected_error(exc: BaseException) -> None:
@@ -202,10 +193,10 @@ async def chat_completions(
         session_key = make_session_key(resolved_agent, client_id)
         conversation_id = None
 
-    async def _count_turn(error: BaseException | None) -> None:
-        """El turno cuenta en su conversación si llegó a empezar: no un rechazo previo al
-        chat.send (turno en curso, OpenClaw caído, envío fallido)."""
-        if conversation_id is not None and (error is None or str(error) not in _NOT_STARTED):
+    async def _count_turn() -> None:
+        """El turno cuenta en su conversación en cuanto OpenClaw acepta su chat.send (aunque
+        el cliente se vaya después); un rechazo previo no cuenta."""
+        if conversation_id is not None:
             await note_turn_safely(request.app.state.conversations, conversation_id)
 
     tracker = _make_http_tracker(f"http:{completion_id}", session_registry, client_id)
@@ -237,6 +228,7 @@ async def chat_completions(
                         session_key,
                         tracker=tracker,
                         on_token=_on_token,
+                        on_accepted=_count_turn,
                     )
                 except OrchestratorError as e:
                     # Stable code (orchestrator_error, turn_timeout...): safe to relay (#228).
@@ -252,14 +244,14 @@ async def chat_completions(
                 else:
                     status = "completed"
                 finally:
-                    await queue.put(
-                        None
-                    )  # sentinel siempre primero — garantiza que el generador puede avanzar
-                    await _count_turn(orchestrator_error)
+                    # El tracker, antes del centinela: al verlo, el generador cancela esta tarea
+                    # si aún no terminó, y el cierre se quedaría sin hacer (la sesión, activa).
                     try:
                         await tracker.close(status=status)
                     except Exception as e:  # noqa: BLE001 — limpieza: va a DEBUG
                         logger.debug("HTTP tracker close failed (%s)", describe_error(e))
+                    finally:
+                        await queue.put(None)  # siempre, también si el cierre falló
 
             task = asyncio.create_task(_run())
             try:
@@ -318,6 +310,7 @@ async def chat_completions(
             session_key,
             tracker=tracker,
             on_token=_on_token,
+            on_accepted=_count_turn,
         )
     except OrchestratorError as e:
         logger.error("HTTP orchestrator error (%s)", e)
@@ -330,7 +323,6 @@ async def chat_completions(
         status = "completed"
     finally:
         await tracker.close(status=status)
-    await _count_turn(orchestrator_error)
 
     if orchestrator_error:
         if str(orchestrator_error) == TURN_IN_PROGRESS_ERROR:

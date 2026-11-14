@@ -203,6 +203,7 @@ async def _lifespan_body(app: FastAPI):
             for provider in (speech.stt, speech.tts):
                 await td.step(provider.aclose(), f"cierre del proveedor {provider.name}")
             await td.step(legacy_import.aclose(), "importación de conversaciones")
+            await td.step(app.state.conversation_titles.aclose(), "títulos de conversaciones")
             await td.step(openclaw.close(), "cierre de OpenClaw")
             # 3. Notification tasks still in flight.
             for task in list(_notification_tasks):

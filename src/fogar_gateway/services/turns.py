@@ -933,6 +933,36 @@ class TurnController:
 
     # ── Cierre ────────────────────────────────────────────────────────────
 
+    async def let_go(self, limit: float) -> None:
+        """La sesión pierde su conversación (M19: desplazada o revocada). Antes que su TTS o sus
+        turn_end, que nada suyo siga corriendo en OpenClaw en su clave: cancela el turno del
+        usuario hasta que su stream suelta la clave (su chat.abort sale al recibir la
+        cancelación, antes de cerrar su TTS) y aborta el push abierto y cualquier otro run
+        activo en ella. La espera del turno, acotada por `limit`; cada chat.abort, por el suyo.
+        Después la sesión cierra sus turnos como siempre (`close`)."""
+        self._closing = True
+        key = self._session_key()
+        task = self._user_task
+        if task is not None and not task.done():
+            self._mark_cancel(task, "closed")
+            task.cancel()
+            released = asyncio.ensure_future(self._turn_registry.wait_released(key))
+            try:
+                await asyncio.wait(
+                    {task, released}, timeout=limit, return_when=asyncio.FIRST_COMPLETED
+                )
+            finally:
+                released.cancel()
+        runs = self._turn_registry.active_runs(key)
+        push = self._push
+        if push is not None and not push.ended:
+            self._abort_run(push.run_id)
+        for run_id in runs:
+            self._turn_registry.abort_run(run_id)
+        pushing_here = push is not None and not push.ended and push.session_key == key
+        if (runs or pushing_here) and self._may_abort(key):
+            await self._orchestrator.abort(key)
+
     def stop_intake(self) -> None:
         """Desde ya, ni turnos nuevos (G-09) ni eventos de push."""
         self._closing = True

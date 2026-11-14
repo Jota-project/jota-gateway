@@ -50,6 +50,8 @@ class TurnRegistry:
     """Routes active OpenClaw turns (req_id / session_key) to asyncio queues.
 
     Queue message protocol:
+      ("accepted", run_id)    — the turn's chat.send was acked ok (first item; only for a
+                                registration with `announce=True`, stream_response's)
       ("chat", payload_dict)  — streaming token
       ("done", frame_dict)    — final res frame
       ("error", str)          — internal error (e.g. reconnect)
@@ -94,10 +96,38 @@ class TurnRegistry:
         # newer turn that has since taken over the same session_key, instead
         # of popping by session_key alone (see issue #99).
         self._session_owner: dict[str, str] = {}
+        # req_ids whose ack is announced in their queue (register(announce=True)).
+        self._announce: set[str] = set()
+        # session_key -> waiters of wait_released() (M19: a displaced session letting go).
+        self._release_waiters: dict[str, list[asyncio.Future]] = {}
 
-    def register(self, req_id: str, session_key: str, *, by_run: bool = True) -> asyncio.Queue:
+    async def wait_released(self, session_key: str) -> None:
+        """Until no turn owns `session_key` (at once if none does). A turn's stream releases
+        its key in its `finally`, right before sending its chat.abort."""
+        if session_key not in self._sessions:
+            return
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        waiters = self._release_waiters.setdefault(session_key, [])
+        waiters.append(fut)
+        try:
+            await fut
+        finally:
+            if fut in waiters:
+                waiters.remove(fut)
+            if not waiters:
+                self._release_waiters.pop(session_key, None)
+
+    def _wake_released(self, session_key: str) -> None:
+        for fut in self._release_waiters.pop(session_key, []):
+            if not fut.done():
+                fut.set_result(None)
+
+    def register(
+        self, req_id: str, session_key: str, *, by_run: bool = True, announce: bool = False
+    ) -> asyncio.Queue:
         """`by_run=False` (chat.abort's own registration, whose answer never reaches the
-        dispatcher) takes every frame of the key, whatever its run."""
+        dispatcher) takes every frame of the key, whatever its run. `announce=True` puts an
+        ("accepted", runId) first in the queue when OpenClaw acks the chat.send (M19)."""
         if session_key in self._sessions:
             raise TurnInProgress(session_key)
         size = self._max_queue_size if self._max_queue_size is not None else settings.TURN_QUEUE_MAX
@@ -107,6 +137,8 @@ class TurnRegistry:
         self._session_owner[session_key] = req_id
         if not by_run:
             self._run_of_req[req_id] = None
+        if announce:
+            self._announce.add(req_id)
         return queue
 
     def unregister(self, session_key: str, req_id: str) -> None:
@@ -117,9 +149,11 @@ class TurnRegistry:
             self._sessions.pop(session_key, None)
             self._session_owner.pop(session_key, None)
             self._overflowed.discard(session_key)
+            self._wake_released(session_key)
         self._req_to_session.pop(req_id, None)
         self._run_of_req.pop(req_id, None)
         self._held.pop(req_id, None)
+        self._announce.discard(req_id)
 
     # ── runId (#285) ──────────────────────────────────────────────────────
 
@@ -140,6 +174,9 @@ class TurnRegistry:
         queue = self._sessions.get(session_key)
         if queue is None or self._session_owner.get(session_key) != req_id:
             return
+        if req_id in self._announce:
+            # OpenClaw accepted the turn's chat.send (M19: /v1 counts the turn from here).
+            self._deliver(session_key, queue, ("accepted", run_id))
         for item, item_run in held:
             if run_id is None or item_run is None or item_run == run_id:
                 self._deliver(session_key, queue, item)
@@ -315,11 +352,14 @@ class TurnRegistry:
         for queue in self._sessions.values():
             self._force_put(queue, ("error", message))
         self._overflowed.clear()
+        for session_key in list(self._sessions):
+            self._wake_released(session_key)
         self._sessions.clear()
         self._req_to_session.clear()
         self._session_owner.clear()
         self._run_of_req.clear()
         self._held.clear()
+        self._announce.clear()
         # The connection is gone: what was running on it is not known any more.
         self._active_runs.clear()
 

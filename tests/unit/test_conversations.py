@@ -1,6 +1,7 @@
 """Conversaciones (M19): reglas del día, la tabla, la importación de antes de M19, el índice
 y el reparto del push (`ClientRegistry`). services/conversations.py."""
 
+import asyncio
 from datetime import UTC, date, datetime
 from unittest.mock import MagicMock
 
@@ -206,7 +207,31 @@ async def test_titles_are_cached_and_failures_are_not():
     OpenClaw.fail = True
     assert await cache.get(OpenClaw()) == {}
     assert await cache.get(OpenClaw()) == {}
-    assert len(reads) == 3  # un fallo no se cachea
+    assert len(reads) == 2  # un fallo se recuerda un rato: la segunda no pregunta
+    cache._failed_at -= 60  # pasado TITLES_FAILURE_TTL_S
+    assert await cache.get(OpenClaw()) == {}
+    assert len(reads) == 3
+
+
+async def test_concurrent_title_requests_share_one_read():
+    started, release = asyncio.Event(), asyncio.Event()
+    reads = []
+
+    class Hanging:
+        async def request(self, method, params, timeout=10.0):
+            reads.append(method)
+            started.set()
+            await release.wait()
+            raise TimeoutError()
+
+    cache = TitleCache()
+    waiters = [asyncio.create_task(cache.get(Hanging())) for _ in range(5)]
+    await started.wait()
+    waiters[0].cancel()  # una petición que se va no cancela la lectura de las demás
+    release.set()
+    results = await asyncio.gather(*waiters[1:])
+    assert results == [{}] * 4 and reads == ["sessions.list"]
+    assert await cache.get(Hanging()) == {} and reads == ["sessions.list"]  # fallo recordado
 
 
 # ── Sesiones de antes de M19 ──────────────────────────────────────────────
@@ -250,6 +275,19 @@ async def test_legacy_sessions_are_imported_once(service, engine):
     assert service.index.get("agent:main:tv").client_id == "tv"
     # Paginado y con archivadas, sin pedir títulos.
     assert all(p["archived"] == "all" and p["rowMode"] == "compact" for _, p in openclaw.calls)
+
+
+async def test_a_client_deleted_mid_import_does_not_fail_the_others(service, engine, monkeypatch):
+    """Con claves foráneas, un commit por cliente: uno borrado entre la lectura de clientes y
+    su alta no se importa, y los demás sí."""
+    real = conv_mod._legacy_key
+    # La importación leyó los dos clientes; `web` se borra antes de su commit.
+    monkeypatch.setattr(conv_mod, "_legacy_key", lambda key, _ids: real(key, {"tv", "web"}))
+    with Session(engine) as s:
+        s.delete(s.get(ClientRecord, "web"))
+        s.commit()
+    imported = service._import_legacy([{"key": "agent:main:tv"}, {"key": "agent:main:web"}])
+    assert [(c.session_key, c.client_id) for c in imported] == [("agent:main:tv", "tv")]
 
 
 async def test_legacy_import_retries_after_a_failure(service):

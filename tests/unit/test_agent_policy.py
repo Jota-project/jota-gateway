@@ -194,12 +194,37 @@ def test_default_agent_setting_is_stripped():
     assert Settings(DEFAULT_AGENT="  jota ").DEFAULT_AGENT == "jota"  # type: ignore[call-arg]
 
 
-def test_default_agent_follows_the_client_agent_name_rule():
-    """Como `default_agent` de un cliente (admin_schemas.AgentName): hasta 200 caracteres."""
+@pytest.mark.parametrize("bad", ["a:b", "j assistant", "-x", "x" * 65, "agente.uno", "é"])
+def test_default_agent_follows_openclaws_agent_id_rule(bad):
+    """Como `default_agent` de un cliente: un id de agente de OpenClaw (VALID_ID_RE de
+    2026.10.5), sin `:` ni espacios, que romperían `agent:{agente}:fogar-{id}`."""
     from pydantic import ValidationError
 
     from fogar_gateway.core.config import Settings
 
     with pytest.raises(ValidationError):
-        Settings(DEFAULT_AGENT="x" * 201)  # type: ignore[call-arg]
-    assert Settings(DEFAULT_AGENT="x" * 200).DEFAULT_AGENT == "x" * 200  # type: ignore[call-arg]
+        Settings(DEFAULT_AGENT=bad)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("good", ["", "main", "j-assistant", "Jota_2", "x" * 64])
+def test_default_agent_accepts_valid_agent_ids(good):
+    from fogar_gateway.core.config import Settings
+
+    configured = Settings(DEFAULT_AGENT=good).DEFAULT_AGENT  # type: ignore[call-arg]
+    assert configured == good
+
+
+@pytest.mark.parametrize("bad", ["a:b", "j assistant", "x" * 65])
+def test_client_agent_names_follow_the_same_rule(bad):
+    from pydantic import ValidationError
+
+    from fogar_gateway.models.admin_schemas import ClientCreate, ClientUpdate, ConversationCreate
+
+    for build in (
+        lambda: ClientCreate(name="n", default_agent=bad),
+        lambda: ClientCreate(name="n", allowed_agents=["main", bad]),
+        lambda: ClientUpdate(default_agent=bad),
+        lambda: ConversationCreate(agent=bad),
+    ):
+        with pytest.raises(ValidationError):
+            build()

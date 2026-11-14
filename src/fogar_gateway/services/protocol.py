@@ -4,6 +4,9 @@ from typing import Literal, Protocol, runtime_checkable
 
 from fogar_gateway.services.openclaw.models import ToolCallEvent
 
+# `status` event content: OpenClaw accepted the turn's chat.send (its ack), before any token.
+ACCEPTED = "accepted"
+
 
 @dataclass
 class OrchestratorEvent:

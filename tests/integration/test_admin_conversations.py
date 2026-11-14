@@ -177,6 +177,7 @@ def test_v1_follows_the_daily_default_conversation(
 
     async def stream(text, session_key=None):
         keys.append(session_key)
+        yield OrchestratorEvent(type="status", content="accepted")  # el ack del chat.send
         yield OrchestratorEvent(type="token", content="ok")
         yield OrchestratorEvent(type="status", content="done")
 
@@ -213,6 +214,50 @@ def test_v1_counts_a_turn_only_once_it_started(client_untrusted, mock_orchestrat
     with Session(db_engine) as s:
         (row,) = s.exec(select(ConversationRecord)).all()
     assert row.turn_count == 0 and row.last_turn_at is None
+
+
+def test_v1_counts_the_turn_once_openclaw_accepted_it(
+    client_untrusted, mock_orchestrator, db_engine
+):
+    """Aceptado el chat.send, el turno cuenta aunque luego falle (o el cliente se vaya)."""
+    from fogar_gateway.services.protocol import OrchestratorEvent
+
+    async def accepted_then_dropped(text, session_key=None):
+        yield OrchestratorEvent(type="status", content="accepted")
+        yield OrchestratorEvent(type="error", content="orchestrator_disconnected")
+
+    mock_orchestrator.stream_response = accepted_then_dropped
+    body = {"messages": [{"role": "user", "content": "hola"}]}
+    headers = {"authorization": f"Bearer {VALID_KEY}"}
+    r = client_untrusted.post("/v1/chat/completions", json=body, headers=headers)
+    assert r.status_code == 502
+    with Session(db_engine) as s:
+        (row,) = s.exec(select(ConversationRecord)).all()
+    assert row.turn_count == 1 and row.last_turn_at is not None
+
+
+def test_v1_streaming_closes_its_session_and_counts_the_turn(
+    client_untrusted, mock_orchestrator, db_engine, admin_headers
+):
+    from fogar_gateway.services.protocol import OrchestratorEvent
+
+    async def stream(text, session_key=None):
+        yield OrchestratorEvent(type="status", content="accepted")
+        yield OrchestratorEvent(type="token", content="hola")
+        yield OrchestratorEvent(type="status", content="done")
+
+    mock_orchestrator.stream_response = stream
+    body = {"messages": [{"role": "user", "content": "hola"}], "stream": True}
+    headers = {"authorization": f"Bearer {VALID_KEY}"}
+    r = client_untrusted.post("/v1/chat/completions", json=body, headers=headers)
+    assert r.status_code == 200 and "data: [DONE]" in r.text
+    sessions = client_untrusted.get("/admin/sessions", headers=admin_headers).json()
+    (http,) = [s for s in sessions["sessions"] if s["session_id"].startswith("http:")]
+    assert http["status"] == "completed" and http["ended_at"] is not None
+    assert sessions["active"] == 0
+    with Session(db_engine) as s:
+        (row,) = s.exec(select(ConversationRecord)).all()
+    assert row.turn_count == 1
 
 
 def test_v1_database_failure_is_a_stable_error(client_untrusted, monkeypatch, caplog):

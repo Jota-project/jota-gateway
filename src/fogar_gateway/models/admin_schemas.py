@@ -15,6 +15,7 @@ from fastapi import Path, Query
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from fogar_gateway.core.logging import fingerprint_key
+from fogar_gateway.core.session_key import AGENT_ID_PATTERN
 from fogar_gateway.db.models import ClientRecord
 from fogar_gateway.models.schemas import OutputMode
 
@@ -29,7 +30,8 @@ _Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, ma
 _Text = Annotated[str, StringConstraints(min_length=1, max_length=200)]
 # Solo para importar una clave existente (#293): "" no equivale a omitirla.
 _ImportedKey = Annotated[str, StringConstraints(min_length=32)]
-AgentName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+# La regla de OpenClaw para un id de agente (core/session_key.py, AGENT_ID_PATTERN).
+AgentName = Annotated[str, StringConstraints(strip_whitespace=True, pattern=AGENT_ID_PATTERN)]
 _VadThold = Annotated[float, Field(ge=0.0, le=1.0)]
 _Speed = Annotated[float, Field(gt=0.0, le=10.0)]
 _Seconds = Annotated[float, Field(gt=0.0, le=86_400.0)]

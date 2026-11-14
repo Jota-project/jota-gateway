@@ -44,9 +44,11 @@ _WATCHDOG_POLL_S = 2
 _sleep = asyncio.sleep
 
 
-# Lo que espera una sesión nueva a que la que desplaza suelte sus turnos (M19), en múltiplos de
-# SESSION_TEARDOWN_S: el corte del turno, el del push y el envío de su turn_end.
-_RELEASE_WAIT_STEPS = 3
+# Lo que espera una sesión nueva a que la que desplaza suelte su clave (M19): SESSION_TEARDOWN_S
+# para que su turno suelte la clave, más esto para sus chat.abort (cada uno con tope de 1 s).
+_ABORT_SLACK_S = 3.0
+# Revocada o desplazada, la sesión solo manda ya el turn_end de lo que tenga abierto (G-18).
+_ONLY_TURN_END = frozenset({"turn_end"})
 
 _REASON_BY_STATUS: dict[str, CloseReason] = {
     "revoked": "revoked",
@@ -105,7 +107,7 @@ class FogarBridge:
         conversation.bind(self._spawn_background)
         conversation.on_move = self._on_conversation_move
         # Desplazada por otra sesión (M19): su cierre, y el aviso de que ya soltó sus turnos.
-        self._displacing: asyncio.Task | None = None
+        self._policy_close: asyncio.Task | None = None
         self._released = asyncio.Event()
         # Máximo de la cola de turno de las conversaciones que la sesión ya dejó (#219).
         self._turn_queue_peak = 0
@@ -498,35 +500,51 @@ class FogarBridge:
     async def _revoke_session(self) -> None:
         """Cierra la sesión con 1008 «revoked» por el camino de cierre existente."""
         logger.warning(f"[{self.client_id}] Cliente revocado (borrado/desactivado/clave rotada).")
-        await self._close_1008("revoked", "revoked", "session_revoked", status="revoked")
+        task = self._start_close_1008("revoked", "revoked", "session_revoked", status="revoked")
+        # asyncio.wait, no await: close_all() cancela esta tarea (la de revalidación), y eso
+        # no debe cancelar el cierre.
+        await asyncio.wait({task})
 
     async def displace(self) -> None:
         """Otra sesión abrió la conversación de esta (M19): se cierra con 1008 «conversation
         opened elsewhere». El cierre corre en una tarea propia de esta sesión; quien la desplaza
-        espera, acotado, a que haya soltado sus turnos (su turn_end enviado
-        y sus chat.abort hechos), y desde ahí esta sesión ya no aborta nada en esa clave."""
-        if self._displacing is None:
+        espera solo a su primer paso, los chat.abort en la clave (`turns.let_go`), acotado; desde
+        ahí esta sesión ya no aborta nada en esa clave."""
+        if self._policy_close is None:
             logger.info(
                 f"[{self.client_id}] Conversación {self.conversation.id} abierta en otra sesión."
             )
-            self._displacing = asyncio.create_task(
-                self._close_1008("conversation opened elsewhere", "displaced", "session_displaced"),
-                name="displaced",
-            )
-            self._background_tasks.add(self._displacing)
-            self._displacing.add_done_callback(self._background_tasks.discard)
-            self._supervise(self._displacing)
-        wait_s = _RELEASE_WAIT_STEPS * settings.SESSION_TEARDOWN_S
+        self._start_close_1008("conversation opened elsewhere", "displaced", "session_displaced")
+        wait_s = settings.SESSION_TEARDOWN_S + _ABORT_SLACK_S
         try:
             await asyncio.wait_for(self._released.wait(), timeout=wait_s)
         except TimeoutError:
             logger.warning(
-                f"[{self.client_id}] La sesión desplazada no soltó sus turnos en {wait_s}s; "
+                f"[{self.client_id}] La sesión desplazada no soltó su clave en {wait_s}s; "
                 "la nueva sigue."
             )
         finally:
             # Red de seguridad: pase lo que pase, ya no aborta en la clave que ha perdido.
             self.conversation.released = True
+
+    def _start_close_1008(
+        self,
+        wire_reason: str,
+        close_reason: CloseReason,
+        event: str,
+        status: SessionStatus | None = None,
+    ) -> asyncio.Task:
+        """Un solo cierre por política por sesión: el primero gana (motivo incluido) y quien
+        llegue después (una revocación durante un desplazamiento) espera a ese."""
+        if self._policy_close is None:
+            task = asyncio.create_task(
+                self._close_1008(wire_reason, close_reason, event, status), name=close_reason
+            )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+            self._supervise(task)
+            self._policy_close = task
+        return self._policy_close
 
     async def _close_1008(
         self,
@@ -537,20 +555,28 @@ class FogarBridge:
     ) -> None:
         """Cierre por política (1008: revocada, conversación abierta en otra sesión).
 
-        Exactamente un turn_end por turn_start (G-10): el turno abierto (y el push) se cierra
-        con `closed` y su turn_end sale, acotado, antes del 1008. Después el cierre de siempre.
+        1. Desde ya no sale nada más que turn_end (G-18: ni audio, ni tokens, ni avisos).
+        2. Antes que nada, que nada suyo siga corriendo en OpenClaw en su clave (`let_go`): lo
+           espera quien la desplaza (`_released`), pase lo que pase.
+        3. Exactamente un turn_end por turn_start (G-10): el turno abierto y el push se cierran
+           con `closed` y su turn_end sale, acotado, antes del 1008. Después, el cierre de siempre.
         """
-        self.note_close_reason(close_reason)
-        await self.tracker.record(event)
-        if self._turn_in_flight_at_close is None:
-            self._turn_in_flight_at_close = self.turns.in_flight()
         limit = settings.SESSION_TEARDOWN_S
         try:
-            async with Teardown(f"[{self.client_id}] turnos antes del 1008") as td:
-                await self.turns.close(td, limit)
-                await td.step(self._sender.flush(), "turn_end antes del 1008", limit)
+            self.note_close_reason(close_reason)
+            self._sender.restrict(_ONLY_TURN_END)
+            if self._turn_in_flight_at_close is None:
+                self._turn_in_flight_at_close = self.turns.in_flight()
+            await self.turns.let_go(limit)
         finally:
             self._released.set()
+        try:
+            await self.tracker.record(event)
+        except Exception as e:  # noqa: BLE001 — una métrica nunca impide el cierre
+            logger.debug(f"[{self.client_id}] {event} sin registrar: {type(e).__name__}")
+        async with Teardown(f"[{self.client_id}] turnos antes del 1008") as td:
+            await self.turns.close(td, limit)
+            await td.step(self._sender.flush(), "turn_end antes del 1008", limit)
         try:
             await asyncio.wait_for(
                 self.client_ws.close(code=1008, reason=wire_reason),

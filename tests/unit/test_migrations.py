@@ -159,3 +159,21 @@ def test_conversations_migration_applies_and_rolls_back(tmp_path, monkeypatch):
     with engine.connect() as c:
         assert c.execute(text("SELECT id FROM clients")).scalars().all() == ["tv"]
     engine.dispose()
+
+
+def test_connections_keep_foreign_keys_on_after_migrating(tmp_path, monkeypatch):
+    """env.py apaga foreign_keys en la conexión de la migración y la devuelve al pool del
+    engine compartido: tiene que volver a ON, o un borrado de cliente en ella se saltaría el
+    ON DELETE CASCADE (el listener de `connect` no corre al reusarla)."""
+    from sqlalchemy import text
+
+    _point_at(monkeypatch, tmp_path / "fk.db")
+    database.run_migrations()
+    engine = database.get_engine()
+    conns = [engine.connect() for _ in range(3)]  # la del pool (la de la migración) y nuevas
+    try:
+        assert [c.execute(text("PRAGMA foreign_keys")).scalar() for c in conns] == [1, 1, 1]
+    finally:
+        for c in conns:
+            c.close()
+        database.dispose_engine()
