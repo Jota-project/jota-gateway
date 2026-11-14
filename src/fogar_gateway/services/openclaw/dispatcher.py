@@ -74,9 +74,7 @@ class FrameDispatcher:
         # #285: the `chat.send` ack names the run of the turn; a `chat.abort` answer, the
         # runs it aborted. Both feed the runId tombstones.
         payload = _as_dict(frame.get("payload"))
-        run_id = payload.get("runId")
-        if isinstance(run_id, str):
-            self._turns.note_run(str(frame.get("id", "")), run_id)
+        self._turns.note_run(str(frame.get("id", "")), _run_id(payload))
         self._turns.note_abort_result(payload)
 
     def _of_aborted_run(self, payload: dict) -> bool:
@@ -101,7 +99,7 @@ class FrameDispatcher:
         sk = payload.get("sessionKey")
         if sk is None or self._of_aborted_run(payload):
             return
-        if self._turns.deliver_by_session(sk, ("chat", payload)):
+        if self._turns.deliver_by_session(sk, ("chat", payload), _run_id(payload)):
             return
         if self._turns.is_aborted(sk):
             return  # late frame of a turn aborted for overflow (#130 S3b)
@@ -159,7 +157,7 @@ class FrameDispatcher:
         data = _as_dict(payload.get("data"))
         if data.get("phase") not in ("start", "result"):
             return
-        if self._turns.deliver_by_session(sk, ("tool", data)):
+        if self._turns.deliver_by_session(sk, ("tool", data), _run_id(payload)):
             return
         if self._turns.is_aborted(sk):
             return  # late frame of a turn aborted for overflow (#130 S3b)

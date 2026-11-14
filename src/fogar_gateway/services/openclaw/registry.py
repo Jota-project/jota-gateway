@@ -68,7 +68,12 @@ class TurnRegistry:
         # session_key -> monotonic deadline; see TURN_ABORT_TOMBSTONE_S.
         self._tombstones: dict[str, float] = {}
         # runId correlation (#285): the `chat.send` ack carries the run id of the turn.
-        self._run_of_req: dict[str, str] = {}  # req_id -> runId
+        # req_id -> runId (None: acked without one, or a registration that does not filter
+        # by run). A req_id absent here is still waiting for its ack.
+        self._run_of_req: dict[str, str | None] = {}
+        # req_id -> frames carrying a runId that arrived before the turn's ack: held until
+        # the ack says which run is the turn's own (#285).
+        self._held: dict[str, list[tuple[tuple, str]]] = {}
         # req_id -> deadline: turns aborted before their ack arrived; the ack tombstones it.
         self._abandoned_reqs: dict[str, float] = {}
         # runId -> deadline; see RUN_ABORT_TOMBSTONE_S.
@@ -84,7 +89,9 @@ class TurnRegistry:
         # of popping by session_key alone (see issue #99).
         self._session_owner: dict[str, str] = {}
 
-    def register(self, req_id: str, session_key: str) -> asyncio.Queue:
+    def register(self, req_id: str, session_key: str, *, by_run: bool = True) -> asyncio.Queue:
+        """`by_run=False` (chat.abort's own registration, whose answer never reaches the
+        dispatcher) takes every frame of the key, whatever its run."""
         if session_key in self._sessions:
             raise TurnInProgress(session_key)
         size = self._max_queue_size if self._max_queue_size is not None else settings.TURN_QUEUE_MAX
@@ -92,6 +99,8 @@ class TurnRegistry:
         self._sessions[session_key] = queue
         self._req_to_session[req_id] = session_key
         self._session_owner[session_key] = req_id
+        if not by_run:
+            self._run_of_req[req_id] = None
         return queue
 
     def unregister(self, session_key: str, req_id: str) -> None:
@@ -104,16 +113,32 @@ class TurnRegistry:
             self._overflowed.discard(session_key)
         self._req_to_session.pop(req_id, None)
         self._run_of_req.pop(req_id, None)
+        self._held.pop(req_id, None)
 
     # ── runId (#285) ──────────────────────────────────────────────────────
 
-    def note_run(self, req_id: str, run_id: str) -> None:
-        """The `chat.send` ack of `req_id` names its run. A turn already aborted before its
-        ack arrived gets its run tombstoned right away."""
+    def note_run(self, req_id: str, run_id: str | None) -> None:
+        """The ok `res` of `req_id` (its `chat.send` ack) names its run, or None if it
+        carries none. A turn already aborted before its ack arrived gets its run
+        tombstoned right away. Frames held for the turn until now are delivered if they are
+        of its run (all of them when the ack names none) and dropped otherwise."""
         if self._abandoned_reqs.pop(req_id, None) is not None:
-            self.abort_run(run_id)
-        elif req_id in self._req_to_session:
-            self._run_of_req[req_id] = run_id
+            if run_id is not None:
+                self.abort_run(run_id)
+            return
+        session_key = self._req_to_session.get(req_id)
+        if session_key is None or req_id in self._run_of_req:
+            return
+        self._run_of_req[req_id] = run_id
+        held = self._held.pop(req_id, [])
+        queue = self._sessions.get(session_key)
+        if queue is None or self._session_owner.get(session_key) != req_id:
+            return
+        for item, item_run in held:
+            if run_id is None or item_run == run_id:
+                self._deliver(session_key, queue, item)
+            else:
+                logger.debug("frame of another run dropped (sk=%s)", session_key)
 
     def run_of(self, req_id: str) -> str | None:
         return self._run_of_req.get(req_id)
@@ -165,12 +190,32 @@ class TurnRegistry:
     def get_queue_by_session(self, session_key: str) -> asyncio.Queue | None:
         return self._sessions.get(session_key)
 
-    def deliver_by_session(self, session_key: str, item: tuple) -> bool:
+    def deliver_by_session(
+        self, session_key: str, item: tuple, run_id: str | None = None
+    ) -> bool:
         """Non-blocking put for the turn owning session_key. True if a turn owns it
-        (even if the item was dropped), False if none does."""
+        (even if the item was dropped), False if none does.
+
+        `run_id` (#285): a frame of another run than the turn's own never reaches it — not
+        a late reply of an aborted turn, not a push whose start was suppressed (#112).
+        Until the turn's ack names its run, frames with a run id are held, not delivered.
+        """
         queue = self._sessions.get(session_key)
         if queue is None:
             return False
+        owner = self._session_owner.get(session_key)
+        if run_id is not None and owner is not None:
+            if owner not in self._run_of_req:
+                held = self._held.setdefault(owner, [])
+                if queue.maxsize > 0 and len(held) >= queue.maxsize:
+                    self._overflow(session_key, queue)
+                else:
+                    held.append((item, run_id))
+                return True
+            own_run = self._run_of_req[owner]
+            if own_run is not None and run_id != own_run:
+                logger.debug("frame of another run dropped (sk=%s)", session_key)
+                return True
         self._deliver(session_key, queue, item)
         return True
 
@@ -187,15 +232,21 @@ class TurnRegistry:
             queue.put_nowait(item)
             self._peak[session_key] = max(self._peak.get(session_key, 0), queue.qsize())
         except asyncio.QueueFull:
-            logger.warning(
-                "turn queue overflow for sk=%s (max=%d): aborting turn", session_key, queue.maxsize
-            )
-            self._overflowed.add(session_key)
-            self._tombstones[session_key] = time.monotonic() + TURN_ABORT_TOMBSTONE_S
-            # Pending items belong to a turn that is being aborted: discard them.
-            while not queue.empty():
-                queue.get_nowait()
-            queue.put_nowait(("overflow", None))
+            self._overflow(session_key, queue)
+
+    def _overflow(self, session_key: str, queue: asyncio.Queue) -> None:
+        logger.warning(
+            "turn queue overflow for sk=%s (max=%d): aborting turn", session_key, queue.maxsize
+        )
+        self._overflowed.add(session_key)
+        self._tombstones[session_key] = time.monotonic() + TURN_ABORT_TOMBSTONE_S
+        owner = self._session_owner.get(session_key)
+        if owner is not None:
+            self._held.pop(owner, None)
+        # Pending items belong to a turn that is being aborted: discard them.
+        while not queue.empty():
+            queue.get_nowait()
+        queue.put_nowait(("overflow", None))
 
     @staticmethod
     def _force_put(queue: asyncio.Queue, item: tuple) -> None:
@@ -225,6 +276,7 @@ class TurnRegistry:
         self._req_to_session.clear()
         self._session_owner.clear()
         self._run_of_req.clear()
+        self._held.clear()
 
 
 def _prune(deadlines: dict[str, float]) -> None:

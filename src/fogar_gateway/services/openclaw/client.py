@@ -689,16 +689,19 @@ class OpenClawClient:
     async def abort(self, session_key: str, timeout: float = 1.0) -> None:
         """Abort the run in flight on `session_key` and swallow its own `aborted`.
 
-        The run is not known here (a push): holding the key until the terminal `chat`
-        arrives keeps it from closing the next turn empty, and the answer's `runIds` are
-        tombstoned so later frames of that run are dropped (#285). No-op if a normal turn
+        A run already tombstoned (#285; the caller does it when it knows the run, e.g. a
+        cut push) has its frames dropped by the dispatcher, `aborted` included. Otherwise
+        holding the key until the terminal `chat` arrives keeps it from closing the next
+        turn empty. The answer's `runIds` are tombstoned afterwards. No-op if a normal turn
         owns the key. Never raises an Exception.
         """
         if not self._ws:
             return
         req_id = str(uuid.uuid4())
         try:
-            queue = self._turn_registry.register(req_id, session_key)
+            # by_run=False: its answer is caught by id below, never acked through the
+            # dispatcher, so it takes every frame of the key.
+            queue = self._turn_registry.register(req_id, session_key, by_run=False)
         except TurnInProgress:
             return
         # The ok:true `res` never reaches the turn queue (the dispatcher only routes
@@ -712,6 +715,13 @@ class OpenClawClient:
                 payload = (await res).get("payload")
                 if not (isinstance(payload, dict) and payload.get("aborted")):
                     return  # nothing was running: no `aborted` will follow
+                run_ids = payload.get("runIds")
+                if (
+                    isinstance(run_ids, list)
+                    and run_ids
+                    and all(self._turn_registry.is_run_aborted(r) for r in run_ids)
+                ):
+                    return  # their `aborted` is dropped by the dispatcher: nothing to wait for
                 # The `aborted` usually comes before the `res`: it is already queued.
                 while True:
                     kind, data = await queue.get()
@@ -771,16 +781,7 @@ class OpenClawClient:
                     yield OrchestratorEvent(type="error", content="turn_timeout")
                     break
                 if kind == "chat":
-                    run_id, own_run = data.get("runId"), self._turn_registry.run_of(req_id)
-                    if (
-                        own_run is not None
-                        and run_id is not None
-                        and run_id != own_run
-                        and data.get("state") in _TERMINAL
-                    ):
-                        # #285: the end of another run on this session never ends this turn.
-                        logger.debug("terminal chat of another run ignored")
-                        continue
+                    # Only frames of this turn's own run get here (#285, TurnRegistry).
                     # #241: OpenClaw 2026.10.5 sends the full text only in `final`
                     # (no deltaText); emit just what the deltas did not cover.
                     delta = text_tracker.feed(data)

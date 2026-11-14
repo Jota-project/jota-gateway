@@ -1,4 +1,5 @@
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -91,6 +92,7 @@ async def test_res_unknown_req_id_is_ignored():
 async def test_chat_event_routes_to_session_queue():
     dispatcher, turn_reg, _ = make_dispatcher()
     q = turn_reg.register("req-1", "agent:main:client-a")
+    await dispatcher.dispatch(_ack("req-1", "r1"))
     payload = {
         "sessionKey": "agent:main:client-a",
         "runId": "r1",
@@ -214,6 +216,7 @@ async def test_health_and_tick_ignored():
 async def test_session_tool_start_routes_to_turn_queue():
     dispatcher, turn_reg, _ = make_dispatcher()
     q = turn_reg.register("req-1", "agent:main:client-a")
+    await dispatcher.dispatch(_ack("req-1", "r1"))
     payload = {
         "sessionKey": "agent:main:client-a",
         "runId": "r1",
@@ -724,3 +727,116 @@ async def test_agent_error_phase_is_forwarded_as_turn_error():
     client_reg.register("client-a", bridge)
     await dispatcher.dispatch(_agent("run-1", "error"))
     bridge.enqueue_push.assert_called_once_with("turn_error", SK, run_id="run-1")
+
+
+def _drain(q):
+    out = []
+    while not q.empty():
+        out.append(q.get_nowait())
+    return out
+
+
+async def test_frames_of_another_run_never_reach_the_turn():
+    """#285 (review 1): once the ack named the turn's run, every frame of another run on
+    the same key is dropped — deltas and tool events too, not only its terminal."""
+    dispatcher, turn_reg, _ = make_dispatcher()
+    q = turn_reg.register("req-1", SK)
+    await dispatcher.dispatch(_ack("req-1", "run-1"))
+    for frame in (_chat("run-push"), _tool("run-push"), _chat("run-push", "final"), _chat("run-1", text="mio")):
+        await dispatcher.dispatch(frame)
+    assert [(k, d.get("deltaText")) for k, d in _drain(q)] == [("chat", "mio")]
+
+
+async def test_frames_before_the_ack_are_held_until_it_names_the_run():
+    """#285 (review 2): frames with a run id that arrive before the turn's ack are held;
+    the ack delivers those of its run, in order, and drops the rest."""
+    dispatcher, turn_reg, _ = make_dispatcher()
+    q = turn_reg.register("req-1", SK)
+    for frame in (_chat("run-old", text="viejo"), _chat("run-1", text="a"), _chat("run-old", "final"),
+                  _chat("run-1", text="b")):  # fmt: skip
+        await dispatcher.dispatch(frame)
+    assert q.empty()
+    await dispatcher.dispatch(_ack("req-1", "run-1"))
+    assert [d["deltaText"] for _, d in _drain(q)] == ["a", "b"]
+
+
+async def test_an_ack_without_run_id_delivers_what_was_held():
+    """A server whose ack names no run (older than 2026.10.5) loses nothing."""
+    dispatcher, turn_reg, _ = make_dispatcher()
+    q = turn_reg.register("req-1", SK)
+    await dispatcher.dispatch(_chat("run-x", text="a"))
+    await dispatcher.dispatch({"type": "res", "id": "req-1", "ok": True, "payload": {"status": "started"}})
+    await dispatcher.dispatch(_chat("run-x", text="b"))
+    assert [d["deltaText"] for _, d in _drain(q)] == ["a", "b"]
+
+
+async def test_held_frames_are_bounded_like_the_queue():
+    turn_reg = TurnRegistry(max_queue_size=2)
+    dispatcher = FrameDispatcher(turn_reg, ClientRegistry())
+    q = turn_reg.register("req-1", SK)
+    for i in range(3):
+        await dispatcher.dispatch(_chat("run-1", text=str(i)))
+    assert _drain(q) == [("overflow", None)]
+    await dispatcher.dispatch(_ack("req-1", "run-1"))
+    assert q.empty()
+
+
+async def test_abort_registration_takes_every_frame_of_the_key():
+    """chat.abort's own registration is never acked through the dispatcher: it filters
+    nothing by run (it waits for the `aborted` of a run it does not know)."""
+    dispatcher, turn_reg, _ = make_dispatcher()
+    q = turn_reg.register("abort-1", SK, by_run=False)
+    await dispatcher.dispatch(_chat("run-push", "aborted"))
+    assert [d["state"] for _, d in _drain(q)] == ["aborted"]
+
+
+class _SendOnlyWS:
+    """An OpenClaw socket that only records what the client sends; the test plays the
+    server through the dispatcher, in the exact order it wants."""
+
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, raw):
+        self.sent.append(json.loads(raw))
+
+    def chat_sends(self):
+        return [f["id"] for f in self.sent if f.get("method") == "chat.send"]
+
+
+async def test_late_terminal_of_an_aborted_turn_before_both_acks_does_not_close_the_next():
+    """#285 (review 2), the exact ordering: turn A is aborted before its ack; turn B is
+    sent; A's late reply (delta + final) arrives before B's ack, then B's ack, then A's
+    late ack, then B's own reply. B gets only its own text and ends on its own final."""
+    from fogar_gateway.services.openclaw.client import OpenClawClient
+
+    turns = TurnRegistry()
+    dispatcher = FrameDispatcher(turns, ClientRegistry())
+    client = OpenClawClient("127.0.0.1", 1, "tok", turns, dispatcher)
+    client._ws = ws = _SendOnlyWS()  # no connect: the test is the server
+
+    async def collect(text):
+        return [e async for e in client.stream_response(text, session_key=SK)]
+
+    first = asyncio.create_task(collect("uno"))
+    while len(ws.chat_sends()) < 1:
+        await asyncio.sleep(0)
+    first.cancel()  # barge-in before A's ack
+    await asyncio.gather(first, return_exceptions=True)
+    second = asyncio.create_task(collect("dos"))
+    while len(ws.chat_sends()) < 2:
+        await asyncio.sleep(0)
+    req_a, req_b = ws.chat_sends()
+
+    await dispatcher.dispatch(_chat("run-a", text="viejo"))
+    await dispatcher.dispatch(_chat("run-a", "final"))
+    await dispatcher.dispatch(_ack(req_b, "run-b"))
+    await dispatcher.dispatch(_ack(req_a, "run-a"))
+    await dispatcher.dispatch(_chat("run-a", text="aun mas viejo"))
+    await dispatcher.dispatch(_chat("run-b", text="nuevo"))
+    await dispatcher.dispatch(_chat("run-b", "final", text=""))
+    events = await asyncio.wait_for(second, 2)
+
+    assert "".join(e.content for e in events if e.type == "token") == "nuevo"
+    assert (events[-1].type, events[-1].content) == ("status", "done")
+    assert turns.is_run_aborted("run-a")

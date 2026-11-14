@@ -11,7 +11,7 @@ from fogar_gateway.core.exceptions import ClientInactive, ClientNotFound
 from fogar_gateway.models.schemas import Client, ClientConfig, Handshake
 from fogar_gateway.services.db_client import db_client
 from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
-from fogar_gateway.services.outbound import OutboundSender
+from fogar_gateway.services.outbound import OutboundSender, log_send_failed
 from fogar_gateway.services.pipeline_tracker import PipelineTracker
 from fogar_gateway.services.protocol import OrchestratorProtocol
 from fogar_gateway.services.reconnection import (
@@ -523,8 +523,7 @@ class FogarBridge:
         self._supervise(task)
 
     def _log_send_failed(self, what: str, e: BaseException) -> None:
-        # Casi siempre es un cliente que ya se fue: DEBUG con el tipo, nunca el texto (#221).
-        logger.debug(f"[{self.client_id}] envío de {what} al cliente falló: {describe_error(e)}")
+        log_send_failed(self.client_id, what, e)
 
     async def run(self):
         self._session_start = time.monotonic()

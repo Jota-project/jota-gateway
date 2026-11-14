@@ -15,6 +15,7 @@ from fogar_gateway.core.config import settings
 from fogar_gateway.services.outbound import QueuedSender
 from fogar_gateway.services.protocol import OrchestratorEvent
 from tests.fakes.bridge import (
+    RecWS,
     blocking,
     push,
     push_reply,
@@ -458,3 +459,145 @@ async def test_send_over_a_push_ends_it_with_reason_replaced(make_bridge):
     assert (replaced.origin, replaced.end_reason) == ("push", "replaced")
     bridge.orchestrator.abort.assert_awaited_once_with(sk)
     await bridge.close_all()
+
+
+# ── Review of a5ed08f ────────────────────────────────────────────────────────
+
+
+def _audio_provider(stream):
+    provider = AsyncMock()
+    provider.connect = AsyncMock(return_value=stream)
+    provider.resolve_voice = lambda v: v
+    return provider
+
+
+async def test_a_send_during_the_push_timeout_cut_waits_for_its_abort(make_bridge, monkeypatch):
+    """G-08: the timeout cut runs under the turn lock like every other cut, so the user's
+    chat.send never goes out before the push's chat.abort (and the abort is not lost)."""
+    monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.1)
+    closing, release = asyncio.Event(), asyncio.Event()
+    stream = AsyncMock()
+
+    async def audio():
+        await asyncio.sleep(3600)
+        yield b""  # pragma: no cover
+
+    async def slow_close():
+        closing.set()
+        await release.wait()
+
+    stream.get_audio_stream = audio
+    stream.close = slow_close
+    provider = _audio_provider(stream)
+    provider.connect = AsyncMock(side_effect=[stream, None])  # the user turn: TTS down
+    bridge, ws = make_bridge(client_id="hab_sito", output_mode=("audio", "text"), tts=provider)
+    order = []
+    bridge.orchestrator.abort = AsyncMock(side_effect=lambda sk: order.append("abort"))
+
+    async def user_stream(*a, **k):
+        order.append("send")
+        yield OrchestratorEvent(type="token", content="hola")
+
+    bridge.orchestrator.stream_response = user_stream
+    bridge.enqueue_push("turn_start", bridge._session_key())
+    await asyncio.wait_for(closing.wait(), 2)  # the timeout cut is releasing the push TTS
+
+    starter = asyncio.create_task(bridge.turns.start_user_turn("hola"))
+    await asyncio.sleep(0.05)
+    release.set()
+    await asyncio.wait_for(starter, 2)
+    await asyncio.wait_for(bridge.turns.user_task, 2)
+
+    assert order == ["abort", "send"]
+    await sent(bridge)
+    frames = [(m["type"], m["turn_id"]) for m in ws.of("turn_start") + ws.of("turn_end")]
+    assert sorted(frames) == [("turn_end", "t-1"), ("turn_end", "t-2"), ("turn_start", "t-1"), ("turn_start", "t-2")]
+    await bridge.close_all()
+
+
+async def test_a_second_cancellation_during_tts_release_still_closes_the_stream(make_bridge):
+    """#221: a barge-in cancels the turn; close_all cancels it again while its TTS is being
+    released. The stream is still closed, and the cancellation still ends the task."""
+    cancelling = asyncio.Event()
+    stream = AsyncMock()
+
+    async def audio():
+        try:
+            await asyncio.sleep(3600)
+            yield b""  # pragma: no cover
+        except asyncio.CancelledError:
+            cancelling.set()
+            await asyncio.shield(asyncio.sleep(0.1))  # slow to stop
+            raise
+
+    stream.get_audio_stream = audio
+    bridge, _ = make_bridge(output_mode=("audio", "text"), tts=_audio_provider(stream))
+    started = asyncio.Event()
+    bridge.orchestrator.stream_response = blocking(started)
+    task = await start_turn(bridge)
+    await asyncio.wait_for(started.wait(), 2)
+
+    task.cancel()  # barge-in
+    await asyncio.wait_for(cancelling.wait(), 2)  # the release waits for the audio
+    task.cancel()  # close_all
+    await asyncio.wait({task}, timeout=2)
+
+    assert task.cancelled()
+    stream.close.assert_awaited_once()
+    assert [m["turn_id"] for m in (await sent(bridge)) if m["type"] == "turn_end"] == ["t-1"]
+
+
+class _YieldingSender:
+    """A sender that yields before enqueueing (a real socket write would)."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    async def send_json(self, payload):
+        await asyncio.sleep(0.01)
+        await self._inner.send_json(payload)
+
+    async def send_bytes(self, data):
+        await asyncio.sleep(0.01)
+        await self._inner.send_bytes(data)
+
+    async def flush(self):
+        await self._inner.flush()
+
+    async def aclose(self, timeout):
+        await self._inner.aclose(timeout)
+
+    def queue_stats(self):
+        return self._inner.queue_stats()
+
+
+async def test_a_send_while_a_push_opens_never_leaves_two_turns_open(make_bridge):
+    """#202: the push is registered and opened under the turn lock; a `send` that arrives
+    while its turn_start is being written waits, then cuts it."""
+    ws = RecWS()
+    bridge, _ = make_bridge(ws, client_id="hab_sito", sender=_YieldingSender(QueuedSender(ws)))
+    bridge.orchestrator.stream_response = tokens("hola")
+    bridge.enqueue_push("turn_start", bridge._session_key())
+    await asyncio.sleep(0.003)  # the worker is writing the push's turn_start
+    await bridge.turns.start_user_turn("hola")
+    await asyncio.wait_for(bridge.turns.user_task, 2)
+    await bridge.push_idle()
+
+    await sent(bridge)
+    frames = [(m["type"], m["turn_id"]) for m in ws.sent if m["type"] in ("turn_start", "turn_end")]
+    assert frames == [("turn_start", "t-1"), ("turn_end", "t-1"), ("turn_start", "t-2"), ("turn_end", "t-2")]
+    await bridge.close_all()
+
+
+async def test_snapshot_since_is_the_running_turn_s_own(make_bridge):
+    bridge, _ = make_bridge()
+    bridge.orchestrator.stream_response = tokens("a")
+    await run_turn(bridge)
+    await asyncio.sleep(0.3)
+    bridge.orchestrator.stream_response = blocking()
+    task = await start_turn(bridge)  # its task has not run yet
+
+    turn = bridge.turns.snapshot(time.monotonic())["turn"]
+    assert turn["kind"] == "normal" and turn["since_s"] < 0.2
+    task.cancel()
+    await asyncio.wait({task})

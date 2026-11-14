@@ -519,18 +519,26 @@ No server change; this records how the gateway reacts. Frames are still routed b
 `sessionKey` (a normal turn owns its key in `TurnRegistry`), and `runId` filters on top:
 
 - **The ack names the run.** The `res ok` of `chat.send` (`payload {runId, status}`) is
-  recorded for its turn (`TurnRegistry.note_run`). A terminal `chat` (`final`, `aborted`,
-  `error`) of **another** run on the same key does not end the turn; its own does.
+  recorded for its turn (`TurnRegistry.note_run`). From then on no frame (`chat` or
+  `session.tool`) of **another** run on the same key reaches the turn: not the late reply
+  of an aborted turn, not a push whose `agent start` was suppressed (#112). Frames with a
+  `runId` that arrive **before** the ack are held (bounded like the turn queue) and the ack
+  delivers those of its run, in order; an ack without `runId` delivers them all. Frames
+  without `runId` are delivered as they come. `chat.abort`'s own short registration takes
+  every frame of the key (its answer is caught by id, not through the dispatcher).
 - **Aborted runs are tombstoned** (`RUN_ABORT_TOMBSTONE_S`, 300 s; run ids are never reused)
   on every abort path: a turn that ends without its terminal `chat` (barge-in, a replacing
   `send`, `cancel`, the client gone, `turn_timeout`, `turn_overflow`) tombstones its run;
   if its ack had not arrived yet, the late ack does it. The answer to `chat.abort`
   (`{ok, aborted: true, runIds}`) tombstones the runs it names, and a push the gateway cuts
-  or times out has the `runId` of its `agent start` tombstoned too (also on another agent's
-  session key, where it is not aborted). `FrameDispatcher` drops every `chat`, `agent` and
-  `session.tool` frame of a tombstoned run before routing it, so the late reply of an
-  interrupted turn neither closes the next turn nor comes back as a push (G-14); the push
-  worker drops what was already queued for it.
+  or times out has the `runId` of its `agent start` tombstoned too, before its `chat.abort`
+  (also on another agent's session key, where it is not aborted; a push whose `turn_start`
+  could not be sent, too). `FrameDispatcher` drops every `chat`, `agent` and `session.tool`
+  frame of a tombstoned run before routing it, so the late reply of an interrupted turn
+  neither closes the next turn nor comes back as a push (G-14); the push worker asks the
+  same tombstones for what was already queued. When every run a `chat.abort` answer names
+  is already tombstoned, the gateway does not wait for their `aborted` (the dispatcher
+  drops it).
 - **A push has the same budget as a normal turn:** `TURN_TIMEOUT_S` without any event of it
   (idle-reset) closes it with `turn_timeout` and, on our own session key, `chat.abort` (G-15).
 - `agent` `phase: "error"` reaches the bridge as its own push event (`turn_error`), so the

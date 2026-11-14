@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from fogar_gateway.models.schemas import ClientConfig
-from fogar_gateway.services.openclaw.registry import ClientRegistry
+from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
 from tests.fakes.bridge import push, push_reply, sent, wait_until
 
 SK = "agent:main:hab_sito"
@@ -328,7 +328,9 @@ async def test_queued_events_of_a_cut_push_never_reopen_it(make_push_bridge, mon
         await asyncio.sleep(3600)
 
     stream.send_text_chunk = slow_chunk
-    bridge, ws = make_push_bridge(output_mode=("audio", "text"), tts=provider)
+    bridge, ws = make_push_bridge(
+        output_mode=("audio", "text"), tts=provider, turn_registry=TurnRegistry()
+    )
     for kind, arg in (("turn_start", SK), ("chat", {"deltaText": "a"}), ("turn_start", SK),
                       ("chat", {"deltaText": "b"}), ("turn_end", SK)):  # fmt: skip
         bridge.enqueue_push(kind, arg, run_id="run-1")
