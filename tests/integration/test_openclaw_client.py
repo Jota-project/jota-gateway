@@ -453,6 +453,16 @@ def test_ipv6_host_is_bracketed_in_uri(host, uri):
     assert client._uri == uri
 
 
+@pytest.mark.parametrize(
+    ("host", "uri"),
+    [("green-house.example.ts.net", "wss://green-house.example.ts.net:443"), ("::1", "wss://[::1]:443")],
+)
+def test_tls_uses_wss(host, uri):
+    turns = TurnRegistry()
+    client = OpenClawClient(host, 443, "tok", turns, FrameDispatcher(turns, ClientRegistry()), tls=True)
+    assert client._uri == uri
+
+
 @pytest.mark.asyncio
 async def test_connect_retries_on_startup_sidecars():
     async with FakeOpenClawServer(startup_pending=1) as server:

@@ -301,7 +301,8 @@ fogar-gw logs -n 20         # últimas líneas del journal (-f para seguir)
 El gateway se conecta a OpenClaw como `gateway-client`/`backend` pidiendo `operator.read`, `operator.write` y `operator.admin` (ninguna función usa todavía el admin), y firma cada conexión con su **identidad de dispositivo**: una clave Ed25519 propia de la instalación, en `<base>/data/openclaw-device.json` (permisos 600; es una credencial, como `config.env`).
 
 - **OpenClaw en esta máquina:** basta el token compartido (`OPENCLAW_TOKEN`); OpenClaw se fía de la conexión local y concede los permisos pedidos, sin emparejar.
-- **OpenClaw en otra máquina** (LAN, Tailscale, o en Docker con el puerto publicado): la primera vez OpenClaw pide aprobar el gateway como dispositivo. El gateway lo dice en el log, en `fogar-gw status`/`doctor` y en `/admin/state`, con el comando exacto: `openclaw devices approve <id>`, en la máquina de OpenClaw. Tras aprobarlo, el gateway recibe un **token de dispositivo**, lo guarda en ese fichero y conecta con él (aunque cambie el token compartido); si OpenClaw lo revoca, vuelve al token compartido y, si hace falta, a pedir aprobación.
+- **OpenClaw en otra máquina** (Tailscale, LAN, o en Docker con el puerto publicado): la primera vez OpenClaw pide aprobar el gateway como dispositivo. El gateway lo dice en el log, en `fogar-gw status`/`doctor` y en `/admin/state`, con el comando exacto: `openclaw devices approve <id>`, en la máquina de OpenClaw. Tras aprobarlo, el gateway recibe un **token de dispositivo**, lo guarda en ese fichero y conecta con él (aunque cambie el token compartido); si OpenClaw lo revoca, vuelve al token compartido y, si hace falta, a pedir aprobación.
+- **Por Tailscale (lo recomendado para otra máquina):** si OpenClaw se publica en la tailnet con su `tailscale serve` (`gateway.tailscale.mode: serve`), sigue escuchando solo en loopback y se llega con TLS: `OPENCLAW_HOST=<máquina>.<tailnet>.ts.net`, `OPENCLAW_PORT=443` y `OPENCLAW_TLS=true`. No abras el puerto 18789 a la red ni lo pongas detrás de otro proxy inverso: con cabeceras de proxy y sin `gateway.trustedProxies`, OpenClaw responde 403.
 
 > **El gateway nunca crea una BD por su cuenta.** Si no la encuentra en `<base>/data/gateway.db`
 > (o en la `DATABASE_URL` configurada), se para y explica qué hacer: así no arranca vacío, sin
@@ -417,6 +418,7 @@ Variables de entorno o, si no, de `<base>/config.env` (instalación nativa). En 
 | `TTS_TOKEN` | — | Token de auth para fogar-speaker; vacío si el TTS no exige clave |
 | `OPENCLAW_HOST` | `127.0.0.1` | Host de OpenClaw |
 | `OPENCLAW_PORT` | `18789` | Puerto de OpenClaw |
+| `OPENCLAW_TLS` | `false` | `true` = conecta por `wss://` (OpenClaw de otra máquina tras TLS, p. ej. Tailscale) |
 | `OPENCLAW_TOKEN` | — | Token de OpenClaw. Sin él el gateway arranca con un aviso, pero OpenClaw rechaza la conexión (`/ready` 503) |
 | `ADMIN_TOKEN` | — | Token para endpoints `/admin/*`; vacío deshabilita el admin API |
 | `ORCHESTRATOR_RECONNECT_INITIAL_BACKOFF` | `1.0` | Backoff inicial en reconexión del orquestador (s) |

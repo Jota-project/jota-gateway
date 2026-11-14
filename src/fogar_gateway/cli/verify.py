@@ -28,7 +28,8 @@ DETECT_TIMEOUT_S = 3.0
 NOT_LOOPBACK_DETAIL = (
     "El asistente solo configura un OpenClaw en este equipo (o por un túnel SSH: "
     "`ssh -L 18789:127.0.0.1:18789 …`). Para uno de otra máquina, a mano: "
-    "`fogar-gw config set OPENCLAW_HOST …` y, la primera vez, aprueba el gateway en OpenClaw "
+    "`fogar-gw config set OPENCLAW_HOST …` (por Tailscale, también `OPENCLAW_PORT 443` y "
+    "`OPENCLAW_TLS true`) y, la primera vez, aprueba el gateway en OpenClaw "
     "con el `openclaw devices approve …` que enseña `fogar-gw doctor`."
 )
 

@@ -241,6 +241,7 @@ class OpenClawClient:
         device_store: DeviceStore | None = None,
         access: OrchestratorAccess | None = None,
         use_device_token: bool = True,
+        tls: bool = False,
     ) -> None:
         # Key of the stored device token: the configured OpenClaw `host:port`.
         self._gateway = f"{host}:{port}"
@@ -254,7 +255,8 @@ class OpenClawClient:
         self._identity_warned = False
         # An IPv6 literal (`::1`) goes in brackets inside the URI, unless it already has them.
         bare_ipv6 = ":" in host and not host.startswith("[")
-        self._uri = f"ws://[{host}]:{port}" if bare_ipv6 else f"ws://{host}:{port}"
+        scheme = "wss" if tls else "ws"
+        self._uri = f"{scheme}://[{host}]:{port}" if bare_ipv6 else f"{scheme}://{host}:{port}"
         self._token = token
         self._turn_registry = turn_registry
         self._dispatcher = dispatcher

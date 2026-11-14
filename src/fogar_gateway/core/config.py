@@ -108,6 +108,8 @@ class Settings(BaseSettings):
     STT_GATE_RMS_DBFS: float = -45.0
     OPENCLAW_HOST: str = "127.0.0.1"
     OPENCLAW_PORT: int = 18789
+    # wss:// en vez de ws:// (OpenClaw de otra máquina tras TLS, p. ej. su `tailscale serve`).
+    OPENCLAW_TLS: bool = False
     OPENCLAW_TOKEN: str = ""
     ORCHESTRATOR_RECONNECT_INITIAL_BACKOFF: float = 1.0
     ORCHESTRATOR_RECONNECT_MAX_BACKOFF: float = 60.0
