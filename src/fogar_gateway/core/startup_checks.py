@@ -82,7 +82,8 @@ def insecure_tokens(settings) -> list[str]:
     if not settings.OPENCLAW_TOKEN or _is_placeholder(settings.OPENCLAW_TOKEN):
         flagged.append("OPENCLAW_TOKEN")
     # Vacío = «sin clave», legítimo (no es un placeholder): solo se marca un valor de ejemplo.
-    if _is_placeholder(settings.TTS_TOKEN):
+    # Y solo si el TTS de fogar está en uso: con elevenlabs u off el token no se usa (#248).
+    if settings.TTS_PROVIDER == "fogar" and _is_placeholder(settings.TTS_TOKEN):
         flagged.append("TTS_TOKEN")
     return flagged
 

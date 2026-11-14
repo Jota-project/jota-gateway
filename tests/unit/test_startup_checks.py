@@ -84,6 +84,18 @@ def test_placeholder_tts_token_flagged(value, caplog):
     assert warn_insecure_tokens(_settings(TTS_TOKEN=value)) == ["TTS_TOKEN"]
 
 
+@pytest.mark.parametrize(
+    ("provider", "flagged"), [("fogar", ["TTS_TOKEN"]), ("elevenlabs", []), ("off", [])]
+)
+def test_placeholder_tts_token_only_flagged_for_the_fogar_provider(provider, flagged, caplog):
+    """#248: con elevenlabs u off el TTS_TOKEN no se usa, así que no se avisa de él."""
+    caplog.set_level(logging.WARNING)
+    s = _settings(TTS_TOKEN="changeme", TTS_PROVIDER=provider)
+    assert insecure_tokens(s) == flagged
+    assert warn_insecure_tokens(s) == flagged
+    assert ("TTS_TOKEN" in caplog.text) == bool(flagged)
+
+
 def test_warnings_never_contain_the_token_value(caplog):
     caplog.set_level(logging.DEBUG)
     warn_insecure_tokens(_settings(ADMIN_TOKEN="changeme", OPENCLAW_TOKEN="changeme"))
