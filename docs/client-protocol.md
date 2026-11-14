@@ -23,6 +23,7 @@ Guía completa para implementar clientes que se conecten a fogar-gateway. Cubre 
 12. [Referencia completa de mensajes](#12-referencia-completa-de-mensajes)
 13. [Timeouts y cierre de sesión](#13-timeouts-y-cierre-de-sesión)
 14. [Conversaciones](#14-conversaciones)
+15. [Diagnóstico del pipeline (`pipeline_event`)](#15-diagnóstico-del-pipeline-pipeline_event)
 
 ---
 
@@ -114,7 +115,7 @@ El **primer mensaje** que envíes DEBE ser el handshake. Es el único mensaje si
 | `client_key` | string | ✓ (o `admin_token`) | Clave de autenticación del cliente |
 | `admin_token` | string | — | Solo el panel web del gateway: el `ADMIN_TOKEN` en lugar de `client_key` (una de las dos, nunca las dos). Entra como el cliente «Panel web» (`panel-web`), una ficha normal que el gateway crea la primera vez. Tiene la misma potencia que el `X-Admin-Token` de `/admin`: no lo guardes en un aparato |
 | `input_mode` | `"audio"` \| `"text"` | ✓ | Cómo enviará datos este cliente |
-| `output_mode` | array | ✓ | Qué quiere recibir: `"text"` (mensajes `token`), `"audio"` (frames TTS), `"status"` (mensajes `pipeline_event`, §12). Los `status` de servicios, `error`, `transcription*` y el control de turnos llegan siempre |
+| `output_mode` | array | ✓ | Qué quiere recibir: `"text"` (mensajes `token`), `"audio"` (frames TTS), `"status"` (mensajes `turn_progress`, §5, y `pipeline_event`, §15). Los `status` de servicios, `error`, `transcription*` y el control de turnos llegan siempre |
 | `agent` | string | — | Agente OpenClaw a usar; omitir para usar el agente por defecto (ver "Selección de agente" abajo) |
 | `conversation` | string (1–64) | — | La conversación de la sesión (§14): el id de una conversación **de este cliente** para retomarla, o `"new"` para empezar una. Sin él, la conversación del día. Nuevo en M19 |
 
@@ -340,6 +341,35 @@ Solo se envía si el cliente tiene el flag `tool_calls_enabled` activado (por de
 
 No hay un `phase="update"` — OpenClaw emite resultados parciales de streaming que el gateway descarta deliberadamente; solo se reenvían inicio y resultado final. También llegan durante turnos iniciados por el agente (push, ver §10).
 
+### `turn_progress` — en qué está el turno (nuevo, #254)
+
+Solo con `"status"` en `output_mode`. Mientras el agente prepara la respuesta o usa herramientas, el cliente no recibe nada más: con OpenClaw 2026.10.5 el texto llega casi entero al final, y una respuesta con herramientas (Home Assistant, MCP) puede tardar decenas de segundos. `turn_progress` dice en qué está, para que el cliente lo enseñe («Pensando…», «Usando ha_call_service…») o suene algo en lugar de silencio:
+
+```json
+{ "type": "turn_progress", "turn_id": "t-1", "phase": "preparing", "tool": null }
+{ "type": "turn_progress", "turn_id": "t-1", "phase": "thinking", "tool": null }
+{ "type": "turn_progress", "turn_id": "t-1", "phase": "tool", "tool": "ha_call_service" }
+{ "type": "turn_progress", "turn_id": "t-1", "phase": "thinking", "tool": null }
+```
+
+| Campo | Descripción |
+|-------|-------------|
+| `turn_id` | Turno al que pertenece (el de su `turn_start`) |
+| `phase` | `"preparing"`: el orquestador prepara la ejecución (espacio de trabajo, contexto, memoria). `"thinking"`: el modelo está generando, también al volver de una herramienta. `"tool"`: el agente usa una herramienta |
+| `tool` | Con `phase: "tool"`, el **nombre** de la herramienta (con varias a la vez, la última que sigue abierta); `null` en las demás fases y cuando el nombre no es un identificador (`[A-Za-z0-9_.:-]`, hasta 128 caracteres): entonces es «una herramienta». Nunca lleva argumentos ni resultado |
+
+Reglas:
+
+- **Solo dentro de su turno:** llega después de su `turn_start` y antes de su `turn_end`, en el orden total de la sesión, nunca después del `turn_end`. Nada de una ejecución abortada (barge-in, `cancel`, un `send` que la sustituye) llega como progreso. Vale igual para un push (§10), salvo lo que el orquestador cuente antes de abrirlo.
+- **Es el estado actual, no un registro:** cada uno sustituye al anterior. Un `token` lo deja obsoleto (el texto ya está llegando; bórralo); puede volver a llegar después de un `token` si el agente usa otra herramienta a media respuesta. Sin un `token` entre medias nunca llega el mismo estado dos veces seguidas, y llega como mucho uno cada 250 ms: si el orquestador encadena herramientas más deprisa, el gateway se salta los intermedios y manda el más reciente (y lo que quedara aplazado al salir un `token` ya no sale).
+- **No es una garantía:** un turno puede no traer ninguno (una respuesta inmediata, o un orquestador que no lo cuenta), y no hay uno de cierre: el fin es el `turn_end`.
+- **Independiente de `tool_calls_enabled`:** ese flag sigue gobernando el mensaje `tool_call` completo (con `args` y `result`); `turn_progress` solo lleva el nombre, así que llega con el flag desactivado.
+- **Vocabulario del gateway:** el gateway traduce lo que cuenta el orquestador (las fases de arranque de OpenClaw y sus eventos de herramienta, ver [`openclaw-protocol.md`](openclaw-protocol.md)) a estas fases; nunca reenvía el texto del orquestador. La lista puede crecer: trata un `phase` que no conozcas como un «trabajando» genérico.
+
+**Por qué esta forma.** Como `turn_start` y `turn_end`, es un mensaje del turno (prefijo `turn_` y su `turn_id`); `phase` es el estado actual y `tool` va siempre presente (`null` si no aplica), como los campos de `tool_call`. Va con `"status"` porque, como `pipeline_event`, cuenta cómo va la sesión sin ser contenido: un cliente que no lo pide (uno mínimo, la tele) no recibe nada nuevo.
+
+> **Cambio aditivo — #254.** Mensaje nuevo, solo para clientes con `"status"` en `output_mode`; nada de lo que ya llegaba cambia. Un cliente que ignora los `type` que no conoce no tiene que hacer nada.
+
 ### Pseudocódigo de recepción
 
 ```python
@@ -375,6 +405,10 @@ async for msg in ws:
             case "tool_call":
                 # Solo llega si tool_calls_enabled=True para este cliente
                 handle_tool_call(data["turn_id"], data["phase"], data["name"], data.get("args"), data.get("result"))
+
+            case "turn_progress":
+                # Solo con "status" en output_mode: el estado actual del turno; un token lo deja obsoleto
+                show_progress(data["turn_id"], data["phase"], data["tool"])
 
             case "transcription_partial":
                 show_live_transcription(data["text"])
@@ -617,7 +651,7 @@ Al revés, hablar corta el push: si el usuario hace barge-in, envía un `send` o
 
 Un push tiene el mismo tope que un turno normal: si OpenClaw lo abre y deja de mandar nada durante `TURN_TIMEOUT_S` (sin su fin), el gateway lo cierra con `{"type":"error","code":"TURN_ERROR","message":"turn_timeout","fatal":false,"turn_id":...}` y su `turn_end`, y lo aborta en OpenClaw si es de tu sesión de agente (#286). El siguiente push abre su propio `turn_start`.
 
-El cliente no necesita distinguirlos de los turnos normales — el `turn_id` y `turn_seq` siguen la misma secuencia (si quiere, `origin` lo dice). Si `tool_calls_enabled` está activo, también pueden llegar mensajes `tool_call` (§5) intercalados.
+El cliente no necesita distinguirlos de los turnos normales — el `turn_id` y `turn_seq` siguen la misma secuencia (si quiere, `origin` lo dice). Si `tool_calls_enabled` está activo, también pueden llegar mensajes `tool_call` (§5) intercalados; con `"status"` en `output_mode`, `turn_progress` (§5).
 
 > **`push_enabled` (por defecto `True`, configurable por admin):** si tu `client_key` tiene este flag desactivado, no recibirás **ningún** mensaje de un turno iniciado por el agente — ni `turn_start`, ni `token`, ni audio, ni `tool_call` — para esa sesión. No hay ninguna señal explícita de que se haya suprimido un push; es indistinguible de que OpenClaw simplemente no haya iniciado ninguno. Si tu integración depende de notificaciones proactivas, confirma con el admin que `push_enabled=True` para tu cliente. Un `send` tuyo aborta en OpenClaw el push que estuviera en curso en tu sesión de agente aunque no lo recibas, para que tu respuesta no se mezcle con él.
 
@@ -703,11 +737,12 @@ El cliente escribe; el gateway sintetiza audio con el texto de la respuesta.
 | `token` | `{"type":"token","turn_id":"t-N","text":"..."}` | `"text"` en `output_mode` — tokens en streaming |
 | `turn_end` | `{"type":"turn_end","turn_id":"t-N","reason":"done"\|"error"\|"cancelled"\|"interrupted"\|"replaced"\|"timeout"\|"closed"}` | Fin de cada turno (§5) |
 | `tool_call` | `{"type":"tool_call","turn_id":"t-N","phase":"start"\|"result","name":"...","tool_call_id":"...","args":{...}\|null,"result":"..."\|null,"is_error":bool\|null}` | Solo si `tool_calls_enabled=True` para el cliente — uso de herramientas del agente |
+| `turn_progress` | `{"type":"turn_progress","turn_id":"t-N","phase":"preparing"\|"thinking"\|"tool","tool":"..."\|null}` | Solo con `"status"` en `output_mode`: en qué está el turno mientras no llega texto (§5). Nuevo en #254 |
 | `transcription_partial` | `{"type":"transcription_partial","text":"..."}` | `input_mode="audio"` — parciales en tiempo real |
 | `transcription` | `{"type":"transcription","text":"..."}` | `input_mode="audio"` — transcripción final, espera `send` |
 | `status` | `{"type":"status","service":"...","state":"..."}` | Cambio de estado de un microservicio |
 | `error` | `{"type":"error","code":"...","message":"...","fatal":bool,"turn_id":"..."}` | Error (turno o sesión) |
-| `pipeline_event` | `{"type":"pipeline_event","stage":"...","elapsed_ms":N,"turn":N}` | Solo con `"status"` en `output_mode`: cada etapa del pipeline (p. ej. `llm_start`, `llm_first_token`, `tts_first_chunk`, `transcription_final`, `session_end`) con los ms desde la etapa anterior. Diagnóstico; no lleva texto |
+| `pipeline_event` | `{"type":"pipeline_event","stage":"...","elapsed_ms":N,"turn":N}` | Solo con `"status"` en `output_mode`: cada etapa del pipeline con los ms desde la etapa anterior (§15). Diagnóstico; no lleva texto |
 
 #### Frames binarios de audio
 
@@ -836,3 +871,41 @@ Las reglas son las mismas para todos los clientes; el gateway no mira el tipo de
 > La sesión de OpenClaw ya no es una por cliente y agente para siempre: es la de la conversación. Un cliente que no manda `conversation` empieza conversación (y contexto) nuevo cada día a las `CONVERSATION_DAY_START_HOUR`, y abrir dos sesiones del mismo cliente en la misma conversación cierra la primera con 4102 (`conversation opened elsewhere`). Un cliente que necesite dos sesiones a la vez debe abrirlas en conversaciones distintas (`"new"` o ids distintos).
 
 **El panel web** entra con `admin_token` (§1) como el cliente «Panel web»: crea sus conversaciones con `POST /admin/conversations` (o `"conversation": "new"`) y las retoma por su id. Escribir en la conversación de otro cliente no está permitido.
+
+---
+
+## 15. Diagnóstico del pipeline (`pipeline_event`)
+
+Solo con `"status"` en `output_mode`. El gateway mide cada sesión por etapas (las mismas que enseña `/admin/sessions` y que van al log a INFO) y, a un cliente que pide `"status"`, le manda cada una según ocurre:
+
+```json
+{ "type": "pipeline_event", "stage": "llm_first_token", "elapsed_ms": 2840, "turn": 3 }
+```
+
+| Campo | Descripción |
+|-------|-------------|
+| `stage` | La etapa (tabla siguiente) |
+| `elapsed_ms` | Milisegundos (entero) desde la etapa **anterior de la sesión**, sea cual sea, no desde el inicio del turno. Para medir un tramo (fin de frase → primer audio), suma los de las etapas que lo forman |
+| `turn` | El contador de turnos **del usuario** de la sesión (0 antes del primer `send`). No es el `turn_id` ni el `turn_seq`: un push no lo incrementa, y sus etapas llevan el del último turno del usuario |
+
+No lleva texto (ni del usuario ni de la respuesta) ni los detalles que el gateway guarda para `/admin/sessions` (longitudes, voz, tiempos internos del TTS): solo la etapa y los dos números.
+
+| `stage` | Cuándo |
+|---|---|
+| `session_start` | Al empezar la sesión, justo después de `ready` |
+| `transcription_partial` | Cada parcial de transcripción (`input_mode: "audio"`), después de su `transcription_partial` |
+| `barge_in` | Un parcial cortó el turno en curso (§7), después de su `turn_end` |
+| `transcription_final` | La transcripción final, antes de su `transcription` |
+| `transcription_incomplete` | El transcriptor cortó una final por saturación (`complete: false`) |
+| `llm_start` | Un turno del usuario sale hacia el orquestador (después de su `turn_start`) |
+| `llm_first_token` | Llega el primer texto del orquestador, justo antes del primer `token` |
+| `llm_done` | El orquestador terminó la respuesta |
+| `tts_start` | Empieza la síntesis de voz del turno (con `"audio"`; también en un push) |
+| `tts_first_chunk` | Primer audio del TTS, antes de su primer frame |
+| `tts_done` | El TTS entregó todo el audio del turno |
+| `push_tts` | Se cerró el TTS de un push (al terminar o al cortarse) |
+| `session_end` | La sesión se cierra (si el socket aún puede recibirlo) |
+
+Un push no tiene `llm_*`: solo `tts_*` y `push_tts` si hay audio. Las etapas de un cierre forzado (`client_slow`, `session_revoked`, `session_displaced`) quedan en `/admin/sessions` pero no llegan: el socket ya no las puede recibir o solo deja salir el `turn_end` (§13).
+
+Van en el mismo orden total que el resto (§5), así que su posición respecto a `turn_start`, `token` y `turn_end` es fiable, y pueden llegar fuera de un turno (`session_start`, `transcription_*`, `session_end`). Son diagnóstico: la lista de etapas puede crecer y un cliente no debe depender de ellas para funcionar (para enseñar en qué está un turno, `turn_progress`, §5). Ignora las etapas que no conozcas.
