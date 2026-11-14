@@ -119,7 +119,7 @@ class Harness:
         return session_key_for(conversation["agent"], conversation["id"])
 
     async def push(
-        self, text: str, end: bool = True, session_key: str | None = None, progress: bool = False
+        self, text: str, end: bool = True, session_key: str | None = None, progress: bool | str = False
     ) -> None:
         """El orquestador inicia un turno por su cuenta en la conversación del último cliente
         conectado, o en `session_key` (con `end=False` lo deja abierto hasta `push_end`; con

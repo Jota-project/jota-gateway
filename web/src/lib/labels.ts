@@ -38,7 +38,15 @@ export const PAIRING_STATE: Record<PairingState, string> = {
 
 /** Texto de un valor, o el valor tal cual si el gateway trae uno nuevo que la web aún no conoce. */
 export function label(texts: Record<string, string>, value: string): string {
-  return texts[value] ?? value
+  return ownText(texts, value) ?? value
+}
+
+/**
+ * El texto de `value` solo si es una clave propia de `texts`: un valor que llega del gateway como
+ * `constructor` o `toString` no debe dar con los miembros de `Object.prototype`.
+ */
+export function ownText(texts: Record<string, string>, value: string): string | undefined {
+  return Object.hasOwn(texts, value) ? texts[value] : undefined
 }
 
 /** Motivos de cierre de sesión (src/services/stats.py, CloseReason). */

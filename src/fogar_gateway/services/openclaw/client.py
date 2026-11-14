@@ -832,7 +832,7 @@ class OpenClawClient:
                     # out mapped to the gateway's vocabulary, never as OpenClaw's string.
                     phase = chat_status_phase(data)
                     if phase is not None:
-                        yield OrchestratorEvent(type="progress", content=phase)
+                        yield OrchestratorEvent(type="progress", phase=phase)
                         continue
                     # Only frames of this turn's own run get here (#285, TurnRegistry).
                     # #241: OpenClaw 2026.10.5 sends the full text only in `final`

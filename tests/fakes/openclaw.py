@@ -101,6 +101,8 @@ class FakeOpenClawServer:
                  no es un identificador
     progress_late -> ack started, delta y final, y después una fase y una herramienta del
                  mismo run (nada de eso debe llegar al cliente)
+    progress_hold -> ack started, una fase y una herramienta `slow_tool` (start), y espera a
+                 `release` antes de delta y final
     progress_burst -> ack started, `burst_tools` herramientas seguidas (start y result), una
                  pausa de `burst_pause_s` y delta y final (el ritmo de `turn_progress`)
     wait*     -> ack started y se queda en cola hasta `finish_next()` (o `release`); entonces
@@ -110,8 +112,11 @@ class FakeOpenClawServer:
                  además, tras su agent start, una fase y una herramienta `late_tool`.
     push(sk, text, end=True, progress=False) -> agent start, chat delta, chat final y agent
                  end, sin `chat.send`; con `end=False` el push queda abierto hasta
-                 `push_end(sk)`, `push_fail(sk)` o un `chat.abort`. Con `progress`, entre el
-                 agent start y el delta: fases de arranque y una herramienta `push_tool`.
+                 `push_end(sk)`, `push_fail(sk)` o un `chat.abort`. Con `progress=True`,
+                 entre el agent start y el delta: fases de arranque y una herramienta
+                 `push_tool`; con `progress="early"`, dos fases antes del agent start.
+    agent_noise(sk, run_id=None) -> `agent` de streams `item`/`tool` con `data.phase`
+                 start/end (cada `agent` lleva su `stream`, como el real).
     chat.abort -> si hay un push abierto en esa `sessionKey`: chat `aborted`, agent end y
                  `res {ok, aborted: true, runIds}`, en el orden del real (6g); si no, solo
                  `res {aborted: false}`. Tras el abort, `push_end`/`push_fail` no emiten nada.
@@ -244,9 +249,23 @@ class FakeOpenClawServer:
         await ws.send(self._tool(sk, run_id, "result", tool, call_id))
 
     @staticmethod
-    def _agent(sk, phase, run_id):
-        payload = {"sessionKey": sk, "runId": run_id, "data": {"phase": phase}}
+    def _agent(sk, phase, run_id, stream="lifecycle"):
+        """`agent` con su `stream`, como el real: `lifecycle` abre y cierra el run; los demás
+        (`item`, `tool`…) también llevan `data.phase` y no abren ni cierran nada."""
+        data = {"phase": phase}
+        if stream == "item":
+            data.update({"itemId": f"item-{run_id}", "kind": "tool", "title": "x"})
+        payload = {"sessionKey": sk, "runId": run_id, "stream": stream, "data": data}
         return json.dumps({"type": "event", "event": "agent", "payload": payload})
+
+    async def agent_noise(self, sk, run_id=None):
+        """`agent` de streams que no son `lifecycle` (`item` start/end, `tool` start), del
+        push abierto en `sk` o de un run nuevo: no deben abrir ni cerrar un push."""
+        run_id = run_id or self._open_pushes.get(sk) or self._new_run()
+        for ws in list(self._conns):
+            await ws.send(self._agent(sk, "start", run_id, stream="item"))
+            await ws.send(self._agent(sk, "start", run_id, stream="tool"))
+            await ws.send(self._agent(sk, "end", run_id, stream="item"))
 
     def _new_run(self) -> str:
         self._runs += 1
@@ -303,8 +322,11 @@ class FakeOpenClawServer:
         run_id = self._new_run()
         self._record(sk, "assistant", text)
         for ws in list(self._conns):
+            if progress == "early":  # fases de arranque antes del `agent start` (#300, #254)
+                await ws.send(self._status(sk, "preparing_workspace", run_id))
+                await ws.send(self._status(sk, "preparing_context", run_id))
             await ws.send(self._agent(sk, "start", run_id))
-            if progress:
+            if progress is True:
                 phases = ("preparing_workspace", "starting_model")
                 await self._progress_frames(ws, sk, run_id, phases, "push_tool")
             await ws.send(self._chat(sk, "delta", text, run_id))
@@ -478,6 +500,11 @@ class FakeOpenClawServer:
             await self._progress_frames(ws, sk, run_id, phases, "ha_call_service")
         elif text == "progress_weird":
             await self._progress_frames(ws, sk, run_id, ("warp_drive",), "bad name; rm -rf /")
+        elif text == "progress_hold":
+            # Una fase (sale ya) y una herramienta (aplazada por el ritmo); después espera.
+            await ws.send(self._status(sk, "preparing_workspace", run_id))
+            await ws.send(self._tool(sk, run_id, "start", "slow_tool", "call-1"))
+            await self.release.wait()
         elif text == "progress_burst":
             for i in range(self.burst_tools):
                 await self._progress_frames(ws, sk, run_id, (), f"tool_{i}", call_id=f"call-{i}")

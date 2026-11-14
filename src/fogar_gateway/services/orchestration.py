@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from fogar_gateway.services.openclaw.models import ToolCallEvent
 from fogar_gateway.services.pipeline_tracker import PipelineTracker
 from fogar_gateway.services.protocol import ACCEPTED, OrchestratorProtocol
+from fogar_gateway.services.turn_progress import ProgressPhase
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ async def call_orchestrator(
     on_token: Callable[[str], Awaitable[None]] | None = None,
     on_tool_call: Callable[[ToolCallEvent], Awaitable[None]] | None = None,
     on_accepted: Callable[[], Awaitable[None]] | None = None,
-    on_progress: Callable[[str], Awaitable[None]] | None = None,
+    on_progress: Callable[[ProgressPhase], Awaitable[None]] | None = None,
 ) -> None:
     """Iterate orchestrator.stream_response(), record pipeline events, call on_token per token,
     on_tool_call per tool-call event, on_accepted once OpenClaw accepted the chat.send and
@@ -65,8 +66,8 @@ async def call_orchestrator(
                     await on_tool_call(event.tool_call)
 
             elif event.type == "progress":
-                if on_progress:
-                    await on_progress(event.content)
+                if on_progress and event.phase is not None:
+                    await on_progress(event.phase)
 
             elif event.type == "error":
                 raise OrchestratorError(event.content)

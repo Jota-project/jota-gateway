@@ -113,6 +113,15 @@ class FrameDispatcher:
         sk = payload.get("sessionKey")
         if sk is None or self._of_aborted_run(payload):
             return
+        stream = payload.get("stream")
+        if stream is not None and stream != "lifecycle":
+            # `agent` events of other streams (`item`, `tool`, `assistant`, `thinking`,
+            # `run_status`…) also carry `data.phase` (`item`: start/update/end), but only
+            # `lifecycle` opens or ends a run (OpenClaw's own `lifecyclePhase`, 2026.10.5): an
+            # `item` `end` must not close a push, nor a `tool` `start` open one. They still
+            # show the run is alive. A frame without `stream` keeps the old reading.
+            self._turns.note_run_activity(sk, _run_id(payload), ended=False)
+            return
         phase = _as_dict(payload.get("data")).get("phase")
         self._turns.note_run_activity(sk, _run_id(payload), ended=phase in ("end", "error"))
         bridge = self._clients.route(sk)

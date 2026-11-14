@@ -869,3 +869,65 @@ async def test_active_runs_follow_their_frames():
     await dispatcher.dispatch(_tool("run-4"))
     turn_reg.error_all("orchestrator_disconnected")
     assert turn_reg.active_runs(SK) == []
+
+
+# ── `agent` de streams que no son `lifecycle` (2026.10.5; revisión de #254) ──
+
+
+def _agent_stream(stream, phase, run_id="r1", sk=SK):
+    payload = {"sessionKey": sk, "runId": run_id, "stream": stream, "data": {"phase": phase}}
+    return {"type": "event", "event": "agent", "payload": payload}
+
+
+@pytest.mark.parametrize(
+    ("stream", "phase"),
+    [
+        ("item", "start"),
+        ("item", "update"),
+        ("item", "end"),
+        ("tool", "start"),
+        ("tool", "result"),
+        ("assistant", "end"),
+        ("run_status", "preparing_workspace"),
+        ("thinking", "error"),
+    ],
+)
+async def test_only_the_lifecycle_stream_opens_or_ends_a_push(stream, phase):
+    """OpenClaw's `item` events carry `data.phase` start/update/end (one per tool activity)
+    and are broadcast as `agent` too: an `item` `end` used to close a push and a `tool`
+    `start` to open one."""
+    dispatcher, turn_reg, client_reg = make_dispatcher()
+    bridge = MagicMock()
+    client_reg.register("client-a", bridge)
+    await dispatcher.dispatch(_agent_stream(stream, phase))
+    bridge.enqueue_push.assert_not_called()
+    assert turn_reg.active_runs(SK) == ["r1"]  # the run is still alive
+
+
+@pytest.mark.parametrize(
+    ("phase", "kind"), [("start", "turn_start"), ("end", "turn_end"), ("error", "turn_error")]
+)
+async def test_the_lifecycle_stream_still_opens_and_ends_a_push(phase, kind):
+    dispatcher, _, client_reg = make_dispatcher()
+    bridge = MagicMock()
+    client_reg.register("client-a", bridge)
+    await dispatcher.dispatch(_agent_stream("lifecycle", phase))
+    bridge.enqueue_push.assert_called_once_with(kind, SK, run_id="r1")
+
+
+async def test_an_item_end_does_not_close_the_open_push(make_real_bridge):
+    dispatcher, _, client_reg = make_dispatcher()
+    bridge, _ = make_real_bridge()
+    client_reg.register("hab_sito", bridge)
+    sk = "agent:main:hab_sito"
+    await dispatcher.dispatch(_agent_stream("lifecycle", "start", sk=sk))
+    await bridge.push_idle()
+    assert push_open(bridge)
+    await dispatcher.dispatch(_agent_stream("item", "end", sk=sk))
+    await dispatcher.dispatch(_agent_stream("tool", "start", sk=sk))
+    await bridge.push_idle()
+    assert push_open(bridge)
+    await dispatcher.dispatch(_agent_stream("lifecycle", "end", sk=sk))
+    await bridge.push_idle()
+    assert not push_open(bridge)
+    assert [m["type"] for m in await sent(bridge)] == ["turn_start", "turn_end"]

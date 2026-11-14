@@ -8,7 +8,6 @@ from fogar_gateway.services.turn_progress import (
     TurnProgress,
     chat_status_phase,
     safe_tool_name,
-    status_phase,
 )
 
 # ChatRunStartupPhaseSchema de OpenClaw 2026.10.5, en su orden.
@@ -46,11 +45,18 @@ def test_a_retry_arrives_as_starting_model_and_is_thinking():
     assert chat_status_phase(payload) == "thinking"
 
 
-def test_status_phase_accepts_only_our_status_phases():
-    assert status_phase("preparing") == "preparing"
-    assert status_phase("thinking") == "thinking"
-    assert status_phase("tool") is None  # la herramienta sale de `tool_call`, con su nombre
-    assert status_phase("preparing_workspace") is None
+@pytest.mark.parametrize("call_id", [{"id": 1}, ["c1"], None, 3.5, True])
+def test_a_tool_call_id_that_is_not_text_or_int_is_no_id(call_id):
+    p = TurnProgress(min_interval=0)
+    assert p.tool(_start(call_id, "exec")) == Progress("tool", "exec")
+    assert p.tool(_result(call_id, "exec")) == Progress("thinking")
+
+
+def test_an_int_tool_call_id_pairs_start_and_result():
+    p = TurnProgress(min_interval=0)
+    p.tool(_start(1, "read"))
+    p.tool(_start(2, "exec"))
+    assert p.tool(_result(2, "exec")) == Progress("tool", "read")
 
 
 @pytest.mark.parametrize(

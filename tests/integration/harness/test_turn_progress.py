@@ -15,11 +15,13 @@ from fogar_gateway.services import turn_progress
 from tests.integration.conftest import CLIENT_ID
 from tests.integration.harness.conftest import (
     assert_turns_paired,
+    interrupted,
     of_type,
     turn_ended,
 )
 
 WITH_PROGRESS = ("text", "status")
+AUDIO_FRAME = b"\x00" * 3200  # 50 ms de PCM Float32 a 16 kHz
 
 
 @pytest.fixture
@@ -182,4 +184,50 @@ async def test_a_flood_is_rate_capped_and_the_latest_state_still_arrives(harness
     assert seen[-1] == ("thinking", None)
     assert all(a != b for a, b in pairwise(seen)), "repetido seguido"
     assert_progress_inside_turns(msgs)
+    assert_turns_paired(msgs)
+
+
+async def test_no_progress_after_a_barge_in_with_a_tool_deferred(harness):
+    """La fase sale ya y la herramienta queda aplazada por el ritmo; el usuario habla encima
+    antes de que salga: no llega ningún `turn_progress` tras la interrupción."""
+    harness.transcriber.on_audio = [("espera un momento", False)]
+    client = await harness.connect(input_mode="audio", output_mode=WITH_PROGRESS)
+    await client.send({"type": "send", "text": "progress_hold"})
+    await client.collect(lambda m: bool(of_type(m, "turn_progress")))
+    await client.send_audio(AUDIO_FRAME)
+    await client.collect(lambda m: bool(interrupted(m)))
+    msgs = await client.collect(timeout=turn_progress.PROGRESS_MIN_INTERVAL_S + 0.4)
+    end_at = msgs.index(interrupted(msgs)[0])
+    assert not of_type(msgs[end_at:], "turn_progress")
+    assert ("tool", "slow_tool") not in progress(msgs)
+    assert_progress_inside_turns(msgs)
+    assert_turns_paired(msgs)
+
+
+async def test_a_push_shows_the_phase_it_reported_before_opening(harness, no_rate_cap):
+    """OpenClaw cuenta las fases de arranque antes del `agent start` del push (#300): la
+    última sale como primer progreso del push."""
+    client = await harness.connect(output_mode=WITH_PROGRESS)
+    await harness.push("aviso", progress="early")
+    msgs = await client.collect(turn_ended)
+    kinds = [m["type"] for m in msgs if isinstance(m, dict) and m["type"] != "pipeline_event"]
+    start_at = kinds.index("turn_start")
+    assert kinds[start_at + 1] == "turn_progress"
+    assert progress(msgs) == [("preparing", None)]
+    assert_turns_paired(msgs)
+
+
+async def test_agent_events_of_other_streams_neither_open_nor_close_a_push(harness):
+    """`agent` `item`/`tool` con `data.phase` start/end (2026.10.5): ni abren un push ni
+    cierran el abierto; solo el stream `lifecycle` lo hace."""
+    client = await harness.connect()
+    await harness.openclaw.agent_noise(harness.session_key())  # un run sin lifecycle
+    await harness.push("aviso", end=False)
+    await client.collect(lambda m: bool(of_type(m, "token")))
+    await harness.openclaw.agent_noise(harness.session_key())  # item end del push abierto
+    await harness.push_end()
+    msgs = await client.collect(turn_ended)
+    assert len(of_type(msgs, "turn_start")) == 1
+    assert [m["type"] for m in msgs if isinstance(m, dict)][-1] == "turn_end"
+    assert of_type(msgs, "turn_end")[0]["reason"] == "done"
     assert_turns_paired(msgs)

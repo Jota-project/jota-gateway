@@ -26,8 +26,6 @@ from fogar_gateway.services.openclaw.models import ToolCallEvent
 logger = logging.getLogger(__name__)
 
 ProgressPhase = Literal["preparing", "thinking", "tool"]
-# Las que llegan por un evento `progress` del orquestador (la de herramienta sale de `tool_call`).
-_STATUS_PHASES: dict[str, ProgressPhase] = {"preparing": "preparing", "thinking": "thinking"}
 
 # Como mucho un `turn_progress` por turno cada tanto (OpenClaw puede encadenar herramientas).
 PROGRESS_MIN_INTERVAL_S = 0.25
@@ -72,9 +70,12 @@ def chat_status_phase(payload: dict) -> ProgressPhase | None:
     return mapped
 
 
-def status_phase(value: str) -> ProgressPhase | None:
-    """`preparing`/`thinking` de un evento `progress` del orquestador; None si es otra cosa."""
-    return _STATUS_PHASES.get(value)
+def _call_id(value: object) -> str | int | None:
+    """El `toolCallId` como clave: solo texto o entero (un objeto o una lista de OpenClaw no
+    sirven de clave y romperían el turno); cualquier otra cosa es «sin id»."""
+    if isinstance(value, str) or (isinstance(value, int) and not isinstance(value, bool)):
+        return value
+    return None
 
 
 @dataclass(frozen=True)
@@ -100,7 +101,7 @@ class TurnProgress:
     ) -> None:
         self._min = PROGRESS_MIN_INTERVAL_S if min_interval is None else min_interval
         self._clock = clock
-        self._open_tools: dict[str, str | None] = {}  # toolCallId → nombre, en orden de inicio
+        self._open_tools: dict[str | int, str | None] = {}  # toolCallId → nombre, por inicio
         self._latest: Progress | None = None
         self._sent: Progress | None = None
         self._sent_at: float | None = None
@@ -108,12 +109,15 @@ class TurnProgress:
     def tool(self, tool_call: ToolCallEvent) -> Progress:
         """El estado tras un evento de herramienta: la que empieza o, al terminar una, la última
         que sigue abierta (herramientas en paralelo); si no queda ninguna, `thinking`."""
+        call_id = _call_id(tool_call.tool_call_id)
         if tool_call.phase == "start":
             name = safe_tool_name(tool_call.name)
-            self._open_tools.pop(tool_call.tool_call_id, None)
-            self._open_tools[tool_call.tool_call_id] = name
+            if call_id is not None:  # sin id no se puede emparejar con su result
+                self._open_tools.pop(call_id, None)
+                self._open_tools[call_id] = name
             return Progress("tool", name)
-        self._open_tools.pop(tool_call.tool_call_id, None)
+        if call_id is not None:
+            self._open_tools.pop(call_id, None)
         if self._open_tools:
             return Progress("tool", next(reversed(self._open_tools.values())))
         return Progress("thinking")

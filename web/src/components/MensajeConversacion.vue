@@ -24,7 +24,10 @@ defineProps<{
     </p>
     <p v-if="texto || escribiendo" class="texto" :class="{ escribiendo }">{{ texto }}</p>
     <p v-else-if="!aviso" class="texto fg-tenue">(sin texto)</p>
-    <p v-if="escribiendo && progreso" class="progreso fg-meta" aria-live="polite">{{ progreso }}</p>
+    <p v-if="escribiendo && progreso" class="progreso fg-meta" aria-hidden="true">{{ progreso }}</p>
+    <!-- La región viva está siempre en el DOM y solo cambia su texto: así el lector de pantalla
+         anuncia cada cambio (una creada con su texto ya puesto no se anuncia). -->
+    <span class="fg-solo-lector" aria-live="polite">{{ escribiendo && progreso ? progreso : '' }}</span>
     <p v-if="aviso" class="aviso">{{ aviso }}</p>
   </article>
 </template>

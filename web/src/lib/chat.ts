@@ -1,4 +1,4 @@
-import { label, TURN_ERROR, TURN_PROGRESS } from './labels'
+import { label, ownText, TURN_ERROR, TURN_PROGRESS } from './labels'
 import { reconnectClass, type Reconnect } from './closeCodes'
 
 // El chat del panel por el WebSocket (docs/client-protocol.md): lo que llega, cómo queda en pantalla y
@@ -44,7 +44,7 @@ export interface TurnProgress {
 /** El progreso en una frase corta: «Pensando…», «Usando ha_call_service…». Una fase nueva es «Trabajando…». */
 export function progressText(progress: TurnProgress): string {
   if (progress.phase === 'tool') return progress.tool ? `Usando ${progress.tool}…` : 'Usando una herramienta…'
-  return TURN_PROGRESS[progress.phase] ?? 'Trabajando…'
+  return ownText(TURN_PROGRESS, progress.phase) ?? 'Trabajando…'
 }
 
 /** Las líneas de la conversación en vivo, en el orden en que llegan (el orden total del gateway). */
@@ -166,7 +166,8 @@ const REASON: Record<string, string> = {
 export function endReasonText(line: Pick<ChatLine, 'reason' | 'error'>): string | null {
   const reason = line.reason ?? 'done'
   if (reason === 'done') return null
-  if (REASON[reason]) return REASON[reason]
+  const text = ownText(REASON, reason)
+  if (text) return text
   return line.error ? `Falló: ${label(TURN_ERROR, line.error).toLowerCase()}.` : 'Falló.'
 }
 

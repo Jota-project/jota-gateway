@@ -143,6 +143,12 @@ describe('progressText', () => {
   it('una fase que la web no conoce es un «trabajando» genérico', () => {
     expect(progressText({ phase: 'compacting', tool: null })).toBe('Trabajando…')
   })
+  it('ni con nombres de Object.prototype (constructor, toString, __proto__)', () => {
+    for (const phase of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      expect(progressText({ phase, tool: null })).toBe('Trabajando…')
+    }
+    expect(endReasonText({ reason: 'constructor' })).toBe('Falló.')
+  })
 })
 
 describe('endReasonText', () => {

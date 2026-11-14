@@ -282,8 +282,37 @@ only a DEBUG line. `session.tool` `start` → `tool` with the tool `name` if it 
 `[A-Za-z0-9_.:-]{1,128}` (otherwise no name); `result` → `thinking` (or the last tool still
 open, when several run at once). `args` and `result` never reach `turn_progress`. These frames
 go through the same `runId` filter as the rest of the turn ("How the gateway uses `runId`"), so
-nothing of an aborted run, and nothing after the turn's end, becomes progress. `update` tool frames and the
-`agent` `run_status`/`thinking` streams are still ignored.
+nothing of an aborted run, and nothing after the turn's end, becomes progress. A startup phase
+that arrives while no push of its run is open (before its `agent` `lifecycle` `start`) is kept
+per `runId` (the last 8 runs, 30 s) and sent right after that push's `turn_start`. `update` tool
+frames and the `agent` `run_status`/`thinking` streams are still ignored.
+
+---
+
+## `agent` events of streams other than `lifecycle` (2026-11-14, server 2026.10.5)
+
+Read in the npm package `openclaw@2026.10.5` (`server-chat`, `builtin-openclaw`, the
+`AgentActivityItemSchema` in `sessions`); not a new live capture. **Gateway bug fixed.**
+
+- Every `agent` event carries `stream` (the payload spreads the internal agent event). OpenClaw
+  itself reads a run's lifecycle only from `stream:"lifecycle"`
+  (`lifecyclePhase = evt.stream === "lifecycle" && … data.phase`).
+- Other streams also carry `data.phase`: `item` (`start`/`update`/`end`, one item per tool
+  activity, `AgentActivityItemSchema`), `tool` (`start`/`update`/`result`), `run_status`
+  (the startup phases), `plan` (`update`), plus `assistant`/`thinking`/`usage`. Non-tool
+  streams of a control-UI-visible run are broadcast as `agent` events to every operator
+  connection (`sendOrBufferAgentTextEvent` → `sendLivePayload("agent", …)`), so the gateway
+  receives `item` `start`/`end` whenever the agent uses a tool. `tool`-stream `agent` events
+  go only to connections registered as tool recipients of the run, or (for a run hidden from
+  the control UI) to session-message subscribers; the gateway gets tools as `session.tool`.
+- Before this fix `FrameDispatcher._handle_agent_lifecycle` read `data.phase` whatever the
+  stream: an `item` `end` closed the open push (the rest of its text was then lost) and an
+  `item` (or `tool`) `start` with no push open could open one; an `end` also marked the run
+  ended for the active-run tracking.
+
+How the gateway reacts now: only `stream:"lifecycle"` opens (`start`) or ends (`end`/`error`) a
+push; an `agent` event of any other stream only records that its run is still active. A frame
+without `stream` (not sent by 2026.10.5) keeps the old reading, as lifecycle.
 
 ---
 
@@ -553,7 +582,7 @@ Full notes in the team's Obsidian vault (observations of 2026-10 on OpenClaw and
   it ends with a `chat` `final` carrying its `runId` while the original run keeps streaming
   and later sends its own `final` (OpenClaw appears to fold the message into the running run;
   not verified, no text recorded).
-- Events the gateway ignores today: `agent` streams `run_status`, `assistant`, `thinking`,
+- Events the gateway ignores today: `agent` streams `run_status`, `assistant`, `thinking`, `item`, `plan`,
   `usage`; `sessions.changed`, `session.message`.
 
 **Breaking for fogar-gateway as of v1.21.0:** `stream_response()` ends a turn on the first
@@ -923,6 +952,10 @@ The gateway uses them only through `OpenClawClient.request`, which refuses any m
   observed live on loopback and read in the package source); "Session key carries the
   conversation" replaces "…per-client identity": the key is now `agent:{agent}:fogar-{conversation}`,
   pre-M19 keys are imported as `legacy` conversations, push is routed by an in-memory index.
+- **2026-11-14**: added "`agent` events of streams other than `lifecycle`" (server 2026.10.5,
+  read in the package source): only `stream:"lifecycle"` opens or ends a push now; an `item`
+  `end` used to close the open push. Startup phases of a push that arrive before its
+  `agent start` are kept and sent when it opens.
 - **2026-11-14**: added "Startup phases and tool progress" (server 2026.10.5, read in the package
   source, issue #254): the full `chat` `state:"status"` phase set, where it comes from, retries;
   the gateway now forwards them and the tool names as `turn_progress`.
