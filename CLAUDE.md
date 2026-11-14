@@ -89,7 +89,7 @@ Speech providers are chosen at startup with `STT_PROVIDER`/`TTS_PROVIDER` (`foga
 
 Breaking any of these is a bug, whatever the change is for.
 
-- **Service addresses are `host:port` without protocol** in every `Settings` field; each client adds `ws://`/`http://` itself. Never store full URLs in settings. Sole exception: `PUBLIC_URLS` (the user's own `https://` URLs, validated by `access.parse_public_urls`).
+- **Service addresses are `host:port` without protocol** in every `Settings` field; each client adds `ws://`/`http://` itself (`wss://` for OpenClaw when `OPENCLAW_TLS` is set). Never store full URLs in settings. Sole exception: `PUBLIC_URLS` (the user's own `https://` URLs, validated by `access.parse_public_urls`).
 - **The OpenClaw device identity is a credential** (M19): the private key and the device token in `<base>/data/openclaw-device.json` never reach logs, `/admin` or Obsidian, not even as a prefix (the token correlates as `fp=`); the deviceId and the pairing request id are public. The file is never overwritten when it is unreadable (it may hold a paired identity).
 - **`client_key` is a credential.** `/admin` returns it only on create and rotate (`ClientWithKey`); reads carry `key_fp`. Never log it, in full or as a prefix; correlate with `fingerprint_key(value)` logged as `fp=<8 hex>`, and with `client.id` after auth. Pydantic validation errors must be logged as field + error type only (`input_value` would carry the key).
 - **No user text in logs at INFO or above, nor in tracker `meta`** (it is logged at INFO and persisted in `SessionRecord`, visible in `/admin/sessions`): record lengths (`text_len=len(text)`). DEBUG transcripts are truncated (finals: 40 chars).

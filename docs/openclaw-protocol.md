@@ -720,6 +720,16 @@ socket, with the shared token. **`fogar-gw onboard` never uses the stored device
 (`OpenClawClient(use_device_token=False)`): it tests the token that was pasted, still signing so
 pairing is detected.
 
+**Transport and proxies** (observed 2026-11-14, server 2026.10.5): OpenClaw treats a connection
+as local only when it arrives over loopback **and carries no forwarded headers**
+(`isLocalDirectRequest`); an SSH tunnel is therefore local (no pairing), while any reverse proxy
+is not. A request with forwarded headers and no `gateway.trustedProxies` is refused with HTTP 403
+("Proxy client attribution is required"), so a plain nginx `location` in front of 18789 does not
+work. OpenClaw's own `gateway.tailscale.mode: serve` publishes it on the tailnet over HTTPS (443)
+through a separate internal listener, keeping `bind: loopback`; it is reached with
+`OPENCLAW_TLS=true` (`wss://<host>.<tailnet>.ts.net:443`) and needs device pairing like any
+remote connection.
+
 - **Same token, different scopes (deliberate deviation).** Like the reference client an identical
   token never narrows its stored scopes, but when `hello-ok.auth.scopes` is a strict superset of
   them (an approved scope upgrade can keep the token: `ensureDeviceToken` reuses it when it

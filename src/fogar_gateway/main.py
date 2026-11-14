@@ -100,6 +100,7 @@ async def _lifespan_body(app: FastAPI):
     inner = OpenClawClient(
         host=settings.OPENCLAW_HOST,
         port=settings.OPENCLAW_PORT,
+        tls=settings.OPENCLAW_TLS,
         token=settings.OPENCLAW_TOKEN,
         turn_registry=turn_registry,
         dispatcher=dispatcher,
