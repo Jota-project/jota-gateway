@@ -107,6 +107,14 @@ class FakeOpenClawServer:
 
     Cada `chat.send` y cada push tienen su `runId` (en el ack y en sus eventos), como el real.
 
+    Lectura (M19, forma real de 2026.10.5, docs/openclaw-protocol.md «2026-11-14»): cada
+    `chat.send` y cada push dejan su sesión en `sessions` (clave → fila de `sessions.list`) con
+    sus mensajes (`user` con `content` en texto, `assistant` con partes `text`, `timestamp` en
+    ms). `sessions.list` pagina con `limit`/`offset` (`hasMore`, `nextOffset`) y pone
+    `derivedTitle` solo con `includeDerivedTitles`; `chat.history` da los `limit` últimos.
+    `add_session(key, title, messages)` siembra una (p. ej. una de antes de M19);
+    `fail_reads=True` rechaza las lecturas (`UNAVAILABLE`); `reads` guarda cada una.
+
     `startup_pending=n`: los `n` primeros `connect` reciben el `UNAVAILABLE`/`startup-sidecars`
     de OpenClaw 2026.11.1 arrancando (`retryAfterMs = startup_retry_after_ms`) y cierre 1013.
 
@@ -160,6 +168,9 @@ class FakeOpenClawServer:
         self._runs = 0
         self._held: list[tuple[asyncio.Event, asyncio.Event]] = []  # (seguir, terminado)
         self._open_pushes: dict[str, str] = {}  # sessionKey -> runId del push abierto
+        self.sessions: dict[str, dict] = {}  # sessionKey -> fila de sessions.list + "messages"
+        self.reads: list[tuple[str, dict]] = []  # (método, params) de cada lectura
+        self.fail_reads = False
 
     async def __aenter__(self):
         self._server = await websockets.serve(
@@ -203,11 +214,56 @@ class FakeOpenClawServer:
         self._runs += 1
         return f"run-{self._runs}"
 
+    def add_session(self, key, title=None, messages=None, created_at=None):
+        """Una sesión que OpenClaw ya tiene (p. ej. de antes de M19)."""
+        now = int(time.time() * 1000)
+        row = self.sessions.setdefault(key, {
+            "key": key, "agentId": key.split(":")[1], "kind": "direct",
+            "createdAt": created_at or now, "updatedAt": now, "messages": [],
+        })
+        if title is not None:
+            row["label"] = title
+        row["messages"].extend(messages or [])
+        return row
+
+    def _record(self, sk, role, text):
+        content = text if role == "user" else [{"type": "text", "text": text}]
+        row = self.add_session(sk)
+        row["updatedAt"] = int(time.time() * 1000)
+        row["messages"].append({"role": role, "content": content, "timestamp": row["updatedAt"]})
+
+    async def _read(self, ws, rid, method, params):
+        self.reads.append((method, params))
+        if self.fail_reads:
+            error = {"code": "UNAVAILABLE", "message": "store busy"}
+            await ws.send(json.dumps({"type": "res", "id": rid, "ok": False, "error": error}))
+            return
+        if method == "sessions.list":
+            rows = list(self.sessions.values())
+            offset, limit = params.get("offset", 0), params.get("limit", 100)
+            page = rows[offset:offset + limit]
+            sessions = []
+            for row in page:
+                out = {k: v for k, v in row.items() if k not in ("messages", "label")}
+                if params.get("includeDerivedTitles") and row.get("label"):
+                    out["derivedTitle"] = row["label"]
+                sessions.append(out)
+            more = offset + limit < len(rows)
+            payload = {"count": len(sessions), "totalCount": len(rows), "hasMore": more,
+                       "nextOffset": offset + limit if more else None, "sessions": sessions}
+        else:  # chat.history
+            messages = self.sessions.get(params["sessionKey"], {}).get("messages", [])
+            limit = params.get("limit", 200)
+            payload = {"sessionKey": params["sessionKey"], "messages": messages[-limit:],
+                       "hasMore": len(messages) > limit, "totalMessages": len(messages)}
+        await ws.send(self._res(rid, payload))
+
     async def push(self, sk, text, end=True):
         """Turno push: lo inicia OpenClaw, sin `chat.send`. Emite en las conexiones abiertas."""
         if not self._conns:
             raise RuntimeError("no hay conexión abierta para el push")
         run_id = self._new_run()
+        self._record(sk, "assistant", text)
         for ws in list(self._conns):
             await ws.send(self._agent(sk, "start", run_id))
             await ws.send(self._chat(sk, "delta", text, run_id))
@@ -360,6 +416,8 @@ class FakeOpenClawServer:
                     await ws.send(self._res(rid, {"subscribed": True}))
                 elif method == "health":
                     await ws.send(self._res(rid, {"ok": True}))
+                elif method in ("sessions.list", "chat.history"):
+                    await self._read(ws, rid, method, params)
                 elif method == "chat.abort":
                     await self._chat_abort(ws, rid, params["sessionKey"])
                 elif method == "chat.send":
@@ -383,6 +441,7 @@ class FakeOpenClawServer:
     async def _chat_send(self, ws, rid, params):
         sk, text = params["sessionKey"], params["message"]
         run_id = self._new_run()
+        self._record(sk, "user", text)
         try:
             if text == "close":
                 await ws.close(1000)
@@ -435,6 +494,7 @@ class FakeOpenClawServer:
                 await ws.send(self._chat(sk, "delta", "x" * self.big_bytes, run_id))
                 await ws.send(self._chat(sk, "final", run_id=run_id))
             else:
+                self._record(sk, "assistant", f"reply-{text}")
                 await ws.send(self._chat(sk, "delta", f"reply-{text}", run_id))
                 await ws.send(self._chat(sk, "final", run_id=run_id))
         except websockets.ConnectionClosed:

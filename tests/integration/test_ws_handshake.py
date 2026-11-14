@@ -278,6 +278,32 @@ def test_handshake_validation_error_log_has_no_key_material(client, caplog):
     assert "input_mode" in caplog.text
 
 
+@pytest.mark.parametrize(
+    "credentials",
+    [{}, {"client_key": VALID_KEY, "admin_token": "test-admin-token"}],
+    ids=["none", "both"],
+)
+def test_handshake_needs_exactly_one_credential(client, caplog, credentials):
+    """M19: `client_key` o `admin_token`, una de las dos; el log no lleva ninguna."""
+    with caplog.at_level(logging.ERROR), pytest.raises(Exception):
+        with client.websocket_connect("/ws/stream") as ws:
+            ws.send_json({**credentials, "input_mode": "text", "output_mode": ["text"]})
+            ws.receive_text()
+    assert "value_error" in caplog.text
+    assert "test-admin-token" not in caplog.text
+    assert VALID_KEY not in caplog.text
+
+
+@pytest.mark.parametrize("conversation", ["", "x" * 65])
+def test_handshake_conversation_is_validated(client, conversation):
+    with pytest.raises(Exception), client.websocket_connect("/ws/stream") as ws:
+        ws.send_json(
+            {"client_key": VALID_KEY, "input_mode": "text", "output_mode": ["text"],
+             "conversation": conversation}
+        )
+        ws.receive_text()
+
+
 # ── Primer frame binario (#232) y ClientGone en el health check (#205) ────────
 
 def _start_server():

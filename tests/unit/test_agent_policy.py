@@ -144,3 +144,51 @@ def test_allowlist_runs_before_roster_check():
         "allowlist must be checked before the roster — got not_available"
     )
     assert ei.value.agent_name == "b"
+
+
+# --- DEFAULT_AGENT, the installation default (#245) ------------------------
+
+
+@pytest.fixture
+def installation_default(monkeypatch):
+    from fogar_gateway.core.config import settings
+
+    monkeypatch.setattr(settings, "DEFAULT_AGENT", "jota")
+
+
+def test_default_agent_empty_changes_nothing():
+    from fogar_gateway.core.config import settings
+
+    assert settings.DEFAULT_AGENT == ""
+    assert resolve_agent(None, _StubClientConfig(), _StubGatewayInfo("oc-default")) == "oc-default"
+
+
+def test_default_agent_comes_before_the_openclaw_default(installation_default):
+    assert resolve_agent(None, _StubClientConfig(), _StubGatewayInfo("oc-default")) == "jota"
+    # Also with no client row (the legacy /v1 trusted-origin path) and no roster yet.
+    assert resolve_agent(None, None, None) == "jota"
+
+
+def test_client_default_and_requested_agent_win_over_default_agent(installation_default):
+    gw = _StubGatewayInfo("oc-default", agents={"a": {}, "jota": {}})
+    assert resolve_agent(None, _StubClientConfig(default_agent="b"), gw) == "b"
+    assert resolve_agent("a", _StubClientConfig(default_agent="b"), gw) == "a"
+
+
+def test_allowlist_applies_to_default_agent(installation_default):
+    with pytest.raises(AgentPolicyError) as exc:
+        resolve_agent(None, _StubClientConfig(allowed_agents=["a"]), _StubGatewayInfo())
+    assert exc.value.kind == "not_permitted"
+    assert resolve_agent(None, _StubClientConfig(allowed_agents=["jota"]), _StubGatewayInfo()) == "jota"
+
+
+def test_default_agent_is_server_config_not_checked_against_the_roster(installation_default):
+    """Like the other cascade defaults: a DEFAULT_AGENT missing from OpenClaw only warns at
+    connect (OpenClawClient), it does not reject the session."""
+    assert resolve_agent(None, _StubClientConfig(), _StubGatewayInfo(agents={"main": {}})) == "jota"
+
+
+def test_default_agent_setting_is_stripped():
+    from fogar_gateway.core.config import Settings
+
+    assert Settings(DEFAULT_AGENT="  jota ").DEFAULT_AGENT == "jota"  # type: ignore[call-arg]
