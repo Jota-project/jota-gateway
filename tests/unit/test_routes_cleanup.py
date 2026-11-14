@@ -136,7 +136,7 @@ async def test_connect_internal_services_failure_leaves_no_zombie_session(monkey
     assert len(sessions) == 1
     assert sessions[0].status == "error"
     assert sessions[0].ended_at is not None
-    assert ws.closed_with == (1011, "Problema estableciendo microservicios internos del hub.")
+    assert ws.closed_with == (1011, "session setup failed")
 
 
 async def test_session_end_reaches_client_before_socket_close():
@@ -198,6 +198,6 @@ async def test_session_construction_failure_closes_writer_and_session(
     sessions = app_state.session_registry.get_all()
     assert len(sessions) == (1 if registered else 0)
     assert all(s.status == "error" for s in sessions)
-    assert ws.closed_with == (1011, "Problema estableciendo microservicios internos del hub.")
+    assert ws.closed_with == (1011, "session setup failed")
     assert "RuntimeError" in caplog.text
     assert secret not in caplog.text

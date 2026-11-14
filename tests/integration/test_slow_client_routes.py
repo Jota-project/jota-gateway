@@ -71,7 +71,7 @@ def test_slow_client_without_transport_is_closed_with_1013(client, monkeypatch):
         with pytest.raises(WebSocketDisconnect) as exc:
             for _ in range(60):
                 ws.receive_json()
-    assert exc.value.code == 1013
+    assert (exc.value.code, exc.value.reason) == (1013, "client too slow")
     # The real session tears down after the drop (nothing hangs and
     # the bridge leaves the registry), not just the client-visible close code.
     from fogar_gateway.main import app

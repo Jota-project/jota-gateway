@@ -1,4 +1,4 @@
-"""G-06 (#218): revocar un cliente corta sus sesiones vivas (1008 «revoked»), contra un
+"""G-06 (#218): revocar un cliente corta sus sesiones vivas (4200 «credential revoked»), contra un
 uvicorn real con la app completa (lifespan incluido) y un cliente `websockets` real."""
 
 import asyncio
@@ -65,7 +65,7 @@ async def _expect_revoked(ws):
     elapsed = time.monotonic() - started
     close = exc.value.rcvd
     assert close is not None
-    assert (close.code, close.reason) == (1008, "revoked")
+    assert (close.code, close.reason) == (4200, "credential revoked")
     assert elapsed < CLOSE_DEADLINE_S
     return elapsed
 

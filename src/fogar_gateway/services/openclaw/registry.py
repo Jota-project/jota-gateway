@@ -375,7 +375,7 @@ class ClientRegistry:
 
     Cada sesión se registra con su cliente y su conversación (un cliente puede tener varias
     sesiones, cada una en una conversación). Una conversación está abierta en una sola sesión:
-    abrirla en otra devuelve la anterior, que el llamador cierra (1008 «conversation opened
+    abrirla en otra devuelve la anterior, que el llamador cierra (4102 «conversation opened
     elsewhere»). El push se enruta por su `sessionKey`: conversación (`index`) → la sesión que
     la tiene abierta o, si ninguna, la sesión más reciente de su cliente (p. ej. un recordatorio
     en la conversación de ayer de la tele, que ya está en la de hoy).

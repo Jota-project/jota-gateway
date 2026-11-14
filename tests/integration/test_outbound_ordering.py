@@ -50,7 +50,7 @@ def test_health_check_failure_delivers_status_then_closes_1011(client, mock_orch
         assert status == {"type": "status", "service": "orchestrator", "state": "unavailable"}
         with pytest.raises(WebSocketDisconnect) as exc:
             ws.receive_json()
-    assert exc.value.code == 1011
+    assert (exc.value.code, exc.value.reason) == (1011, "orchestrator unavailable")
 
 
 def test_rejected_handshake_creates_no_writer_task(client, monkeypatch):
@@ -68,5 +68,5 @@ def test_rejected_handshake_creates_no_writer_task(client, monkeypatch):
         ws.send_json({"client_key": "no-existe", "input_mode": "text", "output_mode": ["text"]})
         with pytest.raises(WebSocketDisconnect) as exc:
             ws.receive_json()
-    assert exc.value.code == 1008
+    assert (exc.value.code, exc.value.reason) == (4010, "invalid or inactive credential")
     assert created == []

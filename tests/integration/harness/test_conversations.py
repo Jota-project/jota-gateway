@@ -1,7 +1,7 @@
 """Conversaciones (M19) vistas desde el cliente (arnés e2e: gateway real, OpenClaw falso).
 
 Cada test mira lo que recibe el cliente por su WebSocket (`ready.conversation`,
-`turn_start.conversation`/`origin`, `turn_end.reason`, cierres 1008) y, cuando importa, en qué
+`turn_start.conversation`/`origin`, `turn_end.reason`, cierres 4xxx) y, cuando importa, en qué
 sesión de OpenClaw acabó cada turno (`openclaw.sessions`).
 """
 
@@ -90,7 +90,7 @@ async def test_same_conversation_in_a_second_session_closes_the_first(harness, c
 
     closed = await closed_by_gateway(old)
     assert closed.rcvd is not None
-    assert (closed.rcvd.code, closed.rcvd.reason) == (1008, "conversation opened elsewhere")
+    assert (closed.rcvd.code, closed.rcvd.reason) == (4102, "conversation opened elsewhere")
     msgs = await run_turn(new, "sigo aquí")  # la nueva sigue viva
     assert of_type(msgs, "turn_start")[0]["conversation"] == new.ready["conversation"]["id"]
 
@@ -135,7 +135,7 @@ async def test_push_of_a_conversation_reaches_the_session_that_has_it_open(harne
 
 
 async def test_a_displaced_session_ends_its_turn_and_lets_go_before_the_new_one_talks(harness):
-    """La vieja recibe el turn_end (`closed`) de su turno abierto antes del 1008, y su
+    """La vieja recibe el turn_end (`closed`) de su turno abierto antes del 4102, y su
     chat.abort sale antes del primer chat.send de la nueva, que llega entero."""
     old = await harness.connect()
     await old.send({"type": "send", "text": "wait-old"})  # el orquestador se queda esperando
@@ -144,7 +144,7 @@ async def test_a_displaced_session_ends_its_turn_and_lets_go_before_the_new_one_
 
     new = await harness.connect()  # la misma conversación del día
     closed = await closed_by_gateway(old)
-    assert (closed.rcvd.code, closed.rcvd.reason) == (1008, "conversation opened elsewhere")
+    assert (closed.rcvd.code, closed.rcvd.reason) == (4102, "conversation opened elsewhere")
     assert [e["reason"] for e in of_type(old.messages, "turn_end")] == ["closed"]
     assert_turns_paired(old.messages)
 
@@ -171,12 +171,12 @@ async def test_a_new_session_that_fails_its_health_check_leaves_the_live_one_alo
         closed = await closed_by_gateway(failed)
     finally:
         del openclaw.ping
-    assert closed.rcvd.code == 1011
+    assert (closed.rcvd.code, closed.rcvd.reason) == (1011, "orchestrator unavailable")
     msgs = await run_turn(live, "sigo aquí")  # la viva sigue con su conversación
     assert of_type(msgs, "turn_start")[0]["conversation"] == live.ready["conversation"]["id"]
 
 
-async def test_a_revoked_session_ends_its_open_turn_before_the_1008(harness, monkeypatch):
+async def test_a_revoked_session_ends_its_open_turn_before_the_close(harness, monkeypatch):
     monkeypatch.setattr(settings, "SESSION_REVALIDATE_INTERVAL_S", 0.1)
     client = await harness.connect()
     await client.send({"type": "send", "text": "wait-revoked"})
@@ -187,7 +187,7 @@ async def test_a_revoked_session_ends_its_open_turn_before_the_1008(harness, mon
         r = await admin.patch(f"/admin/clients/{CLIENT_ID}", json={"is_active": False})
         assert r.status_code == 200
     closed = await closed_by_gateway(client)
-    assert (closed.rcvd.code, closed.rcvd.reason) == (1008, "revoked")
+    assert (closed.rcvd.code, closed.rcvd.reason) == (4200, "credential revoked")
     assert [e["reason"] for e in of_type(client.messages, "turn_end")] == ["closed"]
     assert_turns_paired(client.messages)
 
@@ -219,7 +219,7 @@ async def test_a_conversation_of_another_client_is_refused(harness, db_engine):
     for conversation in (foreign.id, "no-existe"):
         client = await harness.open(handshake={"conversation": conversation})
         closed = await closed_by_gateway(client)
-        assert (closed.rcvd.code, closed.rcvd.reason) == (1008, "conversation not found")
+        assert (closed.rcvd.code, closed.rcvd.reason) == (4100, "conversation not found")
         assert of_type(client.messages, "ready") == []
 
 
@@ -228,7 +228,7 @@ async def test_a_conversation_keeps_its_agent(harness):
     chosen = client.ready["conversation"]["id"]
     other = await harness.open(handshake={"conversation": chosen, "agent": "otro-agente"})
     closed = await closed_by_gateway(other)
-    assert (closed.rcvd.code, closed.rcvd.reason) == (1008, "conversation agent mismatch")
+    assert (closed.rcvd.code, closed.rcvd.reason) == (4101, "conversation agent mismatch")
 
 
 # ── turn_end.reason en cada camino ───────────────────────────────────────────
@@ -290,7 +290,7 @@ async def test_admin_token_enters_as_the_panel_web_client(harness, caplog):
 async def test_a_wrong_admin_token_is_refused(harness, token):
     client = await harness.open(handshake={"client_key": None, "admin_token": token})
     closed = await closed_by_gateway(client)
-    assert (closed.rcvd.code, closed.rcvd.reason) == (1008, "Clave de cliente invalida o inactiva.")
+    assert (closed.rcvd.code, closed.rcvd.reason) == (4010, "invalid or inactive credential")
 
 
 async def test_the_panel_resumes_a_conversation_created_from_admin(harness):

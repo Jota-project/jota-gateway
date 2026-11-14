@@ -14,6 +14,7 @@ from fogar_gateway.core.exceptions import ClientInactive, ClientNotFound
 from fogar_gateway.core.logging import fingerprint_key
 from fogar_gateway.core.network import resolve_client_ip
 from fogar_gateway.core.transport import drop_slow_client
+from fogar_gateway.models.close_codes import Close, CloseFrame
 from fogar_gateway.models.schemas import Client, ClientConfig, Handshake
 from fogar_gateway.services.bridge import FogarBridge
 from fogar_gateway.services.conversations import (
@@ -35,17 +36,23 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Motivos (reason) estables de los cierres 1008 de conversación (docs/client-protocol.md §1).
-CONVERSATION_NOT_FOUND = "conversation not found"
-CONVERSATION_AGENT_MISMATCH = "conversation agent mismatch"
+_AGENT_CLOSE = {
+    "not_permitted": Close.AGENT_NOT_PERMITTED,
+    "not_available": Close.AGENT_NOT_AVAILABLE,
+}
+
+
+async def _close(websocket: WebSocket, frame: CloseFrame) -> None:
+    """Todo cierre de `/ws/stream` en este módulo: código y texto de la tabla (§13)."""
+    await websocket.close(code=frame.code, reason=frame.reason)
 
 
 class _Rejected(Exception):
-    """Un handshake rechazado con 1008: `reason` va al cliente; `kind`, al log."""
+    """Un handshake rechazado: `close` va al cliente; `kind`, al log."""
 
-    def __init__(self, kind: str, reason: str, stat: str) -> None:
+    def __init__(self, kind: str, close: CloseFrame, stat: str) -> None:
         super().__init__(kind)
-        self.kind, self.reason, self.stat = kind, reason, stat
+        self.kind, self.close, self.stat = kind, close, stat
 
 
 async def _authenticate(handshake: Handshake) -> tuple[Client, ClientConfig, str]:
@@ -73,17 +80,19 @@ async def _open_conversation(
     gateway_info: GatewayInfo | None,
 ) -> SessionConversation:
     """La conversación de la sesión: la pedida (`conversation`, solo del propio cliente), una
-    nueva (`"new"`) o, sin pedir, la del día. Lanza `_Rejected` (1008)."""
+    nueva (`"new"`) o, sin pedir, la del día. Lanza `_Rejected` (41xx, 402x)."""
     requested = handshake.conversation
     existing = None
     if requested is not None and requested != NEW:
         try:
             existing = await service.get_owned(client_id, requested)
         except ConversationNotFound:
-            raise _Rejected("conversation_not_found", CONVERSATION_NOT_FOUND, "conversation") from None
+            raise _Rejected(
+                "conversation_not_found", Close.CONVERSATION_NOT_FOUND, "conversation"
+            ) from None
         asked = (handshake.agent or "").strip()
         if asked and asked != existing.agent:
-            raise _Rejected("conversation_agent", CONVERSATION_AGENT_MISMATCH, "conversation")
+            raise _Rejected("conversation_agent", Close.CONVERSATION_AGENT_MISMATCH, "conversation")
     try:
         # Una conversación existente fija su agente: se le aplican la lista y el roster.
         agent = resolve_agent(
@@ -92,7 +101,8 @@ async def _open_conversation(
             gateway_info=gateway_info,
         )
     except AgentPolicyError as e:
-        raise _Rejected(f"agent {e.kind}", str(e), "agent") from None
+        close = _AGENT_CLOSE.get(e.kind, Close.AGENT_NOT_PERMITTED)
+        raise _Rejected(f"agent {e.kind}", close, "agent") from None
     if existing is not None:
         conversation = existing
     elif requested == NEW:
@@ -117,7 +127,7 @@ async def gateway_websocket(websocket: WebSocket):
                 f"Handshake rechazado: {len(raw_msg)} caracteres > HANDSHAKE_MAX_BYTES."
             )
             gateway_stats.handshake_rejected("too_large")
-            await websocket.close(code=1008, reason="Handshake too large")
+            await _close(websocket, Close.HANDSHAKE_TOO_LARGE)
             return
         msg_data = json.loads(raw_msg)
         handshake = Handshake(**msg_data)
@@ -134,21 +144,19 @@ async def gateway_websocket(websocket: WebSocket):
             detail = f"JSON inválido ({e.msg})"
         logger.error(f"Payload inicial inválido de handshake. {detail}")
         gateway_stats.handshake_rejected("invalid")
-        await websocket.close(
-            code=1008, reason="Handshake invalido. Se esperaba JSON de configuración."
-        )
+        await _close(websocket, Close.HANDSHAKE_INVALID)
         return
     except TimeoutError:
         logger.warning("Handshake no recibido dentro de HANDSHAKE_TIMEOUT_S.")
         gateway_stats.handshake_rejected("timeout")
-        await websocket.close(code=1008, reason="Handshake timeout")
+        await _close(websocket, Close.HANDSHAKE_TIMEOUT)
         return
     except KeyError:
         # #232: starlette's receive_text() lee message["text"]; un primer frame binario
         # (o cualquier mensaje sin "text") lanza KeyError. Sin contenido en el log.
         logger.warning("Handshake rechazado: el primer mensaje no es texto.")
         gateway_stats.handshake_rejected("not_text")
-        await websocket.close(code=1008, reason="Handshake invalido. Se esperaba texto.")
+        await _close(websocket, Close.HANDSHAKE_NOT_TEXT)
         return
     except WebSocketDisconnect:
         logger.info("Cliente desconectado antes o durante el handshake.")
@@ -166,7 +174,7 @@ async def gateway_websocket(websocket: WebSocket):
             f"{who} Handshake rechazado: credencial inválida o cliente inactivo."
         )
         gateway_stats.handshake_rejected("invalid_key")
-        await websocket.close(code=1008, reason="Clave de cliente invalida o inactiva.")
+        await _close(websocket, Close.INVALID_CREDENTIAL)
         return
     # La credencial ya no hace falta: la sesión guarda el handshake sin el admin_token.
     handshake = handshake.model_copy(update={"admin_token": None})
@@ -184,23 +192,20 @@ async def gateway_websocket(websocket: WebSocket):
             app_state.conversations, client.id, config, handshake, openclaw.gateway_info
         )
     except _Rejected as e:
-        # Solo el tipo de rechazo; el reason del 1008 sí lleva el texto (protocolo, §1).
         logger.warning(f"[{client.id}] Handshake rechazado: {e.kind}")
         gateway_stats.handshake_rejected(e.stat)
-        await websocket.close(code=1008, reason=e.reason)
+        await _close(websocket, e.close)
         return
     except ConversationClientMissing:
         # Borrado entre la autenticación y el alta de la conversación: su clave ya no vale.
         logger.warning(f"[{client.id}] Handshake rechazado: el cliente ya no existe.")
         gateway_stats.handshake_rejected("invalid_key")
-        await websocket.close(code=1008, reason="Clave de cliente invalida o inactiva.")
+        await _close(websocket, Close.INVALID_CREDENTIAL)
         return
     except Exception as e:  # noqa: BLE001 — frontera: sin conversación no hay sesión (1011)
         logger.error(f"[{client.id}] Fallo al abrir la conversación: {describe_error(e)}")
         logger.debug(f"[{client.id}] conversación: {traceback_no_message(e)}")
-        await websocket.close(
-            code=1011, reason="Problema estableciendo microservicios internos del hub."
-        )
+        await _close(websocket, Close.SETUP_FAILED)
         return
     resolved_agent = conversation.current.agent
 
@@ -252,9 +257,7 @@ async def gateway_websocket(websocket: WebSocket):
             session_registry.close(session_id, "error")  # no-op si no llegó a registrarse
             await td.step(sender.aclose(settings.SESSION_TEARDOWN_S), "cierre de la salida")
             await td.step(
-                websocket.close(
-                    code=1011, reason="Problema estableciendo microservicios internos del hub."
-                ),
+                _close(websocket, Close.SETUP_FAILED),
                 "cierre del WebSocket",
                 settings.SESSION_TEARDOWN_S,
             )
@@ -276,9 +279,7 @@ async def gateway_websocket(websocket: WebSocket):
                 f"[{client.id}] Fallo al inicializar puentes internos: {describe_error(e)}"
             )
             logger.debug(f"[{client.id}] puentes internos: {traceback_no_message(e)}")
-            await websocket.close(
-                code=1011, reason="Problema estableciendo microservicios internos del hub."
-            )
+            await _close(websocket, Close.SETUP_FAILED)
             return
 
         # 3.5 HEALTH CHECK — verifica disponibilidad de servicios antes de abrir la sesión
@@ -297,11 +298,11 @@ async def gateway_websocket(websocket: WebSocket):
                 await sender.flush()  # deliver the queued `status` before the 1011 close
             except ClientGone:
                 pass
-            await websocket.close(code=1011, reason="Servicio crítico no disponible.")
+            await _close(websocket, Close.ORCHESTRATOR_UNAVAILABLE)
             return
 
         # 3.55 CONVERSACIÓN (M19): solo una sesión que pasó el health check la abre; la que la
-        # tuviera se cierra (1008) y se espera a que suelte sus turnos antes de `ready`.
+        # tuviera se cierra (4102) y se espera a que suelte sus turnos antes de `ready`.
         await bridge.claim_conversation()
 
         # 3.6 SEND READY — confirms session is established and announces capabilities
@@ -338,6 +339,7 @@ async def gateway_websocket(websocket: WebSocket):
                 f"{describe_error(e)}"
             )
             logger.debug(f"[{client.id}] puente principal: {traceback_no_message(e)}")
+            bridge.note_close_reason("error")
     finally:
         # Each step runs even if this handler is cancelled; the cancellation is
         # re-raised at the end (#221). close_all() bounds each of its own steps.
@@ -346,7 +348,9 @@ async def gateway_websocket(websocket: WebSocket):
             # close_all() queued session_end; drain it before the socket goes away.
             await td.step(sender.aclose(settings.SESSION_TEARDOWN_S), "drenado de la salida")
             if "DISCONNECTED" not in websocket.client_state.name:
+                # 1000 si la sesión acabó bien (inactividad, silencio); 1011 si fue un fallo.
+                frame = Close.INTERNAL_ERROR if bridge.ended_in_error else Close.NORMAL
                 await td.step(
-                    websocket.close(), "cierre del WebSocket", settings.SESSION_TEARDOWN_S
+                    _close(websocket, frame), "cierre del WebSocket", settings.SESSION_TEARDOWN_S
                 )
             logger.info(f"[{client.id}] --- Sesión de entrada WebSocket Concluida ---")

@@ -4,6 +4,7 @@ import json
 
 import pytest
 from sqlmodel import Session
+from starlette.websockets import WebSocketDisconnect
 
 from fogar_gateway.db.models import ClientRecord
 from tests.integration.conftest import CLIENT_ID, VALID_KEY
@@ -40,10 +41,10 @@ def test_ws_allowed_agent_passes(client, db_engine):
         assert ready["agent"] == "a"
 
 
-def test_ws_disallowed_agent_closes_1008(client, db_engine):
-    """allowed_agents=['a'], handshake with agent='b' → close 1008."""
+def test_ws_disallowed_agent_closes_4020(client, db_engine):
+    """allowed_agents=['a'], handshake with agent='b' → close 4020."""
     _patch_client(db_engine, allowed_agents=json.dumps(["a"]))
-    with pytest.raises(Exception), client.websocket_connect("/ws/stream") as ws:
+    with pytest.raises(WebSocketDisconnect) as exc, client.websocket_connect("/ws/stream") as ws:
         ws.send_json(
             {
                 "client_key": VALID_KEY,
@@ -53,12 +54,13 @@ def test_ws_disallowed_agent_closes_1008(client, db_engine):
             }
         )
         ws.receive_text()  # should raise on close frame
+    assert (exc.value.code, exc.value.reason) == (4020, "agent not permitted")
 
 
-def test_ws_agent_not_in_roster_closes_1008(client, db_engine):
-    """allowed_agents=None, handshake with agent that doesn't exist anywhere → 1008."""
+def test_ws_agent_not_in_roster_closes_4021(client, db_engine):
+    """allowed_agents=None, handshake with agent that doesn't exist anywhere → 4021."""
     _patch_client(db_engine, allowed_agents=None)
-    with pytest.raises(Exception), client.websocket_connect("/ws/stream") as ws:
+    with pytest.raises(WebSocketDisconnect) as exc, client.websocket_connect("/ws/stream") as ws:
         ws.send_json(
             {
                 "client_key": VALID_KEY,
@@ -68,6 +70,7 @@ def test_ws_agent_not_in_roster_closes_1008(client, db_engine):
             }
         )
         ws.receive_text()
+    assert (exc.value.code, exc.value.reason) == (4021, "agent not available")
 
 
 def test_ws_default_agent_applied_when_handshake_omits_agent(client, db_engine):
@@ -92,9 +95,9 @@ def test_ws_default_agent_applied_when_handshake_omits_agent(client, db_engine):
 
 
 def test_ws_empty_allowed_denies_everything(client, db_engine):
-    """allowed_agents=[] (deny-all) without an agent in handshake → close 1008."""
+    """allowed_agents=[] (deny-all) without an agent in handshake → close 4020."""
     _patch_client(db_engine, allowed_agents=json.dumps([]))
-    with pytest.raises(Exception), client.websocket_connect("/ws/stream") as ws:
+    with pytest.raises(WebSocketDisconnect) as exc, client.websocket_connect("/ws/stream") as ws:
         ws.send_json(
             {
                 "client_key": VALID_KEY,
@@ -103,3 +106,4 @@ def test_ws_empty_allowed_denies_everything(client, db_engine):
             }
         )
         ws.receive_text()
+    assert (exc.value.code, exc.value.reason) == (4020, "agent not permitted")

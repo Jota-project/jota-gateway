@@ -90,7 +90,7 @@ Después abre la sesión normal (§1) con esa `client_key`.
 
 ### Cuando la clave deja de valer
 
-Si al abrir la sesión el gateway cierra con 1008 `"Clave de cliente invalida o inactiva."`, o una sesión abierta se cierra con 1008 `"revoked"` (§13), el administrador ha borrado, desactivado o rotado tu cliente. Estos dos textos son estables: compáralos tal cual. Borra la clave guardada y vuelve a la pantalla de emparejamiento. Cualquier otro cierre 1008 (handshake mal formado, agente no permitido, conversación no encontrada, `"conversation opened elsewhere"`) no invalida la clave. No reintentes en bucle con la misma clave.
+Si al abrir la sesión el gateway cierra con **4010**, o una sesión abierta se cierra con **4200** (§13), el administrador ha borrado, desactivado o rotado tu cliente. Mira el código, no el texto del `reason`. Borra la clave guardada y vuelve a la pantalla de emparejamiento. Ningún otro cierre (handshake mal formado, agente no permitido, conversación no encontrada, conversación abierta en otra sesión) invalida la clave. No reintentes en bucle con la misma clave.
 
 ---
 
@@ -124,25 +124,25 @@ El agente efectivo de la sesión no es simplemente "el que pediste o el global":
 
 1. Si omites `agent` en el handshake, el que acabes usando puede venir de una configuración por-cliente que un admin te haya asignado (no siempre el default global) — comprueba siempre `ready.agent`, no asumas cuál será.
 2. Pedir explícitamente un `agent` puede fallar de dos formas distintas (ver tabla siguiente): que ese agente no esté permitido para tu cliente, o que no exista en OpenClaw.
-3. Una conversación existente (`conversation` con un id) ya tiene su agente: es el de la sesión. No hace falta mandar `agent`; si lo mandas y es otro, el gateway cierra con 1008 `"conversation agent mismatch"`. A ese agente se le aplican las mismas comprobaciones (lista permitida y roster).
+3. Una conversación existente (`conversation` con un id) ya tiene su agente: es el de la sesión. No hace falta mandar `agent`; si lo mandas y es otro, el gateway cierra con 4101 (`conversation agent mismatch`). A ese agente se le aplican las mismas comprobaciones (lista permitida y roster).
 
 ### Errores de handshake (el servidor cierra la conexión)
 
-| Situación | Código WS | Motivo |
-|-----------|-----------|--------|
-| No se recibe el handshake JSON en los primeros `HANDSHAKE_TIMEOUT_S` (5s por defecto) | 1008 | `"Handshake timeout"` |
-| El handshake supera `HANDSHAKE_MAX_BYTES` (4096 caracteres) | 1008 | `"Handshake too large"` |
-| JSON inválido o campos incorrectos | 1008 | `"Handshake invalido. Se esperaba JSON de configuración."` |
-| El primer mensaje es binario, no texto | 1008 | `"Handshake invalido. Se esperaba texto."` |
-| `client_key` inválida o cliente inactivo | 1008 | `"Clave de cliente invalida o inactiva."` |
-| Agente solicitado no está en la lista permitida para este cliente (`allowed_agents`) | 1008 | `"Agent '{name}' not permitted for this client."` |
-| Agente solicitado no existe en OpenClaw | 1008 | `"Agent '{name}' not available."` |
-| `client_key` y `admin_token` a la vez, o ninguna de las dos | 1008 | `"Handshake invalido. Se esperaba JSON de configuración."` |
-| `admin_token` que no es el `ADMIN_TOKEN` (o el gateway no tiene ninguno), o el cliente «Panel web» desactivado | 1008 | `"Clave de cliente invalida o inactiva."` |
-| `conversation` no existe o es de otro cliente (no se distingue) | 1008 | `"conversation not found"` |
-| `agent` distinto del de la conversación pedida | 1008 | `"conversation agent mismatch"` |
-| Fallo al abrir los servicios internos de la sesión (también al abrir la conversación) | 1011 | `"Problema estableciendo microservicios internos del hub."` |
-| Orquestador no disponible tras health check | 1011 | `"Servicio crítico no disponible."` |
+El código es el contrato; el `reason` es un texto en inglés para logs y personas, que puede cambiar: no lo compares. La tabla completa de cierres, con qué hacer en cada uno, está en la §13 («Códigos de cierre»).
+
+| Situación | Código WS | `reason` |
+|-----------|-----------|----------|
+| JSON inválido o campos incorrectos; `client_key` y `admin_token` a la vez, o ninguna de las dos | 4000 | `invalid handshake` |
+| El primer mensaje es binario, no texto | 4001 | `handshake must be a text frame` |
+| El handshake supera `HANDSHAKE_MAX_BYTES` (4096 caracteres) | 4002 | `handshake too large` |
+| No se recibe el handshake JSON en los primeros `HANDSHAKE_TIMEOUT_S` (5s por defecto) | 4003 | `handshake timeout` |
+| `client_key` inválida o cliente inactivo; `admin_token` que no es el `ADMIN_TOKEN` (o el gateway no tiene ninguno), o el cliente «Panel web» desactivado | 4010 | `invalid or inactive credential` |
+| El agente efectivo no está en la lista permitida para este cliente (`allowed_agents`) | 4020 | `agent not permitted` |
+| El agente pedido no existe en OpenClaw | 4021 | `agent not available` |
+| `conversation` no existe o es de otro cliente (no se distingue) | 4100 | `conversation not found` |
+| `agent` distinto del de la conversación pedida | 4101 | `conversation agent mismatch` |
+| Fallo al abrir los servicios internos de la sesión (también al abrir la conversación) | 1011 | `session setup failed` |
+| Orquestador no disponible tras health check | 1011 | `orchestrator unavailable` |
 
 > **El orquestador (OpenClaw) es el único servicio que puede cerrar la conexión en el handshake.** Transcriber y TTS ya **no** son críticos: si cualquiera de los dos no responde al arrancar la sesión, el gateway la abre igualmente en modo degradado y te lo notifica vía `status` (ver §8) — nunca cierra el WebSocket por esto. Antes de la versión que introdujo la reconexión automática (issue #46), un fallo de Transcriber en este punto sí cerraba la conexión con 1011; ya no es el caso.
 >
@@ -561,8 +561,8 @@ Los errores llegan independientemente de `output_mode`:
 |--------|-------|---------------|
 | `TURN_ERROR` | false | Fallo en un turno concreto (orquestador caído/reconectando durante una sesión activa, **o** el turno se cuelga sin progreso — `message: "turn_timeout"`, ver §13); la sesión continúa |
 | `INVALID_MESSAGE` | false | Mensaje de texto del cliente que no es un objeto JSON (`42`, `[1]`, `"s"`, `true`, `null`) o `send` con `text` que no es cadena (#215). La sesión continúa; el mensaje se ignora. En modo texto, un prompt plano que parsea como JSON escalar (`"42"`, `"true"`, `"null"`) también recibe `INVALID_MESSAGE`: los prompts van en `{"type":"send","text":...}` |
-| `AUTH_FAILED` | true | Documentado para `client_key` inválida o inactiva — en la práctica se señaliza cerrando el WS con 1008, sin este mensaje previo |
-| `AGENT_NOT_FOUND` | true | Documentado para agente inexistente — en la práctica se señaliza cerrando el WS con 1008, sin este mensaje previo |
+| `AUTH_FAILED` | true | Documentado para `client_key` inválida o inactiva — en la práctica se señaliza cerrando el WS con 4010, sin este mensaje previo |
+| `AGENT_NOT_FOUND` | true | Documentado para agente inexistente — en la práctica se señaliza cerrando el WS con 4021 (o 4020 si no está permitido), sin este mensaje previo |
 | `ORCHESTRATOR_UNAVAILABLE` | true | Documentado para orquestador no disponible al iniciar — en la práctica se señaliza cerrando el WS con 1011, sin este mensaje previo |
 | `TTS_UNAVAILABLE` | false | Documentado para TTS caído — en la práctica ver `status: {tts, unavailable}` (§8), no este código |
 | `TRANSCRIBER_UNAVAILABLE` | false | Documentado para Transcriber caído — en la práctica ver `status: {transcriber, unavailable}` (§8), no este código |
@@ -588,13 +588,13 @@ Si `fatal: true`, no envíes más mensajes — el servidor cerrará la conexión
 
 ### Cierres por conversación (M19)
 
-Los fallos de conversación no llegan como `error`: el gateway cierra el WebSocket con 1008 y uno de estos `reason`, estables (compáralos tal cual). Ninguno invalida la `client_key`.
+Los fallos de conversación no llegan como `error`: el gateway cierra el WebSocket con uno de estos códigos (41xx, §13). Ninguno invalida la `client_key`.
 
-| `reason` | Cuándo | Qué hacer |
-|---|---|---|
-| `conversation not found` | En el handshake: el id de `conversation` no existe o es de otro cliente | Olvida ese id; conecta sin `conversation` (la del día) o con `"new"` |
-| `conversation agent mismatch` | En el handshake: `agent` no es el de la conversación pedida | No mandes `agent` al retomar una conversación |
-| `conversation opened elsewhere` | Con la sesión abierta: otra sesión abrió la misma conversación (§14) y esta se cierra (antes recibes el `turn_end` de tu turno abierto, `reason: "closed"`) | **No reconectes automáticamente a la misma conversación**: otra sesión (una reconexión tuya que ganó la carrera, otra pestaña del panel) la tiene ya, y volver a abrirla la cerraría a ella; las dos se echarían una a otra sin fin. Reconecta solo si lo pide el usuario, o abre otra conversación (`"new"`) |
+| Código | `reason` | Cuándo | Qué hacer |
+|---|---|---|---|
+| 4100 | `conversation not found` | En el handshake: el id de `conversation` no existe o es de otro cliente | Olvida ese id; conecta sin `conversation` (la del día) o con `"new"` |
+| 4101 | `conversation agent mismatch` | En el handshake: `agent` no es el de la conversación pedida | No mandes `agent` al retomar una conversación |
+| 4102 | `conversation opened elsewhere` | Con la sesión abierta: otra sesión abrió la misma conversación (§14) y esta se cierra (antes recibes el `turn_end` de tu turno abierto, `reason: "closed"`) | **No reconectes automáticamente a la misma conversación**: otra sesión (una reconexión tuya que ganó la carrera, otra pestaña del panel) la tiene ya, y volver a abrirla la cerraría a ella; las dos se echarían una a otra sin fin. Reconecta solo si lo pide el usuario, o abre otra conversación (`"new"`) |
 
 ---
 
@@ -725,22 +725,70 @@ Llegan entrelazados con los mensajes JSON. Identifica audio por el magic byte `0
 
 | Deadline | Valor por defecto | Qué provoca | Cómo lo ves |
 |---|---|---|---|
-| `HANDSHAKE_TIMEOUT_S` | 5s | No mandas el JSON de handshake a tiempo | Cierre WS 1008, `"Handshake timeout"` (ver §1) |
+| `HANDSHAKE_TIMEOUT_S` | 5s | No mandas el JSON de handshake a tiempo | Cierre WS 4003 (ver §1) |
 | `TURN_TIMEOUT_S` | 120s, **idle-reset** | El orquestador deja de mandar nada durante un turno ya en marcha, normal o push (cuelgue real, no duración total) | `{"type":"error","code":"TURN_ERROR","message":"turn_timeout","fatal":false,"turn_id":"..."}` (ver §9) — la sesión sigue viva, solo ese turno se aborta |
 | `TURN_QUEUE_MAX` | 1000 eventos por turno | El gateway no consigue procesar los eventos del orquestador al ritmo al que llegan para ese turno (consumidor atascado); es un fallo interno raro, no depende de tu lectura del socket | `{"type":"error","code":"TURN_ERROR","message":"turn_overflow","fatal":false,"turn_id":"..."}` — la sesión sigue viva, solo ese turno se aborta (los tokens pendientes se descartan); mismo tratamiento en el cliente que `turn_timeout` |
-| `IDLE_TIMEOUT_S` | 300s (5 min) | No mandas **ningún** mensaje (ni audio ni texto) durante ese tiempo | Cierre WS con código 1000, **sin ningún mensaje de error o aviso previo** |
+| `IDLE_TIMEOUT_S` | 300s (5 min) | No mandas **ningún** mensaje (ni audio ni texto) durante ese tiempo | Cierre WS con código 1000 (`session ended`), **sin ningún mensaje de error o aviso previo** |
 | `silence_timeout_s` / `max_silence_turns` (por cliente, defaults 2 s y 3) | ~6 s con los defaults | Mientras envías audio, el transcriptor no devuelve nada: cada sondeo de 2 s pasado `silence_timeout_s` cuenta un aviso (`status` `transcriber` `degraded`); con `max_silence_turns` avisos seguidos se cierra la sesión. No cuenta con un turno en curso ni sin audio entrante | Avisos `degraded` y después cierre WS con código 1000 |
-| `SESSION_REVALIDATE_INTERVAL_S` | 10s | Tu cliente se borra, se desactiva o se le rota la `client_key` con la sesión abierta | Cierre WS 1008 `"revoked"` en la siguiente revalidación; el turno en curso se cancela |
-| — (inmediato) | — | Otra sesión abre la conversación de esta (§14) | El turno en curso se cancela (recibes su `turn_end`, `reason: "closed"`) y cierre WS 1008 `"conversation opened elsewhere"` |
+| `SESSION_REVALIDATE_INTERVAL_S` | 10s | Tu cliente se borra, se desactiva o se le rota la `client_key` con la sesión abierta | Cierre WS 4200 en la siguiente revalidación; el turno en curso se cancela |
+| — (inmediato) | — | Otra sesión abre la conversación de esta (§14) | El turno en curso se cancela (recibes su `turn_end`, `reason: "closed"`) y cierre WS 4102 |
 | `SESSION_TEARDOWN_S` | 5s | Interno — tope de cada paso cuando el gateway cierra una sesión (cancelar el turno en curso, cerrar servicios, mandarte los últimos mensajes). Sustituye a `SHUTDOWN_DRAIN_S`, que ya no se usa | Ninguno directo. Un turno en curso **no se espera**: se cancela, y recibes su `turn_end` si el socket sigue abierto (ver «Cierre de la sesión por el gateway» abajo) |
 | `PUSH_TTS_DRAIN_TIMEOUT_S` | 30s, **sin progreso** | El TTS de un turno de push (iniciado por el agente) lleva 30s sin producir audio tras el `end` del agente (se reinicia con cada trozo, así que un push largo sonando a ritmo no se corta) | El audio restante de ese push se corta, el TTS se cierra y el `turn_end` se envía igualmente — la sesión sigue viva. Con el mismo tope se acotan las escrituras de texto al TTS de push y su `end()`: si vencen, el resto de ese push llega solo como `token` de texto, sin más audio, y el `turn_end` se envía igualmente. En los turnos normales el mismo tope acota cada operación con el TTS, y la espera del audio cuenta como tiempo **sin progreso** (se reinicia con cada chunk): si vence, el turno sigue solo con texto y también recibe su `turn_end` |
 | `CLIENT_SEND_TIMEOUT_S` | 10s, **por envío** | El gateway no consigue escribirte un mensaje durante ese tiempo porque tu socket **drena por debajo del ritmo al que el gateway escribe**: o has dejado de leer, o lees muy por debajo del caudal de salida (el audio TTS PCM16 a 24 kHz son 48 KB/s). Es un umbral de caudal de drenado, del orden de unos pocos KB/s (teoría) a unas pocas decenas de KB/s (medidas de laboratorio en macOS), según kernel y tasa de producción, y **solo cuando hay más datos en vuelo que los buffers del sistema** (varios MB); con respuestas de tamaño normal y un cliente que lee, no se activa; un cliente que lee a un ritmo razonable no se corta | Cierre WS con código **1013** (`client too slow`) (mejor esfuerzo) si reanudas la lectura en los 2 s siguientes; si no, o si el close frame se pierde, la conexión se corta sin close frame (1006). Los mensajes pendientes se descartan; reconecta y abre una sesión nueva |
+
+### Códigos de cierre
+
+> **Incompatibilidad de protocolo — M19**
+> Los cierres por motivo de aplicación tienen cada uno su código 4xxx, y **el código es el contrato**: el `reason` queda como texto corto en inglés para logs y personas (≤ 123 bytes) y puede cambiar; no lo compares. Antes casi todos eran 1008 y el cliente tenía que distinguirlos por el texto del `reason` (en español y en inglés). Migración, de lo que antes era 1008 + texto a lo que es ahora:
+>
+> | Antes | Ahora |
+> |---|---|
+> | 1008 `"Handshake invalido. Se esperaba JSON de configuración."` | 4000 |
+> | 1008 `"Handshake invalido. Se esperaba texto."` | 4001 |
+> | 1008 `"Handshake too large"` | 4002 |
+> | 1008 `"Handshake timeout"` | 4003 |
+> | 1008 `"Clave de cliente invalida o inactiva."` | 4010 |
+> | 1008 `"Agent '{name}' not permitted for this client."` | 4020 (el `reason` ya no lleva el nombre) |
+> | 1008 `"Agent '{name}' not available."` | 4021 (ídem) |
+> | 1008 `"conversation not found"` | 4100 |
+> | 1008 `"conversation agent mismatch"` | 4101 |
+> | 1008 `"conversation opened elsewhere"` | 4102 |
+> | 1008 `"revoked"` | 4200 |
+> | 1011 con `reason` en español (`"Problema estableciendo…"`, `"Servicio crítico…"`) | 1011, mismo código, `reason` en inglés |
+> | 1000 tras un fallo interno con la sesión abierta | 1011 `internal error` (antes no se distinguía de la inactividad) |
+>
+> Trata cualquier 4xxx que no conozcas como «no reconectar solo, y decirlo»: así sigues funcionando si el gateway añade códigos.
+
+Los códigos estándar se quedan donde el significado es de transporte y el estándar ya lo cubre (fin normal, fallo del servidor, «vuelve a intentarlo»); cada motivo de aplicación tiene el suyo, agrupado: **40xx** handshake y credencial, **41xx** conversación, **42xx** sesión. Ningún cierre del gateway usa ya 1008. La tabla vive en `src/fogar_gateway/models/close_codes.py` y un test comprueba que coincide con esta.
+
+«Reconectar» dice qué hacer: **con espera** (solo, con backoff creciente: 1 s, 2 s, 4 s… con tope), **al usarlo** (no hace falta reconectar ya: abre sesión cuando el usuario vuelva), **no, lo decide el usuario** (reconectar solo echaría a otra sesión, que haría lo mismo) o **no, hay que arreglar algo** (la clave, el handshake o la configuración: con la misma petición el resultado será el mismo).
+
+| Código | `reason` | Cuándo | Reconectar |
+|---|---|---|---|
+| 1000 | `session ended` | Fin normal: inactividad (`IDLE_TIMEOUT_S`) o silencio del transcriptor (`max_silence_turns`) | Al usarlo |
+| 1011 | `session setup failed` | Handshake: falló un servicio interno al montar la sesión (o al abrir la conversación) | Con espera |
+| 1011 | `orchestrator unavailable` | Handshake: OpenClaw no responde al health check (antes llega `status` `orchestrator` `unavailable`) | Con espera |
+| 1011 | `internal error` | Una sesión abierta termina por un fallo interno del gateway | Con espera |
+| 1013 | `client too slow` | No lees al ritmo al que el gateway escribe (`CLIENT_SEND_TIMEOUT_S`); si no reanudas la lectura en 2 s, verás 1006 | Con espera |
+| 4000 | `invalid handshake` | JSON inválido, campos incorrectos, `client_key` y `admin_token` a la vez o ninguna | No, hay que arreglar algo (bug del cliente) |
+| 4001 | `handshake must be a text frame` | El primer mensaje es binario | No, hay que arreglar algo (bug del cliente) |
+| 4002 | `handshake too large` | El handshake supera `HANDSHAKE_MAX_BYTES` | No, hay que arreglar algo (bug del cliente) |
+| 4003 | `handshake timeout` | No mandas el handshake en `HANDSHAKE_TIMEOUT_S` | Con espera |
+| 4010 | `invalid or inactive credential` | `client_key` o `admin_token` no válidos, o el cliente está desactivado | No, hay que arreglar algo: vuelve a emparejar (§0) |
+| 4020 | `agent not permitted` | El agente no está en `allowed_agents` del cliente | No, hay que arreglar algo: otro agente, o que el administrador lo permita |
+| 4021 | `agent not available` | El agente pedido no existe en OpenClaw | No, hay que arreglar algo: otro agente |
+| 4100 | `conversation not found` | La conversación pedida no existe o no es tuya | No, hay que arreglar algo: olvida ese id; sin `conversation` o con `"new"` |
+| 4101 | `conversation agent mismatch` | `agent` distinto del de la conversación pedida | No, hay que arreglar algo: no mandes `agent` al retomar |
+| 4102 | `conversation opened elsewhere` | Otra sesión abrió esta conversación (§14); antes recibes el `turn_end` (`closed`) del turno abierto | **No, lo decide el usuario** (o abre otra conversación) |
+| 4200 | `credential revoked` | Con la sesión abierta, tu cliente se borró, se desactivó o se rotó su clave (`SESSION_REVALIDATE_INTERVAL_S`); antes recibes el `turn_end` (`closed`) del turno abierto | No, hay que arreglar algo: vuelve a emparejar (§0) |
+
+Cierres que no manda el gateway pero verás: **1006** (la conexión se cortó sin close frame: la red, o el abort tras un 1013), **1009** (un frame de más de 1 MiB: lo cierra el servidor WebSocket antes de que llegue al gateway; es un bug del cliente) y **1012** (el gateway se reinicia o se para). Ante 1006 o 1012, reconecta con espera.
 
 ### Cuidado con el ping de la librería WebSocket de tu cliente
 
 Muchas librerías WebSocket (p. ej. `websockets` de Python: `ping_interval=20 s` y `ping_timeout=20 s` por defecto) cierran la conexión si no reciben el `pong` a tiempo. Con el pacing del audio (§6) el gateway solo tiene ~2 s de audio por delante, así que el `pong` ya no queda detrás de minutos de audio. Aun así, si tu cliente deja de leer el socket mientras reproduce, la librería puede quedarse sin `pong` y **cerrar ella misma la conexión** (1011/1006) sin que el gateway haga nada.
 
-Qué hacer en el cliente: desactivar o ampliar el ping de la librería (`ping_interval=None` o un `ping_timeout` mayor), o leer del socket en una tarea aparte de la reproducción y poner el audio en una cola propia. Y, en cualquier caso, **reconectar ante cualquier cierre inesperado** (1006, 1011, 1012, 1013, EOF) abriendo una sesión nueva con handshake completo.
+Qué hacer en el cliente: desactivar o ampliar el ping de la librería (`ping_interval=None` o un `ping_timeout` mayor), o leer del socket en una tarea aparte de la reproducción y poner el audio en una cola propia. Y, en cualquier caso, **reconectar ante cualquier cierre inesperado** (1006, 1011, 1012, 1013, EOF) abriendo una sesión nueva con handshake completo; ante un 4xxx, no (ver «Códigos de cierre»).
 
 ### `TURN_TIMEOUT_S` es "idle-reset", no un techo total
 
@@ -752,7 +800,7 @@ Esta es la novedad más relevante para clientes de larga duración (dispositivos
 
 - El contador se basa **solo en mensajes entrantes del cliente** (audio o texto) — nada que el gateway te mande a ti cuenta como actividad.
 - **Se pausa mientras haya un turno o un push en curso**: si el orquestador está respondiendo activamente o hay un turno iniciado por el agente abierto, el cierre por idle no se dispara aunque hayan pasado los 5 minutos — el contador solo corre cuando de verdad no hay nada pasando en ninguna dirección.
-- Si se dispara, el gateway simplemente cierra el WebSocket (código 1000, cierre normal) — **no** manda un `error` ni un `status` avisando antes. Detectas esto como cualquier otro cierre inesperado de socket.
+- Si se dispara, el gateway simplemente cierra el WebSocket (código 1000 `session ended`, cierre normal) — **no** manda un `error` ni un `status` avisando antes. Detectas esto como cualquier otro cierre inesperado de socket.
 - No hay campo en `ready` que indique este valor — si tu cliente necesita conocerlo para decidir cuándo mandar un keep-alive, tiene que estar hardcodeado o configurado del lado del cliente (no se expone por protocolo todavía).
 
 **Qué implica para tu cliente:** si tu caso de uso implica abrir una sesión y quedarte a la escucha de *pushes* del agente sin que el usuario interactúe activamente durante más de 5 minutos seguidos, tu cliente debe:
@@ -765,7 +813,7 @@ No requiere ningún cambio de cliente si ya reconectas tras un cierre inesperado
 
 - **Turno en curso:** si el gateway cierra la sesión con un turno abierto, el turno se **cancela**, no se espera a que termine, y recibes igualmente su `turn_end` antes del cierre si el socket sigue abierto. Nunca queda un `turn_start` sin su `turn_end` mientras puedas recibirlo. La inactividad (`IDLE_TIMEOUT_S`) y el silencio no cortan un turno en curso. Un push huérfano (abierto sin su fin) no la retiene: a los `TURN_TIMEOUT_S` sin progreso se cierra solo, con su `turn_end` (§10).
 - **Reinicio o parada del gateway:** el servidor cierra cada WebSocket con el código **1012** (*service restart*) en cuanto empieza a apagarse; un turno en curso se corta en ese momento y su `turn_end` ya no te llega (el socket está cerrado). No hay ventana de gracia para terminar el turno. Trata el 1012 como un cierre esperado: reconecta (con una pequeña espera y reintentos, el gateway tarda unos segundos en volver) y abre una sesión nueva con handshake completo.
-- **Revocación y conversación abierta en otra sesión:** desde ese momento no te llega nada más (ni audio, ni tokens, ni avisos; tampoco lo que ya estaba en cola) salvo el `turn_end` del turno en curso (y de un push abierto), con `reason: "closed"`; después, el cierre 1008 (`"revoked"` o `"conversation opened elsewhere"`). Antes de M19 la revocación cerraba sin ese `turn_end`.
+- **Revocación y conversación abierta en otra sesión:** desde ese momento no te llega nada más (ni audio, ni tokens, ni avisos; tampoco lo que ya estaba en cola) salvo el `turn_end` del turno en curso (y de un push abierto), con `reason: "closed"`; después, el cierre 4200 (revocada) o 4102 (conversación abierta en otra sesión). Antes de M19 la revocación cerraba sin ese `turn_end`.
 
 `SHUTDOWN_DRAIN_S` (antes 30 s) prometía esperar al turno en curso en un reinicio; en la práctica eso no ocurría (el servidor ya había cerrado el socket). Desde #221 ya no se usa: el gateway lo ignora y avisa en el log si sigue en su `.env`.
 
@@ -778,13 +826,13 @@ No requiere ningún cambio de cliente si ya reconectas tras un cierre inesperado
 Las reglas son las mismas para todos los clientes; el gateway no mira el tipo de cliente. Que tu cliente use una conversación del día o elija las suyas es una decisión de diseño de tu cliente:
 
 - **Sin `conversation` en el handshake**, la sesión cae en la **conversación del día**: una por cliente, agente y día. El día empieza a las `CONVERSATION_DAY_START_HOUR` (5:00 por defecto, hora local del gateway). Se evalúa **al empezar cada turno tuyo**: una sesión que sigue abierta al pasar el corte (una tele con el socket abierto días) pasa a la conversación del día nuevo en su primer turno después, y lo verás en `turn_start.conversation`. `ready.conversation` es la del momento de conectar. Un push no cambia la conversación de la sesión.
-- **Con `"conversation": "new"`**, el gateway crea una conversación nueva para tu cliente; **con el `id` de una de tus conversaciones** (el que te dio `ready.conversation.id`), la retomas: OpenClaw sigue el hilo. Una sesión que eligió conversación **no cambia nunca de día** por sí sola. Solo puedes pedir conversaciones de tu propio cliente: cualquier otro id cierra con 1008 `"conversation not found"`. Una conversación fija su agente (§1).
-- **Una conversación, una sesión.** Si una sesión nueva abre una conversación que otra sesión tiene abierta (la misma del día, o el mismo id), la vieja se cierra con 1008 `"conversation opened elsewhere"` (§9), después de recibir el `turn_end` de su turno abierto. Solo la desplaza una sesión que ya pasó el health check, justo antes de su `ready`, y la nueva espera a que la vieja suelte su turno: lo que la vieja tenía en marcha en OpenClaw nunca corta el primer turno de la nueva. Un cliente que reconecta antes de que caiga su socket viejo no queda con dos sesiones vivas. Quien recibe ese 1008 no debe reconectar solo a la misma conversación (§9): un cliente que puede tener varias sesiones a la vez (varias pestañas del panel web, que comparten el cliente «Panel web») debe abrir cada una en su conversación (`"new"` o un id), nunca en la del día.
+- **Con `"conversation": "new"`**, el gateway crea una conversación nueva para tu cliente; **con el `id` de una de tus conversaciones** (el que te dio `ready.conversation.id`), la retomas: OpenClaw sigue el hilo. Una sesión que eligió conversación **no cambia nunca de día** por sí sola. Solo puedes pedir conversaciones de tu propio cliente: cualquier otro id cierra con 4100 (`conversation not found`). Una conversación fija su agente (§1).
+- **Una conversación, una sesión.** Si una sesión nueva abre una conversación que otra sesión tiene abierta (la misma del día, o el mismo id), la vieja se cierra con 4102 (`conversation opened elsewhere`, §9), después de recibir el `turn_end` de su turno abierto. Solo la desplaza una sesión que ya pasó el health check, justo antes de su `ready`, y la nueva espera a que la vieja suelte su turno: lo que la vieja tenía en marcha en OpenClaw nunca corta el primer turno de la nueva. Un cliente que reconecta antes de que caiga su socket viejo no queda con dos sesiones vivas. Quien recibe ese 4102 no debe reconectar solo a la misma conversación (§9): un cliente que puede tener varias sesiones a la vez (varias pestañas del panel web, que comparten el cliente «Panel web») debe abrir cada una en su conversación (`"new"` o un id), nunca en la del día.
 - **Push:** llega a la sesión que tiene abierta su conversación; si ninguna la tiene, a la sesión más reciente de su cliente (§10).
 - **Conversaciones de antes de M19.** Antes, cada cliente tenía una única sesión de OpenClaw por agente. El gateway las importa una vez como conversaciones `legacy` de su cliente (se pueden leer y retomar por su id); desde M19 un cliente sin `conversation` empieza cada día una conversación nueva en vez de seguir en aquella.
 - **Home Assistant (`/v1`)** sigue la misma regla del día para su cliente (con `Authorization: Bearer`).
 
 > **Incompatibilidad de protocolo — M19**
-> La sesión de OpenClaw ya no es una por cliente y agente para siempre: es la de la conversación. Un cliente que no manda `conversation` empieza conversación (y contexto) nuevo cada día a las `CONVERSATION_DAY_START_HOUR`, y abrir dos sesiones del mismo cliente en la misma conversación cierra la primera con 1008 `"conversation opened elsewhere"`. Un cliente que necesite dos sesiones a la vez debe abrirlas en conversaciones distintas (`"new"` o ids distintos).
+> La sesión de OpenClaw ya no es una por cliente y agente para siempre: es la de la conversación. Un cliente que no manda `conversation` empieza conversación (y contexto) nuevo cada día a las `CONVERSATION_DAY_START_HOUR`, y abrir dos sesiones del mismo cliente en la misma conversación cierra la primera con 4102 (`conversation opened elsewhere`). Un cliente que necesite dos sesiones a la vez debe abrirlas en conversaciones distintas (`"new"` o ids distintos).
 
 **El panel web** entra con `admin_token` (§1) como el cliente «Panel web»: crea sus conversaciones con `POST /admin/conversations` (o `"conversation": "new"`) y las retoma por su id. Escribir en la conversación de otro cliente no está permitido.

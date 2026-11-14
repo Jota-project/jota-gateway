@@ -1,4 +1,4 @@
-"""Cierre por política (1008: revocada o desplazada, M19): una sola vez por sesión, `_released`
+"""Cierre por política (4200 revocada o 4102 desplazada, M19): una sola vez por sesión, `_released`
 siempre se avisa, y desde que empieza no sale nada más que el turn_end (G-18)."""
 
 import asyncio
@@ -47,7 +47,7 @@ async def test_queued_output_is_dropped_once_restricted():
     await sender.aclose(1.0)
 
 
-async def test_a_revoked_session_sends_only_its_turn_end_then_1008(make_bridge):
+async def test_a_revoked_session_sends_only_its_turn_end_then_4200(make_bridge):
     ws = GatedWS()
     bridge, _ = make_bridge(ws)
 
@@ -71,7 +71,7 @@ async def test_a_revoked_session_sends_only_its_turn_end_then_1008(make_bridge):
     after = ws.sent[at["n"]:]
     assert [m for m in after if not (isinstance(m, dict) and m["type"] == "turn_end")] == []
     assert after == [{"type": "turn_end", "turn_id": "t-1", "reason": "closed"}]
-    assert ws.closed == (1008, "revoked")
+    assert ws.closed == (4200, "credential revoked")
 
 
 async def test_policy_close_runs_once_and_later_callers_wait_for_it(make_bridge):
@@ -86,7 +86,7 @@ async def test_policy_close_runs_once_and_later_callers_wait_for_it(make_bridge)
     await asyncio.sleep(0)
     await bridge.displace()  # ya cerrándose por revocación: espera a ese, no abre otro
     await revoke
-    assert ws.closed == (1008, "revoked")  # el primero gana, motivo incluido
+    assert ws.closed == (4200, "credential revoked")  # el primero gana, motivo incluido
     assert [m["reason"] for m in ws.of("turn_end")] == ["closed"]
     assert bridge.tracker.record.await_args_list.count((("session_revoked",), {})) == 1
     assert (("session_displaced",), {}) not in bridge.tracker.record.await_args_list
@@ -100,4 +100,4 @@ async def test_the_displacer_is_released_even_if_recording_fails(make_bridge):
     assert bridge._released.is_set()
     assert bridge.conversation.released is True
     await asyncio.wait({bridge._policy_close}, timeout=1.0)
-    assert ws.closed == (1008, "conversation opened elsewhere")  # y el cierre sigue
+    assert ws.closed == (4102, "conversation opened elsewhere")  # y el cierre sigue

@@ -3,7 +3,7 @@
 Owns the cascade that picks the effective agent for a request, plus the
 two policy checks (allowlist, global roster). Pure helper — no DB, no
 FastAPI, no WebSocket. Translation of AgentPolicyError into wire formats
-(close 1008 reason / 403 JSON body) happens at the call sites.
+(close 4020/4021 / 403 JSON body) happens at the call sites.
 """
 
 from typing import TYPE_CHECKING, Optional

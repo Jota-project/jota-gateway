@@ -12,7 +12,7 @@ Reglas, iguales para todos los clientes (el gateway no mira el tipo de cliente):
   empieza a las `CONVERSATION_DAY_START_HOUR` (hora local del host) y se evalúa al empezar cada
   turno: una sesión abierta días (la tele) pasa a la del día nuevo en su primer turno tras el corte.
 - Una conversación está abierta en una sola sesión (`ClientRegistry`): abrirla en otra cierra la
-  anterior con 1008 «conversation opened elsewhere».
+  anterior con 4102 «conversation opened elsewhere».
 - El push se enruta por su `sessionKey`: índice → conversación → sesión viva (`ClientRegistry`).
 
 Nada de esto guarda ni registra texto del usuario.

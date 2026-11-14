@@ -72,7 +72,7 @@ async def test_oversized_valid_handshake_is_rejected_before_parsing(make_server,
     )
     close = await _first_close(port, payload)
     assert close is not None
-    assert (close.code, close.reason) == (1008, "Handshake too large")
+    assert (close.code, close.reason) == (4002, "handshake too large")
 
 
 async def test_ws_max_size_closes_with_1009(make_server):
