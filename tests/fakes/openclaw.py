@@ -439,3 +439,25 @@ class FakeOpenClawServer:
                 await ws.send(self._chat(sk, "final", run_id=run_id))
         except websockets.ConnectionClosed:
             pass
+
+
+class SendOnlyOpenClawWS:
+    """An OpenClaw socket that only records what the client sends (set it as
+    `OpenClawClient._ws`, no connect). The test plays the server through the dispatcher in
+    the exact order it wants; `on_send(frame)` may answer a request."""
+
+    def __init__(self, on_send=None):
+        self.sent: list[dict] = []
+        self.on_send = on_send
+
+    async def send(self, raw):
+        frame = json.loads(raw)
+        self.sent.append(frame)
+        if self.on_send is not None:
+            self.on_send(frame)
+
+    def methods(self) -> list:
+        return [f.get("method") for f in self.sent]
+
+    def ids(self, method: str) -> list[str]:
+        return [f["id"] for f in self.sent if f.get("method") == method]

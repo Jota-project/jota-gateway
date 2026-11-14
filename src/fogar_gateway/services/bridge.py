@@ -68,7 +68,7 @@ class FogarBridge:
         client_registry: ClientRegistry,
         default_agent: str,
         sender: OutboundSender,
-        turn_registry: TurnRegistry | None = None,
+        turn_registry: TurnRegistry,
     ):
         # Contada al crearse: toda sesión que luego cierra close_all() cuenta como abierta,
         # también la que falla antes de run() (1011, ready fallido…).
@@ -86,7 +86,7 @@ class FogarBridge:
         self._stt: SpeechToTextProvider = speech.stt
         self.tracker: PipelineTracker = tracker
         self._client_registry = client_registry
-        # Máximo de la cola de turno (#219) y lápidas de los runs de push cortados (#285).
+        # Máximo de la cola de turno (#219) y runs de OpenClaw: lápidas y activos (#285).
         self._turn_registry = turn_registry
         self._default_agent = default_agent
         self.transcriber: SttSession | None = None
@@ -168,11 +168,7 @@ class FogarBridge:
         desde el SessionRecord (aquí van a None)."""
         now = time.monotonic()
         turns = self.turns.snapshot(now)
-        depth, peak = (
-            self._turn_registry.depth(self._session_key())
-            if self._turn_registry is not None
-            else (0, 0)
-        )
+        depth, peak = self._turn_registry.depth(self._session_key())
         return {
             "session_id": self.tracker.session_id,
             "client_id": self.client_id,
@@ -216,11 +212,10 @@ class FogarBridge:
             meta["sender_peak_bytes"] = int(q["peak_bytes"])
         except Exception as e:  # noqa: BLE001 — una métrica nunca impide el cierre
             logger.debug(f"[{self.client_id}] sender_peak no disponible: {type(e).__name__}")
-        if self._turn_registry is not None:
-            try:
-                meta["turn_queue_peak"] = self._turn_registry.pop_peak(self._session_key())
-            except Exception as e:  # noqa: BLE001 — una métrica nunca impide el cierre
-                logger.debug(f"[{self.client_id}] turn_queue_peak no disponible: {type(e).__name__}")
+        try:
+            meta["turn_queue_peak"] = self._turn_registry.pop_peak(self._session_key())
+        except Exception as e:  # noqa: BLE001 — una métrica nunca impide el cierre
+            logger.debug(f"[{self.client_id}] turn_queue_peak no disponible: {type(e).__name__}")
         return meta
 
     async def close_all(

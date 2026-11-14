@@ -14,6 +14,10 @@ def _as_dict(value: object) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+# `chat` states that end a run (#219, #300).
+_TERMINAL_CHAT = ("final", "aborted", "error")
+
+
 def _run_id(payload: dict) -> str | None:
     run_id = payload.get("runId")
     return run_id if isinstance(run_id, str) else None
@@ -99,6 +103,8 @@ class FrameDispatcher:
         sk = payload.get("sessionKey")
         if sk is None or self._of_aborted_run(payload):
             return
+        ended = payload.get("state") in _TERMINAL_CHAT
+        self._turns.note_run_activity(sk, _run_id(payload), ended=ended)
         if self._turns.deliver_by_session(sk, ("chat", payload), _run_id(payload)):
             return
         if self._turns.is_aborted(sk):
@@ -113,6 +119,7 @@ class FrameDispatcher:
         if sk is None or self._of_aborted_run(payload):
             return
         phase = _as_dict(payload.get("data")).get("phase")
+        self._turns.note_run_activity(sk, _run_id(payload), ended=phase in ("end", "error"))
         client_id = client_id_from_session_key(sk)
         bridge = self._clients.get(client_id)
         if bridge is None:
@@ -154,6 +161,7 @@ class FrameDispatcher:
         sk = payload.get("sessionKey")
         if sk is None or self._of_aborted_run(payload):
             return
+        self._turns.note_run_activity(sk, _run_id(payload), ended=False)
         data = _as_dict(payload.get("data"))
         if data.get("phase") not in ("start", "result"):
             return

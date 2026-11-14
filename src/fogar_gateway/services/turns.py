@@ -319,7 +319,7 @@ class TurnController:
         session_key: Callable[[], str],
         spawn: Callable[[Coroutine[Any, Any, None], str], asyncio.Task],
         supervise: Callable[[asyncio.Task], None],
-        turn_registry: TurnRegistry | None = None,
+        turn_registry: TurnRegistry,
     ) -> None:
         self._client_id = client_id
         self._config = config
@@ -332,8 +332,9 @@ class TurnController:
         self._session_key = session_key
         self._spawn = spawn
         self._supervise = supervise
-        # Lápidas de runs (#285): el dispatcher descarta los frames de un run abortado que
-        # aún no llegaron, y el worker de push lo que ya tenía en cola.
+        # Runs de OpenClaw (#285): lápidas (el dispatcher descarta los frames de un run
+        # abortado que aún no llegaron, y el worker de push lo que ya tenía en cola) y runs
+        # activos en nuestra session_key (se abortan antes de un chat.send).
         self._turn_registry = turn_registry
 
         self._seq = 0
@@ -422,6 +423,7 @@ class TurnController:
                 await self._cancel_and_wait(current)
             # Dentro del lock: el abort del push termina antes de que salga el chat.send.
             await self._cut_push(None, "replaced")
+            await self._abort_other_runs()
             if self._closing:  # close_all() pudo empezar durante la espera
                 return
             task = asyncio.create_task(self._run_user_turn(text), name="turn")
@@ -459,6 +461,24 @@ class TurnController:
             turn = self._user_turn
             opened = turn is not None and turn.task is task and turn.opened
             return True, turn.turn_id if opened and turn is not None else None
+
+    async def _abort_other_runs(self) -> None:
+        """Ningún otro run activo en nuestra session_key cuando sale el chat.send del
+        usuario: OpenClaw lo plegaría en ese run (docs/openclaw-protocol.md, #219) y la
+        respuesta llegaría con otro runId. Pasa con un push que no llegó a abrirse (aún en la
+        cola del worker, `push_enabled=False`, o su turn_start falló). Lápida y chat.abort,
+        bajo el lock de quien llama."""
+        session_key = self._session_key()
+        runs = self._turn_registry.active_runs(session_key)
+        if not runs:
+            return
+        for run_id in runs:
+            self._turn_registry.abort_run(run_id)
+        logger.info(
+            f"[{self._client_id}] {len(runs)} run(s) de OpenClaw activos en la sesión: "
+            f"chat.abort antes del send"
+        )
+        await self._orchestrator.abort(session_key)
 
     async def _cancel_and_wait(self, task: asyncio.Task) -> None:
         # Sin tope: el turno nuevo no arranca hasta que el viejo terminó. Si cancelan a quien
@@ -649,14 +669,10 @@ class TurnController:
         logger.warning(f"[{self._client_id}] push {what} falló: {type(e).__name__}")
 
     def _run_aborted(self, run_id: str | None) -> bool:
-        return (
-            run_id is not None
-            and self._turn_registry is not None
-            and self._turn_registry.is_run_aborted(run_id)
-        )
+        return run_id is not None and self._turn_registry.is_run_aborted(run_id)
 
     def _abort_run(self, run_id: str | None) -> None:
-        if run_id is not None and self._turn_registry is not None:
+        if run_id is not None:
             self._turn_registry.abort_run(run_id)
 
     async def _push_start(self, session_key: str, run_id: str | None = None) -> None:
@@ -686,11 +702,14 @@ class TurnController:
                 self._push = turn  # antes de cualquier await
                 self._push_text.reset()
                 if not await self._open(turn):
-                    # Sin turn_start no hay push: se deshace, y el resto de su run se
-                    # descarta (su `agent start` intermedio no lo reabriría, #84).
+                    # Sin turn_start no hay push: se deshace, el resto de su run se descarta
+                    # (su `agent start` intermedio no lo reabriría, #84) y, en nuestra
+                    # session_key, se aborta en OpenClaw (no sigue corriendo para nadie).
                     if self._push is turn:
                         self._push = None
                     self._abort_run(run_id)
+                    if session_key == self._session_key():
+                        await self._orchestrator.abort(session_key)
                     return
                 break
         gateway_stats.turn_started("push")
@@ -753,18 +772,19 @@ class TurnController:
 
     async def _push_timed_out(self) -> None:
         """#286: un push sin progreso en TURN_TIMEOUT_S se cierra como el turno normal."""
-        push = self._push
-        if push is None or push.finishing or push.ended:
-            return
-        logger.warning(
-            f"[{self._client_id}] push {push.turn_id} sin progreso en "
-            f"TURN_TIMEOUT_S={settings.TURN_TIMEOUT_S}s — se cierra."
-        )
-        gateway_stats.turn_error("turn_timeout")
-        await self._send_turn_error(push, "turn_timeout")
         # Bajo el lock, como todo corte (G-08): un `send` que llegue mientras tanto espera, y
-        # el chat.abort del push sale antes que su chat.send.
+        # el chat.abort del push sale antes que su chat.send. Se decide dentro: si un `send`
+        # o un barge-in lo cortaron mientras se esperaba el lock, no hubo timeout.
         async with self._lock:
+            push = self._push
+            if push is None or push.finishing or push.ended:
+                return
+            logger.warning(
+                f"[{self._client_id}] push {push.turn_id} sin progreso en "
+                f"TURN_TIMEOUT_S={settings.TURN_TIMEOUT_S}s — se cierra."
+            )
+            gateway_stats.turn_error("turn_timeout")
+            await self._send_turn_error(push, "turn_timeout")
             await self._cut_push(push.turn_id, "timeout")
 
     async def _cut_push(self, expected: str | None, reason: EndReason) -> str | None:
@@ -835,8 +855,10 @@ class TurnController:
     ) -> bool:
         """El único que envía un turn_end: exactamente uno por turno, quien llegue primero.
 
-        Lo marca terminado antes de cualquier await (su audio deja de salir), libera su TTS,
-        aborta el push en OpenClaw si se pide y es de nuestra session_key, y envía turn_end.
+        Lo marca terminado antes de cualquier await (su audio deja de salir), libera su TTS
+        (con su evento `push_tts`), aborta el push en OpenClaw si se pide y es de nuestra
+        session_key, y envía turn_end. Cada paso termina aunque cancelen a quien cierra
+        (#221, `Teardown`); esa cancelación se relanza después del turn_end.
         """
         if turn.ended:
             return False
@@ -844,22 +866,26 @@ class TurnController:
         turn.end_reason = reason
         self.last_ended = turn
         logger.debug(f"[{self._client_id}] turno {turn.turn_id} ({turn.origin}) terminado: {reason}")
-        try:
-            if release and turn.tts is not None:
-                if reason not in ("done", "error"):
-                    await turn.tts.drop(f"turno {reason}", logging.INFO)
-                await turn.tts.release()
-            if abort and turn.session_key is not None and turn.session_key == self._session_key():
-                await self._orchestrator.abort(turn.session_key)
-        finally:
-            if self._push is turn:
-                self._push = None
-            if turn.opened:
-                try:
-                    await self._sender.send_json({"type": "turn_end", "turn_id": turn.turn_id})
-                except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-                    self._log_send_failed("turn_end", e)
+        td = Teardown(f"[{self._client_id}] fin del turno {turn.turn_id}")
+        if release and turn.tts is not None:
+            await td.step(self._release_tts(turn.tts, reason), "TTS del turno")
+        if abort and turn.session_key is not None and turn.session_key == self._session_key():
+            await td.step(self._orchestrator.abort(turn.session_key), "chat.abort del push")
+        if self._push is turn:
+            self._push = None
+        if turn.opened:
+            try:
+                await self._sender.send_json({"type": "turn_end", "turn_id": turn.turn_id})
+            except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+                self._log_send_failed("turn_end", e)
+        td.raise_if_cancelled()
         return True
+
+    @staticmethod
+    async def _release_tts(tts: TurnTts, reason: EndReason) -> None:
+        if reason not in ("done", "error"):
+            await tts.drop(f"turno {reason}", logging.INFO)
+        await tts.release()
 
     async def _send_turn_error(self, turn: Turn, code: str) -> None:
         try:

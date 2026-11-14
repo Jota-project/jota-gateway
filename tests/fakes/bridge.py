@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from fogar_gateway.models.schemas import Client, ClientConfig, Handshake
 from fogar_gateway.services.bridge import FogarBridge
-from fogar_gateway.services.openclaw.registry import ClientRegistry
+from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
 from fogar_gateway.services.outbound import ClientGone, QueuedSender
 from fogar_gateway.services.protocol import OrchestratorEvent
 from tests.fakes.speech import speech_providers
@@ -75,6 +75,7 @@ def make_bridge(
         tracker=fake_tracker(),
         handshake=Handshake(client_key="k", input_mode=input_mode, output_mode=list(output_mode)),
         client_registry=ClientRegistry(),
+        turn_registry=TurnRegistry(),
         default_agent="main",
     )
     kwargs.update(overrides)

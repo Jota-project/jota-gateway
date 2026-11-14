@@ -73,11 +73,16 @@ class TurnRegistry:
         self._run_of_req: dict[str, str | None] = {}
         # req_id -> frames carrying a runId that arrived before the turn's ack: held until
         # the ack says which run is the turn's own (#285).
-        self._held: dict[str, list[tuple[tuple, str]]] = {}
+        self._held: dict[str, list[tuple[tuple, str | None]]] = {}
         # req_id -> deadline: turns aborted before their ack arrived; the ack tombstones it.
         self._abandoned_reqs: dict[str, float] = {}
         # runId -> deadline; see RUN_ABORT_TOMBSTONE_S.
         self._aborted_runs: dict[str, float] = {}
+        # runId -> (session_key, last frame seen): runs OpenClaw is running, from their
+        # frames (agent lifecycle, chat, session.tool) until a terminal one. A `chat.send`
+        # while another run is active on its key is folded into that run (see
+        # docs/openclaw-protocol.md), so the bridge aborts these before sending.
+        self._active_runs: dict[str, tuple[str, float]] = {}
         self._sessions: dict[str, asyncio.Queue] = {}
         # session_key -> max queue depth seen; not cleared by unregister (the bridge
         # reads it after the turn and calls pop_peak) (#219).
@@ -135,13 +140,10 @@ class TurnRegistry:
         if queue is None or self._session_owner.get(session_key) != req_id:
             return
         for item, item_run in held:
-            if run_id is None or item_run == run_id:
+            if run_id is None or item_run is None or item_run == run_id:
                 self._deliver(session_key, queue, item)
             else:
                 logger.debug("frame of another run dropped (sk=%s)", session_key)
-
-    def run_of(self, req_id: str) -> str | None:
-        return self._run_of_req.get(req_id)
 
     def abandon(self, req_id: str) -> None:
         """The turn of `req_id` is being aborted: from now on the frames of its run are
@@ -156,6 +158,24 @@ class TurnRegistry:
     def abort_run(self, run_id: str) -> None:
         _prune(self._aborted_runs)
         self._aborted_runs[run_id] = time.monotonic() + RUN_ABORT_TOMBSTONE_S
+        self._active_runs.pop(run_id, None)
+
+    def note_run_activity(self, session_key: str, run_id: str | None, *, ended: bool) -> None:
+        """A frame of `run_id` on `session_key`: the run is active until a terminal one."""
+        if run_id is None:
+            return
+        if ended:
+            self._active_runs.pop(run_id, None)
+        else:
+            self._active_runs[run_id] = (session_key, time.monotonic())
+
+    def active_runs(self, session_key: str) -> list[str]:
+        """Runs active on `session_key` (not ended, not tombstoned). A run with no frame for
+        RUN_ABORT_TOMBSTONE_S is forgotten: its end was probably lost (a reconnect)."""
+        stale = time.monotonic() - RUN_ABORT_TOMBSTONE_S
+        for run_id in [r for r, (_, seen) in self._active_runs.items() if seen <= stale]:
+            del self._active_runs[run_id]
+        return [r for r, (sk, _) in self._active_runs.items() if sk == session_key]
 
     def note_abort_result(self, payload: object) -> None:
         """A `chat.abort` answer (`{ok, aborted, runIds}`) names the runs it aborted."""
@@ -180,9 +200,19 @@ class TurnRegistry:
         return True
 
     def depth(self, session_key: str) -> tuple[int, int]:
-        """(current qsize or 0, max seen)."""
+        """(current depth or 0, max seen); the depth counts frames held before the ack."""
         q = self._sessions.get(session_key)
-        return (q.qsize() if q is not None else 0, self._peak.get(session_key, 0))
+        return (
+            q.qsize() + self._held_count(session_key) if q is not None else 0,
+            self._peak.get(session_key, 0),
+        )
+
+    def _held_count(self, session_key: str) -> int:
+        owner = self._session_owner.get(session_key)
+        return len(self._held.get(owner, ())) if owner is not None else 0
+
+    def _note_peak(self, session_key: str, depth: int) -> None:
+        self._peak[session_key] = max(self._peak.get(session_key, 0), depth)
 
     def pop_peak(self, session_key: str) -> int:
         return self._peak.pop(session_key, 0)
@@ -198,20 +228,26 @@ class TurnRegistry:
 
         `run_id` (#285): a frame of another run than the turn's own never reaches it — not
         a late reply of an aborted turn, not a push whose start was suppressed (#112).
-        Until the turn's ack names its run, frames with a run id are held, not delivered.
+        Until the turn's ack names its run, frames with a run id are held, not delivered;
+        once one is held, frames without a run id are held behind it, so the turn sees
+        them in arrival order. After an overflow the turn takes nothing more.
         """
         queue = self._sessions.get(session_key)
         if queue is None:
             return False
+        if session_key in self._overflowed:
+            return True  # flagged for abort once (#130 S3b): drop
         owner = self._session_owner.get(session_key)
-        if run_id is not None and owner is not None:
-            if owner not in self._run_of_req:
+        if owner is not None and owner not in self._run_of_req:
+            if run_id is not None or self._held.get(owner):
                 held = self._held.setdefault(owner, [])
                 if queue.maxsize > 0 and len(held) >= queue.maxsize:
                     self._overflow(session_key, queue)
                 else:
                     held.append((item, run_id))
+                    self._note_peak(session_key, queue.qsize() + len(held))
                 return True
+        elif run_id is not None and owner is not None:
             own_run = self._run_of_req[owner]
             if own_run is not None and run_id != own_run:
                 logger.debug("frame of another run dropped (sk=%s)", session_key)
@@ -220,17 +256,23 @@ class TurnRegistry:
         return True
 
     def deliver_by_req(self, req_id: str, item: tuple) -> bool:
+        """For the answer to the request itself (a rejected `chat.send`): delivered at
+        once; whatever was held for it is of other runs (it never had one)."""
         session_key = self._req_to_session.get(req_id)
         if session_key is None:
             return False
-        return self.deliver_by_session(session_key, item)
+        self._held.pop(req_id, None)
+        queue = self._sessions.get(session_key)
+        if queue is not None and self._session_owner.get(session_key) == req_id:
+            self._deliver(session_key, queue, item)
+        return True
 
     def _deliver(self, session_key: str, queue: asyncio.Queue, item: tuple) -> None:
         if session_key in self._overflowed:
             return  # turn already flagged for abort: drop
         try:
             queue.put_nowait(item)
-            self._peak[session_key] = max(self._peak.get(session_key, 0), queue.qsize())
+            self._note_peak(session_key, queue.qsize())
         except asyncio.QueueFull:
             self._overflow(session_key, queue)
 
@@ -277,6 +319,8 @@ class TurnRegistry:
         self._session_owner.clear()
         self._run_of_req.clear()
         self._held.clear()
+        # The connection is gone: what was running on it is not known any more.
+        self._active_runs.clear()
 
 
 def _prune(deadlines: dict[str, float]) -> None:

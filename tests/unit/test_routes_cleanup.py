@@ -17,7 +17,7 @@ import pytest
 
 from fogar_gateway.api import routes
 from fogar_gateway.models.schemas import Client, ClientConfig
-from fogar_gateway.services.openclaw.registry import ClientRegistry
+from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
 from fogar_gateway.services.session_registry import SessionRegistry
 
 CLIENT_KEY = "test-key"
@@ -72,6 +72,7 @@ def _make_app_state(orchestrator_ping_result=True):
         openclaw=orchestrator,
         speech=SimpleNamespace(tts=AsyncMock(), stt=AsyncMock()),
         client_registry=ClientRegistry(),
+        turn_registry=TurnRegistry(),
         session_registry=SessionRegistry(),
     ), orchestrator
 

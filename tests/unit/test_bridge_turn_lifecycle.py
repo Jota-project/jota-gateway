@@ -601,3 +601,62 @@ async def test_snapshot_since_is_the_running_turn_s_own(make_bridge):
     assert turn["kind"] == "normal" and turn["since_s"] < 0.2
     task.cancel()
     await asyncio.wait({task})
+
+
+
+async def test_a_push_cut_while_its_timeout_waits_for_the_lock_reports_no_timeout(
+    make_bridge, monkeypatch
+):
+    """Review 1: the timeout is decided under the lock. A `send` that got the lock first
+    cuts the push (replaced): the client never sees a turn_timeout that did not happen."""
+    from fogar_gateway.services.stats import gateway_stats
+
+    monkeypatch.setattr(settings, "TURN_TIMEOUT_S", 0.1)
+    bridge, ws = make_bridge(client_id="hab_sito")
+    bridge.orchestrator.stream_response = tokens("hola")
+    await push(bridge, ("turn_start", bridge._session_key()))
+    await bridge.turns._lock.acquire()  # a turn being replaced holds the lock
+    starter = asyncio.create_task(bridge.turns.start_user_turn("hola"))  # first in line
+    await asyncio.sleep(0.25)  # the push's budget runs out meanwhile: the worker queues too
+    bridge.turns._lock.release()
+    await asyncio.wait_for(starter, 2)
+    await asyncio.wait_for(bridge.turns.user_task, 2)
+    await bridge.push_idle()
+
+    await sent(bridge)
+    assert ws.of("error") == []
+    assert "turn_timeout" not in gateway_stats.snapshot()["turn_errors"]
+    frames = [(m["type"], m["turn_id"]) for m in ws.sent if m["type"] in ("turn_start", "turn_end")]
+    assert frames == [("turn_start", "t-1"), ("turn_end", "t-1"), ("turn_start", "t-2"), ("turn_end", "t-2")]
+    await bridge.close_all()
+
+
+async def test_cancelling_a_cut_still_releases_the_push_tts(make_bridge):
+    """Review 8: the cutter is cancelled while the push TTS is being dropped; the stream
+    is still closed, its push_tts recorded and its turn_end sent, then the cancellation
+    propagates."""
+    cancelling = asyncio.Event()
+    stream = AsyncMock()
+
+    async def audio():
+        try:
+            await asyncio.sleep(3600)
+            yield b""  # pragma: no cover
+        except asyncio.CancelledError:
+            cancelling.set()
+            await asyncio.shield(asyncio.sleep(0.1))  # slow to stop
+            raise
+
+    stream.get_audio_stream = audio
+    bridge, ws = make_bridge(client_id="hab_sito", output_mode=("audio", "text"), tts=_audio_provider(stream))
+    await push(bridge, ("turn_start", bridge._session_key()))
+    cutter = asyncio.create_task(bridge.turns.cancel("cancelled"))
+    await asyncio.wait_for(cancelling.wait(), 2)
+    cutter.cancel()
+    await asyncio.wait({cutter}, timeout=2)
+
+    assert cutter.cancelled()
+    stream.close.assert_awaited_once()
+    assert [c for c in bridge.tracker.record.await_args_list if c.args[0] == "push_tts"]
+    assert [m["turn_id"] for m in (await sent(bridge)) if m["type"] == "turn_end"] == ["t-1"]
+    await bridge.close_all()

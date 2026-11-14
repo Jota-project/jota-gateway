@@ -377,3 +377,71 @@ async def test_close_all_sends_the_turn_end_of_an_open_push(make_push_bridge):
     assert _turn_frames(bridge.client_ws.sent)[-1] == {"type": "turn_end", "turn_id": "t-1"}
     stream.close.assert_awaited_once()
     assert bridge.turns.last_ended.end_reason == "closed"
+
+
+
+async def test_a_queued_push_run_is_aborted_before_the_user_s_chat_send(make_push_bridge):
+    """Review 3: a push run on our key still in the worker backlog (never opened) when the
+    user sends. A chat.send while it runs would be folded into it by OpenClaw: it is
+    tombstoned and aborted first, and the user's turn gets its own reply."""
+    import json
+
+    from fogar_gateway.services.openclaw.client import OpenClawClient
+    from fogar_gateway.services.openclaw.dispatcher import FrameDispatcher
+    from tests.fakes.openclaw import SendOnlyOpenClawWS
+
+    turns, clients = TurnRegistry(), ClientRegistry()
+    dispatcher = FrameDispatcher(turns, clients)
+    client = OpenClawClient("127.0.0.1", 1, "tok", turns, dispatcher)
+
+    def answer(frame):
+        if frame.get("method") == "chat.abort":
+            payload = {"ok": True, "aborted": True, "runIds": ["run-p"]}
+            res = json.dumps({"type": "res", "id": frame["id"], "ok": True, "payload": payload})
+            asyncio.get_running_loop().call_soon(
+                lambda: asyncio.ensure_future(client._handle_raw_frame(res))
+            )
+
+    client._ws = ws = SendOnlyOpenClawWS(answer)
+    bridge, _ = make_push_bridge(
+        output_mode=("text",), orchestrator=client, turn_registry=turns, client_registry=clients,
+        register=True,
+    )  # fmt: skip
+
+    def event(name, payload):
+        return {"type": "event", "event": name, "payload": {"sessionKey": SK, **payload}}
+
+    await dispatcher.dispatch(event("agent", {"runId": "run-p", "data": {"phase": "start"}}))
+    await dispatcher.dispatch(event("chat", {"runId": "run-p", "state": "delta", "deltaText": "aviso"}))
+    await bridge.turns.start_user_turn("hola")  # the push is still queued, unopened
+    await wait_until(lambda: ws.ids("chat.send"))
+    assert ws.methods().index("chat.abort") < ws.methods().index("chat.send")
+
+    (req,) = ws.ids("chat.send")
+    await dispatcher.dispatch({"type": "res", "id": req, "ok": True, "payload": {"runId": "run-u"}})
+    await dispatcher.dispatch(event("chat", {"runId": "run-p", "state": "delta", "deltaText": "más"}))
+    await dispatcher.dispatch(event("chat", {"runId": "run-u", "state": "delta", "deltaText": "mio"}))
+    await dispatcher.dispatch(event("chat", {"runId": "run-u", "state": "final", "deltaText": ""}))
+    await asyncio.wait_for(bridge.turns.user_task, 2)
+    await bridge.push_idle()
+
+    msgs = await sent(bridge)
+    assert [(m["type"], m.get("turn_id"), m.get("text")) for m in msgs] == [
+        ("turn_start", "t-1", None), ("token", "t-1", "mio"), ("turn_end", "t-1", None),
+    ]  # fmt: skip
+    assert turns.is_run_aborted("run-p")
+    await bridge.close_all()
+
+
+async def test_a_push_whose_turn_start_fails_is_aborted(make_push_bridge):
+    """Review 5: no turn_start, no push — and on our key, no run left going in OpenClaw."""
+    from tests.fakes.bridge import GoneSender
+
+    turns = TurnRegistry()
+    bridge, _ = make_push_bridge(output_mode=("text",), sender=GoneSender(), turn_registry=turns)
+    await push(bridge, ("turn_start", SK))
+    bridge.enqueue_push("turn_start", SK, run_id="run-p")
+    await bridge.push_idle()
+    bridge.orchestrator.abort.assert_awaited_with(SK)
+    assert turns.is_run_aborted("run-p")
+    assert bridge.turns.snapshot(0.0)["turn"]["kind"] == "idle"

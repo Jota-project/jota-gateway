@@ -156,7 +156,7 @@ async def gateway_websocket(websocket: WebSocket):
             client_registry=app_state.client_registry,
             default_agent=resolved_agent,
             sender=sender,
-            turn_registry=getattr(app_state, "turn_registry", None),
+            turn_registry=app_state.turn_registry,
         )
     except Exception as e:  # noqa: BLE001 — frontera: sesión a medio construir
         logger.error(f"[{client.id}] Fallo al construir la sesión: {describe_error(e)}")

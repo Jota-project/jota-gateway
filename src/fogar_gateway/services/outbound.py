@@ -13,6 +13,7 @@ from typing import Protocol
 from starlette.websockets import WebSocketDisconnect
 
 from fogar_gateway.core.config import settings
+from fogar_gateway.services.reconnection import describe_error
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ def _is_routine_disconnect(e: Exception) -> bool:
 def log_send_failed(client_id: str, what: str, e: BaseException) -> None:
     """A send to a client failed — almost always one that already left: DEBUG, with the
     exception type only, never its text (#221)."""
-    logger.debug(f"[{client_id}] envío de {what} al cliente falló: {type(e).__name__}")
+    logger.debug(f"[{client_id}] envío de {what} al cliente falló: {describe_error(e)}")
 
 
 class ClientGone(ConnectionError):

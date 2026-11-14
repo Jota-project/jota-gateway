@@ -35,7 +35,7 @@ def make_reason_bridge(make_bridge):
             config=config or ClientConfig(),
             input_mode=input_mode,
             tracker=tracker,
-            turn_registry=turn_registry,
+            turn_registry=turn_registry or TurnRegistry(),
             register=True,
         )
         return bridge
@@ -197,7 +197,7 @@ async def test_queue_peaks_in_session_end(make_reason_bridge):
     assert turns.depth(sk) == (0, 0)  # pop_peak consumido
 
 
-async def test_queue_peaks_default_to_zero_without_turn_registry(make_reason_bridge):
+async def test_queue_peaks_default_to_zero_without_a_turn(make_reason_bridge):
     bridge = make_reason_bridge()
     await bridge.close_all()
     assert _end_meta(bridge)["turn_queue_peak"] == 0

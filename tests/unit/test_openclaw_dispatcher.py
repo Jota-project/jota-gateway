@@ -1,5 +1,4 @@
 import asyncio
-import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -10,6 +9,7 @@ from fogar_gateway.services.openclaw.dispatcher import FrameDispatcher
 from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
 from fogar_gateway.services.reconnection import ConnectionState, ServiceStatus
 from tests.fakes.bridge import push, sent
+from tests.fakes.openclaw import SendOnlyOpenClawWS
 
 
 def push_open(bridge) -> bool:
@@ -649,15 +649,6 @@ def _tool(run_id):
     return {"type": "event", "event": "session.tool", "payload": {"sessionKey": SK, "runId": run_id, "data": data}}
 
 
-async def test_ack_names_the_run_of_the_turn():
-    dispatcher, turn_reg, _ = make_dispatcher()
-    turn_reg.register("req-1", SK)
-    await dispatcher.dispatch(_ack("req-1", "run-1"))
-    assert turn_reg.run_of("req-1") == "run-1"
-    turn_reg.unregister(SK, "req-1")
-    assert turn_reg.run_of("req-1") is None
-
-
 async def test_frames_of_an_abandoned_turn_never_reach_the_next_turn_nor_a_push():
     dispatcher, turn_reg, client_reg = make_dispatcher()
     bridge = MagicMock()
@@ -790,20 +781,6 @@ async def test_abort_registration_takes_every_frame_of_the_key():
     assert [d["state"] for _, d in _drain(q)] == ["aborted"]
 
 
-class _SendOnlyWS:
-    """An OpenClaw socket that only records what the client sends; the test plays the
-    server through the dispatcher, in the exact order it wants."""
-
-    def __init__(self):
-        self.sent = []
-
-    async def send(self, raw):
-        self.sent.append(json.loads(raw))
-
-    def chat_sends(self):
-        return [f["id"] for f in self.sent if f.get("method") == "chat.send"]
-
-
 async def test_late_terminal_of_an_aborted_turn_before_both_acks_does_not_close_the_next():
     """#285 (review 2), the exact ordering: turn A is aborted before its ack; turn B is
     sent; A's late reply (delta + final) arrives before B's ack, then B's ack, then A's
@@ -813,20 +790,20 @@ async def test_late_terminal_of_an_aborted_turn_before_both_acks_does_not_close_
     turns = TurnRegistry()
     dispatcher = FrameDispatcher(turns, ClientRegistry())
     client = OpenClawClient("127.0.0.1", 1, "tok", turns, dispatcher)
-    client._ws = ws = _SendOnlyWS()  # no connect: the test is the server
+    client._ws = ws = SendOnlyOpenClawWS()  # no connect: the test is the server
 
     async def collect(text):
         return [e async for e in client.stream_response(text, session_key=SK)]
 
     first = asyncio.create_task(collect("uno"))
-    while len(ws.chat_sends()) < 1:
+    while len(ws.ids("chat.send")) < 1:
         await asyncio.sleep(0)
     first.cancel()  # barge-in before A's ack
     await asyncio.gather(first, return_exceptions=True)
     second = asyncio.create_task(collect("dos"))
-    while len(ws.chat_sends()) < 2:
+    while len(ws.ids("chat.send")) < 2:
         await asyncio.sleep(0)
-    req_a, req_b = ws.chat_sends()
+    req_a, req_b = ws.ids("chat.send")
 
     await dispatcher.dispatch(_chat("run-a", text="viejo"))
     await dispatcher.dispatch(_chat("run-a", "final"))
@@ -840,3 +817,55 @@ async def test_late_terminal_of_an_aborted_turn_before_both_acks_does_not_close_
     assert "".join(e.content for e in events if e.type == "token") == "nuevo"
     assert (events[-1].type, events[-1].content) == ("status", "done")
     assert turns.is_run_aborted("run-a")
+
+
+async def test_frames_without_run_id_wait_behind_held_ones():
+    """Review 6: once a frame is held before the ack, the ones without run id queue behind
+    it, so the turn sees them in arrival order; the held ones count in the depth."""
+    dispatcher, turn_reg, _ = make_dispatcher()
+    q = turn_reg.register("req-1", SK)
+    plain = {"sessionKey": SK, "state": "delta", "deltaText": "b"}
+    await dispatcher.dispatch(_chat("run-1", text="a"))
+    await dispatcher.dispatch({"type": "event", "event": "chat", "payload": plain})
+    assert q.empty() and turn_reg.depth(SK) == (2, 2)
+    await dispatcher.dispatch(_ack("req-1", "run-1"))
+    assert [d["deltaText"] for _, d in _drain(q)] == ["a", "b"]
+
+
+async def test_held_frames_overflow_once(caplog):
+    """Review 7: after the overflow the turn takes nothing more (one warning, one item)."""
+    turn_reg = TurnRegistry(max_queue_size=2)
+    dispatcher = FrameDispatcher(turn_reg, ClientRegistry())
+    q = turn_reg.register("req-1", SK)
+    for i in range(6):
+        await dispatcher.dispatch(_chat("run-1", text=str(i)))
+    assert _drain(q) == [("overflow", None)]
+    assert caplog.text.count("turn queue overflow") == 1
+
+
+async def test_a_rejected_send_is_delivered_even_with_frames_held():
+    dispatcher, turn_reg, _ = make_dispatcher()
+    q = turn_reg.register("req-1", SK)
+    await dispatcher.dispatch(_chat("run-other", text="x"))
+    await dispatcher.dispatch({"type": "res", "id": "req-1", "ok": False, "error": {"code": "X"}})
+    assert [k for k, _ in _drain(q)] == ["done"]
+
+
+async def test_active_runs_follow_their_frames():
+    """Review 3: a run is active on its key from its first frame to its terminal one; a
+    tombstone or a lost connection forgets it."""
+    dispatcher, turn_reg, _ = make_dispatcher()
+    await dispatcher.dispatch(_agent("run-1", "start"))
+    await dispatcher.dispatch(_chat("run-2"))
+    assert sorted(turn_reg.active_runs(SK)) == ["run-1", "run-2"]
+    assert turn_reg.active_runs("agent:otro:client-a") == []
+    await dispatcher.dispatch(_chat("run-2", "final"))
+    assert turn_reg.active_runs(SK) == ["run-1"]
+    await dispatcher.dispatch(_agent("run-1", "end"))
+    assert turn_reg.active_runs(SK) == []
+    await dispatcher.dispatch(_agent("run-3", "start"))
+    turn_reg.abort_run("run-3")
+    assert turn_reg.active_runs(SK) == []
+    await dispatcher.dispatch(_tool("run-4"))
+    turn_reg.error_all("orchestrator_disconnected")
+    assert turn_reg.active_runs(SK) == []

@@ -539,6 +539,15 @@ No server change; this records how the gateway reacts. Frames are still routed b
   same tombstones for what was already queued. When every run a `chat.abort` answer names
   is already tombstoned, the gateway does not wait for their `aborted` (the dispatcher
   drops it).
+- **No other run is active on the key when the user's `chat.send` goes out.** Because of the
+  folding described above, the reply would otherwise come under the other run's `runId` and
+  the filter would drop it. `TurnRegistry` keeps the runs it sees active per session key
+  (from their first `agent`/`chat`/`session.tool` frame to a terminal `chat` or an `agent`
+  `end`/`error`; forgotten after `RUN_ABORT_TOMBSTONE_S` without frames, or when the
+  connection drops). Before a user turn, under the turn lock, any active run on our key is
+  tombstoned and `chat.abort`ed: a push not opened yet (still in the worker's queue, the
+  client has `push_enabled=False`, or its `turn_start` failed — that one is aborted right
+  away too).
 - **A push has the same budget as a normal turn:** `TURN_TIMEOUT_S` without any event of it
   (idle-reset) closes it with `turn_timeout` and, on our own session key, `chat.abort` (G-15).
 - `agent` `phase: "error"` reaches the bridge as its own push event (`turn_error`), so the
