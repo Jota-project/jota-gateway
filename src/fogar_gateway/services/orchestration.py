@@ -23,9 +23,11 @@ async def call_orchestrator(
     on_token: Callable[[str], Awaitable[None]] | None = None,
     on_tool_call: Callable[[ToolCallEvent], Awaitable[None]] | None = None,
     on_accepted: Callable[[], Awaitable[None]] | None = None,
+    on_progress: Callable[[str], Awaitable[None]] | None = None,
 ) -> None:
     """Iterate orchestrator.stream_response(), record pipeline events, call on_token per token,
-    on_tool_call per tool-call event and on_accepted once OpenClaw accepted the chat.send.
+    on_tool_call per tool-call event, on_accepted once OpenClaw accepted the chat.send and
+    on_progress per progress phase (the gateway's vocabulary, #254).
 
     Raises OrchestratorError (a RuntimeError) if the orchestrator emits an error event.
     """
@@ -61,6 +63,10 @@ async def call_orchestrator(
             elif event.type == "tool_call":
                 if on_tool_call and event.tool_call is not None:
                     await on_tool_call(event.tool_call)
+
+            elif event.type == "progress":
+                if on_progress:
+                    await on_progress(event.content)
 
             elif event.type == "error":
                 raise OrchestratorError(event.content)

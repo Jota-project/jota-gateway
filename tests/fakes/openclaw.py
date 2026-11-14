@@ -94,13 +94,24 @@ class FakeOpenClawServer:
     drop      -> ack started, un delta y cierra la conexión con 1011 (caída a mitad de turno)
     agent_error -> ack started, `agent` phase error y `chat` state error con `errorMessage`
                  (el agente falla tras aceptar el turno; 2026.10.5, issue #300)
+    progress  -> ack started, las fases de arranque de `chat` `state:"status"` (con una
+                 repetida), una herramienta `ha_call_service` (start con `args` y result con
+                 contenido, los dos con `SECRET-…`), delta y final (#254)
+    progress_weird -> como `progress`, con una fase desconocida y un nombre de herramienta que
+                 no es un identificador
+    progress_late -> ack started, delta y final, y después una fase y una herramienta del
+                 mismo run (nada de eso debe llegar al cliente)
+    progress_burst -> ack started, `burst_tools` herramientas seguidas (start y result), una
+                 pausa de `burst_pause_s` y delta y final (el ritmo de `turn_progress`)
     wait*     -> ack started y se queda en cola hasta `finish_next()` (o `release`); entonces
                  emite su respuesta como una ejecución del agente: agent start, delta
                  `reply-<texto>`, final, agent end. Ignora `chat.abort`, como un run cuya
-                 respuesta ya iba en camino cuando llegó el abort.
-    push(sk, text, end=True) -> agent start, chat delta, chat final y agent end, sin
-                 `chat.send`; con `end=False` el push queda abierto hasta `push_end(sk)`,
-                 `push_fail(sk)` o un `chat.abort`.
+                 respuesta ya iba en camino cuando llegó el abort. `waitprogress*` emite
+                 además, tras su agent start, una fase y una herramienta `late_tool`.
+    push(sk, text, end=True, progress=False) -> agent start, chat delta, chat final y agent
+                 end, sin `chat.send`; con `end=False` el push queda abierto hasta
+                 `push_end(sk)`, `push_fail(sk)` o un `chat.abort`. Con `progress`, entre el
+                 agent start y el delta: fases de arranque y una herramienta `push_tool`.
     chat.abort -> si hay un push abierto en esa `sessionKey`: chat `aborted`, agent end y
                  `res {ok, aborted: true, runIds}`, en el orden del real (6g); si no, solo
                  `res {aborted: false}`. Tras el abort, `push_end`/`push_fail` no emiten nada.
@@ -172,6 +183,8 @@ class FakeOpenClawServer:
         self.reads: list[tuple[str, dict]] = []  # (método, params) de cada lectura
         self.fail_reads = False
         self.calls: list[tuple[str, str]] = []  # (chat.send | chat.abort, sessionKey), en orden
+        self.burst_tools = 20
+        self.burst_pause_s = 0.6
 
     async def __aenter__(self):
         self._server = await websockets.serve(
@@ -205,6 +218,30 @@ class FakeOpenClawServer:
     def _chat_error(sk, run_id):
         payload = {"sessionKey": sk, "runId": run_id, "state": "error", "errorMessage": "No API key found"}
         return json.dumps({"type": "event", "event": "chat", "payload": payload})
+
+    @staticmethod
+    def _status(sk, phase, run_id):
+        """`chat` `state:"status"`: una fase de arranque, sin texto (2026.10.5)."""
+        payload = {"sessionKey": sk, "runId": run_id, "state": "status", "phase": phase}
+        return json.dumps({"type": "event", "event": "chat", "payload": payload})
+
+    @staticmethod
+    def _tool(sk, run_id, phase, name, call_id):
+        """`session.tool` con la forma real: `args` en start, `result.content` en result."""
+        data = {"phase": phase, "name": name, "toolCallId": call_id}
+        if phase == "start":
+            data["args"] = {"entity_id": "SECRET-ARG"}
+        else:
+            data["isError"] = False
+            data["result"] = {"content": [{"type": "text", "text": "SECRET-RESULT"}]}
+        payload = {"sessionKey": sk, "runId": run_id, "data": data}
+        return json.dumps({"type": "event", "event": "session.tool", "payload": payload})
+
+    async def _progress_frames(self, ws, sk, run_id, phases, tool, call_id="call-1"):
+        for phase in phases:
+            await ws.send(self._status(sk, phase, run_id))
+        await ws.send(self._tool(sk, run_id, "start", tool, call_id))
+        await ws.send(self._tool(sk, run_id, "result", tool, call_id))
 
     @staticmethod
     def _agent(sk, phase, run_id):
@@ -259,7 +296,7 @@ class FakeOpenClawServer:
                        "hasMore": len(messages) > limit, "totalMessages": len(messages)}
         await ws.send(self._res(rid, payload))
 
-    async def push(self, sk, text, end=True):
+    async def push(self, sk, text, end=True, progress=False):
         """Turno push: lo inicia OpenClaw, sin `chat.send`. Emite en las conexiones abiertas."""
         if not self._conns:
             raise RuntimeError("no hay conexión abierta para el push")
@@ -267,6 +304,9 @@ class FakeOpenClawServer:
         self._record(sk, "assistant", text)
         for ws in list(self._conns):
             await ws.send(self._agent(sk, "start", run_id))
+            if progress:
+                phases = ("preparing_workspace", "starting_model")
+                await self._progress_frames(ws, sk, run_id, phases, "push_tool")
             await ws.send(self._chat(sk, "delta", text, run_id))
         self._open_pushes[sk] = run_id
         if end:
@@ -432,6 +472,21 @@ class FakeOpenClawServer:
         finally:
             self._conns.discard(ws)
 
+    async def _chat_send_progress(self, ws, sk, run_id, text):
+        if text == "progress":
+            phases = ("preparing_workspace", "preparing_context", "preparing_context", "starting_model")
+            await self._progress_frames(ws, sk, run_id, phases, "ha_call_service")
+        elif text == "progress_weird":
+            await self._progress_frames(ws, sk, run_id, ("warp_drive",), "bad name; rm -rf /")
+        elif text == "progress_burst":
+            for i in range(self.burst_tools):
+                await self._progress_frames(ws, sk, run_id, (), f"tool_{i}", call_id=f"call-{i}")
+            await asyncio.sleep(self.burst_pause_s)
+        await ws.send(self._chat(sk, "delta", f"reply-{text}", run_id))
+        await ws.send(self._chat(sk, "final", run_id=run_id))
+        if text == "progress_late":
+            await self._progress_frames(ws, sk, run_id, ("starting_model",), "late_tool")
+
     async def _chat_abort(self, ws, rid, sk):
         run_id = self._open_pushes.pop(sk, None)
         if run_id is None:
@@ -463,6 +518,8 @@ class FakeOpenClawServer:
                 try:
                     await self._until_go(go)
                     await ws.send(self._agent(sk, "start", run_id))
+                    if text.startswith("waitprogress"):
+                        await self._progress_frames(ws, sk, run_id, ("starting_model",), "late_tool")
                     await ws.send(self._chat(sk, "delta", f"reply-{text}", run_id))
                     await ws.send(self._chat(sk, "final", run_id=run_id))
                     await ws.send(self._agent(sk, "end", run_id))
@@ -482,6 +539,9 @@ class FakeOpenClawServer:
                     json.dumps({"type": "event", "event": "agent", "payload": {"sessionKey": _SK_B, "data": None}})
                 )
                 await ws.send(json.dumps({"type": "res", "id": "x", "payload": None}))
+            if text.startswith("progress"):
+                await self._chat_send_progress(ws, sk, run_id, text)
+                return
             if text == "agent_error":
                 await ws.send(self._agent(sk, "error", run_id))
                 await ws.send(self._chat_error(sk, run_id))

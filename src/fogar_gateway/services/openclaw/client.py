@@ -40,6 +40,7 @@ from fogar_gateway.services.openclaw.registry import (
 from fogar_gateway.services.protocol import ACCEPTED, OrchestratorEvent
 from fogar_gateway.services.reconnection import describe_error, traceback_no_message
 from fogar_gateway.services.teardown import Teardown
+from fogar_gateway.services.turn_progress import chat_status_phase
 
 logger = logging.getLogger(__name__)
 
@@ -827,6 +828,12 @@ class OpenClawClient:
                     yield OrchestratorEvent(type="error", content="turn_timeout")
                     break
                 if kind == "chat":
+                    # #254: a `state:"status"` carries no text, only a startup phase; it goes
+                    # out mapped to the gateway's vocabulary, never as OpenClaw's string.
+                    phase = chat_status_phase(data)
+                    if phase is not None:
+                        yield OrchestratorEvent(type="progress", content=phase)
+                        continue
                     # Only frames of this turn's own run get here (#285, TurnRegistry).
                     # #241: OpenClaw 2026.10.5 sends the full text only in `final`
                     # (no deltaText); emit just what the deltas did not cover.

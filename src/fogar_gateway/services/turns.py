@@ -42,6 +42,12 @@ from fogar_gateway.services.reconnection import describe_error, traceback_no_mes
 from fogar_gateway.services.speech.ports import TextToSpeechProvider, TtsStream
 from fogar_gateway.services.stats import gateway_stats
 from fogar_gateway.services.teardown import Teardown
+from fogar_gateway.services.turn_progress import (
+    Progress,
+    TurnProgress,
+    chat_status_phase,
+    status_phase,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +91,8 @@ class Turn:
     cancel_reason: EndReason | None = None  # quien cancela su tarea dice por qué
     finishing: bool = False  # push: llegó el fin del agente, solo queda su audio
     tts: "TurnTts | None" = None
+    progress: TurnProgress = field(default_factory=TurnProgress)  # su `turn_progress` (#254)
+    progress_flush: asyncio.Task | None = None  # el `turn_progress` aplazado por el ritmo
 
 
 @dataclass
@@ -329,6 +337,8 @@ class TurnController:
         self._config = config
         self._wants_text = "text" in handshake.output_mode
         self._wants_audio = "audio" in handshake.output_mode
+        # `turn_progress` (#254) va con los mensajes de diagnóstico del turno: `status`.
+        self._wants_progress = "status" in handshake.output_mode
         self._orchestrator = orchestrator
         self._tts = tts
         self._tracker = tracker
@@ -558,6 +568,7 @@ class TurnController:
             # chat.abort) en vez de seguir hasta que close_all() lo cancele.
             if self.client_gone:
                 raise ClientGone("cliente no disponible")
+            turn.progress.text_arrived()
             if self._wants_text:
                 try:
                     await self._sender.send_json(
@@ -574,6 +585,8 @@ class TurnController:
         async def on_tool_call(tool_call: ToolCallEvent) -> None:
             if self.client_gone:
                 raise ClientGone("cliente no disponible")
+            # El progreso (solo el nombre) no depende de tool_calls_enabled (#254).
+            await self._offer_progress(turn, turn.progress.tool(tool_call))
             if not self._config.tool_calls_enabled:
                 return
             try:
@@ -584,6 +597,13 @@ class TurnController:
             except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
                 self._log_send_failed("tool_call", e)
 
+        async def on_progress(phase: str) -> None:
+            if self.client_gone:
+                raise ClientGone("cliente no disponible")
+            known = status_phase(phase)
+            if known is not None:
+                await self._offer_progress(turn, Progress(known))
+
         try:
             await orchestration.call_orchestrator(
                 self._orchestrator,
@@ -592,6 +612,7 @@ class TurnController:
                 tracker=self._tracker,
                 on_token=on_token,
                 on_tool_call=on_tool_call,
+                on_progress=on_progress,
             )
             return "done"
         except ClientGone:
@@ -747,10 +768,15 @@ class TurnController:
         if push is None or push.ended:
             return  # #109: nada fuera de un turn_start/turn_end
         push.progress_at = time.monotonic()
+        phase = chat_status_phase(payload)
+        if phase is not None:  # #254: una fase de arranque, sin texto
+            await self._offer_progress(push, Progress(phase))
+            return
         # #241: `final` lleva el texto completo sin deltaText (OpenClaw 2026.10.5).
         delta = self._push_text.feed(payload)
         if not delta:
             return
+        push.progress.text_arrived()
         if self._wants_text:
             try:
                 await self._sender.send_json(
@@ -766,10 +792,11 @@ class TurnController:
         if push is None or push.ended:
             return
         push.progress_at = time.monotonic()
-        if not self._config.tool_calls_enabled:
-            return
         tool_call = ToolCallEvent.from_session_tool_payload(data)
         if tool_call is None:
+            return
+        await self._offer_progress(push, push.progress.tool(tool_call))
+        if not self._config.tool_calls_enabled:
             return
         try:
             await self._sender.send_json(_tool_call_message(push.turn_id, tool_call))
@@ -820,6 +847,53 @@ class TurnController:
         self._abort_run(push.run_id)
         await self._end(push, reason, abort=True)
         return push.turn_id
+
+    # ── Progreso (#254) ───────────────────────────────────────────────────
+
+    async def _offer_progress(self, turn: Turn, progress: Progress) -> None:
+        """Un estado nuevo del turno: sale ya, se aplaza (el ritmo) o no sale (repetido).
+
+        Solo con el turno abierto: nunca antes de su turn_start ni después de su turn_end.
+        """
+        if not self._wants_progress or not turn.opened or turn.ended:
+            return
+        decision = turn.progress.offer(progress)
+        if isinstance(decision, Progress):
+            await self._send_progress(turn, decision)
+        elif decision is not None and turn.progress_flush is None:
+            task = asyncio.create_task(self._flush_progress(turn, decision), name="turn_progress")
+            turn.progress_flush = task
+            self._supervise(task)
+
+    async def _flush_progress(self, turn: Turn, delay: float) -> None:
+        """Envía el estado aplazado en cuanto el ritmo lo deja (el más reciente, no todos)."""
+        try:
+            while True:
+                await asyncio.sleep(delay)
+                if turn.ended:
+                    return
+                decision = turn.progress.flush()
+                if isinstance(decision, Progress):
+                    await self._send_progress(turn, decision)
+                    return
+                if decision is None:
+                    return
+                delay = decision
+        finally:
+            if turn.progress_flush is asyncio.current_task():
+                turn.progress_flush = None
+
+    async def _send_progress(self, turn: Turn, progress: Progress) -> None:
+        # Sin await entre mirar `ended` y encolar: `_end` lo marca antes de encolar turn_end,
+        # así que este turn_progress nunca sale detrás de él.
+        if turn.ended:
+            return
+        try:
+            await self._sender.send_json(progress.message(turn.turn_id))
+        except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
+            if isinstance(e, ClientGone):
+                self.client_gone = True
+            self._log_send_failed("turn_progress", e)
 
     # ── Comunes ───────────────────────────────────────────────────────────
 
@@ -890,6 +964,8 @@ class TurnController:
         turn.ended = True
         turn.end_reason = reason
         self.last_ended = turn
+        if turn.progress_flush is not None:
+            turn.progress_flush.cancel()  # no hace falta esperarla: ya ve `ended`
         logger.debug(f"[{self._client_id}] turno {turn.turn_id} ({turn.origin}) terminado: {reason}")
         td = Teardown(f"[{self._client_id}] fin del turno {turn.turn_id}")
         if release and turn.tts is not None:

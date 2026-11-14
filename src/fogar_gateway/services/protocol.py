@@ -10,7 +10,9 @@ ACCEPTED = "accepted"
 
 @dataclass
 class OrchestratorEvent:
-    type: Literal["token", "status", "error", "tool_call"]
+    # `progress`: `content` is a phase of the gateway's vocabulary (services/turn_progress.py,
+    # `preparing`/`thinking`), never the orchestrator's own string (#254).
+    type: Literal["token", "status", "error", "tool_call", "progress"]
     content: str = ""
     tool_call: ToolCallEvent | None = None
 

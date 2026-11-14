@@ -187,7 +187,9 @@ What changed versus 2026.6.11/2026.7.1:
   not a retraction the gateway can honor: tokens already sent to the client cannot be taken
   back. Official semantics below ("Official delta/replace/snapshot semantics", issue #243).
 - New `chat` events with `state:"status"` and a `phase` (`preparing_workspace`,
-  `preparing_context`, `starting_model`, ...). They carry no text and are ignored.
+  `preparing_context`, `starting_model`, ...). They carry no text. Since #254 the gateway
+  forwards them to the client mapped to its own vocabulary (see "Startup phases and tool
+  progress" below).
 
 ### Official delta/replace/snapshot semantics (issue #243)
 
@@ -242,6 +244,46 @@ Observation: with 2026.10.5 most of the text arrives at once in `final` (capture
 16-character delta, a 409-character final), so TTS starts only when generation ends. The 2 s
 narration interval does not explain it (it does not apply to `chat`, see above); fixing that
 latency is an OpenClaw streaming-configuration matter.
+
+---
+
+## Startup phases and tool progress (2026-11-14, server 2026.10.5, issue #254)
+
+Read in the npm package `openclaw@2026.10.5` (not a new live capture; the capture above already
+showed three of the phases). No server change; this records the full phase set and how the
+gateway uses it.
+
+- **The full set.** `chat` `state:"status"` is a closed schema (`ChatStatusEventSchema`):
+  `{runId, sessionKey, seq, state:"status", phase, retry?}`, where `phase` is one of
+  `ChatRunStartupPhaseSchema`, documented upstream as "coarse startup stages shown while a run
+  has not produced visible activity yet": `waiting_for_state`, `preparing_workspace`,
+  `naming_worktree`, `creating_worktree`, `running_setup`, `provisioning_environment`,
+  `preparing_context`, `memory_flushing`, `starting_model`. No text, ever.
+- **Where they come from.** The server projects its internal `agent` stream `run_status` onto
+  `chat` (`server-chat`), only for a run linked to a chat (`chatLink`), visible to the control
+  UI and not aborted, and with `dropIfSlow` (a slow consumer may miss some). The runner maps its
+  milestones to them (`resolveRunStartupPhase`): `runner_entered`/`workspace`/`runtime_plugins`
+  → `preparing_workspace`; `before_agent_reply`/`model_resolution`/`auth`/`context_engine`/
+  `attempt_dispatch`/`context_assembled` → `preparing_context`; `turn_accepted`/
+  `process_spawned`/`model_call_started` → `starting_model`; tool execution and assistant
+  output end the startup phases (no status for them).
+- **Retries.** A model retry (`run_status` `retrying`) arrives as `phase:"starting_model"` plus
+  `retry {attempt, maxAttempts, reason:"rate_limit"}` (only for `rate_limit`).
+- **Order.** Startup phases are meant to precede visible activity (the server's own in-flight
+  progress snapshot ignores a startup phase once a tool or item was recorded); a retry can
+  bring `starting_model` back. In the #300 failure they came before the `agent` `error`, with
+  no `agent` `start`: for a push, the phases can arrive before the push turn is open.
+
+How the gateway reacts (`src/fogar_gateway/services/turn_progress.py`): it sends the client a
+`turn_progress` message (docs/client-protocol.md §5) with its own vocabulary, never OpenClaw's
+string. Every startup phase except `starting_model` → `preparing`; `starting_model` (also a
+retry) → `thinking`; a phase not in the list above (a new startup stage) → `preparing`, with
+only a DEBUG line. `session.tool` `start` → `tool` with the tool `name` if it matches
+`[A-Za-z0-9_.:-]{1,128}` (otherwise no name); `result` → `thinking` (or the last tool still
+open, when several run at once). `args` and `result` never reach `turn_progress`. These frames
+go through the same `runId` filter as the rest of the turn ("How the gateway uses `runId`"), so
+nothing of an aborted run, and nothing after the turn's end, becomes progress. `update` tool frames and the
+`agent` `run_status`/`thinking` streams are still ignored.
 
 ---
 
@@ -881,6 +923,9 @@ The gateway uses them only through `OpenClawClient.request`, which refuses any m
   observed live on loopback and read in the package source); "Session key carries the
   conversation" replaces "…per-client identity": the key is now `agent:{agent}:fogar-{conversation}`,
   pre-M19 keys are imported as `legacy` conversations, push is routed by an in-memory index.
+- **2026-11-14**: added "Startup phases and tool progress" (server 2026.10.5, read in the package
+  source, issue #254): the full `chat` `state:"status"` phase set, where it comes from, retries;
+  the gateway now forwards them and the tool names as `turn_progress`.
 - **2026-11-14**: added "How the gateway uses `runId`" (M19, issues #285/#286): `runId`
   correlation of turns, tombstones for every aborted run, push turn budget. No server change.
 - **2026-11-06**: added "Connect deadline and `chat.send` session keys" (server 2026.11.1, read in

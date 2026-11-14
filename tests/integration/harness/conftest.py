@@ -119,11 +119,12 @@ class Harness:
         return session_key_for(conversation["agent"], conversation["id"])
 
     async def push(
-        self, text: str, end: bool = True, session_key: str | None = None
+        self, text: str, end: bool = True, session_key: str | None = None, progress: bool = False
     ) -> None:
         """El orquestador inicia un turno por su cuenta en la conversación del último cliente
-        conectado, o en `session_key` (con `end=False` lo deja abierto hasta `push_end`)."""
-        await self.openclaw.push(session_key or self.session_key(), text, end=end)
+        conectado, o en `session_key` (con `end=False` lo deja abierto hasta `push_end`; con
+        `progress`, con fases de arranque y una herramienta antes del texto)."""
+        await self.openclaw.push(session_key or self.session_key(), text, end=end, progress=progress)
 
     async def push_end(self, session_key: str | None = None) -> None:
         await self.openclaw.push_end(session_key or self.session_key())
