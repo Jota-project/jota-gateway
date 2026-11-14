@@ -504,7 +504,7 @@ async def test_agent_lifecycle_end_closes_push_turn_opened_before_normal_turn(ma
 
     await bridge.push_idle()
     assert not push_open(bridge)
-    assert {"type": "turn_end", "turn_id": push_turn_id} in await sent(bridge)
+    assert {"type": "turn_end", "turn_id": push_turn_id, "reason": "done"} in await sent(bridge)
     await bridge.close_all()
 
 

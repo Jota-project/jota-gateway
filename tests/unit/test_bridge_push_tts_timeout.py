@@ -72,7 +72,7 @@ async def test_hung_send_text_chunk_drops_tts_and_continues_text_only(make_push_
     tts.close.assert_awaited_once()
     tts.send_text_chunk.assert_awaited_once()
     assert await _tokens(bridge) == ["a", "b", "c"]
-    assert await _turn_end(bridge) == [{"type": "turn_end", "turn_id": "t-1"}]
+    assert await _turn_end(bridge) == [{"type": "turn_end", "turn_id": "t-1", "reason": "done"}]
     assert len([r for r in caplog.records if "TTS del turno" in r.getMessage()]) == 1
 
 
@@ -103,7 +103,7 @@ async def test_hung_tts_end_still_sends_turn_end(make_push_bridge, monkeypatch):
     await asyncio.wait_for(push(bridge, *push_reply("a", sk=SK)), timeout=2.0)
 
     tts.close.assert_awaited_once()
-    assert await _turn_end(bridge) == [{"type": "turn_end", "turn_id": "t-1"}]
+    assert await _turn_end(bridge) == [{"type": "turn_end", "turn_id": "t-1", "reason": "done"}]
     assert bridge.turns.snapshot(0.0)["turn"]["kind"] == "idle"
 
 
@@ -116,7 +116,7 @@ async def test_hung_tts_close_is_bounded(make_push_bridge, monkeypatch):
 
     await asyncio.wait_for(push(bridge, *push_reply("a", sk=SK)), timeout=2.0)
 
-    assert await _turn_end(bridge) == [{"type": "turn_end", "turn_id": "t-1"}]
+    assert await _turn_end(bridge) == [{"type": "turn_end", "turn_id": "t-1", "reason": "done"}]
 
 
 async def test_audio_ignoring_cancellation_does_not_hang_the_push(make_push_bridge, monkeypatch):
@@ -136,7 +136,7 @@ async def test_audio_ignoring_cancellation_does_not_hang_the_push(make_push_brid
     bridge = make_push_bridge(tts=_stream(audio=stubborn))
     try:
         await asyncio.wait_for(push(bridge, *push_reply("a", sk=SK)), timeout=2.0)
-        assert await _turn_end(bridge) == [{"type": "turn_end", "turn_id": "t-1"}]
+        assert await _turn_end(bridge) == [{"type": "turn_end", "turn_id": "t-1", "reason": "done"}]
     finally:
         release.set()
         await asyncio.sleep(0)
@@ -234,7 +234,7 @@ async def test_long_push_reply_is_not_cut_by_the_inactivity_cap(make_push_bridge
 
     msgs = await sent(bridge)
     assert [m[3] for m in msgs if isinstance(m, bytes)] == list(range(total))
-    assert msgs[-1] == {"type": "turn_end", "turn_id": "t-1"}
+    assert msgs[-1] == {"type": "turn_end", "turn_id": "t-1", "reason": "done"}
 
 
 async def test_push_drain_window_restarts_at_drain_start(make_push_bridge, monkeypatch):
@@ -258,7 +258,7 @@ async def test_push_drain_window_restarts_at_drain_start(make_push_bridge, monke
 
     msgs = await sent(bridge)
     assert len([m for m in msgs if isinstance(m, bytes)]) == 3
-    assert msgs[-1] == {"type": "turn_end", "turn_id": "t-1"}
+    assert msgs[-1] == {"type": "turn_end", "turn_id": "t-1", "reason": "done"}
 
 
 async def test_turn_counters(make_push_bridge, monkeypatch):

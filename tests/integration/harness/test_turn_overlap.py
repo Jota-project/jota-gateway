@@ -15,7 +15,7 @@ worker FIFO, así que un push "fin" posterior llega al cliente detrás de cualqu
 
 
 from fogar_gateway.core.config import settings
-from tests.integration.harness.conftest import assert_turns_paired, of_type, turn_ended
+from tests.integration.harness.conftest import assert_turns_paired, interrupted, of_type, turn_ended
 
 AUDIO_FRAME = b"\x00" * 3200  # 50 ms de PCM Float32 a 16 kHz
 
@@ -49,7 +49,7 @@ async def _barge_in(harness, text):
     await client.send({"type": "send", "text": text})
     await harness.openclaw.wait_held(1)
     await client.send_audio(AUDIO_FRAME)
-    await client.collect(lambda m: bool(of_type(m, "interrupted")))
+    await client.collect(lambda m: bool(interrupted(m)))
     return client
 
 

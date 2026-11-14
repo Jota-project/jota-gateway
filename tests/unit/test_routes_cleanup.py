@@ -17,6 +17,7 @@ import pytest
 
 from fogar_gateway.api import routes
 from fogar_gateway.models.schemas import Client, ClientConfig
+from fogar_gateway.services.conversations import Conversation, ConversationIndex, conversation_day
 from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
 from fogar_gateway.services.session_registry import SessionRegistry
 
@@ -74,7 +75,19 @@ def _make_app_state(orchestrator_ping_result=True):
         client_registry=ClientRegistry(),
         turn_registry=TurnRegistry(),
         session_registry=SessionRegistry(),
+        conversations=_FakeConversations(),
     ), orchestrator
+
+
+class _FakeConversations:
+    """Only what routes.py asks for: the client's default conversation of the day."""
+
+    def __init__(self):
+        self.index = ConversationIndex()
+
+    async def default_for(self, client_id, agent, day=None):
+        day = day or conversation_day()
+        return Conversation("conv-1", client_id, agent, f"agent:{agent}:fogar-conv-1", "default", day)
 
 
 @pytest.fixture(autouse=True)

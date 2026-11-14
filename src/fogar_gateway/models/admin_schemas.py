@@ -8,9 +8,10 @@ contratos internos con la interfaz HTTP de administración.
 """
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Literal
 
+from fastapi import Path, Query
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from fogar_gateway.core.logging import fingerprint_key
@@ -188,3 +189,50 @@ class PairRequest(BaseModel):
     name: _Name | None = None
     client_type: ClientType | None = None
     output_mode: list[OutputMode] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Conversaciones (M19)
+# ---------------------------------------------------------------------------
+
+# Parámetros de las rutas (FastAPI valida Path/Query, no un Field suelto).
+ConversationIdPath = Annotated[str, Path(min_length=1, max_length=200)]
+ClientIdFilter = Annotated[str | None, Query(min_length=1, max_length=200)]
+# Mensajes de `GET /admin/conversations/{id}/messages` (el tope de `chat.history` es 1000).
+HistoryLimit = Annotated[int, Query(ge=1, le=1000)]
+
+
+class ConversationCreate(BaseModel):
+    """`POST /admin/conversations`: una conversación nueva del panel web. Sin `agent`, el de la
+    cascada (`default_agent` del panel, `DEFAULT_AGENT`, el de OpenClaw)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent: AgentName | None = None
+
+
+class ConversationResponse(BaseModel):
+    """Una conversación: sin texto (el título lo pone OpenClaw; null si no se sabe)."""
+
+    id: str
+    client_id: str
+    client_name: str
+    agent: str
+    kind: str
+    day: date | None
+    created_at: datetime
+    last_turn_at: datetime | None
+    turn_count: int
+    title: str | None = None
+
+
+class ConversationMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    text: str
+    timestamp: datetime | None
+
+
+class ConversationMessages(BaseModel):
+    conversation_id: str
+    messages: list[ConversationMessage]
+    has_more: bool

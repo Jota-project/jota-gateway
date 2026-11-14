@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import json
 import logging
 import time
@@ -6,15 +7,23 @@ import time
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
+from fogar_gateway.api.admin_routes import panel_session
 from fogar_gateway.core.agent_policy import AgentPolicyError, resolve_agent
 from fogar_gateway.core.config import settings
 from fogar_gateway.core.exceptions import ClientInactive, ClientNotFound
 from fogar_gateway.core.logging import fingerprint_key
 from fogar_gateway.core.network import resolve_client_ip
 from fogar_gateway.core.transport import drop_slow_client
-from fogar_gateway.models.schemas import Handshake
+from fogar_gateway.models.schemas import Client, ClientConfig, Handshake
 from fogar_gateway.services.bridge import FogarBridge
+from fogar_gateway.services.conversations import (
+    NEW,
+    ConversationNotFound,
+    ConversationService,
+    SessionConversation,
+)
 from fogar_gateway.services.db_client import db_client
+from fogar_gateway.services.openclaw.models import GatewayInfo
 from fogar_gateway.services.outbound import ClientGone, QueuedSender
 from fogar_gateway.services.pipeline_tracker import PipelineTracker
 from fogar_gateway.services.reconnection import describe_error, traceback_no_message
@@ -24,6 +33,73 @@ from fogar_gateway.services.teardown import Teardown
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Motivos (reason) estables de los cierres 1008 de conversación (docs/client-protocol.md §1).
+CONVERSATION_NOT_FOUND = "conversation not found"
+CONVERSATION_AGENT_MISMATCH = "conversation agent mismatch"
+
+
+class _Rejected(Exception):
+    """Un handshake rechazado con 1008: `reason` va al cliente; `kind`, al log."""
+
+    def __init__(self, kind: str, reason: str, stat: str) -> None:
+        super().__init__(kind)
+        self.kind, self.reason, self.stat = kind, reason, stat
+
+
+async def _authenticate(handshake: Handshake) -> tuple[Client, ClientConfig, str]:
+    """`(Client, ClientConfig, quién para el log)` de la credencial del handshake.
+
+    `admin_token` (M19): el panel web, que entra como el cliente «Panel web» si coincide con
+    ADMIN_TOKEN (tiempo constante; vacío = desactivado). Lanza ClientNotFound/ClientInactive.
+    """
+    if handshake.admin_token is not None:
+        expected = settings.ADMIN_TOKEN.encode("utf-8")
+        given = handshake.admin_token.encode("utf-8")
+        if not expected or not hmac.compare_digest(given, expected):
+            raise ClientNotFound("panel")
+        client, config = await panel_session()
+        return client, config, "panel"
+    key = handshake.client_key or ""  # Handshake exige una de las dos credenciales
+    client, config = await db_client.get_session(key)
+    return client, config, f"fp={fingerprint_key(key)}"
+
+
+async def _open_conversation(
+    service: ConversationService,
+    client_id: str,
+    config: ClientConfig,
+    handshake: Handshake,
+    gateway_info: GatewayInfo | None,
+) -> SessionConversation:
+    """La conversación de la sesión: la pedida (`conversation`, solo del propio cliente), una
+    nueva (`"new"`) o, sin pedir, la del día. Lanza `_Rejected` (1008)."""
+    requested = handshake.conversation
+    existing = None
+    if requested is not None and requested != NEW:
+        try:
+            existing = await service.get_owned(client_id, requested)
+        except ConversationNotFound:
+            raise _Rejected("conversation_not_found", CONVERSATION_NOT_FOUND, "conversation") from None
+        asked = (handshake.agent or "").strip()
+        if asked and asked != existing.agent:
+            raise _Rejected("conversation_agent", CONVERSATION_AGENT_MISMATCH, "conversation")
+    try:
+        # Una conversación existente fija su agente: se le aplican la lista y el roster.
+        agent = resolve_agent(
+            requested=existing.agent if existing is not None else handshake.agent,
+            client_config=config,
+            gateway_info=gateway_info,
+        )
+    except AgentPolicyError as e:
+        raise _Rejected(f"agent {e.kind}", str(e), "agent") from None
+    if existing is not None:
+        conversation = existing
+    elif requested == NEW:
+        conversation = await service.create(client_id, agent)
+    else:
+        conversation = await service.default_for(client_id, agent)
+    return SessionConversation(conversation, explicit=requested is not None, service=service)
 
 
 @router.websocket("/ws/stream")
@@ -80,42 +156,47 @@ async def gateway_websocket(websocket: WebSocket):
 
     # 2. RESOLVER IDENTIDAD EN LA BD LOCAL
     request_id = websocket.state.request_id
-    key_fingerprint = fingerprint_key(handshake.client_key)
     try:
-        client, config = await db_client.get_session(handshake.client_key)
+        client, config, who = await _authenticate(handshake)
     except (ClientNotFound, ClientInactive):
+        # El admin_token nunca va al log, ni su huella; la client_key solo como huella.
+        who = "panel" if handshake.client_key is None else f"fp={fingerprint_key(handshake.client_key)}"
         logger.warning(
             f"request_id={request_id} source_ip={resolve_client_ip(websocket)} "
-            f"fp={key_fingerprint} Handshake rechazado: key inválida o cliente inactivo."
+            f"{who} Handshake rechazado: credencial inválida o cliente inactivo."
         )
         gateway_stats.handshake_rejected("invalid_key")
         await websocket.close(code=1008, reason="Clave de cliente invalida o inactiva.")
         return
+    # La credencial ya no hace falta: la sesión guarda el handshake sin el admin_token.
+    handshake = handshake.model_copy(update={"admin_token": None})
 
-    logger.info(
-        f"request_id={request_id} client_id={client.id} fp={key_fingerprint} Handshake verificado."
-    )
+    logger.info(f"request_id={request_id} client_id={client.id} {who} Handshake verificado.")
 
     # 3. INSTANCIAR EL PUENTE DE MICROSERVICIOS
     app_state = websocket.scope["app"].state
     openclaw = app_state.openclaw
 
-    # Per-client agent policy enforcement (issue #105).
-    # resolve_agent owns the cascade (requested -> client_config.default_agent
-    # -> gateway_info.default_agent_id -> "main") and the policy checks
-    # (allowlist before global roster).
+    # Agente (#105, #245) y conversación (M19): la cascada y la política de resolve_agent, y la
+    # conversación pedida (del propio cliente) o la del día.
     try:
-        resolved_agent = resolve_agent(
-            requested=handshake.agent,
-            client_config=config,
-            gateway_info=openclaw.gateway_info,
+        conversation = await _open_conversation(
+            app_state.conversations, client.id, config, handshake, openclaw.gateway_info
         )
-    except AgentPolicyError as e:
+    except _Rejected as e:
         # Solo el tipo de rechazo; el reason del 1008 sí lleva el texto (protocolo, §1).
-        logger.warning(f"[{client.id}] Agent policy rejected: {e.kind}")
-        gateway_stats.handshake_rejected("agent")
-        await websocket.close(code=1008, reason=str(e))
+        logger.warning(f"[{client.id}] Handshake rechazado: {e.kind}")
+        gateway_stats.handshake_rejected(e.stat)
+        await websocket.close(code=1008, reason=e.reason)
         return
+    except Exception as e:  # noqa: BLE001 — frontera: sin conversación no hay sesión (1011)
+        logger.error(f"[{client.id}] Fallo al abrir la conversación: {describe_error(e)}")
+        logger.debug(f"[{client.id}] conversación: {traceback_no_message(e)}")
+        await websocket.close(
+            code=1011, reason="Problema estableciendo microservicios internos del hub."
+        )
+        return
+    resolved_agent = conversation.current.agent
 
     session_id = f"{client.id}:{int(time.time() * 1000)}"
     session_registry = app_state.session_registry
@@ -154,7 +235,7 @@ async def gateway_websocket(websocket: WebSocket):
             tracker=tracker,
             handshake=handshake,
             client_registry=app_state.client_registry,
-            default_agent=resolved_agent,
+            conversation=conversation,
             sender=sender,
             turn_registry=app_state.turn_registry,
         )
@@ -221,6 +302,7 @@ async def gateway_websocket(websocket: WebSocket):
                     "type": "ready",
                     "session_id": session_id,
                     "agent": resolved_agent,
+                    "conversation": {"id": conversation.id, "agent": resolved_agent},
                     "input_mode": handshake.input_mode,
                     "output_mode": handshake.output_mode,
                     "requested_capabilities": {

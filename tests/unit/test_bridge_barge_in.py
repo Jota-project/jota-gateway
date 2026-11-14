@@ -300,7 +300,7 @@ async def test_close_all_ends_the_active_turn(bridge):
         pytest.param(ClientConfig(barge_in_min_chars=3), "hola", True, id="custom-threshold"),
         # config.barge_in_min_chars, not settings.BARGE_IN_MIN_CHARS
         pytest.param(ClientConfig(barge_in_min_chars=50), "hello world", False, id="config-not-global"),
-        # #108: disabled -> partial still forwarded, no cancellation, no `interrupted`
+        # #108: disabled -> partial still forwarded, no cancellation, no turn_end
         pytest.param(
             ClientConfig(barge_in_enabled=False, barge_in_min_chars=3), "hola mundo", False, id="disabled"
         ),
@@ -318,15 +318,16 @@ async def test_partial_with_active_turn_barges_in_from_the_client_threshold(
 
     msgs = [m for m in await sent(bridge) if isinstance(m, dict)]
     assert msgs[0] == {"type": "transcription_partial", "text": text}
-    expected = [{"type": "turn_end", "turn_id": "t-1"}, {"type": "interrupted", "turn_id": "t-1"}]
+    # M19: the barge-in is the turn_end's reason; there is no separate `interrupted` message.
+    expected = [{"type": "turn_end", "turn_id": "t-1", "reason": "interrupted"}]
     assert msgs[1:] == (expected if barges else [])
     assert turn.cancelled() is barges
     assert (bridge.turns.user_task is None) is barges
     turn.cancel()
 
 
-async def test_barge_in_before_turn_start_sends_interrupted_without_turn_id(make_bridge):
-    """A turn cancelled before it sent its turn_start: `interrupted` has no turn_id."""
+async def test_barge_in_before_turn_start_sends_nothing_but_the_partial(make_bridge):
+    """A turn cancelled before it sent its turn_start: no turn_end (M19: nor `interrupted`)."""
     bridge, ws = make_bridge(**_AUDIO, transcriber=_transcriber())
     bridge.orchestrator.stream_response = blocking()
     await bridge.turns.start_user_turn("x")  # the task has not run yet
@@ -335,7 +336,6 @@ async def test_barge_in_before_turn_start_sends_interrupted_without_turn_id(make
 
     assert [m for m in await sent(bridge) if isinstance(m, dict)] == [
         {"type": "transcription_partial", "text": "hello world"},
-        {"type": "interrupted"},
     ]
 
 

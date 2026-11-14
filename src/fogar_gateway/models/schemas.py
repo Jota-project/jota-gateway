@@ -1,6 +1,6 @@
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 
 # Modos de salida conocidos. Compartido por el handshake WS y la API admin (#122).
 OutputMode = Literal["audio", "text", "status"]
@@ -47,16 +47,27 @@ class ClientConfig(BaseModel):
 
 class Handshake(BaseModel):
     """
-    Configuración inicial que el ESP32 o la Web envían al Gateway al conectar
-    por WebSocket. Define qué patas internas del ecosistema se deben encender.
+    Configuración inicial que el cliente envía al Gateway al conectar por WebSocket. Define
+    qué patas internas del ecosistema se deben encender.
+
+    Credencial: `client_key` o, para el panel web, `admin_token` (M19); una de las dos.
     """
 
-    client_key: str
+    client_key: str | None = None
+    admin_token: str | None = None
     input_mode: Literal["audio", "text"]
     output_mode: list[OutputMode]
     agent: str | None = None  # OpenClaw agent name; None → gateway default
+    # Id de una conversación del cliente o "new"; None → la conversación por defecto (M19).
+    conversation: Annotated[str, StringConstraints(min_length=1, max_length=64)] | None = None
 
     model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def _one_credential(self) -> "Handshake":
+        if (self.client_key is None) == (self.admin_token is None):
+            raise ValueError("client_key or admin_token, exactly one")
+        return self
 
 
 # =====================================================================

@@ -5,7 +5,7 @@ import json
 from sqlmodel import Session
 
 from fogar_gateway.db.models import ClientRecord
-from tests.integration.conftest import CLIENT_ID
+from tests.integration.conftest import CLIENT_ID, default_conversation_key
 
 
 def _patch_client(engine, **fields):
@@ -67,7 +67,6 @@ def test_rest_default_agent_applied_when_model_missing(
     """default_agent='a' set, body.model='' → 200, session uses agent='a'."""
     _patch_client(db_engine, default_agent="a", allowed_agents=None)
 
-    from fogar_gateway.core.session_key import make_session_key
     from fogar_gateway.services.protocol import OrchestratorEvent
 
     captured = {}
@@ -86,7 +85,7 @@ def test_rest_default_agent_applied_when_model_missing(
     )
     assert r.status_code == 200
     # gateway_info mock has default_agent_id='main'; client.default_agent='a' wins
-    assert captured.get("session_key") == make_session_key("a", CLIENT_ID)
+    assert captured.get("session_key") == default_conversation_key(db_engine, "a")
 
 
 def test_rest_legacy_trusted_origin_still_uses_gateway_default(client, mock_orchestrator):

@@ -76,6 +76,14 @@ def chat_abort(req_id: str, session_key: str) -> dict:
     return _req("chat.abort", req_id, {"sessionKey": session_key})
 
 
+# ── Lectura (sessions.list, chat.history; M19) ────────────────────
+
+
+def request(method: str, req_id: str, params: dict) -> dict:
+    """Una petición de lectura de `OpenClawClient.request` (solo métodos de READ_METHODS)."""
+    return _req(method, req_id, params)
+
+
 # ── Agentes ───────────────────────────────────────────────────────
 
 

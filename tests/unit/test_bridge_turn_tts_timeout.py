@@ -59,7 +59,7 @@ async def test_alive_tts_that_never_sends_done_ends_turn_by_cap(make_tts_bridge,
         with caplog.at_level(logging.WARNING):
             await _run_bounded(bridge, 3.0)
 
-        assert (await sent(bridge))[-1] == {"type": "turn_end", "turn_id": "t-1"}
+        assert (await sent(bridge))[-1] == {"type": "turn_end", "turn_id": "t-1", "reason": "done"}
         await asyncio.wait_for(server_closed.wait(), timeout=2.0)
     assert any("TTS" in r.getMessage() for r in caplog.records)
 
@@ -84,7 +84,7 @@ async def test_hung_send_text_chunk_and_end_do_not_wedge_turn(make_tts_bridge, m
 
     await _run_bounded(bridge, 3.0)
 
-    assert (await sent(bridge))[-1] == {"type": "turn_end", "turn_id": "t-1"}
+    assert (await sent(bridge))[-1] == {"type": "turn_end", "turn_id": "t-1", "reason": "done"}
     # text tokens still reached the client despite the dead TTS
     assert [m["text"] for m in ws.of("token")] == ["a", "b"]
 
@@ -110,7 +110,7 @@ async def test_healthy_slow_tts_is_not_truncated_by_idle_cap(make_tts_bridge, mo
     await sent(bridge)
     chunks = [m for m in ws.sent if isinstance(m, bytes)]
     assert len(chunks) == total
-    assert ws.sent[-1] == {"type": "turn_end", "turn_id": "t-1"}
+    assert ws.sent[-1] == {"type": "turn_end", "turn_id": "t-1", "reason": "done"}
 
 
 async def _cancel_turn_during(make_tts_bridge, monkeypatch, *, tokens_block):

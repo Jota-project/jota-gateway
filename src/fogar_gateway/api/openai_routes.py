@@ -18,6 +18,7 @@ from fogar_gateway.core.exceptions import ClientInactive, ClientNotFound
 from fogar_gateway.core.network import is_trusted_origin, resolve_client_ip
 from fogar_gateway.core.session_key import make_session_key
 from fogar_gateway.models.schemas import Client, ClientConfig
+from fogar_gateway.services.conversations import note_turn_safely
 from fogar_gateway.services.db_client import db_client
 from fogar_gateway.services.openclaw.client import _traceback_no_message
 from fogar_gateway.services.openclaw.registry import TURN_IN_PROGRESS_ERROR
@@ -165,13 +166,24 @@ async def chat_completions(
                 status_code=403,
             )
     else:
-        # Legacy trusted-origin path: no policy checks, use gateway default.
-        resolved_agent = (
-            orchestrator.gateway_info.default_agent_id if orchestrator.gateway_info else "main"
+        # Legacy trusted-origin path: no policy checks (no client config), only the cascade
+        # (DEFAULT_AGENT, #245, then the OpenClaw default, then "main").
+        resolved_agent = resolve_agent(
+            requested=None, client_config=None, gateway_info=orchestrator.gateway_info
         )
 
-    client_id = caller.client.id if caller.client else "ha"
-    session_key = make_session_key(resolved_agent, client_id)
+    if caller.client is not None:
+        # M19: like any client that does not pick a conversation, the caller talks in its
+        # default conversation (one per client, agent and day).
+        client_id = caller.client.id
+        conversations = request.app.state.conversations
+        conversation = await conversations.default_for(client_id, resolved_agent)
+        session_key = conversation.session_key
+        await note_turn_safely(conversations, conversation.id)
+    else:
+        # Legacy trusted-origin path: no client row, so no conversation; it keeps its key.
+        client_id = "ha"
+        session_key = make_session_key(resolved_agent, client_id)
 
     tracker = _make_http_tracker(f"http:{completion_id}", session_registry, client_id)
     session_registry.register(tracker)

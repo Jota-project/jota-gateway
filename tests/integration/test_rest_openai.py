@@ -8,7 +8,7 @@ from fogar_gateway.core.config import settings
 from fogar_gateway.db.models import ClientRecord
 from fogar_gateway.main import app
 from fogar_gateway.services.protocol import OrchestratorEvent
-from tests.integration.conftest import CLIENT_ID
+from tests.integration.conftest import CLIENT_ID, default_conversation_key
 
 
 def test_get_models_returns_list(client):
@@ -508,10 +508,8 @@ def test_chat_completions_from_untrusted_origin_with_valid_key_passes(
 
 
 def test_chat_completions_with_valid_key_uses_real_client_session_key(
-    client_untrusted, ha_bearer_headers, mock_registry
+    client_untrusted, ha_bearer_headers, mock_registry, db_engine
 ):
-    from fogar_gateway.core.session_key import make_session_key
-
     captured = {}
 
     async def _stream(text, session_key=None):
@@ -531,7 +529,9 @@ def test_chat_completions_with_valid_key_uses_real_client_session_key(
         headers=ha_bearer_headers,
     )
 
-    expected = make_session_key("openclaw", CLIENT_ID)
+    # M19: la conversación por defecto de hoy del cliente para ese agente.
+    expected = default_conversation_key(db_engine, "openclaw")
+    assert expected.startswith("agent:openclaw:fogar-")
     assert captured.get("session_key") == expected
 
 
@@ -660,10 +660,8 @@ def _capture_session_key(mock_orchestrator):
 
 
 def test_model_alias_fogar_gateway_with_bearer_returns_200(
-    client_untrusted, ha_bearer_headers, mock_orchestrator
+    client_untrusted, ha_bearer_headers, mock_orchestrator, db_engine
 ):
-    from fogar_gateway.core.session_key import make_session_key
-
     captured = _capture_session_key(mock_orchestrator)
     r = client_untrusted.post(
         "/v1/chat/completions",
@@ -672,14 +670,12 @@ def test_model_alias_fogar_gateway_with_bearer_returns_200(
     )
     assert r.status_code == 200, r.text
     # Sin agente explícito -> cascada: default de OpenClaw ("main").
-    assert captured["session_key"] == make_session_key("main", CLIENT_ID)
+    assert captured["session_key"] == default_conversation_key(db_engine, "main")
 
 
 def test_model_alias_uses_client_default_agent_in_cascade(
     client_untrusted, ha_bearer_headers, mock_orchestrator, db_engine
 ):
-    from fogar_gateway.core.session_key import make_session_key
-
     with Session(db_engine) as s:
         rec = s.get(ClientRecord, CLIENT_ID)
         rec.default_agent = "a"
@@ -692,7 +688,7 @@ def test_model_alias_uses_client_default_agent_in_cascade(
         headers=ha_bearer_headers,
     )
     assert r.status_code == 200, r.text
-    assert captured["session_key"] == make_session_key("a", CLIENT_ID)
+    assert captured["session_key"] == default_conversation_key(db_engine, "a")
 
 
 def test_model_alias_respects_allowed_agents_of_cascade_default(
@@ -714,16 +710,14 @@ def test_model_alias_respects_allowed_agents_of_cascade_default(
 
 
 def test_real_agent_as_model_still_works_and_unknown_still_403(
-    client_untrusted, ha_bearer_headers, mock_orchestrator
+    client_untrusted, ha_bearer_headers, mock_orchestrator, db_engine
 ):
-    from fogar_gateway.core.session_key import make_session_key
-
     captured = _capture_session_key(mock_orchestrator)
     r = client_untrusted.post(
         "/v1/chat/completions", json={**BODY, "model": "a"}, headers=ha_bearer_headers
     )
     assert r.status_code == 200
-    assert captured["session_key"] == make_session_key("a", CLIENT_ID)
+    assert captured["session_key"] == default_conversation_key(db_engine, "a")
 
     r = client_untrusted.post(
         "/v1/chat/completions", json={**BODY, "model": "nope"}, headers=ha_bearer_headers

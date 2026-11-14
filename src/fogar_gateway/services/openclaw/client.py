@@ -64,6 +64,16 @@ ORCHESTRATOR_DEVICE_IDENTITY_REQUIRED_ERROR = "orchestrator_device_identity_requ
 
 _TERMINAL = ("aborted", "final", "error")  # terminal `chat` states
 
+# Métodos que `request()` deja llamar (M19): solo lectura (`operator.read`). Ningún método de
+# admin (`sessions.reset`, `config.*`…) sale del gateway aunque la conexión tenga el permiso.
+READ_METHODS = frozenset({"sessions.list", "chat.history"})
+
+
+class OrchestratorRequestError(RuntimeError):
+    """Una petición de lectura (`request()`) no obtuvo respuesta. Su mensaje es siempre un
+    código estable: `orchestrator_unavailable` (sin conexión, envío fallido, sin respuesta a
+    tiempo) u `orchestrator_error` (OpenClaw la rechazó)."""
+
 
 class OrchestratorHandshakeError(RuntimeError):
     """The OpenClaw v4 handshake failed or got an unexpected/malformed frame. The message
@@ -394,6 +404,11 @@ class OpenClawClient:
                         f"keeping last known agent roster ({len(previous_agents)} agents)"
                     )
 
+            default_agent = settings.DEFAULT_AGENT
+            if default_agent and self.gateway_info.agents and default_agent not in self.gateway_info.agents:
+                # #245: un DEFAULT_AGENT mal puesto no impide arrancar; los turnos que lo usen fallarán.
+                logger.warning("DEFAULT_AGENT=%s is not in OpenClaw's agent roster", default_agent)
+
             sub_id = str(uuid.uuid4())
             await self._ws.send(json.dumps(frames.sessions_subscribe(sub_id)))
             sub_ack = await asyncio.wait_for(self._ws.recv(), timeout=10.0)  # noqa: F841
@@ -685,6 +700,37 @@ class OpenClawClient:
             return False
         finally:
             self._health_futures.pop(req_id, None)  # también si cancelan el ping
+
+    async def request(self, method: str, params: dict, timeout: float = 10.0) -> dict:
+        """Una petición de lectura (READ_METHODS) y su `payload`. Su respuesta se recoge por id,
+        como la de ping(), sin pasar por el dispatcher.
+
+        Raises:
+            ValueError: `method` no es de lectura (un error de programación).
+            OrchestratorRequestError: con un código estable; nunca el texto de OpenClaw.
+        """
+        if method not in READ_METHODS:
+            raise ValueError(f"not a read method: {method}")
+        if not self._ws:
+            raise OrchestratorRequestError(ORCHESTRATOR_UNAVAILABLE_ERROR)
+        req_id = str(uuid.uuid4())
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._health_futures[req_id] = fut
+        try:
+            await self._ws.send(json.dumps(frames.request(method, req_id, params)))
+            res = await asyncio.wait_for(fut, timeout=timeout)
+        except Exception as e:  # noqa: BLE001 — frontera: sin respuesta, un código estable
+            logger.warning("OpenClaw %s failed (%s)", method, type(e).__name__)
+            raise OrchestratorRequestError(ORCHESTRATOR_UNAVAILABLE_ERROR) from None
+        finally:
+            self._health_futures.pop(req_id, None)  # también si cancelan la petición
+        if not res.get("ok"):
+            logger.warning(
+                "OpenClaw rejected %s (code=%s)", method, _safe_error_code(res.get("error"))
+            )
+            raise OrchestratorRequestError(ORCHESTRATOR_ERROR)
+        payload = res.get("payload")
+        return payload if isinstance(payload, dict) else {}
 
     async def abort(self, session_key: str, timeout: float = 1.0) -> None:
         """Abort the run in flight on `session_key` and swallow its own `aborted`.

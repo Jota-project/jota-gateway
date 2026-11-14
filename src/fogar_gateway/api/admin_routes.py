@@ -41,7 +41,7 @@ from sqlmodel import Session, select
 
 from fogar_gateway._version import __version__
 from fogar_gateway.api.deps import get_admin_auth
-from fogar_gateway.db.database import get_db_session
+from fogar_gateway.db.database import get_db_session, get_engine
 from fogar_gateway.db.models import ClientRecord
 from fogar_gateway.models.admin_schemas import (
     ClientCreate,
@@ -49,6 +49,8 @@ from fogar_gateway.models.admin_schemas import (
     ClientUpdate,
     ClientWithKey,
 )
+from fogar_gateway.models.schemas import Client, ClientConfig
+from fogar_gateway.services.db_client import db_client
 from fogar_gateway.services.openclaw.models import OrchestratorAccess
 from fogar_gateway.services.reconnection import ServiceStatus
 from fogar_gateway.services.stats import gateway_stats
@@ -113,11 +115,16 @@ def list_clients(session: Session = Depends(get_db_session)) -> list[ClientRespo
     return [ClientResponse.from_record(r) for r in records]
 
 
-def create_client_record(session: Session, body: ClientCreate) -> ClientRecord:
-    """Crea el cliente: la única vía, la usan `POST /admin/clients` y el emparejamiento (#317)."""
+def create_client_record(
+    session: Session, body: ClientCreate, *, client_id: str | None = None
+) -> ClientRecord:
+    """Crea el cliente: la única vía, la usan `POST /admin/clients`, el emparejamiento (#317) y
+    el cliente «Panel web» (M19, el único con `client_id` fijo)."""
     _check_agent_consistency(body.default_agent, body.allowed_agents)
     data = _lists_to_json(body.model_dump())
     data["client_key"] = data["client_key"] or secrets.token_urlsafe(32)
+    if client_id is not None:
+        data["id"] = client_id
     record = ClientRecord(**data)
     session.add(record)
     try:
@@ -132,6 +139,41 @@ def create_client_record(session: Session, body: ClientCreate) -> ClientRecord:
         ) from None
     session.refresh(record)
     return record
+
+
+# El panel web entra con el ADMIN_TOKEN (handshake `admin_token`, M19) como este cliente: una
+# ficha normal (se ve, se edita y se desactiva como las demás), creada la primera vez que hace
+# falta. Su client_key no se enseña nunca (no se usa: el panel no la conoce).
+PANEL_CLIENT_ID = "panel-web"
+PANEL_CLIENT_NAME = "Panel web"
+
+
+def ensure_panel_client(session: Session) -> ClientRecord:
+    """La ficha del cliente «Panel web»; la crea por la vía única si no existe."""
+    record = session.get(ClientRecord, PANEL_CLIENT_ID)
+    if record is not None:
+        return record
+    body = ClientCreate(name=PANEL_CLIENT_NAME, client_type="web", output_mode=["text"])
+    try:
+        return create_client_record(session, body, client_id=PANEL_CLIENT_ID)
+    except HTTPException:
+        # Otra petición la creó a la vez (409 de create_client_record): es esa.
+        record = session.get(ClientRecord, PANEL_CLIENT_ID)
+        if record is None:
+            raise
+        return record
+
+
+def _panel_key() -> str:
+    with Session(get_engine()) as session:
+        return ensure_panel_client(session).client_key
+
+
+async def panel_session() -> tuple[Client, ClientConfig]:
+    """`(Client, ClientConfig)` del panel web, como `db_client.get_session`: lanza
+    `ClientInactive` si el administrador lo desactivó."""
+    key = await asyncio.to_thread(_panel_key)
+    return await db_client.get_session(key)
 
 
 @router.post("/clients", response_model=ClientWithKey, status_code=status.HTTP_201_CREATED)
@@ -178,9 +220,15 @@ def update_client(
 @router.delete("/clients/{client_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_client(
     client_id: str,
+    request: Request,
     session: Session = Depends(get_db_session),
 ) -> None:
-    session.delete(_get_or_404(session, client_id))
+    record = _get_or_404(session, client_id)
+    # Sus conversaciones se van con él (M19); lo dicho sigue en OpenClaw.
+    conversations = getattr(request.app.state, "conversations", None)
+    if conversations is not None:
+        conversations.delete_client(session, client_id)
+    session.delete(record)
     session.commit()
 
 

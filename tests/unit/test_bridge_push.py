@@ -63,9 +63,9 @@ async def test_text_push_is_one_turn_with_its_tokens(make_push_bridge):
     bridge, _ = make_push_bridge(output_mode=("text",))
     await push(bridge, *push_reply("Buenos días!", sk=SK))
     assert await sent(bridge) == [
-        {"type": "turn_start", "turn_id": "t-1", "turn_seq": 1},
+        {"type": "turn_start", "turn_id": "t-1", "turn_seq": 1, "conversation": "conv-1", "origin": "push"},
         {"type": "token", "turn_id": "t-1", "text": "Buenos días!"},
-        {"type": "turn_end", "turn_id": "t-1"},
+        {"type": "turn_end", "turn_id": "t-1", "reason": "done"},
     ]
 
 
@@ -103,7 +103,7 @@ async def test_push_audio_carries_the_turn_seq_header(make_push_bridge):
     expected_header = bytes([0xA1]) + (1).to_bytes(2, "big")
     assert audio == [expected_header + b"\x00\x01", expected_header + b"\x02\x03"]
     # every audio frame comes before its turn_end
-    assert ws.sent[-1] == {"type": "turn_end", "turn_id": "t-1"}
+    assert ws.sent[-1] == {"type": "turn_end", "turn_id": "t-1", "reason": "done"}
 
 
 async def test_push_disabled_client_receives_nothing(make_push_bridge):
@@ -169,8 +169,8 @@ async def test_multiple_push_starts_and_ends_collapse_to_single_pair(make_push_b
 
     await sent(bridge)
     assert _turn_frames(ws.sent) == [
-        {"type": "turn_start", "turn_id": "t-1", "turn_seq": 1},
-        {"type": "turn_end", "turn_id": "t-1"},
+        {"type": "turn_start", "turn_id": "t-1", "turn_seq": 1, "conversation": "conv-1", "origin": "push"},
+        {"type": "turn_end", "turn_id": "t-1", "reason": "done"},
     ]
     # the next push is t-2: the intermediate starts consumed no turn_seq
     await push(bridge, ("turn_start", SK))
@@ -206,7 +206,7 @@ async def test_push_end_bounds_audio_drain(make_push_bridge, monkeypatch):
     await asyncio.wait_for(push(bridge, *push_reply("hola", sk=SK)), timeout=2.0)
 
     stream.close.assert_awaited_once()
-    assert _turn_frames(await sent(bridge))[-1] == {"type": "turn_end", "turn_id": "t-1"}
+    assert _turn_frames(await sent(bridge))[-1] == {"type": "turn_end", "turn_id": "t-1", "reason": "done"}
 
 
 # ── #241/#243: cableado de ChatTextTracker en el push (casos del tracker en test_chat_text.py)
@@ -274,7 +274,7 @@ async def test_cut_while_the_push_drains_its_audio_sends_one_turn_end(make_push_
     await asyncio.wait_for(bridge.push_idle(), 2)
 
     assert [m for m in await sent(bridge) if m.get("type") == "turn_end"] == [
-        {"type": "turn_end", "turn_id": "t-1"}
+        {"type": "turn_end", "turn_id": "t-1", "reason": "cancelled"}
     ]
     bridge.orchestrator.abort.assert_awaited_once_with(SK)
     assert bridge.turns.last_ended.end_reason == "cancelled"
@@ -374,7 +374,7 @@ async def test_close_all_sends_the_turn_end_of_an_open_push(make_push_bridge):
     bridge, _ = make_push_bridge(output_mode=("audio", "text"), tts=provider)
     await push(bridge, *push_reply("hola", sk=SK, end=False))
     await asyncio.wait_for(bridge.close_all(), 2)
-    assert _turn_frames(bridge.client_ws.sent)[-1] == {"type": "turn_end", "turn_id": "t-1"}
+    assert _turn_frames(bridge.client_ws.sent)[-1] == {"type": "turn_end", "turn_id": "t-1", "reason": "closed"}
     stream.close.assert_awaited_once()
     assert bridge.turns.last_ended.end_reason == "closed"
 

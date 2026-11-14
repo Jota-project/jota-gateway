@@ -168,7 +168,7 @@ async def test_close_all_cancels_worker_before_closing_push_tts(make_push_bridge
 
     assert order == ["worker_cancelled", "tts_close"]
     assert all(w.done() for w in _workers(bridge))
-    assert (await sent(bridge))[-1] == {"type": "turn_end", "turn_id": "t-1"}
+    assert (await sent(bridge))[-1] == {"type": "turn_end", "turn_id": "t-1", "reason": "closed"}
 
 
 async def test_close_all_completes_while_worker_waits_for_audio_drain(make_push_bridge, monkeypatch):

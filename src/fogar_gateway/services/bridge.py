@@ -9,6 +9,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from fogar_gateway.core.config import settings
 from fogar_gateway.core.exceptions import ClientInactive, ClientNotFound
 from fogar_gateway.models.schemas import Client, ClientConfig, Handshake
+from fogar_gateway.services.conversations import Conversation, SessionConversation
 from fogar_gateway.services.db_client import db_client
 from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
 from fogar_gateway.services.outbound import OutboundSender, log_send_failed
@@ -49,6 +50,12 @@ _REASON_BY_STATUS: dict[str, CloseReason] = {
 }
 
 
+def _displace(other: "FogarBridge | None") -> None:
+    """La sesión que tenía abierta la conversación (si había otra) se cierra (M19)."""
+    if other is not None:
+        other.displace()
+
+
 class FogarBridge:
     """Una sesión de cliente: bucle de entrada, STT, watchdogs, revalidación y cierre.
 
@@ -66,7 +73,7 @@ class FogarBridge:
         tracker: PipelineTracker,
         handshake: Handshake,
         client_registry: ClientRegistry,
-        default_agent: str,
+        conversation: SessionConversation,
         sender: OutboundSender,
         turn_registry: TurnRegistry,
     ):
@@ -88,7 +95,10 @@ class FogarBridge:
         self._client_registry = client_registry
         # Máximo de la cola de turno (#219) y runs de OpenClaw: lápidas y activos (#285).
         self._turn_registry = turn_registry
-        self._default_agent = default_agent
+        # La conversación de la sesión (M19): su sessionKey y su cambio de día.
+        self.conversation = conversation
+        conversation.bind(self._spawn_background)
+        conversation.on_move = self._on_conversation_move
         self.transcriber: SttSession | None = None
 
         self.tasks: list[asyncio.Task] = []
@@ -124,7 +134,7 @@ class FogarBridge:
             tts=self.tts,
             tracker=tracker,
             sender=sender,
-            session_key=self._session_key,
+            conversation=conversation,
             spawn=self._spawn,
             supervise=self._supervise,
             turn_registry=turn_registry,
@@ -153,14 +163,16 @@ class FogarBridge:
             # health_check() already reports the initial-failure case, if any.
             self.transcriber.on_state_change = self._on_transcriber_state_change
 
-        self._client_registry.register(self.client_id, self)
+        # Una conversación está abierta en una sola sesión: la que la tenía se cierra (M19).
+        _displace(self._client_registry.register(self.client_id, self, self.conversation.current))
 
     def _session_key(self) -> str:
-        from fogar_gateway.core.session_key import make_session_key
+        return self.conversation.session_key
 
-        # _default_agent es el agente ya resuelto y normalizado por resolve_agent (incluye
-        # handshake.agent sin espacios): " main" debe ser la misma sesión que "main".
-        return make_session_key(self._default_agent, self.client_id)
+    def _on_conversation_move(self, old: Conversation, new: Conversation) -> None:
+        """Cambio de día (M19): la sesión deja la conversación de ayer y abre la de hoy."""
+        self._client_registry.close(old.id, self)
+        _displace(self._client_registry.open(new, self))
 
     def snapshot(self) -> dict[str, Any]:
         """Estado vivo de la sesión para /admin/state (#219): solo números, estados e
@@ -173,6 +185,7 @@ class FogarBridge:
             "session_id": self.tracker.session_id,
             "client_id": self.client_id,
             "client_name": self.client.name,
+            "conversation": {"id": self.conversation.id, "agent": self.conversation.current.agent},
             "input_mode": self.handshake.input_mode,
             "output_mode": list(self.handshake.output_mode),
             "started_at": None,
@@ -464,20 +477,41 @@ class FogarBridge:
 
     async def _revoke_session(self) -> None:
         """Cierra la sesión con 1008 «revoked» por el camino de cierre existente."""
-        # Antes del close 1008: el bucle de entrada lo verá como desconexión del cliente.
-        self.note_close_reason("revoked")
         logger.warning(f"[{self.client_id}] Cliente revocado (borrado/desactivado/clave rotada).")
-        await self.tracker.record("session_revoked")
+        await self._close_1008("revoked", "revoked", "session_revoked", status="revoked")
+
+    def displace(self) -> None:
+        """Otra sesión abrió la conversación de esta (M19): se cierra con 1008 «conversation
+        opened elsewhere». No bloquea a quien la desplaza."""
+        logger.info(
+            f"[{self.client_id}] Conversación {self.conversation.id} abierta en otra sesión."
+        )
+        self._spawn_background(
+            self._close_1008("conversation opened elsewhere", "displaced", "session_displaced"),
+            "displaced",
+        )
+
+    async def _close_1008(
+        self,
+        wire_reason: str,
+        close_reason: CloseReason,
+        event: str,
+        status: SessionStatus | None = None,
+    ) -> None:
+        """Cierre por política (1008) por el camino de cierre existente."""
+        # Antes del close 1008: el bucle de entrada lo verá como desconexión del cliente.
+        self.note_close_reason(close_reason)
+        await self.tracker.record(event)
         # Nadie autorizado escucha ya: close_all cancela el turno en curso (G-18).
         self.turns.client_gone = True
         try:
             await asyncio.wait_for(
-                self.client_ws.close(code=1008, reason="revoked"),
+                self.client_ws.close(code=1008, reason=wire_reason),
                 timeout=settings.CLIENT_SEND_TIMEOUT_S,
             )
         except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-            logger.debug(f"[{self.client_id}] close 1008 revoked falló: {type(e).__name__}")
-        await self.close_all(status="revoked", reason="revoked")
+            logger.debug(f"[{self.client_id}] close 1008 {close_reason} falló: {type(e).__name__}")
+        await self.close_all(status=status, reason=close_reason)
 
     def _spawn(self, coro, name: str) -> asyncio.Task:
         """Create a supervised session task and track it in self.tasks."""
@@ -742,20 +776,13 @@ class FogarBridge:
             # Barge-in: interrupt active turn if enabled and partial is substantial enough
             if self.config.barge_in_enabled and len(text) >= self.config.barge_in_min_chars:
                 # The turn or the push open now: one the worker opens after the cancel stays.
-                cancelled, cancelled_turn_id = await self.turns.cancel("interrupted")
+                # Su turn_end lleva `reason: "interrupted"` (M19: ya no hay mensaje aparte).
+                cancelled, _ = await self.turns.cancel("interrupted")
                 if cancelled:
                     logger.info(
                         f"[{self.client_id}] Barge-in: turno cancelado por parcial len={len(text)}"
                     )
                     await self.tracker.record("barge_in")
-                    interrupted: dict[str, str] = {"type": "interrupted"}
-                    if cancelled_turn_id:
-                        interrupted["turn_id"] = cancelled_turn_id
-                    try:
-                        # After the cancelled turn's own turn_end (G-10).
-                        await self._sender.send_json(interrupted)
-                    except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
-                        self._log_send_failed("interrupted", e)
             return  # partials never reach the orchestrator
 
         await self.tracker.record("transcription_final", text_len=len(text))

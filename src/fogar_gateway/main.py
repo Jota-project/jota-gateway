@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from fogar_gateway import paths
 from fogar_gateway.api.admin_routes import router as admin_router
+from fogar_gateway.api.conversation_routes import router as conversation_router
 from fogar_gateway.api.health_routes import router as health_router
 from fogar_gateway.api.openai_routes import router as openai_router
 from fogar_gateway.api.pairing_routes import admin_router as pairing_admin_router
@@ -31,6 +32,7 @@ from fogar_gateway.core.startup_checks import (
 )
 from fogar_gateway.core.transport import TransportCaptureMiddleware
 from fogar_gateway.db.database import dispose_engine, require_database, run_migrations
+from fogar_gateway.services.conversations import ConversationService, LegacyImport
 from fogar_gateway.services.openclaw.client import OpenClawClient
 from fogar_gateway.services.openclaw.dispatcher import FrameDispatcher
 from fogar_gateway.services.openclaw.models import OrchestratorAccess
@@ -92,8 +94,11 @@ async def _lifespan_body(app: FastAPI):
         settings, stt_provider=settings.STT_PROVIDER, tts_provider=settings.TTS_PROVIDER
     )
 
+    # Conversaciones (M19): el índice sessionKey → conversación, cargado de la BD, reparte el push.
+    conversations = ConversationService()
+    await conversations.load()
     turn_registry = TurnRegistry()
-    client_registry = ClientRegistry()
+    client_registry = ClientRegistry(conversations.index)
     dispatcher = FrameDispatcher(turn_registry, client_registry)
     # Acceso a OpenClaw (permisos, emparejamiento): lo actualiza el cliente, lo lee /admin/state.
     openclaw_access = OrchestratorAccess()
@@ -140,7 +145,19 @@ async def _lifespan_body(app: FastAPI):
 
         return _on_state_change
 
-    openclaw.on_state_change = _broadcaster("orchestrator")
+    # Las sesiones de antes de M19 se importan una vez, con OpenClaw conectado (no al arrancar:
+    # puede estar caído); si falla, se reintenta en la siguiente conexión.
+    legacy_import = LegacyImport(conversations, openclaw)
+    broadcast_orchestrator = _broadcaster("orchestrator")
+
+    def _on_orchestrator_state(state: ConnectionState) -> None:
+        broadcast_orchestrator(state)
+        if state == ConnectionState.CONNECTED:
+            legacy_import.kick()
+
+    openclaw.on_state_change = _on_orchestrator_state
+    if openclaw.status().state == ConnectionState.CONNECTED:
+        legacy_import.kick()
 
     # Proveedores de voz singleton (STT_PROVIDER / TTS_PROVIDER), inyectados al bridge.
     stt = build_stt_provider(settings)
@@ -164,6 +181,8 @@ async def _lifespan_body(app: FastAPI):
     app.state.speech = speech
     app.state.turn_registry = turn_registry  # read by routes.py for queue depths (#219)
     app.state.client_registry = client_registry
+    app.state.conversations = conversations
+    app.state.legacy_import = legacy_import
     app.state.session_registry = SessionRegistry()
     app.state.pairing = PairingStore()  # códigos de emparejamiento, en memoria (#317)
 
@@ -182,6 +201,7 @@ async def _lifespan_body(app: FastAPI):
             # 2. Speech providers, then OpenClaw.
             for provider in (speech.stt, speech.tts):
                 await td.step(provider.aclose(), f"cierre del proveedor {provider.name}")
+            await td.step(legacy_import.aclose(), "importación de conversaciones")
             await td.step(openclaw.close(), "cierre de OpenClaw")
             # 3. Notification tasks still in flight.
             for task in list(_notification_tasks):
@@ -227,6 +247,7 @@ app.include_router(stream_router)  # WS /ws/stream
 app.include_router(openai_router)  # HTTP /v1/*
 app.include_router(health_router)  # HTTP /healthz, /ready
 app.include_router(admin_router)  # HTTP /admin/*
+app.include_router(conversation_router)  # HTTP /admin/conversations
 app.include_router(pairing_public_router)  # HTTP /.well-known/fogar-gateway, /pair
 app.include_router(pairing_admin_router)  # HTTP /admin/pairing
 # La web va la última: su GET /{path} recoge lo que no es de la API (rutas de Vue).

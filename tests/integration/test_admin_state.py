@@ -15,6 +15,7 @@ SNAPSHOT_KEYS = {
     "session_id",
     "client_id",
     "client_name",
+    "conversation",
     "input_mode",
     "output_mode",
     "started_at",

@@ -11,16 +11,17 @@ import threading
 import time
 from collections.abc import Callable
 
+import httpx
 import pytest
 import uvicorn
 import websockets
 
 from fogar_gateway.core.config import settings
-from fogar_gateway.core.session_key import make_session_key
 from fogar_gateway.main import app
+from fogar_gateway.services.conversations import session_key_for
 from tests.fakes.fogar_upstreams import FakeTranscriber, FakeTts
 from tests.fakes.openclaw import FakeOpenClawServer
-from tests.integration.conftest import CLIENT_ID, VALID_KEY
+from tests.integration.conftest import ADMIN_TOKEN, VALID_KEY
 
 Message = dict | bytes
 
@@ -65,6 +66,12 @@ class HarnessClient:
 
 
 class Harness:
+    def admin(self) -> httpx.AsyncClient:
+        """Cliente HTTP de `/admin/*` del gateway, con el X-Admin-Token de los tests."""
+        return httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{self.port}", headers={"x-admin-token": ADMIN_TOKEN}
+        )
+
     def __init__(self, port, openclaw, transcriber, tts) -> None:
         self.port = port
         self.openclaw: FakeOpenClawServer = openclaw
@@ -75,31 +82,54 @@ class Harness:
         self.server: uvicorn.Server | None = None
         self.thread: threading.Thread | None = None
 
-    async def connect(
-        self, input_mode: str = "text", output_mode: tuple[str, ...] = ("text",), **ws_kwargs
+    async def open(
+        self,
+        input_mode: str = "text",
+        output_mode: tuple[str, ...] = ("text",),
+        handshake: dict | None = None,
+        **ws_kwargs,
     ) -> HarnessClient:
-        """Abre `/ws/stream`, hace el handshake y espera `ready` (admite `status` antes).
-        `ws_kwargs` va tal cual a `websockets.connect` (p. ej. `ping_interval`)."""
+        """Abre `/ws/stream` y manda el handshake (con `handshake` encima: `conversation`,
+        `admin_token`…), sin esperar a `ready`. `ws_kwargs` va a `websockets.connect`."""
         ws = await websockets.connect(f"ws://127.0.0.1:{self.port}/ws/stream", **ws_kwargs)
         client = HarnessClient(ws)
         self.clients.append(client)
-        await client.send(
-            {"client_key": VALID_KEY, "input_mode": input_mode, "output_mode": list(output_mode)}
-        )
+        payload = {"client_key": VALID_KEY, "input_mode": input_mode, "output_mode": list(output_mode)}
+        payload.update(handshake or {})
+        await client.send({k: v for k, v in payload.items() if v is not None})
+        return client
+
+    async def connect(
+        self,
+        input_mode: str = "text",
+        output_mode: tuple[str, ...] = ("text",),
+        handshake: dict | None = None,
+        **ws_kwargs,
+    ) -> HarnessClient:
+        """Como `open`, y espera `ready` (admite `status` antes)."""
+        client = await self.open(input_mode, output_mode, handshake, **ws_kwargs)
         await client.collect(lambda m: bool(of_type(m, "ready")))
         client.ready = of_type(client.messages, "ready")[0]
         return client
 
-    async def push(self, text: str, agent: str = "main", end: bool = True) -> None:
-        """El orquestador inicia un turno por su cuenta para el cliente de prueba
-        (con `end=False` lo deja abierto hasta `push_end`)."""
-        await self.openclaw.push(make_session_key(agent, CLIENT_ID), text, end=end)
+    def session_key(self, client: HarnessClient | None = None) -> str:
+        """La sessionKey de la conversación de `client` (el último conectado si no se dice)."""
+        client = client or self.clients[-1]
+        conversation = client.ready["conversation"]
+        return session_key_for(conversation["agent"], conversation["id"])
 
-    async def push_end(self, agent: str = "main") -> None:
-        await self.openclaw.push_end(make_session_key(agent, CLIENT_ID))
+    async def push(
+        self, text: str, end: bool = True, session_key: str | None = None
+    ) -> None:
+        """El orquestador inicia un turno por su cuenta en la conversación del último cliente
+        conectado, o en `session_key` (con `end=False` lo deja abierto hasta `push_end`)."""
+        await self.openclaw.push(session_key or self.session_key(), text, end=end)
 
-    async def push_fail(self, agent: str = "main") -> None:
-        await self.openclaw.push_fail(make_session_key(agent, CLIENT_ID))
+    async def push_end(self, session_key: str | None = None) -> None:
+        await self.openclaw.push_end(session_key or self.session_key())
+
+    async def push_fail(self, session_key: str | None = None) -> None:
+        await self.openclaw.push_fail(session_key or self.session_key())
 
 
 def of_type(messages: list[Message], kind: str) -> list[dict]:
@@ -112,6 +142,11 @@ def audio(messages: list[Message]) -> list[bytes]:
 
 def describe(messages: list[Message]) -> list[str]:
     return [m.get("type", "?") if isinstance(m, dict) else f"<{len(m)} bytes>" for m in messages]
+
+
+def interrupted(messages: list[Message]) -> list[dict]:
+    """Los `turn_end` de un barge-in (M19: `reason: "interrupted"`, sin mensaje aparte)."""
+    return [m for m in of_type(messages, "turn_end") if m.get("reason") == "interrupted"]
 
 
 def turn_ended(messages: list[Message]) -> bool:
@@ -142,12 +177,21 @@ def assert_turns_paired(messages: list[Message]) -> None:
 
 
 @pytest.fixture
-async def harness(seed_client, monkeypatch):
+def openclaw_seed() -> dict[str, dict]:
+    """Sesiones que OpenClaw ya tiene al arrancar el gateway (`add_session`: clave → kwargs).
+    Un módulo de tests lo redefine para sembrarlas (p. ej. las de antes de M19)."""
+    return {}
+
+
+@pytest.fixture
+async def harness(seed_client, monkeypatch, openclaw_seed):
     transcriber, tts = FakeTranscriber(), FakeTts()
     await transcriber.start()
     await tts.start()
     try:
         async with FakeOpenClawServer() as openclaw:
+            for key, kwargs in openclaw_seed.items():
+                openclaw.add_session(key, **kwargs)
             # Antes de arrancar: el lifespan construye OpenClaw y los proveedores con estos valores.
             monkeypatch.setattr(settings, "OPENCLAW_HOST", "127.0.0.1")
             monkeypatch.setattr(settings, "OPENCLAW_PORT", openclaw.port)

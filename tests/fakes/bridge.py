@@ -10,8 +10,10 @@ import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock
 
+from fogar_gateway.core.session_key import make_session_key
 from fogar_gateway.models.schemas import Client, ClientConfig, Handshake
 from fogar_gateway.services.bridge import FogarBridge
+from fogar_gateway.services.conversations import Conversation, SessionConversation
 from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
 from fogar_gateway.services.outbound import ClientGone, QueuedSender
 from fogar_gateway.services.protocol import OrchestratorEvent
@@ -76,7 +78,7 @@ def make_bridge(
         handshake=Handshake(client_key="k", input_mode=input_mode, output_mode=list(output_mode)),
         client_registry=ClientRegistry(),
         turn_registry=TurnRegistry(),
-        default_agent="main",
+        conversation=fixed_conversation(client_id),
     )
     kwargs.update(overrides)
     if "sender" not in kwargs:  # not setdefault: it would start a writer task nobody closes
@@ -84,8 +86,24 @@ def make_bridge(
     bridge = FogarBridge(**kwargs)
     bridge.transcriber = transcriber
     if register:
-        kwargs["client_registry"].register(bridge.client_id, bridge)
+        kwargs["client_registry"].register(bridge.client_id, bridge, bridge.conversation.current)
     return bridge, ws
+
+
+CONVERSATION_ID = "conv-1"
+
+
+def fixed_conversation(client_id: str = "u", agent: str = "main", **kwargs) -> SessionConversation:
+    """A session conversation that never changes day, on the pre-M19 key `agent:{agent}:{client_id}`
+    (like an imported legacy conversation), so push tests keep their `agent:main:<client>` keys."""
+    conv = Conversation(
+        id=kwargs.pop("id", CONVERSATION_ID),
+        client_id=client_id,
+        agent=agent,
+        session_key=make_session_key(agent, client_id),
+        kind="legacy",
+    )
+    return SessionConversation(conv, explicit=True, **kwargs)
 
 
 async def sent(bridge) -> list:

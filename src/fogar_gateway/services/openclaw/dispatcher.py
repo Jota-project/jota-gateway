@@ -1,10 +1,6 @@
 import logging
 
-from fogar_gateway.services.openclaw.registry import (
-    ClientRegistry,
-    TurnRegistry,
-    client_id_from_session_key,
-)
+from fogar_gateway.services.openclaw.registry import ClientRegistry, TurnRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -109,8 +105,7 @@ class FrameDispatcher:
             return
         if self._turns.is_aborted(sk):
             return  # late frame of a turn aborted for overflow (#130 S3b)
-        client_id = client_id_from_session_key(sk)
-        bridge = self._clients.get(client_id)
+        bridge = self._clients.route(sk)
         if bridge is not None:
             bridge.enqueue_push("chat", payload, run_id=_run_id(payload))
 
@@ -120,8 +115,7 @@ class FrameDispatcher:
             return
         phase = _as_dict(payload.get("data")).get("phase")
         self._turns.note_run_activity(sk, _run_id(payload), ended=phase in ("end", "error"))
-        client_id = client_id_from_session_key(sk)
-        bridge = self._clients.get(client_id)
+        bridge = self._clients.route(sk)
         if bridge is None:
             return
         if phase == "start":
@@ -169,7 +163,6 @@ class FrameDispatcher:
             return
         if self._turns.is_aborted(sk):
             return  # late frame of a turn aborted for overflow (#130 S3b)
-        client_id = client_id_from_session_key(sk)
-        bridge = self._clients.get(client_id)
+        bridge = self._clients.route(sk)
         if bridge is not None:
             bridge.enqueue_push("tool", data, run_id=_run_id(payload))

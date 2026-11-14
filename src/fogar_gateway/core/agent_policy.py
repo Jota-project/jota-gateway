@@ -8,6 +8,8 @@ FastAPI, no WebSocket. Translation of AgentPolicyError into wire formats
 
 from typing import TYPE_CHECKING, Optional
 
+from fogar_gateway.core.config import settings
+
 if TYPE_CHECKING:
     from fogar_gateway.models.schemas import ClientConfig
     from fogar_gateway.services.openclaw.models import GatewayInfo
@@ -56,8 +58,9 @@ def resolve_agent(
     Cascade (first non-empty-after-stripping wins):
       1. requested (handshake.agent or body.model)
       2. client_config.default_agent (if client_config is not None and set)
-      3. gateway_info.default_agent_id (if gateway_info is not None)
-      4. "main" (last-resort fallback; preserves legacy REST trusted-origin)
+      3. settings.DEFAULT_AGENT, the installation default (#245), if set
+      4. gateway_info.default_agent_id (if gateway_info is not None)
+      5. "main" (last-resort fallback; preserves legacy REST trusted-origin)
 
     Policy checks, fail-fast in order:
       a. If client_config is not None and client_config.allowed_agents is
@@ -68,7 +71,7 @@ def resolve_agent(
          AND gateway_info is not None: the effective agent must be in
          gateway_info.agents. Otherwise AgentPolicyError("not_available", ...).
          The roster check is skipped when the agent came from the cascade
-         (client default / gateway default / "main" fallback) — these are
+         (client default / DEFAULT_AGENT / gateway default / "main") — these are
          trusted server-side configuration, not user input.
 
     Raises:
@@ -84,6 +87,8 @@ def resolve_agent(
         effective = requested
     elif client_config is not None and client_config.default_agent:
         effective = client_config.default_agent
+    elif settings.DEFAULT_AGENT:
+        effective = settings.DEFAULT_AGENT
     elif gateway_info is not None and gateway_info.default_agent_id:
         effective = gateway_info.default_agent_id
     else:

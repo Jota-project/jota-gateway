@@ -111,6 +111,18 @@ class Settings(BaseSettings):
     # wss:// en vez de ws:// (OpenClaw de otra máquina tras TLS, p. ej. su `tailscale serve`).
     OPENCLAW_TLS: bool = False
     OPENCLAW_TOKEN: str = ""
+    # Agente por defecto de la instalación (#245): entra en la cascada de resolve_agent() entre
+    # el `default_agent` del cliente y el agente por defecto de OpenClaw. Vacío = el de OpenClaw.
+    DEFAULT_AGENT: str = ""
+
+    @field_validator("DEFAULT_AGENT")
+    @classmethod
+    def _strip_default_agent(cls, v: str) -> str:
+        return v.strip()
+
+    # Hora local del host (0-23) a la que empieza el día de las conversaciones por defecto (M19):
+    # una por cliente, agente y día. Un turno que empieza tras el corte pasa a la del día nuevo.
+    CONVERSATION_DAY_START_HOUR: int = Field(default=5, ge=0, le=23)
     ORCHESTRATOR_RECONNECT_INITIAL_BACKOFF: float = 1.0
     ORCHESTRATOR_RECONNECT_MAX_BACKOFF: float = 60.0
     TRANSCRIBER_RECONNECT_INITIAL_BACKOFF: float = 1.0

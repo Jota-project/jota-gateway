@@ -8,7 +8,7 @@ import pytest
 
 from fogar_gateway.core.config import settings
 from fogar_gateway.services.protocol import OrchestratorEvent
-from tests.integration.conftest import CLIENT_ID, VALID_KEY
+from tests.integration.conftest import VALID_KEY
 
 HANDSHAKE_TEXT = {
     "client_key": VALID_KEY,
@@ -33,8 +33,11 @@ def test_text_message_produces_token(client):
         assert msg["text"] == "Hola"
 
 
-def test_orchestrator_session_key_carries_client_id(client, mock_registry, mock_orchestrator):
-    """La session_key pasada a stream_response termina en el UUID del cliente."""
+def test_orchestrator_session_key_is_the_conversation_of_the_session(
+    client, mock_registry, mock_orchestrator
+):
+    """M19: la session_key de stream_response es la de la conversación de la sesión
+    (`agent:{agent}:fogar-{id}`), la que anuncia `ready.conversation`."""
     captured = {}
 
     async def _stream(text, session_key=None):
@@ -46,12 +49,13 @@ def test_orchestrator_session_key_carries_client_id(client, mock_registry, mock_
 
     with client.websocket_connect("/ws/stream") as ws:
         ws.send_json(HANDSHAKE_TEXT)
-        ws.receive_json()  # ready
+        ready = ws.receive_json()
         ws.send_text("test")
         ws.receive_json()  # turn_start
         ws.receive_json()  # token
 
-    assert captured["session_key"].endswith(f":{CLIENT_ID}")
+    conversation = ready["conversation"]
+    assert captured["session_key"] == f"agent:{conversation['agent']}:fogar-{conversation['id']}"
 
 
 @pytest.fixture

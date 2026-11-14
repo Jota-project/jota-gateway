@@ -109,7 +109,7 @@ async def test_send_during_close_all_does_not_start_or_replace_a_turn(make_bridg
     assert bridge.turns.user_task is first
     assert first.cancelled()
     await sent(bridge)
-    assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1"}]
+    assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1", "reason": "closed"}]
 
 
 # ── G-10 ─────────────────────────────────────────────────────────────────────
@@ -223,7 +223,7 @@ async def test_final_transcription_cancelling_a_turn_sends_turn_end(make_bridge)
     assert bridge.turns.last_ended.end_reason == "interrupted"
 
 
-async def test_barge_in_sends_turn_end_then_interrupted_with_turn_id(make_bridge):
+async def test_barge_in_ends_the_turn_with_reason_interrupted(make_bridge):
     bridge, ws = make_bridge()
     started = asyncio.Event()
     bridge.orchestrator.stream_response = blocking(started)
@@ -234,11 +234,9 @@ async def test_barge_in_sends_turn_end_then_interrupted_with_turn_id(make_bridge
     assert bridge.turns.last_ended.end_reason == "interrupted"
 
     await sent(bridge)
-    tail = [m for m in ws.sent if isinstance(m, dict) and m["type"] in ("turn_end", "interrupted")]
-    assert tail == [
-        {"type": "turn_end", "turn_id": "t-1"},
-        {"type": "interrupted", "turn_id": "t-1"},
-    ]
+    # M19: no `interrupted` message any more; the turn_end says why.
+    assert ws.of("interrupted") == []
+    assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1", "reason": "interrupted"}]
 
 
 # ── G-11 ─────────────────────────────────────────────────────────────────────

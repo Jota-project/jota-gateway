@@ -7,6 +7,7 @@ from fogar_gateway.services.openclaw.client import (
     ORCHESTRATOR_ERROR,
     ORCHESTRATOR_UNAVAILABLE_ERROR,
     OpenClawClient,
+    OrchestratorRequestError,
 )
 from fogar_gateway.services.openclaw.models import GatewayInfo
 from fogar_gateway.services.protocol import OrchestratorEvent
@@ -107,6 +108,12 @@ class ReconnectingOpenClawClient:
     async def abort(self, session_key: str) -> None:
         if self.state == ConnectionState.CONNECTED:
             await self._client.abort(session_key)
+
+    async def request(self, method: str, params: dict, timeout: float = 10.0) -> dict:
+        """Petición de lectura (`OpenClawClient.request`); sin conexión, `orchestrator_unavailable`."""
+        if self.state != ConnectionState.CONNECTED:
+            raise OrchestratorRequestError(ORCHESTRATOR_UNAVAILABLE_ERROR)
+        return await self._client.request(method, params, timeout)
 
     async def stream_response(
         self,

@@ -4,6 +4,7 @@ import time
 from typing import Any
 
 from fogar_gateway.core.config import settings
+from fogar_gateway.services.conversations import Conversation, ConversationIndex
 from fogar_gateway.services.reconnection import describe_error
 
 logger = logging.getLogger(__name__)
@@ -330,43 +331,77 @@ def _prune(deadlines: dict[str, float]) -> None:
 
 
 class ClientRegistry:
-    """Maps active client_id → FogarBridge for push delivery."""
+    """Sesiones vivas (#113, M19): quién recibe un push y qué conversación está abierta dónde.
 
-    def __init__(self) -> None:
-        self._clients: dict[str, Any] = {}
+    Cada sesión se registra con su cliente y su conversación (un cliente puede tener varias
+    sesiones, cada una en una conversación). Una conversación está abierta en una sola sesión:
+    abrirla en otra devuelve la anterior, que el llamador cierra (1008 «conversation opened
+    elsewhere»). El push se enruta por su `sessionKey`: conversación (`index`) → la sesión que
+    la tiene abierta o, si ninguna, la sesión más reciente de su cliente (p. ej. un recordatorio
+    en la conversación de ayer de la tele, que ya está en la de hoy).
 
-    def register(self, client_id: str, bridge: Any) -> None:
-        # A live mapping being overwritten means a client reconnected while the
-        # previous session's bridge was still registered (reconnect race, #113).
-        # The stale bridge's later unregister() is now a safe no-op (identity
-        # check below), but surface the overlap so it's diagnosable. client_id
-        # is the client UUID, safe to log (never the client_key).
-        if self._clients.get(client_id) is not None:
-            logger.warning(
-                "ClientRegistry: client_id=%s re-registered while a previous "
-                "bridge was still active (reconnect race)",
-                client_id,
-            )
-        self._clients[client_id] = bridge
+    Las identidades se comparan con `is` (#113): el cierre tardío de una sesión vieja nunca
+    quita a la nueva.
+    """
+
+    def __init__(self, index: ConversationIndex | None = None) -> None:
+        self.index = index if index is not None else ConversationIndex()
+        self._clients: dict[str, list[Any]] = {}  # client_id -> sesiones vivas, la última al final
+        self._open: dict[str, Any] = {}  # conversation id -> la sesión que la tiene abierta
+
+    def register(
+        self, client_id: str, bridge: Any, conversation: Conversation | None = None
+    ) -> Any | None:
+        """Registra la sesión (y abre su conversación). Devuelve la sesión que tenía abierta
+        esa conversación, si era otra."""
+        live = self._clients.setdefault(client_id, [])
+        if not any(b is bridge for b in live):
+            live.append(bridge)
+        return self.open(conversation, bridge) if conversation is not None else None
+
+    def open(self, conversation: Conversation, bridge: Any) -> Any | None:
+        """`bridge` abre `conversation`; devuelve la sesión que la tenía abierta, si era otra."""
+        self.index.add(conversation)
+        previous = self._open.get(conversation.id)
+        self._open[conversation.id] = bridge
+        return previous if previous is not None and previous is not bridge else None
+
+    def close(self, conversation_id: str, bridge: Any) -> None:
+        if self._open.get(conversation_id) is bridge:
+            del self._open[conversation_id]
 
     def unregister(self, client_id: str, expected_bridge: Any) -> None:
-        # Only remove the mapping if expected_bridge is still the current owner
-        # of client_id. A reconnect race can register a newer bridge under the
-        # same client_id (register() overwrites); when the older bridge tears
-        # down late it must not evict the live newer one (issue #113). Mirrors
-        # TurnRegistry.unregister's owner check for #99.
-        if self._clients.get(client_id) is expected_bridge:
-            self._clients.pop(client_id, None)
+        live = self._clients.get(client_id)
+        if live is not None:
+            live[:] = [b for b in live if b is not expected_bridge]
+            if not live:
+                del self._clients[client_id]
+        for conversation_id in [c for c, b in self._open.items() if b is expected_bridge]:
+            del self._open[conversation_id]
 
     def get(self, client_id: str) -> Any | None:
-        return self._clients.get(client_id)
+        """La sesión viva más reciente del cliente."""
+        live = self._clients.get(client_id)
+        return live[-1] if live else None
+
+    def holder(self, conversation_id: str) -> Any | None:
+        """La sesión que tiene abierta la conversación, si hay una."""
+        return self._open.get(conversation_id)
+
+    def route(self, session_key: str) -> Any | None:
+        """La sesión que recibe un push de `session_key`, o None."""
+        conversation = self.index.get(session_key)
+        if conversation is not None:
+            return self._open.get(conversation.id) or self.get(conversation.client_id)
+        # Clave sin conversación en el índice: una de antes de M19 (`agent:{agent}:{client.id}`)
+        # que aún no se importó (OpenClaw estaba caído al arrancar).
+        return self.get(client_id_from_session_key(session_key))
 
     def bridges(self) -> list[Any]:
-        # Un solapamiento de reconexión del mismo client_id solo deja el bridge más nuevo.
-        return list(self._clients.values())
+        return [b for live in self._clients.values() for b in live]
 
     async def broadcast_status(self, service: str, state: str) -> None:
-        for bridge in list(self._clients.values()):
+        for bridge in self.bridges():
             try:
                 await bridge.notify_service_status(service, state)
             except Exception as e:  # noqa: BLE001 — frontera: una sesión rota no bloquea al resto

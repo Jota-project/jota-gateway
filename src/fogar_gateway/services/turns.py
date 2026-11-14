@@ -14,8 +14,10 @@ módulo es el único que los abre y los cierra, con las mismas reglas para los d
   inactividad, y liberar; las métricas (`tts_start`, `tts_first_chunk`, `tts_done`) son las
   mismas para los dos orígenes.
 
-Cada turno guarda su origen y el motivo de su fin (`EndReason`); el protocolo todavía no los
-lleva al cliente.
+Cada turno lleva su conversación y su origen en `turn_start`, y el motivo de su fin
+(`EndReason`) en `turn_end` (M19). La conversación de un turno del usuario es la de la sesión,
+evaluada al empezarlo (cambio de día, services/conversations.py); la de un push, la de su
+`sessionKey`.
 """
 
 import asyncio
@@ -28,6 +30,7 @@ from typing import Any, Literal
 from fogar_gateway.core.config import settings
 from fogar_gateway.models.schemas import ClientConfig, Handshake
 from fogar_gateway.services import orchestration
+from fogar_gateway.services.conversations import SessionConversation
 from fogar_gateway.services.openclaw.chat_text import ChatTextTracker
 from fogar_gateway.services.openclaw.models import ToolCallEvent
 from fogar_gateway.services.openclaw.registry import TurnRegistry
@@ -73,6 +76,7 @@ class Turn:
     started_at: float
     progress_at: float  # último evento del orquestador (presupuesto del push, #286)
     session_key: str | None = None  # push: sesión de OpenClaw en la que corre
+    conversation_id: str | None = None  # su conversación (None: push de una clave desconocida)
     run_id: str | None = None  # push: el runId de OpenClaw de su `agent start`
     task: asyncio.Task | None = None  # user: la tarea que lo ejecuta
     opened: bool = False  # su turn_start ya está en la cola del cliente
@@ -316,7 +320,7 @@ class TurnController:
         tts: TextToSpeechProvider,
         tracker: PipelineTracker,
         sender: OutboundSender,
-        session_key: Callable[[], str],
+        conversation: SessionConversation,
         spawn: Callable[[Coroutine[Any, Any, None], str], asyncio.Task],
         supervise: Callable[[asyncio.Task], None],
         turn_registry: TurnRegistry,
@@ -329,7 +333,7 @@ class TurnController:
         self._tts = tts
         self._tracker = tracker
         self._sender = sender
-        self._session_key = session_key
+        self._conversation = conversation
         self._spawn = spawn
         self._supervise = supervise
         # Runs de OpenClaw (#285): lápidas (el dispatcher descarta los frames de un run
@@ -357,6 +361,10 @@ class TurnController:
         self.last_ended: Turn | None = None
 
     # ── Estado ────────────────────────────────────────────────────────────
+
+    def _session_key(self) -> str:
+        """La sesión de OpenClaw de la conversación actual de la sesión."""
+        return self._conversation.session_key
 
     def in_flight(self) -> bool:
         """Hay un turno en curso: el único cálculo para los dos watchdogs.
@@ -423,6 +431,9 @@ class TurnController:
                 await self._cancel_and_wait(current)
             # Dentro del lock: el abort del push termina antes de que salga el chat.send.
             await self._cut_push(None, "replaced")
+            # Después de cortar (el push de la conversación de ayer se aborta en su clave) y
+            # antes de mirar los runs activos: el cambio de día se evalúa al empezar cada turno.
+            await self._conversation.refresh()
             await self._abort_other_runs()
             if self._closing:  # close_all() pudo empezar durante la espera
                 return
@@ -492,6 +503,7 @@ class TurnController:
 
     async def _run_user_turn(self, text: str) -> None:
         turn = self._new_turn("user")
+        turn.conversation_id = self._conversation.id
         turn.task = asyncio.current_task()
         self._user_turn = turn
         self._tracker.start_turn()
@@ -699,6 +711,7 @@ class TurnController:
                     return
                 turn = self._new_turn("push", session_key)
                 turn.run_id = run_id
+                turn.conversation_id = self._conversation.id_for_key(session_key)
                 self._push = turn  # antes de cualquier await
                 self._push_text.reset()
                 if not await self._open(turn):
@@ -820,12 +833,19 @@ class TurnController:
     async def _open(self, turn: Turn) -> bool:
         try:
             await self._sender.send_json(
-                {"type": "turn_start", "turn_id": turn.turn_id, "turn_seq": turn.seq}
+                {
+                    "type": "turn_start",
+                    "turn_id": turn.turn_id,
+                    "turn_seq": turn.seq,
+                    "conversation": turn.conversation_id,
+                    "origin": turn.origin,
+                }
             )
         except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
             self._log_send_failed("turn_start", e)
             return False
         turn.opened = True
+        self._conversation.note_turn(turn.conversation_id)
         return True
 
     async def _connect_tts(self, turn: Turn) -> TurnTts | None:
@@ -875,7 +895,9 @@ class TurnController:
             self._push = None
         if turn.opened:
             try:
-                await self._sender.send_json({"type": "turn_end", "turn_id": turn.turn_id})
+                await self._sender.send_json(
+                    {"type": "turn_end", "turn_id": turn.turn_id, "reason": reason}
+                )
             except Exception as e:  # noqa: BLE001 — frontera: envío a un cliente que puede haberse ido
                 self._log_send_failed("turn_end", e)
         td.raise_if_cancelled()

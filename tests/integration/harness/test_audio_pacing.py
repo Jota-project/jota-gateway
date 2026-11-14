@@ -14,6 +14,7 @@ from fogar_gateway.core.config import settings
 from tests.integration.harness.conftest import (
     assert_turns_paired,
     audio,
+    interrupted,
     of_type,
     turn_ended,
 )
@@ -200,34 +201,30 @@ async def test_barge_in_during_paced_audio_stops_it_soon(paced):
     await client.collect(lambda m: len(audio(m)) >= 1)
     before = len(client.messages)
     await client.send_audio(AUDIO_FRAME)
-    msgs = await client.collect(lambda m: bool(of_type(m, "interrupted")))
+    msgs = await client.collect(lambda m: bool(interrupted(m)))
     await client.collect(timeout=0.3)
 
     (turn,) = of_type(msgs, "turn_start")
     late = _seq_audio(msgs[before:], turn["turn_seq"])
     assert sum(len(f) - 3 for f in late) <= (LEAD + 0.1 + 0.3) * BYTES_PER_S
     ends = of_type(msgs, "turn_end")
-    (interrupted,) = of_type(msgs, "interrupted")
-    assert ends == [{"type": "turn_end", "turn_id": turn["turn_id"]}]
-    assert interrupted["turn_id"] == turn["turn_id"]
-    assert msgs.index(ends[0]) < msgs.index(interrupted)
+    assert ends == [{"type": "turn_end", "turn_id": turn["turn_id"], "reason": "interrupted"}]
+    assert of_type(msgs, "interrupted") == []  # M19: ya no existe
 
 
 async def test_barge_in_cuts_a_push_being_spoken(paced):
-    """Criterio 9: un barge-in corta el push que suena: un turn_end, interrupted con su id."""
+    """Criterio 9: un barge-in corta el push que suena: un turn_end `interrupted` con su id."""
     client = await _audio_client(paced)
     await paced.push("aviso largo")
     await client.collect(lambda m: len(audio(m)) >= 1)
     await client.send_audio(AUDIO_FRAME)
-    msgs = await client.collect(lambda m: bool(of_type(m, "interrupted")))
+    msgs = await client.collect(lambda m: bool(interrupted(m)))
     await client.collect(timeout=0.3)
 
     (push,) = of_type(msgs, "turn_start")
+    assert push["origin"] == "push"
     ends = of_type(msgs, "turn_end")
-    (interrupted,) = of_type(msgs, "interrupted")
-    assert ends == [{"type": "turn_end", "turn_id": push["turn_id"]}]
-    assert interrupted["turn_id"] == push["turn_id"]
+    assert ends == [{"type": "turn_end", "turn_id": push["turn_id"], "reason": "interrupted"}]
     end_at = msgs.index(ends[0])
-    assert end_at < msgs.index(interrupted)
     assert not _seq_audio(msgs[end_at:], push["turn_seq"])
     assert_turns_paired(msgs)

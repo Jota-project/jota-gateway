@@ -7,6 +7,7 @@ inicia un turno) y comprueba solo lo que recibe el cliente por su WebSocket.
 from tests.integration.harness.conftest import (
     assert_turns_paired,
     audio,
+    interrupted,
     of_type,
     turn_ended,
 )
@@ -68,15 +69,13 @@ async def test_speaking_over_a_running_turn_interrupts_it(harness):
     await client.send({"type": "send", "text": "hold"})  # el orquestador se queda esperando
     await client.collect(lambda m: bool(of_type(m, "turn_start")))
     await client.send_audio(AUDIO_FRAME)
-    msgs = await client.collect(lambda m: bool(of_type(m, "interrupted")))
+    msgs = await client.collect(lambda m: bool(interrupted(m)))
 
     (start,) = of_type(msgs, "turn_start")
     assert of_type(msgs, "transcription_partial")[0]["text"] == "espera un momento"
-    types = [m.get("type") for m in msgs if isinstance(m, dict)]
     (end,) = of_type(msgs, "turn_end")
-    (interrupted,) = of_type(msgs, "interrupted")
-    assert end["turn_id"] == interrupted["turn_id"] == start["turn_id"]
-    assert types.index("turn_end") < types.index("interrupted")
+    assert end == {"type": "turn_end", "turn_id": start["turn_id"], "reason": "interrupted"}
+    assert of_type(msgs, "interrupted") == []  # M19: sustituido por turn_end.reason
     assert_turns_paired(msgs)
 
 

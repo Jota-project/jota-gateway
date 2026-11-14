@@ -11,6 +11,7 @@ CloseReason = Literal[
     "silence_timeout",
     "slow_client",
     "revoked",
+    "displaced",
     "shutdown",
     "error",
     "unknown",

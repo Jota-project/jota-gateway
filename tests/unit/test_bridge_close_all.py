@@ -91,7 +91,7 @@ async def test_close_all_step_that_raises_cancelled_error_does_not_abort_teardow
 
     stream.close.assert_awaited_once()
     assert bridge._closed is True
-    assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1"}]
+    assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1", "reason": "closed"}]
     await bridge.close_all()
     bridge.tracker._registry.close.assert_called_once()
 
@@ -286,8 +286,8 @@ async def test_turn_cancelled_by_close_all_still_sends_its_turn_end(make_bridge)
     await asyncio.wait_for(b.close_all(), timeout=2.0)
     await sent(b)
 
-    assert ws.of("turn_start") == [{"type": "turn_start", "turn_id": "t-1", "turn_seq": 1}]
-    assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1"}]
+    assert ws.of("turn_start") == [{"type": "turn_start", "turn_id": "t-1", "turn_seq": 1, "conversation": "conv-1", "origin": "user"}]
+    assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1", "reason": "closed"}]
 
 
 async def test_close_all_sends_turn_end_of_an_open_push_turn(make_bridge):
@@ -299,7 +299,7 @@ async def test_close_all_sends_turn_end_of_an_open_push_turn(make_bridge):
     await sent(b)
 
     assert [m["turn_id"] for m in ws.of("turn_start")] == ["t-1"]
-    assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1"}]
+    assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1", "reason": "closed"}]
     assert b.turns.last_ended.end_reason == "closed"
 
 
@@ -415,7 +415,7 @@ async def test_turn_abandoned_by_close_all_keeps_one_turn_end_before_session_end
     await b._sender.aclose(1.0)
 
     types = ws.types()
-    assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1"}]
+    assert ws.of("turn_end") == [{"type": "turn_end", "turn_id": "t-1", "reason": "closed"}]
     assert types.index("turn_end") < types.index("session_end")
 
 

@@ -57,6 +57,26 @@ def db_engine(monkeypatch, tmp_path):
     return engine
 
 
+def default_conversation_key(db_engine, agent: str, client_id: str = CLIENT_ID) -> str:
+    """sessionKey de la conversación por defecto de hoy de (cliente, agente) (M19); falla si
+    no existe."""
+    from sqlmodel import select
+
+    from fogar_gateway.db.models import ConversationRecord
+    from fogar_gateway.services.conversations import conversation_day
+
+    with Session(db_engine) as s:
+        record = s.exec(
+            select(ConversationRecord).where(
+                ConversationRecord.client_id == client_id,
+                ConversationRecord.agent == agent,
+                ConversationRecord.kind == "default",
+                ConversationRecord.day == conversation_day(),
+            )
+        ).one()
+        return record.session_key
+
+
 @pytest.fixture()
 def seed_client(db_engine):
     """Inserta el cliente de prueba estándar en la BD."""
@@ -141,6 +161,8 @@ def make_mock_orchestrator(tokens: list[str] = None) -> OrchestratorProtocol:
     mock.close = AsyncMock()
     mock.ping = AsyncMock(return_value=True)
     mock.abort = AsyncMock()
+    # Lecturas de OpenClaw (M19): sin sesiones (la importación legacy del arranque no encuentra nada).
+    mock.request = AsyncMock(return_value={"sessions": [], "hasMore": False})
     mock.trigger_reconnect = MagicMock(return_value=True)
     mock.stream_response = _stream
     mock.gateway_info = _make_default_gateway_info()
@@ -196,7 +218,7 @@ def _configure_app_mocks(mock_registry, monkeypatch):
     monkeypatch.setattr("fogar_gateway.main.OpenClawClient", lambda *a, **kw: MagicMock())
     monkeypatch.setattr("fogar_gateway.main.FrameDispatcher", lambda *a, **kw: MagicMock())
     monkeypatch.setattr("fogar_gateway.main.TurnRegistry", lambda: TurnRegistry())
-    monkeypatch.setattr("fogar_gateway.main.ClientRegistry", lambda: ClientRegistry())
+    monkeypatch.setattr("fogar_gateway.main.ClientRegistry", lambda *a, **kw: ClientRegistry(*a, **kw))
     mock_registry.connect = AsyncMock()
     mock_registry.close = AsyncMock()
 
