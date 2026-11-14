@@ -145,45 +145,61 @@ export function endReasonText(line: Pick<ChatLine, 'reason' | 'error'>): string 
   return line.error ? `Falló: ${label(TURN_ERROR, line.error).toLowerCase()}.` : 'Falló.'
 }
 
-/** Textos estables de cierre del gateway (§1, §9, §13): se comparan tal cual. */
+/**
+ * Códigos de cierre del gateway (docs/client-protocol.md §13, «Códigos de cierre»). El código es el
+ * contrato: el `reason` es solo texto para personas y nunca se compara.
+ */
 export const CLOSE = {
-  elsewhere: 'conversation opened elsewhere',
-  notFound: 'conversation not found',
-  agentMismatch: 'conversation agent mismatch',
-  invalidKey: 'Clave de cliente invalida o inactiva.',
-  revoked: 'revoked',
+  normal: 1000,
+  invalidHandshake: 4000,
+  handshakeTimeout: 4003,
+  invalidCredential: 4010,
+  agentNotPermitted: 4020,
+  agentNotAvailable: 4021,
+  notFound: 4100,
+  agentMismatch: 4101,
+  elsewhere: 4102,
+  revoked: 4200,
 } as const
 
 /**
  * Qué hacer al cerrarse el socket:
- * - `elsewhere`: otra sesión abrió esta conversación. Nunca se reconecta solo (§9): las dos se echarían
- *   una a otra sin fin; solo si lo pide la persona.
- * - `stop`: no tiene arreglo reconectando (conversación que ya no existe, panel desactivado…).
+ * - `elsewhere` (4102): otra sesión abrió esta conversación. Nunca se reconecta solo (§9): las dos se
+ *   echarían una a otra sin fin; solo si lo pide la persona.
+ * - `stop`: no tiene arreglo reconectando (cualquier otro 4xxx: conversación que ya no existe, panel
+ *   desactivado, acceso retirado…; y 1008, por si acaso). Lo decide la persona, con «Reintentar».
  * - `idle`: cierre normal (1000, inactividad de 5 min): se reabre al escribir, no antes.
- * - `retry`: caída, reinicio del gateway (1012), cliente lento (1013), OpenClaw caído al entrar (1011).
- *   `revoked` no: el cliente del panel se desactivó, se borró o cambió su clave, y eso lo decide
- *   la persona (`stop`, con «Reintentar»).
+ * - `retry`: caída (1006), fallo del gateway u OpenClaw caído al entrar (1011), reinicio (1012), cliente
+ *   lento (1013), handshake que no llegó a tiempo (4003)…
  */
 export type CloseAction = 'elsewhere' | 'stop' | 'idle' | 'retry'
 
-export function closeAction(code: number, reason: string): CloseAction {
-  if (code === 1008) {
-    if (reason === CLOSE.elsewhere) return 'elsewhere'
-    return 'stop'
-  }
-  if (code === 1000) return 'idle'
+export function closeAction(code: number): CloseAction {
+  if (code === CLOSE.elsewhere) return 'elsewhere'
+  if (code === CLOSE.normal) return 'idle'
+  if (code === CLOSE.handshakeTimeout) return 'retry'
+  if (code === 1008 || (code >= 4000 && code <= 4999)) return 'stop'
   return 'retry'
 }
 
 /** La frase para un cierre que para el chat (`stop`). */
-export function stopText(reason: string): string {
-  if (reason === CLOSE.notFound) return 'Esta conversación ya no existe en el gateway.'
-  if (reason === CLOSE.invalidKey)
-    return 'El panel no puede escribir: su cliente («Panel web») está desactivado. Actívalo en Clientes.'
-  if (reason === CLOSE.revoked)
-    return 'Se retiró el acceso del panel: su cliente («Panel web») se desactivó, se borró o cambió su clave.'
-  if (reason === CLOSE.agentMismatch) return 'El agente no coincide con el de la conversación.'
-  return 'El gateway no aceptó la conexión del chat.'
+export function stopText(code: number): string {
+  switch (code) {
+    case CLOSE.notFound:
+      return 'Esta conversación ya no existe en el gateway.'
+    case CLOSE.invalidCredential:
+      return 'El panel no puede escribir: su cliente («Panel web») está desactivado. Actívalo en Clientes.'
+    case CLOSE.revoked:
+      return 'Se retiró el acceso del panel: su cliente («Panel web») se desactivó, se borró o cambió su clave.'
+    case CLOSE.agentMismatch:
+      return 'El agente no coincide con el de la conversación.'
+    case CLOSE.agentNotPermitted:
+      return 'El agente de esta conversación no está permitido para el panel.'
+    case CLOSE.agentNotAvailable:
+      return 'El agente de esta conversación no existe en OpenClaw.'
+    default:
+      return 'El gateway no aceptó la conexión del chat.'
+  }
 }
 
 /** Espera antes de reintentar: 1 s, 2 s, 4 s… hasta 30 s. */

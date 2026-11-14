@@ -59,7 +59,7 @@ function cerrarChat(): void {
   chat.value = null
 }
 // Si la conversación estaba abierta en otra pestaña, aquella se queda con el aviso «Abierta en otro
-// sitio» (el 1008 del gateway) y no vuelve sola: no hace falta mirarlo antes.
+// sitio» (el 4102 del gateway) y no vuelve sola: no hace falta mirarlo antes.
 function abrirChat(): void {
   if (chat.value || !escribible.value || !session.token) return
   chat.value = createChatSession({ conversationId: id.value, token: session.token })

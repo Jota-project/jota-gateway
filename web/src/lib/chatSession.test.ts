@@ -86,7 +86,7 @@ describe('createChatSession', () => {
     const s = session()
     last().receive({ type: 'turn_start', turn_id: 't-1', turn_seq: 1, conversation: 'c1', origin: 'user' })
     last().receive({ type: 'turn_end', turn_id: 't-1', reason: 'closed' })
-    last().serverClose(1008, 'conversation opened elsewhere')
+    last().serverClose(4102, 'conversation opened elsewhere')
     expect(s.state.connection).toBe('elsewhere')
     vi.advanceTimersByTime(120_000)
     expect(FakeSocket.all).toHaveLength(1)
@@ -136,7 +136,7 @@ describe('createChatSession', () => {
     last().serverClose(1000)
     s.send('¿Hola?')
     last().open()
-    last().serverClose(1008, 'conversation opened elsewhere')
+    last().serverClose(4102)
     expect(s.state.connection).toBe('elsewhere')
     expect(s.state.log.lines.at(-1)).toMatchObject({ text: '¿Hola?', unsent: true })
   })
@@ -153,15 +153,15 @@ describe('createChatSession', () => {
 
   it('con el acceso retirado no reintenta solo', () => {
     const s = session()
-    last().serverClose(1008, 'revoked')
+    last().serverClose(4200, 'credential revoked')
     expect(s.state.connection).toBe('stopped')
     vi.advanceTimersByTime(60_000)
     expect(FakeSocket.all).toHaveLength(1)
   })
 
-  it('para con un 1008 que no se arregla reconectando y dice por qué', () => {
+  it('para con un 4xxx que no se arregla reconectando y dice por qué, por el código', () => {
     const s = session()
-    last().serverClose(1008, 'conversation not found')
+    last().serverClose(4100, 'texto que puede cambiar')
     expect(s.state.connection).toBe('stopped')
     expect(s.state.notice).toMatch(/ya no existe/)
     vi.advanceTimersByTime(60_000)

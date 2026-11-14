@@ -85,7 +85,7 @@ export function createChatSession(options: ChatSessionOptions) {
     socket.onclose = (event) => {
       if (ws !== socket) return
       ws = null
-      onClose(event.code, event.reason)
+      onClose(event.code)
     }
   }
 
@@ -110,10 +110,10 @@ export function createChatSession(options: ChatSessionOptions) {
     state.log.apply(msg)
   }
 
-  function onClose(code: number, reason: string): void {
+  function onClose(code: number): void {
     state.log.closeOpenTurns()
     if (disposed) return
-    const action = closeAction(code, reason)
+    const action = closeAction(code)
     if (action === 'retry') {
       state.connection = 'reconnecting'
       state.failures += 1
@@ -122,7 +122,7 @@ export function createChatSession(options: ChatSessionOptions) {
     }
     if (pending) state.log.markUnsent(pending.key) // no se envió: que se vea
     pending = null
-    if (action === 'stop') state.notice = stopText(reason)
+    if (action === 'stop') state.notice = stopText(code)
     state.connection = action === 'stop' ? 'stopped' : action
   }
 
@@ -145,8 +145,8 @@ export function createChatSession(options: ChatSessionOptions) {
   }
 
   /**
-   * Empieza. Si la conversación estaba abierta en otra pestaña, esa recibe el 1008 «conversation
-   * opened elsewhere» y se queda con su aviso (no vuelve sola): nunca se echan una a otra.
+   * Empieza. Si la conversación estaba abierta en otra pestaña, esa recibe el 4102 («conversation
+   * opened elsewhere») y se queda con su aviso (no vuelve sola): nunca se echan una a otra.
    */
   function start(): void {
     connect()

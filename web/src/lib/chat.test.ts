@@ -97,23 +97,27 @@ describe('endReasonText', () => {
 })
 
 describe('closeAction', () => {
-  it('«conversation opened elsewhere» nunca reconecta solo', () => {
-    expect(closeAction(1008, 'conversation opened elsewhere')).toBe('elsewhere')
+  it('«conversation opened elsewhere» (4102) nunca reconecta solo', () => {
+    expect(closeAction(4102)).toBe('elsewhere')
   })
-  it('para con los 1008 que no se arreglan reconectando', () => {
-    expect(closeAction(1008, 'conversation not found')).toBe('stop')
-    expect(closeAction(1008, 'Clave de cliente invalida o inactiva.')).toBe('stop')
-    expect(stopText('conversation not found')).toMatch(/ya no existe/)
+  it('para con los 4xxx que no se arreglan reconectando, sin mirar el texto', () => {
+    for (const code of [4000, 4001, 4002, 4010, 4020, 4021, 4100, 4101, 4200, 4999]) {
+      expect(closeAction(code)).toBe('stop')
+    }
+    expect(stopText(4100)).toMatch(/ya no existe/)
+    expect(stopText(4010)).toMatch(/está desactivado/)
+    expect(stopText(4101)).toMatch(/no coincide/)
+    expect(stopText(4321)).toBe('El gateway no aceptó la conexión del chat.')
   })
-  it('reintenta tras caídas, reinicios y lentitud', () => {
-    for (const code of [1006, 1011, 1012, 1013]) expect(closeAction(code, '')).toBe('retry')
+  it('reintenta tras caídas, fallos, reinicios, lentitud y un handshake a destiempo', () => {
+    for (const code of [1006, 1011, 1012, 1013, 4003]) expect(closeAction(code)).toBe('retry')
   })
-  it('con el acceso retirado para y lo dice: lo decide la persona', () => {
-    expect(closeAction(1008, 'revoked')).toBe('stop')
-    expect(stopText('revoked')).toMatch(/Se retiró el acceso del panel/)
+  it('con el acceso retirado (4200) para y lo dice: lo decide la persona', () => {
+    expect(closeAction(4200)).toBe('stop')
+    expect(stopText(4200)).toMatch(/Se retiró el acceso del panel/)
   })
   it('un cierre normal (inactividad) espera a que escribas', () => {
-    expect(closeAction(1000, '')).toBe('idle')
+    expect(closeAction(1000)).toBe('idle')
   })
   it('espera cada vez más, hasta 30 s', () => {
     expect([1, 2, 3, 10].map(backoffMs)).toEqual([1000, 2000, 4000, 30_000])
