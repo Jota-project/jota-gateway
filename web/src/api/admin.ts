@@ -3,6 +3,9 @@ import type {
   ClientInput,
   ClientResponse,
   ClientWithKey,
+  Conversation,
+  ConversationAgents,
+  ConversationMessages,
   PairingOpened,
   PairingSummary,
   PairingTemplate,
@@ -42,3 +45,12 @@ export const openPairing = (template: PairingTemplate = {}) =>
   api<PairingOpened>('/admin/pairing', { method: 'POST', body: json(template) })
 export const getPairing = (id: string) => api<PairingSummary>(`/admin/pairing/${enc(id)}`)
 export const cancelPairing = (id: string) => api<void>(`/admin/pairing/${enc(id)}`, { method: 'DELETE' })
+
+export const listConversations = () => api<Conversation[]>('/admin/conversations')
+/** Lo dicho, de OpenClaw: 503 `orchestrator_unavailable` si no responde, 502 `orchestrator_error` si lo rechaza. */
+export const getConversationMessages = (id: string, limit = 200) =>
+  api<ConversationMessages>(`/admin/conversations/${enc(id)}/messages?limit=${limit}`, { timeoutMs: 20_000 })
+export const getConversationAgents = () => api<ConversationAgents>('/admin/conversations/agents')
+/** Conversación nueva del panel web; sin agente, el que toque por defecto. */
+export const createConversation = (agent: string | null) =>
+  api<Conversation>('/admin/conversations', { method: 'POST', body: json(agent ? { agent } : {}) })

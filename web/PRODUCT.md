@@ -16,15 +16,16 @@ La web de fogar-gateway es su panel de administración y su cliente de chat. La 
 Es la cara de un asistente propio en casa: enseña el estado real del gateway, en vivo y sin adornos, con el lenguaje visual de la pantalla de Fogar (Fogar TV).
 
 ## Operating Context
-- Pantallas: Conectar (token de administrador), Estado, Sesiones, Clientes (con emparejamiento por código de 6 cifras) y Chat (texto y voz).
+- Pantallas: Conectar (token de administrador), Estado (con el acceso a OpenClaw: permisos, cómo entra y el comando para aprobarlo), Conversaciones (todas las de la casa; las del panel se crean con su agente y se siguen por texto en vivo, las de otros aparatos solo se leen), Sesiones y Clientes (con emparejamiento por código de 6 cifras).
 - Datos en vivo por `/admin/state/stream` (fetch, sin EventSource) y endpoints de `/admin/*`; especificación en Obsidian, spec «Web en Vue» del 2026-11-02.
-- El micrófono solo funciona con HTTPS o en `localhost`; por HTTP la web funciona sin micro.
+- Voz en la web: fuera de M19 (el chat es solo texto). Cuando llegue, el micrófono solo funciona con HTTPS o en `localhost`.
 
 ## Capabilities and Constraints
 - Solo enseña lo que el gateway expone hoy; nada se pinta si la API no lo da.
-- Credenciales en el navegador: el token de administrador y, desde 17e, la clave del cliente web del chat. CSP estricta, ningún recurso de fuera, nunca `v-html`; la clave de un cliente solo se ve al crearlo o rotarlo.
+- Credenciales en el navegador: solo el token de administrador; el chat entra con él en el WebSocket (`admin_token`, como el cliente «Panel web»), sin clave de cliente propia. CSP estricta, ningún recurso de fuera, nunca `v-html`; la clave de un cliente solo se ve al crearlo o rotarlo.
 - La web es un cliente de administrador: abre códigos de emparejamiento, nunca los teclea.
-- Decisiones abiertas: estilo de los mensajes del chat (Transcripción o Escenario), entrar sin pegar el token (enlace con token o código de un solo uso), onboarding en la web (fuera de M17).
+- Mensajes del chat: estilo Transcripción (todo alineado a la izquierda; lo tuyo en un bloque de piedra, lo de Fogar sobre la noche; un push lleva la brasa junto a «Fogar»).
+- Decisiones abiertas: entrar sin pegar el token (enlace con token o código de un solo uso), onboarding en la web (fuera de M17).
 
 ## Brand Commitments
 - Nombre: Fogar. Textos solo en español, tono cercano y directo («Hola. Conectemos con tu gateway.»).

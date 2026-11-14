@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, useTemplateRef } from 'vue'
+import { copyText } from '@/lib/clipboard'
 import { toast } from '@/lib/toasts'
 import FgBoton from './FgBoton.vue'
 
@@ -12,19 +13,10 @@ const campo = useTemplateRef<HTMLInputElement>('campo')
 const copiada = ref(false)
 
 async function copiar(): Promise<void> {
-  try {
-    // El portapapeles moderno solo existe en HTTPS o localhost; por http://IP se usa la vía antigua.
-    if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(props.clave)
-    else {
-      campo.value?.select()
-      if (!document.execCommand('copy')) throw new Error('copy')
-    }
+  if (await copyText(props.clave, campo.value)) {
     copiada.value = true
     toast('ok', 'Clave copiada')
-  } catch {
-    campo.value?.select()
-    toast('warn', 'No he podido copiarla', 'Está seleccionada: cópiala con el teclado.')
-  }
+  } else toast('warn', 'No he podido copiarla', 'Está seleccionada: cópiala con el teclado.')
 }
 
 const antesDeSalir = (e: BeforeUnloadEvent) => e.preventDefault()

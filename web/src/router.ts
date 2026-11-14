@@ -5,6 +5,8 @@ export const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', name: 'estado', component: () => import('./views/EstadoView.vue') },
+    { path: '/conversaciones', name: 'conversaciones', component: () => import('./views/ConversacionesView.vue') },
+    { path: '/conversaciones/:id', name: 'conversacion', component: () => import('./views/ConversacionView.vue') },
     { path: '/sesiones/:id?', name: 'sesiones', component: () => import('./views/SesionesView.vue') },
     { path: '/clientes', name: 'clientes', component: () => import('./views/ClientesView.vue') },
     { path: '/clientes/:id', name: 'cliente', component: () => import('./views/ClienteView.vue') },

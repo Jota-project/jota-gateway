@@ -19,6 +19,8 @@ export interface LiveSession {
   session_id: string
   client_id: string
   client_name: string
+  /** La conversación de la sesión (M19). */
+  conversation?: { id: string; agent: string }
   input_mode: 'audio' | 'text'
   output_mode: OutputMode[]
   started_at: string | null
@@ -37,10 +39,25 @@ export interface LiveSession {
   } | null
 }
 
+/** Con qué acceso está el gateway en OpenClaw (M19, `OrchestratorAccess.as_dict()`); sin secretos. */
+export type OpenClawPairing = 'unknown' | 'not_required' | 'paired' | 'pending' | 'identity_required'
+
+export interface OpenClawAccess {
+  /** `null`: sin conexión, o OpenClaw no los anuncia (desconocidos, no «ninguno»). */
+  scopes: string[] | null
+  admin: boolean
+  auth_method: 'shared_token' | 'device_token' | null
+  pairing: OpenClawPairing
+  pairing_request_id: string | null
+  identity_error: string | null
+  /** Público: identifica al gateway como dispositivo en OpenClaw. */
+  device_id: string | null
+}
+
 export interface GatewayState {
   gateway: { started_at: string; uptime_s: number; version?: string } // version desde v1.29.0
   services: {
-    orchestrator: ServiceSnapshot
+    orchestrator: ServiceSnapshot & Partial<OpenClawAccess>
     stt: SpeechServiceSnapshot
     tts: SpeechServiceSnapshot
   }
@@ -162,4 +179,41 @@ export interface SessionList {
   active: number
   total: number
   sessions: SessionSummary[]
+}
+
+// Conversaciones (M19): src/api/conversation_routes.py. El gateway no guarda texto: título y mensajes
+// los lee de OpenClaw en cada petición.
+export type ConversationKind = 'default' | 'created' | 'legacy'
+
+export interface Conversation {
+  id: string
+  client_id: string
+  client_name: string
+  agent: string
+  /** `default`: la del día; `created`: elegida o nueva; `legacy`: de antes de M19. */
+  kind: ConversationKind | string
+  day: string | null
+  created_at: string
+  last_turn_at: string | null
+  turn_count: number
+  /** De OpenClaw; `null` si no lo tiene o no responde. */
+  title: string | null
+}
+
+export interface ConversationMessage {
+  role: 'user' | 'assistant'
+  text: string
+  timestamp: string | null
+}
+
+export interface ConversationMessages {
+  conversation_id: string
+  messages: ConversationMessage[]
+  has_more: boolean
+}
+
+/** `GET /admin/conversations/agents`: con qué agentes puede empezar el panel y cuál tocaría sin elegir. */
+export interface ConversationAgents {
+  agents: string[]
+  default: string | null
 }

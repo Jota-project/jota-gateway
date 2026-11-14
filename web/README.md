@@ -1,6 +1,6 @@
 # Web de fogar-gateway
 
-El panel de Fogar: conectar con el token de administrador, el estado en vivo, las sesiones y los clientes (emparejar, crear, editar, rotar la clave, activar y borrar). Lo sirve el propio gateway en `/` (`src/fogar_gateway/api/web_routes.py`). Vue 3 + TypeScript + Vite + Pinia, sin librería de componentes, con la identidad de `fogar-brand`.
+El panel de Fogar: conectar con el token de administrador, el estado en vivo (con el acceso del gateway a OpenClaw), las conversaciones de la casa (leer las de cada aparato; crear las del panel con su agente y chatear en ellas por texto), las sesiones y los clientes (emparejar, crear, editar, rotar la clave, activar y borrar). Lo sirve el propio gateway en `/` (`src/fogar_gateway/api/web_routes.py`). Vue 3 + TypeScript + Vite + Pinia, sin librería de componentes, con la identidad de `fogar-brand`.
 
 ## Desarrollo
 
@@ -28,5 +28,9 @@ Todo sale de `fogar-brand`, copiado y sin editar a mano:
 - `public/favicon.svg` (`web/favicon.svg`) y los iconos de estado (`iconos/estados/`).
 
 Reglas que no se negocian: nada se carga de fuera (CSP `default-src 'self'`), nunca `v-html` ni `style="…"` estático en las plantillas (la CSP no deja estilos en línea), la clave de un cliente y el código de emparejamiento solo existen en la pantalla que los enseña.
+
+## Chat (M19)
+
+El chat entra en `/ws/stream` con el token de administrador (`admin_token`) como el cliente «Panel web» (`panel-web`), siempre en una conversación concreta (`conversation` con su id; las crea `POST /admin/conversations`), nunca en la del día: así dos pestañas no se pisan. Solo texto (`input_mode: "text"`, `output_mode: ["text"]`); la voz en la web queda fuera de M19. La lógica está en `src/lib/chat.ts` (mensajes, motivos de `turn_end`, qué hacer en cada cierre) y `src/lib/chatSession.ts` (el socket), sin componentes, con sus pruebas. Un cierre 1008 `conversation opened elsewhere` no reconecta solo (`docs/client-protocol.md` §9): se ofrece «Seguir aquí»; un cierre normal (inactividad) se reabre al escribir; el resto reintenta con espera creciente. Las conversaciones de otros aparatos solo se leen.
 
 Spec, plan y decisiones: en Obsidian, spec «Dashboard de Fogar (M18)» del 2026-11-12.

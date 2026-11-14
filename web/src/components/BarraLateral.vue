@@ -8,7 +8,7 @@ import FgIcono, { type IconoNombre } from './FgIcono.vue'
 import FgPalabra from './FgPalabra.vue'
 
 // Navegación: barra lateral en escritorio; en el móvil, cabecera con menú y barra inferior.
-// Sin barra superior y sin anunciar lo que aún no existe (el chat tendrá su hueco cuando llegue).
+// Sin barra superior y sin anunciar lo que aún no existe. El chat vive en Conversaciones (M19).
 const props = defineProps<{ nombre?: string; version?: string }>()
 
 const route = useRoute()
@@ -21,6 +21,13 @@ const menu = ref(false)
 const abiertas = computed(() => live.state?.sessions.length ?? null)
 const secciones = computed<{ to: string; texto: string; icono: IconoNombre; cuenta: string | null; activa: boolean }[]>(() => [
   { to: '/', texto: 'Estado', icono: 'estado', cuenta: null, activa: route.path === '/' },
+  {
+    to: '/conversaciones',
+    texto: 'Conversaciones',
+    icono: 'conversaciones',
+    cuenta: null,
+    activa: route.path.startsWith('/conversaciones'),
+  },
   {
     to: '/sesiones',
     texto: 'Sesiones',
@@ -222,7 +229,8 @@ function salir() {
     flex-direction: column;
     align-items: center;
     gap: 2px;
-    min-width: 88px;
+    flex: 1 1 0;
+    min-width: 0;
     min-height: 48px;
     justify-content: center;
     font-size: 12px;
