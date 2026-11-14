@@ -32,7 +32,7 @@ from fogar_gateway.core.startup_checks import (
 )
 from fogar_gateway.core.transport import TransportCaptureMiddleware
 from fogar_gateway.db.database import dispose_engine, require_database, run_migrations
-from fogar_gateway.services.conversations import ConversationService, LegacyImport
+from fogar_gateway.services.conversations import ConversationService, LegacyImport, TitleCache
 from fogar_gateway.services.openclaw.client import OpenClawClient
 from fogar_gateway.services.openclaw.dispatcher import FrameDispatcher
 from fogar_gateway.services.openclaw.models import OrchestratorAccess
@@ -182,6 +182,7 @@ async def _lifespan_body(app: FastAPI):
     app.state.turn_registry = turn_registry  # read by routes.py for queue depths (#219)
     app.state.client_registry = client_registry
     app.state.conversations = conversations
+    app.state.conversation_titles = TitleCache()  # títulos de /admin/conversations
     app.state.legacy_import = legacy_import
     app.state.session_registry = SessionRegistry()
     app.state.pairing = PairingStore()  # códigos de emparejamiento, en memoria (#317)

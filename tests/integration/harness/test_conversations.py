@@ -6,6 +6,7 @@ sesión de OpenClaw acabó cada turno (`openclaw.sessions`).
 """
 
 import asyncio
+import json
 from datetime import datetime
 
 import pytest
@@ -16,7 +17,7 @@ from fogar_gateway.core.config import settings
 from fogar_gateway.db.models import ClientRecord
 from fogar_gateway.services import conversations as conv_mod
 from fogar_gateway.services.conversations import ConversationService, session_key_for
-from tests.integration.conftest import ADMIN_TOKEN
+from tests.integration.conftest import ADMIN_TOKEN, CLIENT_ID
 from tests.integration.harness.conftest import assert_turns_paired, of_type
 
 PANEL = {"client_key": None, "admin_token": ADMIN_TOKEN}
@@ -39,12 +40,14 @@ def clock(monkeypatch):
 
 
 async def closed_by_gateway(client) -> websockets.ConnectionClosed:
-    """Descarta lo que llegue hasta que el gateway cierra el socket; devuelve el cierre."""
+    """Recoge lo que llegue (en `client.messages`) hasta que el gateway cierra el socket;
+    devuelve el cierre."""
     while True:
         try:
-            await asyncio.wait_for(client.ws.recv(), timeout=10)
+            raw = await asyncio.wait_for(client.ws.recv(), timeout=10)
         except websockets.ConnectionClosed as closed:
             return closed
+        client.messages.append(raw if isinstance(raw, bytes) else json.loads(raw))
 
 
 async def run_turn(client, text: str, ends: int = 1) -> list:
@@ -129,6 +132,64 @@ async def test_push_of_a_conversation_reaches_the_session_that_has_it_open(harne
     assert [t["text"] for t in of_type(a.messages, "token")] == ["para a"]
     assert [t["text"] for t in of_type(b.messages, "token")] == ["para b"]
     assert of_type(a.messages, "turn_start")[0]["conversation"] == a.ready["conversation"]["id"]
+
+
+async def test_a_displaced_session_ends_its_turn_and_lets_go_before_the_new_one_talks(harness):
+    """La vieja recibe el turn_end (`closed`) de su turno abierto antes del 1008, y su
+    chat.abort sale antes del primer chat.send de la nueva, que llega entero."""
+    old = await harness.connect()
+    await old.send({"type": "send", "text": "wait-old"})  # el orquestador se queda esperando
+    await harness.openclaw.wait_held(1)
+    await old.collect(lambda m: bool(of_type(m, "turn_start")))
+
+    new = await harness.connect()  # la misma conversación del día
+    closed = await closed_by_gateway(old)
+    assert (closed.rcvd.code, closed.rcvd.reason) == (1008, "conversation opened elsewhere")
+    assert [e["reason"] for e in of_type(old.messages, "turn_end")] == ["closed"]
+    assert_turns_paired(old.messages)
+
+    msgs = await run_turn(new, "hola")
+    assert [t["text"] for t in of_type(msgs, "token")] == ["reply-hola"]
+    key = harness.session_key(new)
+    assert [m for m, sk in harness.openclaw.calls if sk == key] == [
+        "chat.send", "chat.abort", "chat.send"
+    ]
+
+
+async def test_a_new_session_that_fails_its_health_check_leaves_the_live_one_alone(harness):
+    from fogar_gateway.main import app
+
+    live = await harness.connect()
+
+    async def down() -> bool:
+        return False
+
+    openclaw = app.state.openclaw
+    openclaw.ping = down
+    try:
+        failed = await harness.open()
+        closed = await closed_by_gateway(failed)
+    finally:
+        del openclaw.ping
+    assert closed.rcvd.code == 1011
+    msgs = await run_turn(live, "sigo aquí")  # la viva sigue con su conversación
+    assert of_type(msgs, "turn_start")[0]["conversation"] == live.ready["conversation"]["id"]
+
+
+async def test_a_revoked_session_ends_its_open_turn_before_the_1008(harness, monkeypatch):
+    monkeypatch.setattr(settings, "SESSION_REVALIDATE_INTERVAL_S", 0.1)
+    client = await harness.connect()
+    await client.send({"type": "send", "text": "wait-revoked"})
+    await harness.openclaw.wait_held(1)
+    await client.collect(lambda m: bool(of_type(m, "turn_start")))
+
+    async with harness.admin() as admin:
+        r = await admin.patch(f"/admin/clients/{CLIENT_ID}", json={"is_active": False})
+        assert r.status_code == 200
+    closed = await closed_by_gateway(client)
+    assert (closed.rcvd.code, closed.rcvd.reason) == (1008, "revoked")
+    assert [e["reason"] for e in of_type(client.messages, "turn_end")] == ["closed"]
+    assert_turns_paired(client.messages)
 
 
 # ── Conversación elegida ─────────────────────────────────────────────────────

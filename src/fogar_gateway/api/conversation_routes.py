@@ -4,7 +4,8 @@ conversation_routes.py
 /admin/conversations — las conversaciones de todos los clientes (M19). Auth: X-Admin-Token.
 
   GET  /admin/conversations                — lista (filtro `client_id`), la última en hablarse
-                                             primero; el título, de OpenClaw si responde (si no, null)
+                                             primero, sin las del día vacías; el título, de OpenClaw
+                                             (caché de TITLES_TTL_S; si no responde, null)
   GET  /admin/conversations/{id}/messages  — lo dicho, de `chat.history` (`limit`, 200 por defecto);
                                              503 `orchestrator_unavailable` sin OpenClaw
   POST /admin/conversations                — conversación nueva del panel web (agente validado
@@ -32,16 +33,14 @@ from fogar_gateway.models.admin_schemas import (
     HistoryLimit,
 )
 from fogar_gateway.services.conversations import (
+    ConversationClientMissing,
     ConversationRow,
     history_messages,
-    list_openclaw_sessions,
-    session_title,
 )
 from fogar_gateway.services.openclaw.client import (
     ORCHESTRATOR_UNAVAILABLE_ERROR,
     OrchestratorRequestError,
 )
-from fogar_gateway.services.reconnection import describe_error
 
 logger = logging.getLogger(__name__)
 
@@ -64,22 +63,13 @@ def _response(row: ConversationRow, title: str | None = None) -> ConversationRes
     )
 
 
-async def _titles(orchestrator) -> dict[str, str]:
-    """`sessionKey` → título, de `sessions.list`. Sin OpenClaw, ninguno: la lista no falla."""
-    try:
-        sessions = await list_openclaw_sessions(orchestrator)
-    except Exception as e:  # noqa: BLE001 — frontera: sin OpenClaw la lista sale sin títulos
-        logger.info("Conversaciones sin títulos: OpenClaw no responde (%s)", describe_error(e))
-        return {}
-    return {row["key"]: title for row in sessions if (title := session_title(row)) is not None}
-
-
 @router.get("", response_model=list[ConversationResponse])
 async def list_conversations(
     request: Request, client_id: ClientIdFilter = None
 ) -> list[ConversationResponse]:
     rows = await request.app.state.conversations.list_rows(client_id)
-    titles = await _titles(request.app.state.openclaw) if rows else {}
+    cache = request.app.state.conversation_titles
+    titles = await cache.get(request.app.state.openclaw) if rows else {}
     return [_response(row, titles.get(row.record.session_key)) for row in rows]
 
 
@@ -120,7 +110,10 @@ async def create_conversation(body: ConversationCreate, request: Request) -> Con
     except AgentPolicyError as e:
         raise HTTPException(status_code=422, detail=f"agent_{e.kind}") from None
     service = request.app.state.conversations
-    conversation = await service.create(client.id, agent)
+    try:
+        conversation = await service.create(client.id, agent)
+    except ConversationClientMissing:  # el panel, borrado entre medias
+        raise HTTPException(status_code=409, detail="panel_client_inactive") from None
     row = await service.row(conversation.id)
     if row is None:  # borrada entre medias (el panel, con sus conversaciones)
         raise HTTPException(status_code=409, detail="panel_client_inactive")

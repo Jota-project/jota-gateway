@@ -192,3 +192,14 @@ def test_default_agent_setting_is_stripped():
     from fogar_gateway.core.config import Settings
 
     assert Settings(DEFAULT_AGENT="  jota ").DEFAULT_AGENT == "jota"  # type: ignore[call-arg]
+
+
+def test_default_agent_follows_the_client_agent_name_rule():
+    """Como `default_agent` de un cliente (admin_schemas.AgentName): hasta 200 caracteres."""
+    from pydantic import ValidationError
+
+    from fogar_gateway.core.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(DEFAULT_AGENT="x" * 201)  # type: ignore[call-arg]
+    assert Settings(DEFAULT_AGENT="x" * 200).DEFAULT_AGENT == "x" * 200  # type: ignore[call-arg]

@@ -44,16 +44,21 @@ _WATCHDOG_POLL_S = 2
 _sleep = asyncio.sleep
 
 
+# Lo que espera una sesión nueva a que la que desplaza suelte sus turnos (M19), en múltiplos de
+# SESSION_TEARDOWN_S: el corte del turno, el del push y el envío de su turn_end.
+_RELEASE_WAIT_STEPS = 3
+
 _REASON_BY_STATUS: dict[str, CloseReason] = {
     "revoked": "revoked",
     "error": "error",
 }
 
 
-def _displace(other: "FogarBridge | None") -> None:
-    """La sesión que tenía abierta la conversación (si había otra) se cierra (M19)."""
+async def _take_over(other: "FogarBridge | None") -> None:
+    """La sesión que tenía abierta la conversación (si había otra) se cierra (M19), y se
+    espera, acotado, a que suelte sus turnos: ningún chat.abort suyo sale después."""
     if other is not None:
-        other.displace()
+        await other.displace()
 
 
 class FogarBridge:
@@ -99,6 +104,11 @@ class FogarBridge:
         self.conversation = conversation
         conversation.bind(self._spawn_background)
         conversation.on_move = self._on_conversation_move
+        # Desplazada por otra sesión (M19): su cierre, y el aviso de que ya soltó sus turnos.
+        self._displacing: asyncio.Task | None = None
+        self._released = asyncio.Event()
+        # Máximo de la cola de turno de las conversaciones que la sesión ya dejó (#219).
+        self._turn_queue_peak = 0
         self.transcriber: SttSession | None = None
 
         self.tasks: list[asyncio.Task] = []
@@ -163,16 +173,24 @@ class FogarBridge:
             # health_check() already reports the initial-failure case, if any.
             self.transcriber.on_state_change = self._on_transcriber_state_change
 
-        # Una conversación está abierta en una sola sesión: la que la tenía se cierra (M19).
-        _displace(self._client_registry.register(self.client_id, self, self.conversation.current))
+        # Recibe los avisos de estado desde ya; su conversación la abre claim_conversation().
+        self._client_registry.register(self.client_id, self)
+
+    async def claim_conversation(self) -> None:
+        """Abre la conversación de la sesión (M19). Tras el health check y antes de `ready`:
+        una sesión que no llega a abrirse nunca cierra la que la tenía."""
+        await _take_over(self._client_registry.open(self.conversation.current, self))
 
     def _session_key(self) -> str:
         return self.conversation.session_key
 
-    def _on_conversation_move(self, old: Conversation, new: Conversation) -> None:
+    async def _on_conversation_move(self, old: Conversation, new: Conversation) -> None:
         """Cambio de día (M19): la sesión deja la conversación de ayer y abre la de hoy."""
         self._client_registry.close(old.id, self)
-        _displace(self._client_registry.open(new, self))
+        self._turn_queue_peak = max(
+            self._turn_queue_peak, self._turn_registry.pop_peak(old.session_key)
+        )
+        await _take_over(self._client_registry.open(new, self))
 
     def snapshot(self) -> dict[str, Any]:
         """Estado vivo de la sesión para /admin/state (#219): solo números, estados e
@@ -226,7 +244,9 @@ class FogarBridge:
         except Exception as e:  # noqa: BLE001 — una métrica nunca impide el cierre
             logger.debug(f"[{self.client_id}] sender_peak no disponible: {type(e).__name__}")
         try:
-            meta["turn_queue_peak"] = self._turn_registry.pop_peak(self._session_key())
+            meta["turn_queue_peak"] = max(
+                self._turn_queue_peak, self._turn_registry.pop_peak(self._session_key())
+            )
         except Exception as e:  # noqa: BLE001 — una métrica nunca impide el cierre
             logger.debug(f"[{self.client_id}] turn_queue_peak no disponible: {type(e).__name__}")
         return meta
@@ -480,16 +500,33 @@ class FogarBridge:
         logger.warning(f"[{self.client_id}] Cliente revocado (borrado/desactivado/clave rotada).")
         await self._close_1008("revoked", "revoked", "session_revoked", status="revoked")
 
-    def displace(self) -> None:
+    async def displace(self) -> None:
         """Otra sesión abrió la conversación de esta (M19): se cierra con 1008 «conversation
-        opened elsewhere». No bloquea a quien la desplaza."""
-        logger.info(
-            f"[{self.client_id}] Conversación {self.conversation.id} abierta en otra sesión."
-        )
-        self._spawn_background(
-            self._close_1008("conversation opened elsewhere", "displaced", "session_displaced"),
-            "displaced",
-        )
+        opened elsewhere». El cierre corre en una tarea propia de esta sesión; quien la desplaza
+        espera, acotado, a que haya soltado sus turnos (su turn_end enviado
+        y sus chat.abort hechos), y desde ahí esta sesión ya no aborta nada en esa clave."""
+        if self._displacing is None:
+            logger.info(
+                f"[{self.client_id}] Conversación {self.conversation.id} abierta en otra sesión."
+            )
+            self._displacing = asyncio.create_task(
+                self._close_1008("conversation opened elsewhere", "displaced", "session_displaced"),
+                name="displaced",
+            )
+            self._background_tasks.add(self._displacing)
+            self._displacing.add_done_callback(self._background_tasks.discard)
+            self._supervise(self._displacing)
+        wait_s = _RELEASE_WAIT_STEPS * settings.SESSION_TEARDOWN_S
+        try:
+            await asyncio.wait_for(self._released.wait(), timeout=wait_s)
+        except TimeoutError:
+            logger.warning(
+                f"[{self.client_id}] La sesión desplazada no soltó sus turnos en {wait_s}s; "
+                "la nueva sigue."
+            )
+        finally:
+            # Red de seguridad: pase lo que pase, ya no aborta en la clave que ha perdido.
+            self.conversation.released = True
 
     async def _close_1008(
         self,
@@ -498,12 +535,22 @@ class FogarBridge:
         event: str,
         status: SessionStatus | None = None,
     ) -> None:
-        """Cierre por política (1008) por el camino de cierre existente."""
-        # Antes del close 1008: el bucle de entrada lo verá como desconexión del cliente.
+        """Cierre por política (1008: revocada, conversación abierta en otra sesión).
+
+        Exactamente un turn_end por turn_start (G-10): el turno abierto (y el push) se cierra
+        con `closed` y su turn_end sale, acotado, antes del 1008. Después el cierre de siempre.
+        """
         self.note_close_reason(close_reason)
         await self.tracker.record(event)
-        # Nadie autorizado escucha ya: close_all cancela el turno en curso (G-18).
-        self.turns.client_gone = True
+        if self._turn_in_flight_at_close is None:
+            self._turn_in_flight_at_close = self.turns.in_flight()
+        limit = settings.SESSION_TEARDOWN_S
+        try:
+            async with Teardown(f"[{self.client_id}] turnos antes del 1008") as td:
+                await self.turns.close(td, limit)
+                await td.step(self._sender.flush(), "turn_end antes del 1008", limit)
+        finally:
+            self._released.set()
         try:
             await asyncio.wait_for(
                 self.client_ws.close(code=1008, reason=wire_reason),

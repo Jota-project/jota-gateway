@@ -12,10 +12,12 @@ from fogar_gateway.db.models import ClientRecord, ConversationRecord
 from fogar_gateway.services import conversations as conv_mod
 from fogar_gateway.services.conversations import (
     Conversation,
+    ConversationClientMissing,
     ConversationNotFound,
     ConversationService,
     LegacyImport,
     SessionConversation,
+    TitleCache,
     conversation_day,
     history_messages,
     session_key_for,
@@ -156,13 +158,55 @@ async def test_load_fills_the_index(service, engine):
     assert fresh.index.get(conv.session_key) == conv
 
 
-async def test_deleting_a_client_drops_its_conversations(service, engine):
+async def test_deleting_a_client_cascades_to_its_conversations(service, engine):
+    """PRAGMA foreign_keys=ON en cada conexión (db/database.py): ON DELETE CASCADE vale."""
     conv = await service.create("web", "main")
     with Session(engine) as s:
-        service.delete_client(s, "web")
+        s.delete(s.get(ClientRecord, "web"))
         s.commit()
     assert await service.get(conv.id) is None
-    assert service.index.get(conv.session_key) is None
+    assert await service.list_rows() == []
+
+
+async def test_a_conversation_for_a_missing_client_fails_cleanly(service, clock):
+    """La clave foránea rechaza el alta (p. ej. el cliente se borró a la vez)."""
+    with pytest.raises(ConversationClientMissing):
+        await service.default_for("borrado", "main")
+    with pytest.raises(ConversationClientMissing):
+        await service.create("borrado", "main")
+    assert service.index.get("agent:main:fogar-x") is None
+
+
+async def test_list_hides_default_conversations_nobody_spoke_in(service, clock):
+    silent = await service.default_for("tv", "main")
+    spoken = await service.default_for("web", "main")
+    created = await service.create("tv", "main")  # una elegida sí sale, aunque esté vacía
+    await service.note_turn(spoken.id)
+    assert {r.record.id for r in await service.list_rows()} == {spoken.id, created.id}
+    assert (await service.row(silent.id)) is not None  # por id, sí
+
+
+async def test_titles_are_cached_and_failures_are_not():
+    reads = []
+
+    class OpenClaw:
+        fail = False
+
+        async def request(self, method, params, timeout=10.0):
+            reads.append(method)
+            if OpenClaw.fail:
+                raise RuntimeError("down")
+            return {"sessions": [{"key": "k", "derivedTitle": "Cena"}], "hasMore": False}
+
+    cache = TitleCache()
+    assert await cache.get(OpenClaw()) == {"k": "Cena"}
+    assert await cache.get(OpenClaw()) == {"k": "Cena"}
+    assert reads == ["sessions.list"]  # la segunda, de la caché
+    cache._at = None  # caducada
+    OpenClaw.fail = True
+    assert await cache.get(OpenClaw()) == {}
+    assert await cache.get(OpenClaw()) == {}
+    assert len(reads) == 3  # un fallo no se cachea
 
 
 # ── Sesiones de antes de M19 ──────────────────────────────────────────────
@@ -265,7 +309,11 @@ async def test_a_default_session_moves_to_the_new_day(service, clock):
     first = await service.default_for("tv", "main")
     session = SessionConversation(first, explicit=False, service=service)
     moves = []
-    session.on_move = lambda old, new: moves.append((old.id, new.id))
+
+    async def on_move(old, new):
+        moves.append((old.id, new.id))
+
+    session.on_move = on_move
     await session.refresh()
     assert session.current == first and moves == []  # mismo día: nada
     clock.now = datetime(2026, 11, 15, 6, 0)
@@ -302,6 +350,28 @@ async def test_without_db_the_turn_stays_in_its_conversation(service, clock, cap
 
 
 # ── Sesiones vivas y reparto del push ─────────────────────────────────────
+
+
+async def test_a_day_move_frees_the_old_keys_queue_peak_and_keeps_its_value(make_bridge):
+    bridge, _ = make_bridge()
+    old = bridge.conversation.current
+    new = Conversation("d2", old.client_id, "main", session_key_for("main", "d2"), "default", None)
+    bridge._turn_registry._peak[old.session_key] = 3
+    await bridge._on_conversation_move(old, new)
+    assert old.session_key not in bridge._turn_registry._peak
+    assert bridge._session_end_meta("completed")["turn_queue_peak"] == 3
+
+
+async def test_a_session_that_lost_its_conversation_never_aborts_on_that_key(make_bridge):
+    """Red de seguridad del desplazamiento: ya no aborta en la clave que otra sesión tiene."""
+    from tests.fakes.bridge import push
+
+    bridge, _ = make_bridge()
+    await push(bridge, ("turn_start", bridge.conversation.session_key))
+    bridge.conversation.released = True
+    assert (await bridge.turns.cancel("cancelled"))[0] is True
+    bridge.orchestrator.abort.assert_not_awaited()
+    await bridge.close_all()
 
 
 def _conv(cid, client="tv", agent="main"):

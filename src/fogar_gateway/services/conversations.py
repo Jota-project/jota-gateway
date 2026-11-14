@@ -20,12 +20,13 @@ Nada de esto guarda ni registra texto del usuario.
 
 import asyncio
 import logging
-from collections.abc import Callable, Coroutine
+import time
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal, Protocol
 
-from sqlalchemy import delete, update
+from sqlalchemy import or_, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, col, select
 
@@ -79,13 +80,18 @@ class ConversationNotFound(Exception):
     """El id no existe o es de otro cliente (no se distingue: no se revela que existe)."""
 
 
+class ConversationClientMissing(Exception):
+    """El cliente ya no existe (borrado a la vez): la clave foránea rechazó el alta."""
+
+
 class _Requester(Protocol):
     async def request(self, method: str, params: dict, timeout: float = ...) -> dict: ...
 
 
 class ConversationIndex:
     """`session_key` → conversación, en memoria: cargado de la BD al arrancar y al día con cada
-    alta. Lo usa el reparto de push (`ClientRegistry.route`)."""
+    alta. Lo usa el reparto de push (`ClientRegistry.route`). Solo se toca desde el hilo del
+    loop (los métodos async de ConversationService lo actualizan al volver del hilo de la BD)."""
 
     def __init__(self) -> None:
         self._by_key: dict[str, Conversation] = {}
@@ -152,8 +158,9 @@ class ConversationService:
             try:
                 s.commit()
             except IntegrityError:
-                # Otra sesión del mismo cliente la creó a la vez (índice único): es esa.
                 s.rollback()
+                _require_client(s, client_id)
+                # Otra sesión del mismo cliente la creó a la vez (índice único): es esa.
                 found = self._find_default(s, client_id, agent, day)
                 if found is None:
                     raise
@@ -182,7 +189,12 @@ class ConversationService:
         with Session(self._get_engine()) as s:
             record = _new_record(client_id, agent, "created", None)
             s.add(record)
-            s.commit()
+            try:
+                s.commit()
+            except IntegrityError:
+                s.rollback()
+                _require_client(s, client_id)
+                raise
             s.refresh(record)
             return Conversation.from_record(record)
 
@@ -216,7 +228,8 @@ class ConversationService:
             s.commit()
 
     async def list_rows(self, client_id: str | None = None) -> list[ConversationRow]:
-        """Todas (o las de un cliente), la última en hablarse primero."""
+        """Todas (o las de un cliente), la última en hablarse primero. Sin las del día en
+        las que nunca se habló: las crea el handshake de un cliente que conecta y calla."""
         return await asyncio.to_thread(self._list, client_id, None)
 
     async def row(self, conversation_id: str) -> ConversationRow | None:
@@ -232,17 +245,13 @@ class ConversationService:
                 query = query.where(ConversationRecord.client_id == client_id)
             if conversation_id is not None:
                 query = query.where(ConversationRecord.id == conversation_id)
+            else:
+                query = query.where(
+                    or_(col(ConversationRecord.kind) != "default", col(ConversationRecord.turn_count) > 0)
+                )
             rows = [ConversationRow(record, name) for record, name in s.exec(query).all()]
         rows.sort(key=lambda r: _utc(r.record.last_turn_at or r.record.created_at), reverse=True)
         return rows
-
-    def delete_client(self, s: Session, client_id: str) -> None:
-        """Borra las conversaciones del cliente, en la sesión de BD del llamador (que hace el
-        commit). SQLite no aplica `ON DELETE CASCADE` sin `PRAGMA foreign_keys`."""
-        s.exec(  # type: ignore[call-overload]
-            delete(ConversationRecord).where(col(ConversationRecord.client_id) == client_id)
-        )
-        self.index.forget_client(client_id)
 
     # ── Sesiones de antes de M19 ──────────────────────────────────────────
 
@@ -279,6 +288,12 @@ class ConversationService:
             for record in imported:
                 s.refresh(record)
             return [Conversation.from_record(r) for r in imported]
+
+
+def _require_client(s: Session, client_id: str) -> None:
+    """Tras un IntegrityError: si el cliente ya no existe, fue la clave foránea."""
+    if s.get(ClientRecord, client_id) is None:
+        raise ConversationClientMissing() from None
 
 
 def _new_record(
@@ -340,6 +355,37 @@ async def list_openclaw_sessions(orchestrator: _Requester, *, compact: bool = Fa
     return rows
 
 
+# Vida de los títulos leídos de OpenClaw (como la caché de /admin/access): la lista de
+# conversaciones no recorre `sessions.list` entero en cada petición.
+TITLES_TTL_S = 20.0
+
+
+class TitleCache:
+    """`sessionKey` → título, de `sessions.list` (con títulos derivados), cacheado TITLES_TTL_S.
+
+    Las peticiones a la vez comparten una sola lectura. Un fallo no se cachea: devuelve {}
+    (la lista sale sin títulos) y la siguiente petición vuelve a preguntar."""
+
+    def __init__(self) -> None:
+        self._titles: dict[str, str] = {}
+        self._at: float | None = None
+        self._lock = asyncio.Lock()
+
+    async def get(self, orchestrator: _Requester) -> dict[str, str]:
+        async with self._lock:
+            now = time.monotonic()
+            if self._at is not None and now - self._at < TITLES_TTL_S:
+                return self._titles
+            try:
+                rows = await list_openclaw_sessions(orchestrator)
+            except Exception as e:  # noqa: BLE001 — frontera: sin OpenClaw la lista sale sin títulos
+                logger.info(f"Conversaciones sin títulos: OpenClaw no responde ({describe_error(e)})")
+                return {}
+            self._titles = {r["key"]: t for r in rows if (t := session_title(r)) is not None}
+            self._at = now
+            return self._titles
+
+
 def session_title(row: dict) -> str | None:
     """El título de una fila de `sessions.list`: el que muestra OpenClaw (`derivedTitle`,
     `displayName` o `label`, en ese orden), o None."""
@@ -384,7 +430,9 @@ class SessionConversation:
         self._explicit = explicit
         self._service = service
         self._index = index if index is not None else (service.index if service else None)
-        self.on_move: Callable[[Conversation, Conversation], None] | None = None
+        self.on_move: Callable[[Conversation, Conversation], Awaitable[None]] | None = None
+        # La sesión perdió su conversación (otra la abrió): ya no aborta nada en su clave.
+        self.released = False
         self._spawn: Callable[[Coroutine[Any, Any, None], str], None] | None = None
 
     @property
@@ -428,7 +476,7 @@ class SessionConversation:
         self.current = new
         logger.info(f"[{conv.client_id}] Conversación del día: {conv.id} -> {new.id}")
         if self.on_move is not None:
-            self.on_move(conv, new)
+            await self.on_move(conv, new)
 
     def note_turn(self, conversation_id: str | None) -> None:
         """Cuenta un turno de `conversation_id` en la BD, en segundo plano."""

@@ -366,6 +366,11 @@ class TurnController:
         """La sesión de OpenClaw de la conversación actual de la sesión."""
         return self._conversation.session_key
 
+    def _may_abort(self, session_key: str) -> bool:
+        """Se aborta en OpenClaw solo en la clave propia, y no una vez perdida la conversación
+        (M19: otra sesión la abrió y puede tener ya su turno en ella)."""
+        return not self._conversation.released and session_key == self._session_key()
+
     def in_flight(self) -> bool:
         """Hay un turno en curso: el único cálculo para los dos watchdogs.
 
@@ -481,7 +486,7 @@ class TurnController:
         bajo el lock de quien llama."""
         session_key = self._session_key()
         runs = self._turn_registry.active_runs(session_key)
-        if not runs:
+        if not runs or not self._may_abort(session_key):
             return
         for run_id in runs:
             self._turn_registry.abort_run(run_id)
@@ -721,7 +726,7 @@ class TurnController:
                     if self._push is turn:
                         self._push = None
                     self._abort_run(run_id)
-                    if session_key == self._session_key():
+                    if self._may_abort(session_key):
                         await self._orchestrator.abort(session_key)
                     return
                 break
@@ -889,7 +894,7 @@ class TurnController:
         td = Teardown(f"[{self._client_id}] fin del turno {turn.turn_id}")
         if release and turn.tts is not None:
             await td.step(self._release_tts(turn.tts, reason), "TTS del turno")
-        if abort and turn.session_key is not None and turn.session_key == self._session_key():
+        if abort and turn.session_key is not None and self._may_abort(turn.session_key):
             await td.step(self._orchestrator.abort(turn.session_key), "chat.abort del push")
         if self._push is turn:
             self._push = None

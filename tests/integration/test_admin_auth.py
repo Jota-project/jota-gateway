@@ -36,6 +36,18 @@ def test_admin_token_compared_in_constant_time(client, admin_headers, monkeypatc
     assert len(calls) == 1
 
 
+def test_admin_token_matches_is_the_one_check(monkeypatch):
+    """/admin y el `admin_token` del handshake WS (M19) comparten la comprobación."""
+    from fogar_gateway.api.deps import admin_token_matches
+    from fogar_gateway.core.config import settings
+
+    assert admin_token_matches(settings.ADMIN_TOKEN)
+    assert not admin_token_matches("otro")
+    assert not admin_token_matches("tökén")
+    monkeypatch.setattr(settings, "ADMIN_TOKEN", "")
+    assert not admin_token_matches("")
+
+
 def test_admin_non_ascii_token_returns_401_not_500(client):
     # compare_digest(str, str) raises TypeError on non-ASCII; we compare bytes.
     r = client.get("/admin/sessions", headers={"x-admin-token": "tökén".encode("latin-1")})

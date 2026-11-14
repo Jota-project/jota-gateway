@@ -1,9 +1,11 @@
+import sqlite3
 from collections.abc import Generator
 from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy.engine import make_url
+from sqlalchemy import event
+from sqlalchemy.engine import Engine, make_url
 from sqlmodel import Session, create_engine
 
 from fogar_gateway import paths
@@ -15,6 +17,17 @@ _ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 # Decisión 5 de M14c: el gateway no crea nunca una BD en silencio. Lo activan `fogar-gw init`
 # y `fogar-gw serve --create-db` (la imagen Docker).
 CREATE_DB = False
+
+
+@event.listens_for(Engine, "connect")
+def _sqlite_foreign_keys(dbapi_connection, _record) -> None:
+    """Claves foráneas en cada conexión SQLite (M19): SQLite no las aplica por defecto, y
+    `conversations.client_id` borra en cascada con su cliente y rechaza un cliente que no
+    existe. Las migraciones las desactivan en su conexión (migrations/env.py)."""
+    if isinstance(dbapi_connection, sqlite3.Connection):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 
 class DatabaseMissing(RuntimeError):

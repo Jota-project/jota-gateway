@@ -42,17 +42,24 @@ def test_list_has_titles_from_openclaw(client, admin_headers, conversations, moc
     import asyncio
 
     conv = asyncio.run(conversations.default_for(CLIENT_ID, "main"))
-    mock_orchestrator.request = _sessions(
+    mock_orchestrator.request = AsyncMock(wraps=_sessions(
         {"key": conv.session_key, "derivedTitle": "La cena"}, {"key": "agent:x:other"}
-    )
+    ))
+    # La del día en la que nunca se habló no sale (un cliente que conectó y calló).
+    assert client.get("/admin/conversations", headers=admin_headers).json() == []
+    asyncio.run(conversations.note_turn(conv.id))
     r = client.get("/admin/conversations", headers=admin_headers)
     assert r.status_code == 200
     (row,) = r.json()
     assert row == {
         "id": conv.id, "client_id": CLIENT_ID, "client_name": "Test Client", "agent": "main",
         "kind": "default", "day": conv.day.isoformat(), "created_at": row["created_at"],
-        "last_turn_at": None, "turn_count": 0, "title": "La cena",
+        "last_turn_at": row["last_turn_at"], "turn_count": 1, "title": "La cena",
     }
+    assert row["last_turn_at"] is not None
+    client.get("/admin/conversations", headers=admin_headers)
+    # Títulos cacheados (TITLES_TTL_S): una sola lectura de sessions.list para dos listas.
+    assert mock_orchestrator.request.await_count == 1
     assert client.get(
         "/admin/conversations", headers=admin_headers, params={"client_id": "otro"}
     ).json() == []
@@ -190,6 +197,34 @@ def test_v1_follows_the_daily_default_conversation(
         ("default", 2, keys[0]),
         ("default", 1, keys[2]),
     ]
+
+
+def test_v1_counts_a_turn_only_once_it_started(client_untrusted, mock_orchestrator, db_engine):
+    from fogar_gateway.services.protocol import OrchestratorEvent
+
+    async def busy(text, session_key=None):
+        yield OrchestratorEvent(type="error", content="turn_in_progress")
+
+    mock_orchestrator.stream_response = busy
+    body = {"messages": [{"role": "user", "content": "hola"}]}
+    headers = {"authorization": f"Bearer {VALID_KEY}"}
+    r = client_untrusted.post("/v1/chat/completions", json=body, headers=headers)
+    assert (r.status_code, r.json()) == (409, {"error": "turn_in_progress"})
+    with Session(db_engine) as s:
+        (row,) = s.exec(select(ConversationRecord)).all()
+    assert row.turn_count == 0 and row.last_turn_at is None
+
+
+def test_v1_database_failure_is_a_stable_error(client_untrusted, monkeypatch, caplog):
+    async def broken(*a, **k):
+        raise RuntimeError("database is locked /secret/path")
+
+    monkeypatch.setattr(client_untrusted.app.state.conversations, "default_for", broken)
+    body = {"messages": [{"role": "user", "content": "hola"}]}
+    headers = {"authorization": f"Bearer {VALID_KEY}"}
+    r = client_untrusted.post("/v1/chat/completions", json=body, headers=headers)
+    assert (r.status_code, r.json()) == (502, {"error": "internal_error"})
+    assert "/secret/path" not in caplog.text
 
 
 def test_v1_legacy_trusted_origin_keeps_its_key_and_uses_default_agent(

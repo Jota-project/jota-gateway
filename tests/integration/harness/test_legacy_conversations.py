@@ -76,7 +76,10 @@ async def test_a_push_on_the_old_key_still_reaches_the_client(harness):
     assert_turns_paired(msgs)
 
 
-async def test_titles_degrade_when_openclaw_refuses_the_read(harness):
+async def test_titles_degrade_when_openclaw_refuses_the_read(harness, monkeypatch):
+    from fogar_gateway.services import conversations
+
+    monkeypatch.setattr(conversations, "TITLES_TTL_S", 0.0)  # sin caché: se ve el fallo ya
     await _conversations(harness)
     harness.openclaw.fail_reads = True
     async with harness.admin() as admin:

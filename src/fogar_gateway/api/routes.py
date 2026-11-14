@@ -1,5 +1,4 @@
 import asyncio
-import hmac
 import json
 import logging
 import time
@@ -8,6 +7,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from fogar_gateway.api.admin_routes import panel_session
+from fogar_gateway.api.deps import admin_token_matches
 from fogar_gateway.core.agent_policy import AgentPolicyError, resolve_agent
 from fogar_gateway.core.config import settings
 from fogar_gateway.core.exceptions import ClientInactive, ClientNotFound
@@ -18,6 +18,7 @@ from fogar_gateway.models.schemas import Client, ClientConfig, Handshake
 from fogar_gateway.services.bridge import FogarBridge
 from fogar_gateway.services.conversations import (
     NEW,
+    ConversationClientMissing,
     ConversationNotFound,
     ConversationService,
     SessionConversation,
@@ -51,12 +52,11 @@ async def _authenticate(handshake: Handshake) -> tuple[Client, ClientConfig, str
     """`(Client, ClientConfig, quién para el log)` de la credencial del handshake.
 
     `admin_token` (M19): el panel web, que entra como el cliente «Panel web» si coincide con
-    ADMIN_TOKEN (tiempo constante; vacío = desactivado). Lanza ClientNotFound/ClientInactive.
+    ADMIN_TOKEN (`deps.admin_token_matches`, la misma comprobación que `/admin`). Lanza
+    ClientNotFound/ClientInactive.
     """
     if handshake.admin_token is not None:
-        expected = settings.ADMIN_TOKEN.encode("utf-8")
-        given = handshake.admin_token.encode("utf-8")
-        if not expected or not hmac.compare_digest(given, expected):
+        if not admin_token_matches(handshake.admin_token):
             raise ClientNotFound("panel")
         client, config = await panel_session()
         return client, config, "panel"
@@ -189,6 +189,12 @@ async def gateway_websocket(websocket: WebSocket):
         gateway_stats.handshake_rejected(e.stat)
         await websocket.close(code=1008, reason=e.reason)
         return
+    except ConversationClientMissing:
+        # Borrado entre la autenticación y el alta de la conversación: su clave ya no vale.
+        logger.warning(f"[{client.id}] Handshake rechazado: el cliente ya no existe.")
+        gateway_stats.handshake_rejected("invalid_key")
+        await websocket.close(code=1008, reason="Clave de cliente invalida o inactiva.")
+        return
     except Exception as e:  # noqa: BLE001 — frontera: sin conversación no hay sesión (1011)
         logger.error(f"[{client.id}] Fallo al abrir la conversación: {describe_error(e)}")
         logger.debug(f"[{client.id}] conversación: {traceback_no_message(e)}")
@@ -293,6 +299,10 @@ async def gateway_websocket(websocket: WebSocket):
                 pass
             await websocket.close(code=1011, reason="Servicio crítico no disponible.")
             return
+
+        # 3.55 CONVERSACIÓN (M19): solo una sesión que pasó el health check la abre; la que la
+        # tuviera se cierra (1008) y se espera a que suelte sus turnos antes de `ready`.
+        await bridge.claim_conversation()
 
         # 3.6 SEND READY — confirms session is established and announces capabilities
         # resolved_agent comes from the policy helper above.

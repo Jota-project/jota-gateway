@@ -171,6 +171,7 @@ class FakeOpenClawServer:
         self.sessions: dict[str, dict] = {}  # sessionKey -> fila de sessions.list + "messages"
         self.reads: list[tuple[str, dict]] = []  # (método, params) de cada lectura
         self.fail_reads = False
+        self.calls: list[tuple[str, str]] = []  # (chat.send | chat.abort, sessionKey), en orden
 
     async def __aenter__(self):
         self._server = await websockets.serve(
@@ -419,8 +420,10 @@ class FakeOpenClawServer:
                 elif method in ("sessions.list", "chat.history"):
                     await self._read(ws, rid, method, params)
                 elif method == "chat.abort":
+                    self.calls.append((method, params["sessionKey"]))
                     await self._chat_abort(ws, rid, params["sessionKey"])
                 elif method == "chat.send":
+                    self.calls.append((method, params["sessionKey"]))
                     task = asyncio.create_task(self._chat_send(ws, rid, params))
                     self._tasks.add(task)
                     task.add_done_callback(self._tasks.discard)
