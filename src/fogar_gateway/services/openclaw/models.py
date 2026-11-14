@@ -21,6 +21,33 @@ def approve_command(request_id: str | None) -> str:
     return f"openclaw devices approve {request_id or '--latest'}"
 
 
+# La causa de `identity_required`, en una frase: la usan la CLI (`cli/openclaw_access.py`) y el
+# panel (`/admin/state`, `identity_error_text`), para que digan lo mismo.
+IDENTITY_ERROR_TEXT: dict[str, str] = {
+    "identity_file_invalid": "el fichero de identidad del gateway no vale o no se puede crear",
+    "challenge_without_nonce": "este OpenClaw no manda nonce en el reto y no hay nada que firmar",
+}
+IDENTITY_ERROR_FALLBACK = "no hay identidad que mandar"
+
+
+def access_texts(access: dict[str, Any]) -> dict[str, str | None]:
+    """Lo que el panel enseña tal cual del acceso (`OrchestratorAccess.as_dict()`): el comando que
+    aprueba el gateway (solo con el emparejamiento pendiente) y la causa de `identity_required`."""
+    pairing = access.get("pairing")
+    rid = access.get("pairing_request_id")
+    cause = access.get("identity_error")
+    return {
+        "approve_command": (
+            approve_command(rid if isinstance(rid, str) else None) if pairing == "pending" else None
+        ),
+        "identity_error_text": (
+            IDENTITY_ERROR_TEXT.get(str(cause), IDENTITY_ERROR_FALLBACK)
+            if pairing == "identity_required"
+            else None
+        ),
+    }
+
+
 def hello_scopes(payload: dict) -> list[str] | None:
     """`hello-ok.auth.scopes` saneados; None si no vienen (desconocidos, no «ninguno»)."""
     auth = payload.get("auth")

@@ -66,6 +66,21 @@ describe('ChatLog', () => {
   })
 })
 
+describe('ChatLog al volver a leer lo dicho', () => {
+  it('se queda solo con lo que sigue llegando, para no enseñar nada dos veces', () => {
+    const log = new ChatLog('c1')
+    log.addUser('uno')
+    log.apply(start('t-1'))
+    log.apply({ type: 'turn_end', turn_id: 't-1', reason: 'done' })
+    log.addUser('dos')
+    log.apply(start('t-2'))
+    log.keepStreaming()
+    expect(log.lines.map((l) => [l.role, l.state])).toEqual([['assistant', 'streaming']])
+    log.apply({ type: 'token', turn_id: 't-2', text: 'sigue' })
+    expect(log.lines[0]!.text).toBe('sigue')
+  })
+})
+
 describe('endReasonText', () => {
   it('no dice nada si terminó bien', () => {
     expect(endReasonText({ reason: 'done' })).toBeNull()
@@ -90,9 +105,12 @@ describe('closeAction', () => {
     expect(closeAction(1008, 'Clave de cliente invalida o inactiva.')).toBe('stop')
     expect(stopText('conversation not found')).toMatch(/ya no existe/)
   })
-  it('reintenta tras caídas, reinicios, lentitud y una clave rotada', () => {
+  it('reintenta tras caídas, reinicios y lentitud', () => {
     for (const code of [1006, 1011, 1012, 1013]) expect(closeAction(code, '')).toBe('retry')
-    expect(closeAction(1008, 'revoked')).toBe('retry')
+  })
+  it('con el acceso retirado para y lo dice: lo decide la persona', () => {
+    expect(closeAction(1008, 'revoked')).toBe('stop')
+    expect(stopText('revoked')).toMatch(/Se retiró el acceso del panel/)
   })
   it('un cierre normal (inactividad) espera a que escribas', () => {
     expect(closeAction(1000, '')).toBe('idle')

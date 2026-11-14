@@ -28,6 +28,8 @@ export interface ChatLine {
   error?: string
   /** Un push de otra conversación del panel (el gateway lo entrega en la sesión más reciente). */
   otherConversation?: string | null
+  /** Solo en las tuyas: escrita con la conversación dormida y no llegó a salir (falló la reconexión). */
+  unsent?: boolean
 }
 
 /** Las líneas de la conversación en vivo, en el orden en que llegan (el orden total del gateway). */
@@ -37,8 +39,24 @@ export class ChatLog {
 
   constructor(private conversationId: string) {}
 
-  addUser(text: string, at = new Date().toISOString()): void {
-    this.lines.push({ key: `u-${++this.seq}`, role: 'user', text, at, state: 'ended', reason: 'done' })
+  /** Añade lo que escribiste; devuelve su clave (para marcarla si no llega a salir). */
+  addUser(text: string, at = new Date().toISOString()): string {
+    const key = `u-${++this.seq}`
+    this.lines.push({ key, role: 'user', text, at, state: 'ended', reason: 'done' })
+    return key
+  }
+
+  markUnsent(key: string): void {
+    const line = this.lines.find((l) => l.key === key)
+    if (line) line.unsent = true
+  }
+
+  /**
+   * Se ha vuelto a leer lo dicho de OpenClaw, que ya trae lo terminado: solo se queda lo que sigue
+   * llegando (un turno a medias), para no enseñar nada dos veces.
+   */
+  keepStreaming(): void {
+    this.lines = this.lines.filter((l) => l.state === 'streaming')
   }
 
   private turn(turnId: string): ChatLine | undefined {
@@ -142,15 +160,15 @@ export const CLOSE = {
  *   una a otra sin fin; solo si lo pide la persona.
  * - `stop`: no tiene arreglo reconectando (conversación que ya no existe, panel desactivado…).
  * - `idle`: cierre normal (1000, inactividad de 5 min): se reabre al escribir, no antes.
- * - `retry`: caída, reinicio del gateway (1012), cliente lento (1013), OpenClaw caído al entrar (1011),
- *   acceso retirado (la clave del panel rotó: al volver a entrar se usa la nueva).
+ * - `retry`: caída, reinicio del gateway (1012), cliente lento (1013), OpenClaw caído al entrar (1011).
+ *   `revoked` no: el cliente del panel se desactivó, se borró o cambió su clave, y eso lo decide
+ *   la persona (`stop`, con «Reintentar»).
  */
 export type CloseAction = 'elsewhere' | 'stop' | 'idle' | 'retry'
 
 export function closeAction(code: number, reason: string): CloseAction {
   if (code === 1008) {
     if (reason === CLOSE.elsewhere) return 'elsewhere'
-    if (reason === CLOSE.revoked) return 'retry'
     return 'stop'
   }
   if (code === 1000) return 'idle'
@@ -162,6 +180,8 @@ export function stopText(reason: string): string {
   if (reason === CLOSE.notFound) return 'Esta conversación ya no existe en el gateway.'
   if (reason === CLOSE.invalidKey)
     return 'El panel no puede escribir: su cliente («Panel web») está desactivado. Actívalo en Clientes.'
+  if (reason === CLOSE.revoked)
+    return 'Se retiró el acceso del panel: su cliente («Panel web») se desactivó, se borró o cambió su clave.'
   if (reason === CLOSE.agentMismatch) return 'El agente no coincide con el de la conversación.'
   return 'El gateway no aceptó la conexión del chat.'
 }

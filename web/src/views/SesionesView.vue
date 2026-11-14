@@ -5,7 +5,7 @@ import { getSession, listSessions } from '@/api/admin'
 import { ApiError } from '@/api/http'
 import type { SessionDetail, SessionList, SessionStatus } from '@/api/types'
 import FgBoton from '@/components/FgBoton.vue'
-import { formatDuration, formatModes, formatSeconds } from '@/lib/format'
+import { formatDuration, formatModes, formatSeconds, parseIso } from '@/lib/format'
 import { label, SESSION_STATUS, STAGE } from '@/lib/labels'
 import { turnos } from '@/lib/turns'
 import { useClientsStore } from '@/stores/clients'
@@ -64,7 +64,7 @@ const filas = computed(() =>
       modo: formatModes(s.input_mode, s.output_mode),
       estado: label(SESSION_STATUS, s.status),
       viva: s.status === 'active',
-      empezo: new Date(s.started_at).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }),
+      empezo: parseIso(s.started_at).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }),
       turnos: s.turn_count,
       ultimo: formatSeconds(s.last_latencies.turn_e2e_ms),
     })),

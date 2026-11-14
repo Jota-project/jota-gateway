@@ -180,11 +180,14 @@ async function empezar(): Promise<void> {
               <option v-for="o in opciones" :key="o.id" :value="o.id">{{ o.texto }}</option>
             </select>
           </div>
-          <p v-else-if="agentes" class="fg-meta">OpenClaw no ha dado su lista de agentes: se usará el de por defecto.</p>
+          <p v-else-if="agentes" class="error" role="alert">
+            Ahora no hay ningún agente con el que empezar: OpenClaw no ha dado su lista y al panel no le toca ninguno por defecto. Revisa los
+            agentes permitidos de «Panel web» en Clientes.
+          </p>
           <p v-else-if="!nuevaError" class="fg-meta">Cargando agentes…</p>
           <p v-if="nuevaError" class="error" role="alert">{{ nuevaError }}</p>
           <div class="acciones">
-            <FgBoton type="submit" variante="principal" :ocupado="creando" :disabled="!agentes">Empezar</FgBoton>
+            <FgBoton type="submit" variante="principal" :ocupado="creando" :disabled="!opciones.length">Empezar</FgBoton>
             <FgBoton @click="nueva = false">Cancelar</FgBoton>
           </div>
         </form>

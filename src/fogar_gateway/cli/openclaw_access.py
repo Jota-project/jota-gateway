@@ -9,13 +9,14 @@ gateway de otra versión puede no traer algún campo. Solo stdlib (más `models`
 
 from typing import Any, Literal
 
-from fogar_gateway.services.openclaw.models import approve_command
+from fogar_gateway.services.openclaw.models import (
+    IDENTITY_ERROR_FALLBACK,
+    IDENTITY_ERROR_TEXT,
+    approve_command,
+)
 
 AUTH_LABELS = {"shared_token": "token compartido", "device_token": "token de dispositivo"}
-IDENTITY_ERRORS = {
-    "identity_file_invalid": "el fichero de identidad del gateway no vale o no se puede crear",
-    "challenge_without_nonce": "este OpenClaw no manda nonce en el reto y no hay nada que firmar",
-}
+IDENTITY_ERRORS = IDENTITY_ERROR_TEXT  # la misma frase que enseña el panel (/admin/state)
 Level = Literal["ok", "info", "warn"]
 
 
@@ -40,7 +41,7 @@ def pending_text(request_id: Any) -> str:
 
 
 def identity_required_text(cause: Any) -> str:
-    why = IDENTITY_ERRORS.get(str(cause), "no hay identidad que mandar")
+    why = IDENTITY_ERRORS.get(str(cause), IDENTITY_ERROR_FALLBACK)
     return (f"OpenClaw exige identidad de dispositivo y el gateway no puede mandarla: {why}. "
             "Revísalo con `fogar-gw doctor`.")
 

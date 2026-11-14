@@ -144,37 +144,52 @@ def test_create_validates_the_agent_like_the_handshake(client, admin_headers, db
     assert r.status_code == 422
 
 
+def _set_panel(db_engine, **fields):
+    with Session(db_engine) as s:
+        panel = s.get(ClientRecord, "panel-web")
+        for name, value in fields.items():
+            setattr(panel, name, value)
+        s.add(panel)
+        s.commit()
+
+
 def test_agents_for_a_new_conversation_follow_the_panel_policy(
     client, admin_headers, db_engine, mock_orchestrator, monkeypatch
 ):
     r = client.get("/admin/conversations/agents", headers=admin_headers)
     assert (r.status_code, r.json()) == (200, {"agents": ["main", "a", "openclaw"], "default": "main"})
+    with Session(db_engine) as s:  # una lectura: no crea la ficha del panel
+        assert s.get(ClientRecord, "panel-web") is None
+    client.post("/admin/conversations", headers=admin_headers, json={})  # ahora sí existe
     monkeypatch.setattr(settings, "DEFAULT_AGENT", "a")
     assert client.get("/admin/conversations/agents", headers=admin_headers).json()["default"] == "a"
-    with Session(db_engine) as s:
-        panel = s.get(ClientRecord, "panel-web")
-        panel.allowed_agents = '["openclaw"]'
-        s.add(panel)
-        s.commit()
+    _set_panel(db_engine, allowed_agents='["openclaw"]')
     # El de la cascada ("a") no le está permitido al panel: no hay agente por defecto.
     r = client.get("/admin/conversations/agents", headers=admin_headers)
     assert r.json() == {"agents": ["openclaw"], "default": None}
-    mock_orchestrator.gateway_info = None  # OpenClaw sin conectar: sin roster
-    with Session(db_engine) as s:
-        panel = s.get(ClientRecord, "panel-web")
-        panel.allowed_agents = None
-        panel.is_active = False
-        s.add(panel)
-        s.commit()
+    mock_orchestrator.gateway_info = None  # OpenClaw sin conectar: sin roster, sus permitidos
+    assert client.get("/admin/conversations/agents", headers=admin_headers).json() == {
+        "agents": ["openclaw"], "default": None
+    }
+    _set_panel(db_engine, allowed_agents=None, is_active=False)
     r = client.get("/admin/conversations/agents", headers=admin_headers)
     assert (r.status_code, r.json()) == (409, {"detail": "panel_client_inactive"})
-    with Session(db_engine) as s:
-        panel = s.get(ClientRecord, "panel-web")
-        panel.is_active = True
-        s.add(panel)
-        s.commit()
+    _set_panel(db_engine, is_active=True)
     r = client.get("/admin/conversations/agents", headers=admin_headers)
     assert r.json() == {"agents": [], "default": "a"}
+
+
+def test_conversation_dates_carry_their_utc_offset(client, admin_headers, conversations):
+    import asyncio
+
+    conv = asyncio.run(conversations.create(CLIENT_ID, "main"))
+    asyncio.run(conversations.note_turn(conv.id))
+    (row,) = client.get("/admin/conversations", headers=admin_headers).json()
+    # SQLite las guarda sin zona; salen en UTC con su desplazamiento, no como hora local.
+    for field in ("created_at", "last_turn_at"):
+        assert datetime.fromisoformat(row[field]).utcoffset() is not None, field
+    created = client.post("/admin/conversations", headers=admin_headers, json={}).json()
+    assert datetime.fromisoformat(created["created_at"]).utcoffset() is not None
 
 
 def test_create_with_the_panel_disabled_is_a_conflict(client, admin_headers, db_engine):

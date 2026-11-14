@@ -51,7 +51,7 @@ from fogar_gateway.models.admin_schemas import (
 )
 from fogar_gateway.models.schemas import Client, ClientConfig
 from fogar_gateway.services.db_client import db_client
-from fogar_gateway.services.openclaw.models import OrchestratorAccess
+from fogar_gateway.services.openclaw.models import OrchestratorAccess, access_texts
 from fogar_gateway.services.reconnection import ServiceStatus
 from fogar_gateway.services.stats import gateway_stats
 
@@ -174,6 +174,22 @@ async def panel_session() -> tuple[Client, ClientConfig]:
     `ClientInactive` si el administrador lo desactivó."""
     key = await asyncio.to_thread(_panel_key)
     return await db_client.get_session(key)
+
+
+def _existing_panel_key() -> str | None:
+    with Session(get_engine()) as session:
+        record = session.get(ClientRecord, PANEL_CLIENT_ID)
+        return record.client_key if record is not None else None
+
+
+async def existing_panel_config() -> ClientConfig | None:
+    """La configuración del panel web sin crear su ficha (para lecturas): None si aún no existe,
+    `ClientInactive` si el administrador lo desactivó."""
+    key = await asyncio.to_thread(_existing_panel_key)
+    if key is None:
+        return None
+    _, config = await db_client.get_session(key)
+    return config
 
 
 @router.post("/clients", response_model=ClientWithKey, status_code=status.HTTP_201_CREATED)
@@ -448,6 +464,7 @@ def _service_state(s: ServiceStatus) -> dict[str, Any]:
 
 def _build_state(app: FastAPI) -> dict[str, Any]:
     speech = app.state.speech
+    access = getattr(app.state, "openclaw_access", OrchestratorAccess()).as_dict()
     sessions = []
     for bridge in app.state.client_registry.bridges():
         try:
@@ -472,7 +489,8 @@ def _build_state(app: FastAPI) -> dict[str, Any]:
             "orchestrator": {
                 **_service_state(app.state.openclaw.status()),
                 # Permisos concedidos, admin, token en uso y emparejamiento (M19); sin secretos.
-                **getattr(app.state, "openclaw_access", OrchestratorAccess()).as_dict(),
+                **access,
+                **access_texts(access),
             },
             "stt": {"provider": speech.stt.name, **_service_state(speech.stt.status())},
             "tts": {"provider": speech.tts.name, **_service_state(speech.tts.status())},

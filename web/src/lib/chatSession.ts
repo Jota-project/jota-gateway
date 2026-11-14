@@ -50,7 +50,8 @@ export function createChatSession(options: ChatSessionOptions) {
   })
   let ws: WebSocket | null = null
   let retry: ReturnType<typeof setTimeout> | null = null
-  let pending: string | null = null // escrito con la conversación dormida: sale al llegar `ready`
+  // Escrito con la conversación dormida: sale al llegar `ready` (su línea, por si no sale).
+  let pending: { text: string; key: string } | null = null
   let disposed = false
 
   function connect(): void {
@@ -93,9 +94,11 @@ export function createChatSession(options: ChatSessionOptions) {
       const m = msg as Extract<ServerMessage, { type: 'ready' }>
       state.connection = 'ready'
       state.failures = 0
+      // Un `restored` solo llega a quien estaba conectado al volver OpenClaw: al entrar, se parte de cero.
+      state.orchestratorDown = false
       state.agent = m.conversation?.agent ?? m.agent
       if (pending != null) {
-        ws?.send(JSON.stringify({ type: 'send', text: pending }))
+        ws?.send(JSON.stringify({ type: 'send', text: pending.text }))
         pending = null
       }
       return
@@ -117,6 +120,7 @@ export function createChatSession(options: ChatSessionOptions) {
       retry = setTimeout(connect, backoffMs(state.failures))
       return
     }
+    if (pending) state.log.markUnsent(pending.key) // no se envió: que se vea
     pending = null
     if (action === 'stop') state.notice = stopText(reason)
     state.connection = action === 'stop' ? 'stopped' : action
@@ -126,12 +130,13 @@ export function createChatSession(options: ChatSessionOptions) {
   function send(text: string): boolean {
     const clean = text.trim()
     if (!clean) return false
-    if (state.connection === 'ready' && ws) ws.send(JSON.stringify({ type: 'send', text: clean }))
-    else if (state.connection === 'idle') {
-      pending = clean
+    if (state.connection === 'ready' && ws) {
+      ws.send(JSON.stringify({ type: 'send', text: clean }))
+      state.log.addUser(clean)
+    } else if (state.connection === 'idle') {
+      pending = { text: clean, key: state.log.addUser(clean) }
       connect()
     } else return false
-    state.log.addUser(clean)
     return true
   }
 
@@ -140,12 +145,16 @@ export function createChatSession(options: ChatSessionOptions) {
   }
 
   /**
-   * Empieza. Si la conversación ya está abierta en otro sitio (otra pestaña del panel), no la quita:
-   * abrirla la cerraría allí. Se queda en `elsewhere` hasta que la persona pida seguir aquí.
+   * Empieza. Si la conversación estaba abierta en otra pestaña, esa recibe el 1008 «conversation
+   * opened elsewhere» y se queda con su aviso (no vuelve sola): nunca se echan una a otra.
    */
-  function start(heldElsewhere = false): void {
-    if (heldElsewhere) state.connection = 'elsewhere'
-    else connect()
+  function start(): void {
+    connect()
+  }
+
+  /** Lo dicho se ha vuelto a leer de OpenClaw: fuera lo terminado aquí, que ya viene en ello. */
+  function historyReloaded(): void {
+    state.log.keepStreaming()
   }
 
   /** «Seguir aquí» (o reintentar tras un `stopped`): vuelve a abrir la conversación, que se cierra en el otro sitio. */
@@ -165,7 +174,7 @@ export function createChatSession(options: ChatSessionOptions) {
     socket?.close(1000)
   }
 
-  return { state, start, send, cancel, retake, dispose }
+  return { state, start, send, cancel, retake, historyReloaded, dispose }
 }
 
 export type ChatSession = ReturnType<typeof createChatSession>

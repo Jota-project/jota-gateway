@@ -8,19 +8,17 @@ import FgBoton from '@/components/FgBoton.vue'
 import FgEstado from '@/components/FgEstado.vue'
 import FgIcono from '@/components/FgIcono.vue'
 import MensajeConversacion from '@/components/MensajeConversacion.vue'
-import { endReasonText } from '@/lib/chat'
+import MensajeVivo from '@/components/MensajeVivo.vue'
 import { createChatSession, type ChatSession } from '@/lib/chatSession'
 import { canWrite, conversationTitle } from '@/lib/conversations'
 import { formatClock, formatRelative } from '@/lib/format'
 import { useConversationsStore } from '@/stores/conversations'
-import { useLiveStore } from '@/stores/live'
 import { useSessionStore } from '@/stores/session'
 
 // Una conversación: lo que se dijo (de OpenClaw) y, si es del panel, el chat en vivo para seguirla.
 // Las de otros aparatos solo se leen (M19).
 const route = useRoute()
 const conversations = useConversationsStore()
-const live = useLiveStore()
 const session = useSessionStore()
 
 const id = computed(() => String(route.params.id ?? ''))
@@ -33,18 +31,24 @@ const historia = shallowRef<ConversationMessages | null>(null)
 const historiaError = ref<string | null>(null)
 const cargando = ref(false)
 async function cargarHistoria(limit = 200): Promise<void> {
+  const pedida = id.value // si cambias de conversación mientras llega, esta respuesta ya no vale
   cargando.value = true
   try {
-    historia.value = await getConversationMessages(id.value, limit)
+    const leida = await getConversationMessages(pedida, limit)
+    if (pedida !== id.value) return
+    historia.value = leida
     historiaError.value = null
+    // Lo terminado en vivo ya viene en lo leído: que no salga dos veces.
+    chat.value?.historyReloaded()
   } catch (e) {
+    if (pedida !== id.value) return
     historia.value = null
     if (e instanceof ApiError && e.status === 503) historiaError.value = 'OpenClaw no responde: ahora no puedo leer lo que se dijo.'
     else if (e instanceof ApiError && e.status === 502) historiaError.value = 'OpenClaw no ha querido dar lo que se dijo en esta conversación.'
     else if (e instanceof ApiError && e.kind === 'not-found') historiaError.value = 'Esta conversación ya no existe: se borró su aparato.'
     else historiaError.value = 'No llego al gateway.'
   } finally {
-    cargando.value = false
+    if (pedida === id.value) cargando.value = false
   }
 }
 
@@ -54,11 +58,12 @@ function cerrarChat(): void {
   chat.value?.dispose()
   chat.value = null
 }
+// Si la conversación estaba abierta en otra pestaña, aquella se queda con el aviso «Abierta en otro
+// sitio» (el 1008 del gateway) y no vuelve sola: no hace falta mirarlo antes.
 function abrirChat(): void {
   if (chat.value || !escribible.value || !session.token) return
-  const abiertaFuera = (live.state?.sessions ?? []).some((s) => s.conversation?.id === id.value)
   chat.value = createChatSession({ conversationId: id.value, token: session.token })
-  chat.value.start(abiertaFuera)
+  chat.value.start()
 }
 
 watch(
@@ -79,8 +84,8 @@ watch(escribible, (si) => si && abrirChat(), { immediate: true })
 onBeforeUnmount(cerrarChat)
 
 async function seguirAqui(): Promise<void> {
-  await cargarHistoria()
   chat.value?.retake()
+  await cargarHistoria()
 }
 
 const ahora = ref(new Date())
@@ -107,23 +112,8 @@ const pasados = computed(() =>
     },
   })),
 )
-const vivos = computed(() =>
-  (chat.value?.state.log.lines ?? []).map((l) => ({
-    key: l.key,
-    props: {
-      quien: l.role === 'user' ? 'Tú' : 'Fogar',
-      propio: l.role === 'user',
-      texto: l.text,
-      hora: l.at ? formatClock(l.at, ahora.value) : null,
-      push: l.origin === 'push',
-      escribiendo: l.state === 'streaming',
-      aviso:
-        l.state === 'ended'
-          ? [l.otherConversation ? 'Es de otra conversación del panel.' : null, endReasonText(l)].filter(Boolean).join(' ') || null
-          : null,
-    },
-  })),
-)
+// Las líneas en vivo, tal cual: cada MensajeVivo calcula lo suyo.
+const vivos = computed(() => chat.value?.state.log.lines ?? [])
 const vacia = computed(() => historia.value && !pasados.value.length && !vivos.value.length)
 
 // Estado del chat en una línea, y lo que se puede hacer.
@@ -140,6 +130,8 @@ const lineaEstado = computed<{ tono: 'ok' | 'warn' | 'off'; texto: string } | nu
   return null
 })
 const turnoAbierto = computed(() => estado.value?.log.turnOpen ?? false)
+// Al acabar un turno, la cabecera («habló hace…») y el título de OpenClaw se vuelven a leer.
+watch(turnoAbierto, (abierto, antes) => antes && !abierto && void conversations.refresh())
 const puedeEscribir = computed(() => estado.value?.connection === 'ready' || estado.value?.connection === 'idle')
 
 const caja = useTemplateRef<HTMLTextAreaElement>('caja')
@@ -164,12 +156,23 @@ watch(texto, () =>
 )
 
 // Si estás al final, lo nuevo se queda a la vista; si subiste a leer, no te mueve.
-const firma = computed(() => `${pasados.value.length}:${vivos.value.length}:${vivos.value.at(-1)?.props.texto.length ?? 0}`)
+// Como mucho un desplazamiento por fotograma, aunque lleguen muchos tokens.
+const firma = computed(() => `${pasados.value.length}:${vivos.value.length}:${vivos.value.at(-1)?.text.length ?? 0}`)
 let alFinal = true
+let fotograma = 0
 const alDesplazar = () => (alFinal = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 160)
 window.addEventListener('scroll', alDesplazar, { passive: true })
-onBeforeUnmount(() => window.removeEventListener('scroll', alDesplazar))
-watch(firma, () => alFinal && nextTick(() => window.scrollTo({ top: document.documentElement.scrollHeight })), { flush: 'post' })
+onBeforeUnmount(() => {
+  window.removeEventListener('scroll', alDesplazar)
+  cancelAnimationFrame(fotograma)
+})
+watch(firma, () => {
+  if (!alFinal || fotograma) return
+  fotograma = requestAnimationFrame(() => {
+    fotograma = 0
+    window.scrollTo({ top: document.documentElement.scrollHeight })
+  })
+})
 </script>
 
 <template>
@@ -199,7 +202,7 @@ watch(firma, () => alFinal && nextTick(() => window.scrollTo({ top: document.doc
       <p v-else-if="!historia && cargando" class="fg-meta">Leyendo lo que se dijo…</p>
       <p v-else-if="vacia" class="fg-meta">{{ escribible ? 'Todavía no habéis hablado. Escribe abajo para empezar.' : 'No hay nada dicho en esta conversación.' }}</p>
       <div v-if="vivos.length" class="vivos" aria-live="polite" aria-relevant="additions text">
-        <MensajeConversacion v-for="m in vivos" :key="m.key" v-bind="m.props" />
+        <MensajeVivo v-for="l in vivos" :key="l.key" :linea="l" :ahora="ahora" />
       </div>
     </section>
 

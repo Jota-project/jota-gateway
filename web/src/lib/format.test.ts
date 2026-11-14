@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatClock, formatDuration, formatModes, formatRelative, formatSeconds, formatShortDate } from './format'
+import { formatClock, formatDuration, formatModes, formatRelative, formatSeconds, formatShortDate, parseIso } from './format'
 
 describe('formatDuration', () => {
   it.each([
@@ -50,5 +50,16 @@ describe('formatRelative, formatClock y formatShortDate', () => {
   it('la hora sola si es de hoy; si no, con el día', () => {
     expect(formatClock(at(14, 8, 7), now)).toBe('08:07')
     expect(formatClock(at(12, 20, 0), now)).toBe('12 nov, 20:00')
+  })
+})
+
+describe('parseIso', () => {
+  it('una hora sin zona del gateway es UTC, no hora local', () => {
+    expect(parseIso('2026-11-14T18:42:00').toISOString()).toBe('2026-11-14T18:42:00.000Z')
+    expect(parseIso('2026-11-14T18:42:00.123456').getTime()).toBe(Date.UTC(2026, 10, 14, 18, 42, 0, 123))
+  })
+  it('respeta la zona cuando viene', () => {
+    expect(parseIso('2026-11-14T18:42:00+01:00').toISOString()).toBe('2026-11-14T17:42:00.000Z')
+    expect(parseIso('2026-11-14T18:42:00Z').toISOString()).toBe('2026-11-14T18:42:00.000Z')
   })
 })

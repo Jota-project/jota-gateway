@@ -166,7 +166,8 @@ def test_state_skips_bridge_whose_snapshot_fails(client, admin_headers):
 # ── Acceso a OpenClaw (M19): permisos, admin, token en uso y emparejamiento ──
 
 ACCESS_KEYS = {"state", "last_error", "scopes", "admin", "auth_method", "pairing",
-               "pairing_request_id", "identity_error", "device_id"}
+               "pairing_request_id", "identity_error", "device_id",
+               "approve_command", "identity_error_text"}
 
 
 def test_state_orchestrator_access_before_connecting(client, admin_headers):
@@ -174,6 +175,7 @@ def test_state_orchestrator_access_before_connecting(client, admin_headers):
     assert set(orch) == ACCESS_KEYS
     assert orch["scopes"] is None and orch["admin"] is False
     assert orch["auth_method"] is None and orch["pairing"] == "unknown"
+    assert orch["approve_command"] is None and orch["identity_error_text"] is None
 
 
 def test_state_orchestrator_access_connected_with_admin(client, admin_headers):
@@ -195,6 +197,19 @@ def test_state_orchestrator_pairing_pending(client, admin_headers):
     orch = client.get("/admin/state", headers=admin_headers).json()["services"]["orchestrator"]
     assert orch["pairing"] == "pending" and orch["pairing_request_id"] == "req-7"
     assert orch["admin"] is False
+    # La frase y el comando salen del gateway, el mismo texto que la CLI (una sola fuente).
+    assert orch["approve_command"] == "openclaw devices approve req-7"
+
+
+def test_state_orchestrator_identity_required_says_why(client, admin_headers):
+    access = client.app.state.openclaw_access
+    access.pairing = "identity_required"
+    access.identity_error = "challenge_without_nonce"
+    orch = client.get("/admin/state", headers=admin_headers).json()["services"]["orchestrator"]
+    assert orch["identity_error_text"] == (
+        "este OpenClaw no manda nonce en el reto y no hay nada que firmar"
+    )
+    assert orch["approve_command"] is None
 
 
 async def test_state_reflects_a_real_pairing_flow(tmp_path, monkeypatch):

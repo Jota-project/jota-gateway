@@ -9,6 +9,7 @@ import FgBoton from '@/components/FgBoton.vue'
 import FgCampo from '@/components/FgCampo.vue'
 import FgEstado from '@/components/FgEstado.vue'
 import { diff, toForm, validate, type ClientForm } from '@/lib/clientForm'
+import { parseIso } from '@/lib/format'
 import { CLIENT_TYPE, label } from '@/lib/labels'
 import { toast } from '@/lib/toasts'
 import { useClientsStore } from '@/stores/clients'
@@ -39,7 +40,7 @@ const meta = computed(() => {
   const c = cliente.value
   if (!c) return ''
   const tipo = c.client_type ? label(CLIENT_TYPE, c.client_type) : 'Sin tipo'
-  const fecha = new Date(c.created_at).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' })
+  const fecha = parseIso(c.created_at).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' })
   return `${tipo} · creado el ${fecha} · huella ${c.key_fp.slice(0, 4)} ${c.key_fp.slice(4)}`
 })
 

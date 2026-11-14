@@ -100,13 +100,6 @@ describe('createChatSession', () => {
     expect(s.state.connection).toBe('ready')
   })
 
-  it('si la conversación ya está abierta en otra pestaña, no la quita al entrar', () => {
-    const s = createChatSession({ conversationId: 'c1', token: 't', WebSocketImpl: FakeSocket as unknown as typeof WebSocket, url: 'ws://x' })
-    s.start(true)
-    expect(s.state.connection).toBe('elsewhere')
-    expect(FakeSocket.all).toHaveLength(0)
-  })
-
   it('tras una caída reintenta solo, con espera, y cierra el turno que quedó abierto', () => {
     const s = session()
     last().receive({ type: 'turn_start', turn_id: 't-1', turn_seq: 1, conversation: 'c1', origin: 'user' })
@@ -136,6 +129,34 @@ describe('createChatSession', () => {
     expect(last().sent).toHaveLength(1) // solo el handshake hasta el ready
     last().receive(READY)
     expect(last().sent.at(-1)).toEqual({ type: 'send', text: '¿Sigues ahí?' })
+  })
+
+  it('lo escrito con la conversación dormida se marca «no enviado» si no llega a entrar', () => {
+    const s = session()
+    last().serverClose(1000)
+    s.send('¿Hola?')
+    last().open()
+    last().serverClose(1008, 'conversation opened elsewhere')
+    expect(s.state.connection).toBe('elsewhere')
+    expect(s.state.log.lines.at(-1)).toMatchObject({ text: '¿Hola?', unsent: true })
+  })
+
+  it('al volver a entrar, el aviso de OpenClaw caído empieza de cero', () => {
+    const s = session()
+    last().receive({ type: 'status', service: 'orchestrator', state: 'reconnecting' })
+    last().serverClose(1006)
+    vi.advanceTimersByTime(1000)
+    last().open()
+    last().receive(READY)
+    expect(s.state.orchestratorDown).toBe(false)
+  })
+
+  it('con el acceso retirado no reintenta solo', () => {
+    const s = session()
+    last().serverClose(1008, 'revoked')
+    expect(s.state.connection).toBe('stopped')
+    vi.advanceTimersByTime(60_000)
+    expect(FakeSocket.all).toHaveLength(1)
   })
 
   it('para con un 1008 que no se arregla reconectando y dice por qué', () => {

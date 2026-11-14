@@ -52,6 +52,10 @@ export interface OpenClawAccess {
   identity_error: string | null
   /** Público: identifica al gateway como dispositivo en OpenClaw. */
   device_id: string | null
+  /** Con `pairing: "pending"`: el comando que lo aprueba en la máquina de OpenClaw (lo redacta el gateway). */
+  approve_command: string | null
+  /** Con `pairing: "identity_required"`: por qué, en una frase del gateway (la misma que la CLI). */
+  identity_error_text: string | null
 }
 
 export interface GatewayState {

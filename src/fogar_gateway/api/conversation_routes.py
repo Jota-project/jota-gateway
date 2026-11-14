@@ -18,10 +18,11 @@ registran en el log.
 """
 
 import logging
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from fogar_gateway.api.admin_routes import panel_session
+from fogar_gateway.api.admin_routes import existing_panel_config, panel_session
 from fogar_gateway.api.deps import get_admin_auth
 from fogar_gateway.core.agent_policy import AgentPolicyError, resolve_agent
 from fogar_gateway.core.exceptions import ClientInactive, ClientNotFound
@@ -50,6 +51,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/conversations", dependencies=[Depends(get_admin_auth)])
 
 
+def _utc(value: datetime) -> datetime:
+    """SQLite devuelve las fechas sin zona; se guardan en UTC y así salen (con su `+00:00`)."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
 def _response(row: ConversationRow, title: str | None = None) -> ConversationResponse:
     r = row.record
     return ConversationResponse(
@@ -59,8 +65,8 @@ def _response(row: ConversationRow, title: str | None = None) -> ConversationRes
         agent=r.agent,
         kind=r.kind,
         day=r.day,
-        created_at=r.created_at,
-        last_turn_at=r.last_turn_at,
+        created_at=_utc(r.created_at),
+        last_turn_at=_utc(r.last_turn_at) if r.last_turn_at is not None else None,
         turn_count=r.turn_count,
         title=title,
     )
@@ -78,15 +84,19 @@ async def list_conversations(
 
 @router.get("/agents", response_model=ConversationAgents)
 async def get_conversation_agents(request: Request) -> ConversationAgents:
-    """Los del roster de OpenClaw que el panel puede usar (`allowed_agents`) y el de la cascada;
-    sin roster (OpenClaw sin conectar), solo el de la cascada. Mismas reglas que el POST."""
+    """Los del roster de OpenClaw que el panel puede usar (`allowed_agents`) y el de la cascada.
+    Sin roster (OpenClaw sin conectar), su `allowed_agents` (o ninguno). Mismas reglas que el POST,
+    pero es una lectura: no crea la ficha del panel (sin ficha, las de por defecto)."""
     try:
-        _, config = await panel_session()
+        config = await existing_panel_config()
     except (ClientNotFound, ClientInactive):
         raise HTTPException(status_code=409, detail="panel_client_inactive") from None
     info = request.app.state.openclaw.gateway_info
-    allowed = config.allowed_agents
-    agents = [a for a in (info.agents if info is not None else []) if allowed is None or a in allowed]
+    allowed = config.allowed_agents if config is not None else None
+    if info is not None:
+        agents = [a for a in info.agents if allowed is None or a in allowed]
+    else:
+        agents = list(allowed or [])
     try:
         default: str | None = resolve_agent(requested=None, client_config=config, gateway_info=info)
     except AgentPolicyError:

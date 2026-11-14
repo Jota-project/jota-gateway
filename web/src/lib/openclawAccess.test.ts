@@ -10,6 +10,8 @@ const access = (over: Partial<OpenClawAccess>): OpenClawAccess => ({
   pairing_request_id: null,
   identity_error: null,
   device_id: 'abc',
+  approve_command: null,
+  identity_error_text: null,
   ...over,
 })
 
@@ -37,12 +39,19 @@ describe('describeAccess', () => {
     expect(v.metodo).toBe('Token compartido')
   })
 
-  it('pendiente de aprobar: da el comando con el id de la petición', () => {
-    const v = describeAccess(access({ pairing: 'pending', pairing_request_id: 'req-42', scopes: null, admin: false }))!
+  it('pendiente de aprobar: da el comando tal cual lo redacta el gateway', () => {
+    const v = describeAccess(
+      access({ pairing: 'pending', pairing_request_id: 'req-42', approve_command: 'openclaw devices approve req-42', scopes: null, admin: false }),
+    )!
     expect(v.tono).toBe('warn')
     expect(v.comando).toBe('openclaw devices approve req-42')
     expect(v.permisos).toBeNull()
-    expect(describeAccess(access({ pairing: 'pending', pairing_request_id: null }))!.comando).toBe('openclaw devices approve --latest')
+  })
+
+  it('sin identidad que mandar: la causa, del gateway', () => {
+    const v = describeAccess(access({ pairing: 'identity_required', identity_error_text: 'el reto no trae nonce' }))!
+    expect(v.tono).toBe('warn')
+    expect(v.detalle).toBe('Motivo: el reto no trae nonce. Revísalo con fogar-gw doctor.')
   })
 
   it('sin conexión ahora, y un gateway anterior a M19 que no da el dato', () => {

@@ -1,8 +1,9 @@
 import type { OpenClawAccess } from '@/api/types'
 
-// Con qué acceso está el gateway en OpenClaw (M19), para Estado. Las frases siguen a las de la CLI
-// (src/fogar_gateway/cli/openclaw_access.py) para que `fogar-gw status` y el panel digan lo mismo.
-// Nunca hay secretos aquí: ni el token ni la clave privada llegan al panel; el deviceId es público.
+// Con qué acceso está el gateway en OpenClaw (M19), para Estado. El comando que lo aprueba y la causa
+// de `identity_required` los redacta el gateway (`approve_command`, `identity_error_text`), los mismos
+// que enseña `fogar-gw`: aquí no se copian. Nunca hay secretos: ni el token ni la clave privada llegan
+// al panel; el deviceId es público.
 
 export const SCOPES = [
   { scope: 'operator.read', texto: 'Leer' },
@@ -14,14 +15,6 @@ export const AUTH_METHOD: Record<string, string> = {
   shared_token: 'Token compartido',
   device_token: 'Token de dispositivo',
 }
-
-const IDENTITY_ERROR: Record<string, string> = {
-  identity_file_invalid: 'el fichero de identidad del gateway no vale o no se puede crear',
-  challenge_without_nonce: 'este OpenClaw no manda nonce en el reto y no hay nada que firmar',
-}
-
-/** El comando que aprueba el gateway en la máquina de OpenClaw (como `approve_command` del gateway). */
-export const approveCommand = (requestId: string | null | undefined) => `openclaw devices approve ${requestId || '--latest'}`
 
 export type AccessTone = 'ok' | 'warn' | 'off'
 
@@ -55,14 +48,14 @@ export function describeAccess(access: Partial<OpenClawAccess> | undefined): Acc
         tono: 'warn',
         titulo: 'Falta aprobar el gateway en OpenClaw',
         detalle: 'OpenClaw espera que apruebes este gateway como dispositivo. Ejecuta esto en la máquina de OpenClaw; el gateway se conecta solo al aprobarlo.',
-        comando: approveCommand(access.pairing_request_id),
+        comando: access.approve_command ?? null,
       }
     case 'identity_required':
       return {
         ...base,
         tono: 'warn',
         titulo: 'OpenClaw pide una identidad que el gateway no puede mandar',
-        detalle: `Motivo: ${IDENTITY_ERROR[access.identity_error ?? ''] ?? 'no hay identidad que mandar'}. Revísalo con fogar-gw doctor.`,
+        detalle: `${access.identity_error_text ? `Motivo: ${access.identity_error_text}. ` : ''}Revísalo con fogar-gw doctor.`,
       }
     case 'paired':
     case 'not_required': {
